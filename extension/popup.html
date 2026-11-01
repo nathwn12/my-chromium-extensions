@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Crunchyroll Discord Presence</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main class="popup">
+      <header>
+        <img src="icons/icon32.png" alt="" width="24" height="24" />
+        <h1>Crunchyroll Presence</h1>
+        <span id="bridge" class="pill" data-state="unknown">unknown</span>
+      </header>
+
+      <p id="app" class="detail" aria-live="polite">App: Crunchyroll</p>
+      <p id="app-override" class="detail" hidden>
+        Custom application ID in use — change it in Settings.
+      </p>
+
+      <section class="current" aria-live="polite">
+        <p id="now" class="now">Nothing playing</p>
+        <p id="detail" class="detail"></p>
+      </section>
+
+      <label class="toggle" for="enabled">
+        <input id="enabled" type="checkbox" />
+        <span>Presence enabled</span>
+      </label>
+
+      <footer>
+        <a id="open-options" href="options.html">Settings</a>
+      </footer>
+    </main>
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

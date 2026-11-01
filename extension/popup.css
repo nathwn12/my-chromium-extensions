@@ -1,0 +1,140 @@
+:root {
+  color-scheme: dark;
+  --bg: #0d0f13;
+  --card: #161a21;
+  --line: #262c36;
+  --ink: #e8ecf2;
+  --muted: #98a3b3;
+  --accent: #f47521;
+  --ok: #4ade80;
+  --warn: #fbbf24;
+  --bad: #f87171;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  width: 320px;
+  background: var(--bg);
+  color: var(--ink);
+  font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+.popup {
+  padding: 14px;
+  display: grid;
+  gap: 12px;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+h1 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  flex: 1;
+}
+
+.pill {
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: #0f1319;
+  font-size: 12px;
+}
+
+.pill[data-state="connected"] {
+  color: var(--ok);
+  border-color: #1f4d33;
+}
+
+.pill[data-state="connecting"],
+.pill[data-state="idle"] {
+  color: var(--warn);
+  border-color: #4d3f1f;
+}
+
+.pill[data-state="error"],
+.pill[data-state="disconnected"] {
+  color: var(--bad);
+  border-color: #4d2323;
+}
+
+.notice {
+  border: 1px solid #4d3f1f;
+  background: #1c1710;
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 13px;
+}
+
+.notice p {
+  margin: 0 0 6px;
+}
+
+.notice a {
+  color: var(--accent);
+}
+
+.current {
+  border: 1px solid var(--line);
+  background: var(--card);
+  border-radius: 10px;
+  padding: 12px;
+}
+
+.now {
+  margin: 0;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.detail {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.toggle {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.toggle input {
+  accent-color: var(--accent);
+  width: 16px;
+  height: 16px;
+}
+
+footer {
+  display: flex;
+  justify-content: flex-end;
+}
+
+footer a {
+  color: var(--muted);
+  font-size: 12px;
+  text-decoration: none;
+}
+
+footer a:hover {
+  color: var(--accent);
+}
+
+a:focus-visible,
+.toggle input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
