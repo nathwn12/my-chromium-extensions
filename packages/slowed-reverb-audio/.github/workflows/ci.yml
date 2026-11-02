@@ -1,0 +1,44 @@
+# nathwn12 house CI - stack: node / bun (copy to .github/workflows/ci.yml)
+#
+# The install step MUST match the repo's REAL lockfile. `npm ci` fails outright
+# on a bun repo (no package-lock.json), which is a red badge for no reason.
+# This template auto-detects: bun.lock / bun.lockb -> bun, package-lock.json ->
+# npm ci, neither -> npm install.
+#
+# Scripts run through `npm run <script> --if-present` because that only reads
+# package.json - it works whichever package manager populated node_modules.
+#
+# If the repo uses pnpm or yarn, replace the install step and say so in the
+# commit message. If the repo has a real lint step, add it above Build.
+name: ci
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+      - name: Install dependencies
+        shell: bash
+        run: |
+          if [ -f bun.lock ] || [ -f bun.lockb ]; then
+            bun install --frozen-lockfile
+          elif [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+      - name: Lint
+        run: npm run lint
+      - name: Build
+        run: npm run build --if-present
+      - name: Test
+        run: npm test --if-present

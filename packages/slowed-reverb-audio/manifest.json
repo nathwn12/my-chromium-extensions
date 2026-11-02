@@ -1,0 +1,55 @@
+{
+  "manifest_version": 3,
+  "name": "Slowed Reverb Audio",
+  "version": "1.0.2",
+  "description": "Slow YouTube audio and add built-in reverb locally.",
+  "icons": {
+    "16": "audio/icon-16.png",
+    "32": "audio/icon-32.png",
+    "48": "audio/icon-48.png",
+    "128": "audio/icon-128.png"
+  },
+  "permissions": [
+    "scripting",
+    "storage",
+    "tabs"
+  ],
+  "host_permissions": [
+    "https://youtube.com/*",
+    "https://www.youtube.com/*",
+    "https://m.youtube.com/*",
+    "https://music.youtube.com/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://youtube.com/*",
+        "https://www.youtube.com/*",
+        "https://m.youtube.com/*",
+        "https://music.youtube.com/*"
+      ],
+      "js": [
+        "shared.js",
+        "content-script.js"
+      ],
+      "run_at": "document_start"
+    }
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "web_accessible_resources": [{
+    "resources": ["dattorro-worklet.js"],
+    "matches": ["https://youtube.com/*", "https://www.youtube.com/*", "https://m.youtube.com/*", "https://music.youtube.com/*"]
+  }],
+  "action": {
+    "default_icon": {
+      "16": "audio/icon-16.png",
+      "32": "audio/icon-32.png",
+      "48": "audio/icon-48.png",
+      "128": "audio/icon-128.png"
+    },
+    "default_title": "Slowed Reverb Audio",
+    "default_popup": "popup.html"
+  }
+}
