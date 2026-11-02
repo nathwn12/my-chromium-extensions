@@ -1,6 +1,6 @@
 const pageTitleEl = document.getElementById('page-title');
 const resetBtnEl = document.getElementById('reset-btn');
-const statusDotEl = document.getElementById('status-dot');
+const statusPillEl = document.getElementById('status-pill');
 const statusTextEl = document.getElementById('status-text');
 const powerToggleEl = document.getElementById('power-toggle');
 const slowSliderEl = document.getElementById('slow-slider');
@@ -48,6 +48,12 @@ slowSliderEl.addEventListener('pointerup', () => {
   void applySettings(settings);
 });
 
+slowSliderEl.addEventListener('change', () => {
+  const settings = { ...popupState.settings, slow: Number(slowSliderEl.value) };
+  applySettingsToUi(settings);
+  void applySettings(settings);
+});
+
 intensitySliderEl.addEventListener('input', () => {
   const settings = { ...popupState.settings, reverbIntensity: Number(intensitySliderEl.value) };
   applySettingsToUi(settings);
@@ -55,6 +61,12 @@ intensitySliderEl.addEventListener('input', () => {
 });
 
 intensitySliderEl.addEventListener('pointerup', () => {
+  const settings = { ...popupState.settings, reverbIntensity: Number(intensitySliderEl.value) };
+  applySettingsToUi(settings);
+  void applySettings(settings);
+});
+
+intensitySliderEl.addEventListener('change', () => {
   const settings = { ...popupState.settings, reverbIntensity: Number(intensitySliderEl.value) };
   applySettingsToUi(settings);
   void applySettings(settings);
@@ -108,7 +120,6 @@ function getPageLabel(url) {
   try {
     const host = new URL(url).hostname;
     if (host === 'music.youtube.com') return 'YouTube Music';
-    if (host === 'youtube.com' || host === 'www.youtube.com') return 'YouTube';
   } catch {}
   return 'Unsupported';
 }
@@ -132,7 +143,19 @@ function throttledApply(settings) {
   const now = Date.now();
   if (now - lastApplyTime >= APPLY_THROTTLE_MS) {
     lastApplyTime = now;
-    void applySettings(settings);
+    void applyLiveSettings(settings);
+  }
+}
+
+async function applyLiveSettings(settings) {
+  const normalized = normalizeSettings(settings);
+  popupState.settings = normalized;
+  if (activeTabId && popupState.eligible) {
+    try {
+      await chrome.tabs.sendMessage(activeTabId, { type: 'APPLY_LIVE_SETTINGS', settings: normalized });
+    } catch {
+      // Best effort only: the tab may not have a content script yet.
+    }
   }
 }
 
@@ -167,20 +190,16 @@ async function updateTabBypass(bypass) {
     popupState.bypass = Boolean(state?.bypass);
     powerToggleEl.checked = !popupState.bypass;
 
-    if (siteKey) {
-      await saveSiteState(siteKey, !popupState.bypass);
-    }
-
     await refreshLiveStatus();
   } catch {
-    powerToggleEl.checked = !bypass;
+    powerToggleEl.checked = !popupState.bypass;
     renderStatus('red', 'Could not update tab power state.');
   }
 }
 
 async function refreshLiveStatus() {
   if (!popupState.eligible || !activeTabId) {
-    renderStatus('gray', 'Only works on YouTube and YouTube Music.');
+    renderStatus('gray', 'Only works on YouTube Music.');
     return;
   }
 
@@ -200,7 +219,7 @@ async function refreshLiveStatus() {
 }
 
 function buildStatusText(live) {
-  if (live.bypass) return 'Power off for this tab.';
+  if (live.bypass) return 'Power off for this site.';
   if (!live.totalCount) return 'Waiting for media element.';
   if (live.failedCount && !live.attachedCount) return 'Could not attach to page audio.';
   if (live.neutral) return 'Active with neutral settings.';
@@ -208,7 +227,20 @@ function buildStatusText(live) {
   return 'Active on ' + live.attachedCount + ' media element' + (live.attachedCount === 1 ? '.' : 's.');
 }
 
-function renderStatus(dotColor, text) {
-  statusDotEl.className = dotColor === 'red' ? 'red' : dotColor === 'green' ? 'green' : '';
+function renderStatus(indicator, text) {
   statusTextEl.textContent = text;
+  if (!statusPillEl) return;
+  if (indicator === 'green') {
+    statusPillEl.textContent = 'Active';
+    statusPillEl.dataset.state = 'connected';
+  } else if (indicator === 'red') {
+    statusPillEl.textContent = 'Error';
+    statusPillEl.dataset.state = 'error';
+  } else if (/power off|off for/i.test(text)) {
+    statusPillEl.textContent = 'Off';
+    statusPillEl.dataset.state = 'off';
+  } else {
+    statusPillEl.textContent = 'Waiting';
+    statusPillEl.dataset.state = 'idle';
+  }
 }

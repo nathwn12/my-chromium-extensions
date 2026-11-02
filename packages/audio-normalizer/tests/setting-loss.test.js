@@ -310,7 +310,7 @@ test('defect1c: disabling site A never disables embedded site B (content guard)'
   const frameA = loadContentFrame('https://www.youtube.com/watch?v=1', storage);
   const frameB = loadContentFrame('https://example.com/embed', storage);
   await settle();
-  const broadcast = { type: 'SET_DOCUMENT_STATE', siteKey: 'youtube.com', enabled: false };
+  const broadcast = { type: 'SET_DOCUMENT_STATE', siteKey: 'www.youtube.com', enabled: false };
   const [ra, rb] = await Promise.all([frameA.sendMessage(broadcast), frameB.sendMessage(broadcast)]);
   await settle();
   assert.equal(ra.ok, true, 'intended frame applies');
@@ -318,8 +318,8 @@ test('defect1c: disabling site A never disables embedded site B (content guard)'
   // Same guard on the toggle broadcast: a TOGGLE_CHANGED naming site A must
   // never reset an embedded frame from site B.
   const [ta, tb] = await Promise.all([
-    frameA.sendMessage({ type: 'TOGGLE_CHANGED', siteKey: 'youtube.com', enabled: false }),
-    frameB.sendMessage({ type: 'TOGGLE_CHANGED', siteKey: 'youtube.com', enabled: false }),
+    frameA.sendMessage({ type: 'TOGGLE_CHANGED', siteKey: 'www.youtube.com', enabled: false }),
+    frameB.sendMessage({ type: 'TOGGLE_CHANGED', siteKey: 'www.youtube.com', enabled: false }),
   ]);
   assert.equal(ta.ok, true, 'intended frame applies toggle broadcast');
   assert.equal(tb.ok, false, 'foreign frame ignores mismatched toggle broadcast');
@@ -443,38 +443,55 @@ test('defect2c repurposed: a multi-field intent applies atomically or not at all
 });
 
 // ============ DEFECT 3: no pending work; immediate persist; reset is one write ============
-test('defect3a: slider input persists immediately (no debounce window to lose)', async () => {
+test('defect3a: drag previews transiently, persists once on change (no per-tick write)', async () => {
   const seen = [];
+  const tabsCalls = [];
   const runtimeSendMessage = async (msg) => {
     if (msg.type === 'GET_SITE_STATE') return { ok: true, enabled: true, gainDb: 0, siteKey: 'youtube.com', seq: 0 };
     if (msg.type === 'SET_SITE_STATE') { seen.push({ ...msg }); return { ok: true, enabled: true, gainDb: msg.set?.gainDb ?? msg.gainDb, siteKey: 'youtube.com', seq: 1 }; }
     return { ok: true };
   };
   const popup = loadPopup({
-    tabUrl: 'https://www.youtube.com/watch?v=1',
+    tabUrl: 'https://youtube.com/watch',
     runtimeSendMessage,
-    tabsSendMessage: async () => ({ ok: true }),
+    tabsSendMessage: async (tabId, msg, options) => {
+      tabsCalls.push({ tabId, msg, options });
+      return { ok: true };
+    },
   });
   await settle(50);
   popup.els['gain-slider'].disabled = false;
   popup.els.toggle.checked = true;
+  // A drag tick renders locally and live-applies a transient preview —
+  // no storage intent is dispatched per tick.
   popup.els['gain-slider'].value = '6';
   await popup.els['gain-slider'].fire('input');
   await settle(10);
+  assert.equal(seen.filter((m) => m.type === 'SET_SITE_STATE').length, 0, 'input dispatches no persist');
+  const previews = tabsCalls.filter((c) => c.msg?.type === 'SET_DOCUMENT_STATE' && c.msg?.transient === true);
+  assert.equal(previews.length, 1, 'input live-applies one transient preview to the top frame');
+  assert.equal(previews[0].msg.gainDb, 6, 'preview carries the dragged gain');
+  assert.equal(previews[0].options?.frameId, 0, 'preview targets the top frame');
+  // Release persists exactly once; the paired pointerup does not double it.
+  await popup.els['gain-slider'].fire('change');
+  await settle(10);
+  await popup.els['gain-slider'].fire('pointerup');
+  await settle(10);
   const sets = seen.filter((m) => m.type === 'SET_SITE_STATE');
-  assert.equal(sets.length, 1, 'input persists without waiting out a debounce timer');
+  assert.equal(sets.length, 1, 'change+pointerup persist exactly once per value');
   assert.equal(sets[0].set?.gainDb, 6, 'gain input sends a field-level intent (only gainDb)');
   assert.deepEqual(Object.keys(sets[0].set || {}).sort(), ['gainDb'], 'intent carries ONLY the changed field');
   assert.ok(!('at' in sets[0]) && !('actionAt' in sets[0]), 'no wall-clock stamp is sent (clocks deleted)');
 });
 
-test('defect3b: closing the popup cannot lose work (simulated teardown: dispatched sends land)', async () => {
+test('defect3b: closing the popup cannot lose work (release persist lands after teardown)', async () => {
   // SIMULATION, not browser-equivalent teardown: the harness replaces
   // `runtime.sendMessage` with a thrower and empties the interval list, but
   // the vm context and outstanding continuations stay alive — a real popup
   // close destroys the document and its JS. What this proves is narrower:
-  // both intents are dispatched synchronously before any close could drop
-  // them, and the already-dispatched sends land in storage afterwards.
+  // the release-time intent is dispatched synchronously on `change` before
+  // any close could drop it, and the already-dispatched send lands in
+  // storage afterwards. Drag ticks before it persisted nothing (by design).
   const storage = createFakeStorage({
     'site:youtube.com': { enabled: true, gainDb: 0, seq: 0, mirror: true },
   });
@@ -486,36 +503,37 @@ test('defect3b: closing the popup cannot lose work (simulated teardown: dispatch
     return bg.sendMessage(msg);
   };
   const popup = loadPopup({
-    tabUrl: 'https://www.youtube.com/watch?v=1',
+    tabUrl: 'https://youtube.com/watch',
     runtimeSendMessage,
-    tabsSendMessage: async () => ({ ok: true, enabled: true, hostname: 'www.youtube.com', siteKey: 'youtube.com', gainDb: 0, hookAlive: false, hookActive: false, activating: false, lastError: '', indicator: 'gray' }),
+    tabsSendMessage: async () => ({ ok: true, enabled: true, hostname: 'youtube.com', siteKey: 'youtube.com', gainDb: 0, hookAlive: false, hookActive: false, activating: false, lastError: '', indicator: 'gray' }),
   });
   await settle(50);
   assert.equal(popup.unloadHandlers.length, 0, 'no flush-on-close handler exists by design');
-  // Two rapid gain inputs with no awaiting between them (second dispatched
-  // while the first is still in flight). Dispatch must be synchronous: both
-  // intents leave the popup before any close could drop them.
+  // Drag ticks preview without persisting.
   popup.els['gain-slider'].disabled = false;
   popup.els.toggle.checked = true;
-  const before = dispatchCount;
   popup.els['gain-slider'].value = '2';
-  const f1 = popup.els['gain-slider'].fire('input');
-  // Prevent unhandled rejection noise; the popup context is about to go away.
-  f1.catch(() => {});
+  await popup.els['gain-slider'].fire('input');
   popup.els['gain-slider'].value = '6';
-  const f2 = popup.els['gain-slider'].fire('input');
-  f2.catch(() => {});
-  assert.ok(dispatchCount >= before + 2, `both inputs dispatched synchronously before close (got ${dispatchCount - before})`);
+  await popup.els['gain-slider'].fire('input');
+  assert.equal(dispatchCount, 0, 'drag ticks dispatch no persist');
+  // Release dispatches synchronously: the intent leaves the popup before
+  // any close could drop it.
+  popup.els['gain-slider'].value = '6';
+  const f = popup.els['gain-slider'].fire('change');
+  // Prevent unhandled rejection noise; the popup context is about to go away.
+  f.catch(() => {});
+  assert.ok(dispatchCount >= 1, 'release dispatches the persist synchronously before close');
   // Simulated teardown: further sends fail and timers are cleared, but the
   // vm context itself stays alive (see note above). The already-dispatched
-  // intents are in flight to the background and must land.
+  // intent is in flight to the background and must land.
   popup.sandbox.chrome.runtime.sendMessage = async () => { throw new Error('popup closed'); };
   popup.intervals.length = 0;
-  // Deliberately do NOT await f1/f2: the context is gone. Await only the
+  // Deliberately do NOT await f: the context is gone. Await only the
   // background/storage side, like a closed popup would.
   await settle(80);
   const stored = await storage.get(['site:youtube.com']);
-  assert.equal(stored['site:youtube.com'].gainDb, 6, 'later arrival (gain 6) lands in storage after simulated teardown');
+  assert.equal(stored['site:youtube.com'].gainDb, 6, 'release value lands in storage after simulated teardown');
 });
 
 test('defect3c: reset is a single storage write carrying gain alone', async () => {
@@ -525,7 +543,7 @@ test('defect3c: reset is a single storage write carrying gain alone', async () =
   const bg = loadBackground(storage);
   const runtimeSendMessage = async (msg) => bg.sendMessage(msg);
   const popup = loadPopup({
-    tabUrl: 'https://www.youtube.com/watch?v=1',
+    tabUrl: 'https://youtube.com/watch',
     runtimeSendMessage,
     tabsSendMessage: async (tabId, msg) => {
       if (msg?.type === 'GET_DOCUMENT_STATUS') return { ok: true, enabled: true, hostname: 'youtube.com', siteKey: 'youtube.com', gainDb: 6, hookAlive: false, hookActive: false, activating: false, lastError: '', indicator: 'gray' };
@@ -668,11 +686,11 @@ test('queued-actions end to end: sibling gain 6 survives a stale-slider disable 
   pA.els['gain-slider'].disabled = false;
   pA.els.toggle.checked = true;
   pA.els['gain-slider'].value = '2';
-  await pA.els['gain-slider'].fire('input');
+  await pA.els['gain-slider'].fire('change');
   pB.els['gain-slider'].disabled = false;
   pB.els.toggle.checked = true;
   pB.els['gain-slider'].value = '6';
-  await pB.els['gain-slider'].fire('input');
+  await pB.els['gain-slider'].fire('change');
   await settle(60);
   assert.equal(pA.els['gain-slider'].value, '2', 'popup A slider is stale (unaware of sibling gain 6)');
   pA.els.toggle.checked = false;
@@ -732,7 +750,10 @@ test('legacy sibling-subdomain activeSites enables the canonical site', async ()
   assert.equal(got.gainDb, 5, 'gain preserved alongside the enable');
 });
 
-test('un-consumed activeSites entry is never cleared', async () => {
+test('legacy activeSites entries migrate into their own full-host keys', async () => {
+  // Full-host semantics: `music.youtube.com` is its own site, so its legacy
+  // enable migrates into `site:music.youtube.com` (consumed), while the
+  // existing `site:youtube.com` record is untouched.
   const storage = createFakeStorage({
     'site:youtube.com': { enabled: false, gainDb: 1, seq: 3, mirror: false },
     activeSites: { 'music.youtube.com': true },
@@ -742,8 +763,9 @@ test('un-consumed activeSites entry is never cleared', async () => {
   const bg = loadBackground(storage);
   await bg.runStartup();
   const after = await storage.get(null);
-  assert.ok('music.youtube.com' in (after.activeSites || {}), 'un-consumed entry survives startup (per-site already existed)');
-  assert.equal(after['site:youtube.com'].enabled, false, 'existing per-site truth untouched');
+  assert.ok(!('music.youtube.com' in (after.activeSites || {})), 'consumed music.youtube.com cleared after migrating to its full key');
+  assert.equal(after['site:music.youtube.com'].enabled, true, 'legacy enable migrated into its own full-host record');
+  assert.equal(after['site:youtube.com'].enabled, false, 'existing full-host truth untouched');
 });
 
 test('mixed-schema startup injection covers legacy sites when per-site keys exist', async () => {
@@ -909,7 +931,7 @@ test('popup treats a truth-less response as a failure, not a success', async () 
   popup.els['gain-slider'].disabled = false;
   popup.els.toggle.checked = true;
   popup.els['gain-slider'].value = '6';
-  await popup.els['gain-slider'].fire('input');
+  await popup.els['gain-slider'].fire('change');
   await settle(50);
   // Gain 6 was never acknowledged with stored truth, so the control reverts
   // to the stored 3 and the status line says so.

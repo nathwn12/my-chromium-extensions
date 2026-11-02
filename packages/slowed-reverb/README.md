@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="audio/icon-128.png" width="120" height="120" alt="Slowed Reverb icon" />
+  <img src="icons/icon128.png" width="128" height="128" alt="Slowed Reverb icon" />
 </p>
 <h1 align="center">Slowed Reverb</h1>
-<p align="center"><strong>Slow a YouTube track and wash it in plate reverb, right in your browser.</strong></p>
+<p align="center"><strong>Slow a YouTube Music track and wash it in plate reverb, right in your browser.</strong></p>
 
 ## Install
 
@@ -14,7 +14,7 @@ git clone https://github.com/nathwn12/slowed-reverb.git
 
 Open `chrome://extensions`, switch on Developer mode, choose Load unpacked, and select the repo folder holding `manifest.json`.
 
-Once it loads, open a YouTube or YouTube Music tab, start playback, and click the extension icon. You need Chrome or Brave on desktop before any of this works.
+Once it loads, open a YouTube Music tab, start playback, and click the extension icon. You need Chrome or Brave on desktop before any of this works.
 
 ### Offline or pinned
 
@@ -29,7 +29,7 @@ There is no hosted page, so the repo folder itself is the install source. Reload
 
 ## Use it
 
-Start a video or song on YouTube or YouTube Music, then click the extension icon.
+Start a song on YouTube Music, then click the extension icon.
 
 Drag the large slider to set speed from 0.7x to 1.3x.
 
@@ -52,7 +52,7 @@ Your per-site speed, reverb, and Active state persist across restart and apply a
 ## Requirements
 
 - You run Chrome or Brave on desktop with Developer mode access.
-- You listen on `youtube.com`, `www.youtube.com`, or `music.youtube.com`.
+- You listen on `music.youtube.com`.
 - You skip the build step: there is none, and you need no account.
 - You install Node.js with npm only if you want the optional `npm run lint` check.
 

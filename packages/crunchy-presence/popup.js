@@ -12,6 +12,9 @@ const nowEl = el("now");
 const detailEl = el("detail");
 const buttonsEl = el("buttons");
 const enabledEl = el("enabled");
+// Single vocabulary across popups: the toggle reads "Active".
+const toggleLabel = document.querySelector(".toggle span");
+if (toggleLabel) toggleLabel.textContent = "Active";
 
 function ask(message) {
   return new Promise((resolve) => {
@@ -55,7 +58,7 @@ async function render() {
     return;
   }
 
-  const activity = status.lastActivity;
+  const activity = "lastSent" in status ? status.lastSent : status.lastActivity;
   if (activity && activity.details) {
     nowEl.textContent = activity.details;
     detailEl.textContent = describeLine(activity);

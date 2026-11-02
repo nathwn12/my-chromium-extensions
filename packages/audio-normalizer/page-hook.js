@@ -1,20 +1,114 @@
 (() => {
-  if (window.__tabNormalizerHookV5?.revive) {
-    window.__tabNormalizerHookV5.revive();
+  // A page-defined `window.__tabNormalizerHookV5` never blocks the real
+  // hook: always install/overwrite below. Early-return ONLY when our own
+  // connect patch is already present (a real hook is installed).
+  if (typeof AudioNode !== 'undefined' && AudioNode.prototype
+    && /** @type {any} */ (AudioNode.prototype).__tnConnect) {
     return;
   }
 
   const CHANNEL = 'tab-normalizer-v5';
   const PENDING_ATTR = 'data-tab-normalizer-pending';
+  const WORKLET_ATTR = 'data-tn-worklet-url';
+  const WORKLET_SUFFIX = '/audio/normalizer-worklet.js';
   const RECOVERY_BURST_MS = 250;
   const RECOVERY_BURST_COUNT = 6;
   const HOOK_GUARD_TIMEOUT_MS = 1500;
-  const WORKLET_URL = document.documentElement?.getAttribute('data-tn-worklet-url')
-    || new URL(
-      'audio/normalizer-worklet.js',
-      /** @type {HTMLScriptElement|null} */ (document.currentScript)?.src || location.href,
-    ).toString();
-  document.documentElement?.removeAttribute('data-tn-worklet-url');
+  const RESUME_TIMEOUT_MS = 400;
+  /**
+   * Race context.resume() against a short timer so an autoplay-blocked
+   * context never wedges session creation or media attach. Resolves on
+   * timeout, never rejects.
+   * @param {any} context
+   * @param {number} [ms]
+   * @returns {Promise<void>}
+   */
+  function resumeWithTimeout(context, ms = RESUME_TIMEOUT_MS) {
+    if (!context || typeof context.resume !== 'function') return Promise.resolve();
+    const timeoutMs = Number.isFinite(ms) ? ms : RESUME_TIMEOUT_MS;
+    return Promise.race([
+      Promise.resolve()
+        .then(() => context.resume())
+        .then(
+          () => {},
+          () => {},
+        ),
+      new Promise((resolve) => setTimeout(resolve, timeoutMs)),
+    ]).then(() => {});
+  }
+  // Worklet URL contract: the ONLY trusted source is the START message from
+  // the ISOLATED content script (which knows chrome.runtime.getURL). The
+  // page-writable DOM attribute is kept ONLY as the pending-start fallback
+  // (set just before injection when the hook auto-starts before any START
+  // arrives). Anything else — page-relative fallback, missing value, or an
+  // origin that is not the content-script-set one pinned at load — fails
+  // closed with a clear status error. Never fetch a non-chrome-extension URL.
+  //
+  // Origin pinning: a bare `chrome-extension://` prefix check lets a page
+  // START pin ANY extension id's worklet path. At load the hook captures the
+  // exact origin of the content-script-set attribute value; every candidate
+  // must match that origin plus the exact worklet path. No pinned origin
+  // (attribute missing at load) means nothing validates — fail closed.
+  /** @type {string} */
+  let pinnedWorkletOrigin = '';
+  /** @param {unknown} value */
+  function isValidWorkletUrl(value) {
+    if (typeof value !== 'string' || !pinnedWorkletOrigin) return false;
+    let parsed = null;
+    try {
+      parsed = new URL(value);
+    } catch {
+      return false;
+    }
+    return parsed.origin === pinnedWorkletOrigin
+      && parsed.pathname === WORKLET_SUFFIX;
+  }
+  function readWorkletUrlAttribute() {
+    let value = null;
+    try {
+      value = document.documentElement?.getAttribute(WORKLET_ATTR);
+    } catch { value = null; }
+    try {
+      document.documentElement?.removeAttribute(WORKLET_ATTR);
+    } catch {}
+    // Structural pre-check only (origin pinning happens right after from
+    // whatever this captures); the pinned `isValidWorkletUrl` gates use.
+    const ok = typeof value === 'string'
+      && value.startsWith('chrome-extension://')
+      && value.endsWith(WORKLET_SUFFIX);
+    return ok ? value : null;
+  }
+  // Capture the pending-start fallback value once at load; the attribute is
+  // removed immediately so the page cannot swap it afterwards. The value's
+  // origin is pinned: only it (plus the exact worklet path) ever validates.
+  const pendingWorkletUrlFallback = readWorkletUrlAttribute();
+  try {
+    if (pendingWorkletUrlFallback) {
+      pinnedWorkletOrigin = new URL(pendingWorkletUrlFallback).origin;
+    }
+  } catch {
+    pinnedWorkletOrigin = '';
+  }
+  /** @type {string|null} */
+  let WORKLET_URL = null;
+  /**
+   * Resolve the worklet URL: START payload first, stored value next,
+   * pending-start DOM fallback last. Returns null when none validates —
+   * the caller fails closed with a status error.
+   * @param {unknown} candidate
+   */
+  function ensureWorkletUrl(candidate) {
+    if (isValidWorkletUrl(candidate)) {
+      WORKLET_URL = /** @type {string} */ (candidate);
+      return WORKLET_URL;
+    }
+    if (isValidWorkletUrl(WORKLET_URL)) return WORKLET_URL;
+    if (isValidWorkletUrl(pendingWorkletUrlFallback)) {
+      WORKLET_URL = pendingWorkletUrlFallback;
+      return WORKLET_URL;
+    }
+    return null;
+  }
   const MIN_GAIN_DB = -12;
   const MAX_GAIN_DB = 12;
 
@@ -40,10 +134,12 @@
   // tracks lastResetGeneration / pendingResetGeneration; the active
   // program element is activeProgramElement.
   const elementProgramGenerations = new WeakMap();
+  // Element -> live MediaElementAudioSourceNode (see attach/detach paths).
+  const elementSources = new WeakMap();
   let currentProgramGeneration = 0;
   let activeProgramElement = null;
 
-  /** @type {{ active: boolean, observer: (MutationObserver|null), recovering: boolean, internalWiring: boolean, creatingContext: boolean, gainDb: number, lastError: string }} */
+  /** @type {{ active: boolean, observer: (MutationObserver|null), recovering: boolean, internalWiring: boolean, creatingContext: boolean, gainDb: number, lastError: string, stopped: boolean }} */
   const state = {
     active: false,
     observer: null,
@@ -52,6 +148,7 @@
     creatingContext: false,
     gainDb: 0,
     lastError: '',
+    stopped: false,
   };
 
   window.__tabNormalizerHookV5 = {
@@ -79,7 +176,10 @@
     console.log('[hook] revive requested');
     reportStatus('HOOK_STATUS');
 
-    if (readPendingStart()) {
+    // A page can set the DOM pending attribute and call revive() after
+    // Active off. The pending fallback is ignored after stop until a real
+    // START arrives; only genuine recovery remains.
+    if (!state.stopped && readPendingStart()) {
       start();
       return;
     }
@@ -99,12 +199,22 @@
   }
 
   /**
-   * @param {{ gainDb?: number }|null} [nextState]
+   * @param {{ gainDb?: number, workletUrl?: unknown }|null} [nextState]
    */
   function start(nextState = null) {
     const wasActive = state.active;
+    state.stopped = false;
     if (nextState && typeof nextState === 'object') {
       state.gainDb = normalizeGainDb(nextState.gainDb);
+    }
+    // Worklet URL contract: START payload first, stored value next,
+    // pending-start DOM fallback last. Fail closed on anything else.
+    const resolvedUrl = ensureWorkletUrl(
+      nextState && typeof nextState === 'object' ? nextState.workletUrl : null,
+    );
+    if (!resolvedUrl) {
+      setError('Invalid worklet URL: expected a chrome-extension:// URL ending in /audio/normalizer-worklet.js.');
+      return;
     }
     state.active = true;
     state.gainDb = normalizeGainDb(state.gainDb);
@@ -136,6 +246,16 @@
     routeSessions();
     updateSessionGains();
     notifySessionStarts();
+    // Re-enable transition (inactive -> active after a previous program):
+    // mint one fresh program generation and broadcast exactly one
+    // reset-program per session so the re-enabled hook never resumes on the
+    // previous program's stale AGC/limiter state. Never reset at attach time
+    // (attach paths only flush this pending generation); the first cold start
+    // (no prior program) needs no reset because every worklet is already cold.
+    if (currentProgramGeneration > 0 || activeProgramElement) {
+      currentProgramGeneration += 1;
+      broadcastProgramReset(currentProgramGeneration);
+    }
     void recoverAudio();
     scheduleRecoveryBurst();
     reportStatus('HOOK_STARTED');
@@ -150,6 +270,9 @@
   function stop() {
     if (!state.active) return;
     state.active = false;
+    // The DOM pending fallback stays dead until a real START: revive() and
+    // the recovery burst must not re-route audio after an explicit stop.
+    state.stopped = true;
     clearRecoveryBurst();
     console.log('[hook] stopping');
     restoreAllHookGuards();
@@ -163,7 +286,29 @@
       state.observer = null;
     }
 
+    // Close hook-created media contexts that no longer route anything; a
+    // fresh one is pre-warmed on the next start. Sessions that still hold
+    // elements stay alive (their sources cannot be re-captured elsewhere).
+    for (const session of Array.from(sessions)) {
+      maybeCloseIdleMediaSession(session);
+    }
+
     reportStatus('HOOK_STOPPED');
+  }
+
+  // Close a hook-created (media-kind) context once it routes nothing and the
+  // hook is inactive. Never closes page-owned contexts or sessions that
+  // still hold media elements.
+  function maybeCloseIdleMediaSession(session) {
+    if (!session || session.kind !== 'media' || state.active) return;
+    if (session.mediaElements.size !== 0) return;
+    try {
+      if (typeof session.context.close === 'function'
+        && session.context.state !== 'closed') {
+        void session.context.close().catch(() => {});
+      }
+    } catch {}
+    teardownSession(session);
   }
 
   function bootstrap() {
@@ -358,13 +503,22 @@
     AudioContext.prototype.__tnMediaSource = true;
 
     AudioContext.prototype.createMediaElementSource = function (el) {
-      if (el) el.__tnWebAudio = true;
+      // Our own attach path runs under `state.internalWiring` (see
+      // attachMediaElement): never label our own wiring as page WebAudio, or
+      // the element could never re-attach after a context close/recover.
+      if (el && !state.internalWiring) el.__tnWebAudio = true;
       return originalCreateMediaElementSource.call(this, el);
     };
   }
 
   function observeDom() {
-    if (state.observer) return;
+    patchAttachShadow();
+    if (state.observer) {
+      // Observer already runs: still sweep for shadow roots added since the
+      // last sweep (open roots created while inactive are never patched).
+      scanShadowRoots();
+      return;
+    }
 
     let observerTimer = null;
 
@@ -375,6 +529,29 @@
       observerTimer = setTimeout(() => {
         observerTimer = null;
         for (const m of mutations) {
+          for (const node of m.removedNodes ?? []) {
+            // Detach first so removed elements stop pinning sessions: the
+            // source is disconnected and every strong reference is dropped.
+            // (A later re-insert re-attaches, reusing the live source.)
+            try {
+              if (!(node instanceof Element)) continue;
+              if (isMediaElement(node)) {
+                detachMediaElement(node);
+              }
+              for (const media of node.querySelectorAll?.('audio, video') ?? []) {
+                detachMediaElement(media);
+              }
+              try {
+                for (const nested of node.querySelectorAll?.('*') ?? []) {
+                  if (nested.shadowRoot) {
+                    for (const media of nested.shadowRoot.querySelectorAll?.('audio, video') ?? []) {
+                      detachMediaElement(media);
+                    }
+                  }
+                }
+              } catch {}
+            } catch {}
+          }
           for (const node of m.addedNodes) {
             if (!(node instanceof Element)) continue;
             if (isMediaElement(node)) {
@@ -383,6 +560,16 @@
             for (const media of node.querySelectorAll?.('audio, video') ?? []) {
               void attachMediaElement(media);
             }
+            // A subtree added under a shadow host arrives as one Element:
+            // sweep its open shadow root (and nested roots) for media.
+            try {
+              if (node.shadowRoot) observeShadowRoot(node.shadowRoot);
+            } catch {}
+            try {
+              for (const nested of node.querySelectorAll?.('*') ?? []) {
+                if (nested.shadowRoot) observeShadowRoot(nested.shadowRoot);
+              }
+            } catch {}
           }
         }
       }, 100);
@@ -392,12 +579,71 @@
       childList: true,
       subtree: true,
     });
+    scanShadowRoots();
+  }
+
+  // Open-shadow-root walk: the MutationObserver on document never sees nodes
+  // inside a shadow tree, so a <video> in an open shadow root would never be
+  // attached. Observe each open root with the same observer and attach any
+  // media already inside. Closed roots have no observable handle — the
+  // play() patch still catches those at playback time.
+  /** @param {any} root */
+  function observeShadowRoot(root) {
+    if (!root) return;
+    // Re-enable fix: stop() disconnects + nulls the observer, so a later
+    // start creates a new instance. A bare __tnObserved flag would
+    // early-return forever for previously seen roots. Track the observing
+    // instance and re-observe when it differs from the live observer.
+    if (state.observer && /** @type {any} */ (root).__tnObserver !== state.observer) {
+      try {
+        state.observer.observe(root, { childList: true, subtree: true });
+        /** @type {any} */ (root).__tnObserved = true;
+        /** @type {any} */ (root).__tnObserver = state.observer;
+      } catch {}
+    }
+    try {
+      for (const media of root.querySelectorAll?.('audio, video') ?? []) {
+        void attachMediaElement(media);
+      }
+      for (const el of root.querySelectorAll?.('*') ?? []) {
+        if (el.shadowRoot) observeShadowRoot(el.shadowRoot);
+      }
+    } catch {}
+  }
+
+  function scanShadowRoots() {
+    try {
+      const hosts = document.querySelectorAll?.('*') ?? [];
+      for (const el of hosts) {
+        if (el.shadowRoot) observeShadowRoot(el.shadowRoot);
+      }
+    } catch {}
+  }
+
+  function patchAttachShadow() {
+    try {
+      const proto = Element.prototype;
+      if (!proto) return;
+      if (/** @type {any} */ (proto).__tnAttachShadow) return;
+      /** @type {any} */ (proto).__tnAttachShadow = true;
+      const originalAttachShadow = proto.attachShadow;
+      if (typeof originalAttachShadow !== 'function') return;
+      /** @param {any[]} args */
+      /** @type {any} */ (proto).attachShadow = function (...args) {
+        const root = originalAttachShadow.apply(this, args);
+        try {
+          if (state.observer) observeShadowRoot(root);
+        } catch {}
+        return root;
+      };
+    } catch {}
   }
 
   function attachExistingMediaElements() {
     for (const media of document.querySelectorAll('audio, video')) {
       void attachMediaElement(media);
     }
+    scanShadowRoots();
   }
 
   function ensureContextSession(context) {
@@ -443,9 +689,8 @@
     state.creatingContext = true;
     try {
       context = new AudioContext({ latencyHint: 'interactive' });
-      await context.resume();
     } catch (e) {
-      console.warn('[hook] AudioContext resume blocked by autoplay policy:', e.message || e);
+      console.warn('[hook] AudioContext creation failed:', e.message || e);
     } finally {
       state.creatingContext = false;
     }
@@ -454,24 +699,38 @@
 
     console.log('[hook] AudioContext created, state:', context.state, 'sampleRate:', context.sampleRate);
 
-    const session = createSession(context, 'media');
-    mediaSessions.set(document, session);
-    sessions.add(session);
-
-    if (context.state === 'suspended') {
-      const resumeOnInteraction = async () => {
-        try {
-          await context.resume();
-          console.log('[hook] AudioContext resumed on user interaction');
-        } catch {}
+    // Autoplay-policy fix: gesture listeners MUST be registered before any
+    // resume await, so a context created before the first gesture still
+    // resumes on click/touch/key. The resume itself must never block session
+    // creation: race it against a short timeout and retry on gesture.
+    const resumeOnInteraction = async () => {
+      try {
+        await context.resume();
+        console.log('[hook] AudioContext resumed on user interaction');
+      } catch {}
+      if (context.state === 'running') {
         document.removeEventListener('click', resumeOnInteraction);
         document.removeEventListener('touchstart', resumeOnInteraction);
         document.removeEventListener('keydown', resumeOnInteraction);
-      };
-      document.addEventListener('click', resumeOnInteraction);
-      document.addEventListener('touchstart', resumeOnInteraction);
-      document.addEventListener('keydown', resumeOnInteraction);
+      }
+    };
+    document.addEventListener('click', resumeOnInteraction);
+    document.addEventListener('touchstart', resumeOnInteraction);
+    document.addEventListener('keydown', resumeOnInteraction);
+
+    // Bounded resume: never blocks session creation under the autoplay
+    // policy; the gesture listeners above retry on interaction.
+    await resumeWithTimeout(context, RESUME_TIMEOUT_MS);
+
+    if (context.state === 'running') {
+      document.removeEventListener('click', resumeOnInteraction);
+      document.removeEventListener('touchstart', resumeOnInteraction);
+      document.removeEventListener('keydown', resumeOnInteraction);
     }
+
+    const session = createSession(context, 'media');
+    mediaSessions.set(document, session);
+    sessions.add(session);
 
     if (state.active && session.readyResolved && !session.workletNode) {
       attachWorklet(session);
@@ -519,18 +778,15 @@
     });
 
     session.ready = context.audioWorklet
-      .addModule(WORKLET_URL)
+      .addModule(WORKLET_URL || '')
       .then(async () => {
         console.log('[hook] worklet module loaded for context:', context.state);
         if (context.state === 'closed') {
           console.log('[hook] skipping worklet for closed context');
           return;
         }
-        try {
-          await context.resume();
-        } catch (e) {
-          console.warn('[hook] context resume before worklet node:', e.message);
-        }
+        // Bounded resume before worklet node: never blocks readiness.
+        await resumeWithTimeout(context, RESUME_TIMEOUT_MS);
         session.readyResolved = true;
         if (!state.active || session.workletNode) return;
         attachWorklet(session);
@@ -661,10 +917,17 @@
     mediaElement.__tnProgramWatched = true;
     try {
       mediaElement.addEventListener('loadstart', () => markProgramDirty(mediaElement));
-      mediaElement.addEventListener('emptied', () => markProgramDirty(mediaElement));
+      mediaElement.addEventListener('emptied', () => {
+        markProgramDirty(mediaElement);
+        // The element's current source is spent: disconnect it and drop the
+        // strong references so a removed element can be collected. A replay
+        // re-attaches (reusing the live source when its context survived).
+        detachMediaElement(mediaElement);
+      });
       mediaElement.addEventListener('ended', () => {
         markProgramDirty(mediaElement);
         try { mediaElement.__tnPlaying = false; } catch {}
+        detachMediaElement(mediaElement);
       });
       mediaElement.addEventListener('pause', () => {
         try { mediaElement.__tnPlaying = false; } catch {}
@@ -793,7 +1056,14 @@
       clearTimeout(mediaElement.__tnGuardTimer);
       mediaElement.__tnGuardTimer = null;
     }
-    mediaElement.muted = mediaElement.__tnGuardPrevMuted;
+    // Guard-window race: restore the pre-guard muted value ONLY while the
+    // element is still guard-muted (muted === true from armHookGuard). A mute
+    // state the user or page set during the 1.5 s window must never be undone
+    // — e.g. unmuting a muted video, or muting-then-unmuting, must survive.
+    // Guard bookkeeping is always cleared; only the muted write is gated.
+    if (mediaElement.muted === true) {
+      mediaElement.muted = mediaElement.__tnGuardPrevMuted;
+    }
     delete mediaElement.__tnGuarding;
     delete mediaElement.__tnGuardPrevMuted;
     delete mediaElement.__tnGuardTimer;
@@ -803,6 +1073,52 @@
   function restoreAllHookGuards() {
     for (const mediaElement of Array.from(guardedMediaElements)) {
       restoreHookGuard(mediaElement);
+    }
+  }
+
+  // Detach one element: disconnect its live source(s), drop every strong
+  // reference (sessions, sources, mediaElements) so a removed element can be
+  // collected, and clear `__tnAttached` so a later replay re-attaches.
+  // The element keeps `__tnSource` when its context is still live so the
+  // replay reconnects the SAME source (a MediaElementSource can be created
+  // only once per element — re-capturing throws InvalidStateError).
+  /** @param {any} mediaElement */
+  function detachMediaElement(mediaElement) {
+    if (!mediaElement) return;
+    const known = elementSources.get(mediaElement);
+    for (const session of Array.from(sessions)) {
+      if (!session.mediaElements.has(mediaElement)) continue;
+      if (known && session.sources.has(known)) {
+        try { known.disconnect(); } catch {}
+        session.sources.delete(known);
+      } else {
+        // Fallback: disconnect any source tagged for this element.
+        for (const source of Array.from(session.sources)) {
+          try {
+            if (source && source.mediaElement === mediaElement) {
+              try { source.disconnect(); } catch {}
+              session.sources.delete(source);
+            }
+          } catch {}
+        }
+      }
+      session.mediaElements.delete(mediaElement);
+      maybeCloseIdleMediaSession(session);
+    }
+    try {
+      mediaElement.__tnAttached = false;
+    } catch {}
+  }
+
+  // Forget sessions whose contexts closed: they route nothing and their
+  // source sets would otherwise pin removed elements forever.
+  function pruneClosedSessions() {
+    for (const session of Array.from(sessions)) {
+      try {
+        if (session.context.state === 'closed') {
+          teardownSession(session);
+        }
+      } catch {}
     }
   }
 
@@ -818,13 +1134,43 @@
 
     try {
       const session = await ensureMediaSession();
-      await session.context.resume();
-      const source = session.context.createMediaElementSource(mediaElement);
-      source.connect(session.inputNode);
+      await resumeWithTimeout(session.context, RESUME_TIMEOUT_MS);
+      // Reconnect fast path: a live source from an earlier attach is reused
+      // (re-capturing the same element throws InvalidStateError). Only a
+      // dead-context source falls through to a fresh capture.
+      const knownSource = elementSources.get(mediaElement);
+      const liveSource = knownSource
+        && knownSource.context === session.context
+        && session.context.state !== 'closed'
+        ? knownSource
+        : null;
+      if (liveSource) {
+        // Reconnect the SAME source (re-capturing the same element throws
+        // InvalidStateError) and restore the set membership detach dropped.
+        try { liveSource.connect(session.inputNode); } catch {}
+        session.sources.add(liveSource);
+      } else {
+        // Our own capture must not be mistaken for page wiring (see
+        // patchCreateMediaElementSource): run it under internalWiring.
+        state.internalWiring = true;
+        let source = null;
+        try {
+          source = session.context.createMediaElementSource(mediaElement);
+        } finally {
+          state.internalWiring = false;
+        }
+        try { source.mediaElement = mediaElement; } catch {}
+        try { source.context = session.context; } catch {}
+        try { source.connect(session.inputNode); } catch {}
+        try {
+          /** @type {any} */ (mediaElement).__tnSource = source;
+          elementSources.set(mediaElement, source);
+        } catch {}
+        session.sources.add(source);
+      }
       // Routing is live: restore the pre-guard muted value.
       restoreHookGuard(mediaElement);
       mediaElement.__tnAttached = true;
-      session.sources.add(source);
       session.mediaElements.add(mediaElement);
       console.log('[hook] media element attached:', mediaElement.tagName, mediaElement.src?.slice(0, 60));
       reportStatus('HOOK_STATUS');
@@ -842,6 +1188,7 @@
 
   async function recoverAudio() {
     scanExistingContexts();
+    pruneClosedSessions();
 
     for (const session of Array.from(sessions)) {
       if (session.context.state === 'closed') {
@@ -849,11 +1196,7 @@
         continue;
       }
 
-      try {
-        await session.context.resume();
-      } catch (e) {
-        console.warn('[hook] context resume during recovery failed:', e.message || e);
-      }
+      await resumeWithTimeout(session.context, RESUME_TIMEOUT_MS);
 
       if (session.readyResolved && !session.workletNode) {
         attachWorklet(session);
@@ -908,10 +1251,20 @@
       }
     } catch {}
 
+    // Disconnect every element source and drop the strong references so
+    // removed elements and dead contexts can be collected; elements that
+    // are still in the document re-attach on the next recovery pass.
+    for (const source of Array.from(session.sources)) {
+      try { source.disconnect(); } catch {}
+    }
+    session.sources.clear();
     for (const mediaElement of session.mediaElements) {
       restoreHookGuard(mediaElement);
-      mediaElement.__tnAttached = false;
+      try {
+        mediaElement.__tnAttached = false;
+      } catch {}
     }
+    session.mediaElements.clear();
 
     sessions.delete(session);
     contextSessions.delete(session.context);
@@ -927,12 +1280,22 @@
   }
 
   function reportStatus(type, extra = {}) {
+    // Re-assert the live worklet gains from `state.gainDb` on every status
+    // report: a page-forged SET_GAIN that drifted a worklet is corrected at
+    // once, and the echo below lets the content script (the stored-truth
+    // owner) correct a drifted `state.gainDb` with its own SET_GAIN.
+    if (type === 'HOOK_STATUS') {
+      updateSessionGains();
+    }
     window.postMessage({
       channel: CHANNEL,
       type,
       alive: true,
       active: isHookActive(),
-      error: state.active ? state.lastError : '',
+      // A fail-closed worklet error must stay visible even while inactive:
+      // hiding it behind `''` when `!state.active` buried the failure.
+      error: state.lastError,
+      gainDb: state.gainDb,
       requestId: extra.requestId || '',
     }, '*');
   }

@@ -167,7 +167,7 @@ export function buildActivity(state, now = Date.now(), options = {}) {
     state: stateLine
   };
 
-  const artwork = httpsUrl(state.artworkUrl);
+  const artwork = pickButtonUrl(state.artworkUrl);
   const largeText = clampText(state.episodeTitle) || clampText(state.series);
   if (artwork) {
     activity.assets = { large_image: artwork };
@@ -190,10 +190,18 @@ export function buildActivity(state, now = Date.now(), options = {}) {
   const position = Number(state.position);
   const duration = Number(state.duration);
   if (state.paused === false && Number.isFinite(duration) && duration > 0) {
-    const at = Number.isFinite(position) && position >= 0 ? position : 0;
+    // Stable per reported second: flooring both the wall clock and the
+    // position keeps start/end identical across 1 Hz reports while the
+    // position second is unchanged, so the worker dedupe can fire. A
+    // playing position advances in lockstep with the clock, so start stays
+    // fixed instead of jittering on sub-second fractions.
+    const atSec =
+      Number.isFinite(position) && position >= 0 ? Math.floor(position) : 0;
+    const baseSec = Math.floor(now / 1000) * 1000;
+    const durationSec = Math.floor(duration);
     activity.timestamps = {
-      start: Math.round(now - at * 1000),
-      end: Math.round(now + Math.max(0, duration - at) * 1000)
+      start: Math.round(baseSec - atSec * 1000),
+      end: Math.round(baseSec + Math.max(0, durationSec - atSec) * 1000)
     };
   }
 
@@ -300,8 +308,11 @@ export function resolveTab(entry, now = Date.now()) {
 }
 
 /**
- * Rolling-window limiter: at most `max` sends per `windowMs`, newest wins.
- * `schedule` is injectable so tests never need real timers.
+ * Rolling-window limiter: at most `max` ordinary sends per `windowMs`,
+ * newest wins. A null clear bypasses the bucket entirely — it is sent
+ * immediately and never counted — so at most `max` ordinary sends plus
+ * clears share a window (Discord allows 5/20 s; the worker sends at most
+ * 4 ordinary). `schedule` is injectable so tests never need real timers.
  */
 export function createCoalescingLimiter({
   send,
@@ -312,11 +323,12 @@ export function createCoalescingLimiter({
 }) {
   let sentAt = [];
   let pending = null;
+  let hasPending = false;
   let timer = null;
 
   function flush() {
     timer = null;
-    if (!pending) return;
+    if (!hasPending) return;
     const at = now();
     sentAt = sentAt.filter((t) => at - t < windowMs);
     if (sentAt.length >= max) {
@@ -325,6 +337,7 @@ export function createCoalescingLimiter({
     }
     const payload = pending;
     pending = null;
+    hasPending = false;
     sentAt.push(at);
     try {
       send(payload);
@@ -335,20 +348,116 @@ export function createCoalescingLimiter({
 
   return {
     push(payload) {
+      if (payload === null) {
+        // A clear never waits behind an ordinary update and never spends the
+        // budget: bypass the bucket, keep any deferred ordinary payload for
+        // its own window.
+        try {
+          send(payload);
+        } catch {
+          /* a dead port is handled by the port's own disconnect path */
+        }
+        return;
+      }
       pending = payload;
+      hasPending = true;
       if (!timer) flush();
     },
     clear() {
       pending = null;
+      hasPending = false;
       if (timer) {
         clearTimeout(timer);
         timer = null;
       }
     },
+    /** Drop the rolling-window history so a reconnect republishes immediately. */
+    resetWindow() {
+      sentAt = [];
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      if (hasPending) flush();
+    },
     get pending() {
       return pending;
+    },
+    get hasPending() {
+      return hasPending;
     }
   };
+}
+
+/**
+ * Pure ack classifier: ok:true connects, ok:false only records lastError and
+ * never latches the bridge to "error" — a slow connect acks "not connected"
+ * while the handshake is still in flight, which must not look like a rejection.
+ */
+export function applyAckResult(current, ack) {
+  if (ack && ack.ok) return { bridgeState: "connected", lastError: current.lastError ?? null };
+  const detail =
+    ack && typeof ack.error === "string" && ack.error ? ack.error : "Discord rejected the activity";
+  return { bridgeState: current.bridgeState, lastError: detail };
+}
+
+/** True while the URL is an https Crunchyroll page; used to drop tab state on navigate-away. */
+export function isCrunchyrollPageUrl(raw) {
+  if (typeof raw !== "string" || !raw) return false;
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== "https:") return false;
+    return /(^|\.)crunchyroll\.com$/i.test(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Apply a crp-gone report to one tab entry. A tab-scoped gone (pagehide)
+ * deletes the whole tab; a frame-scoped gone (SPA URL change, quiet iframe)
+ * drops just that frame so a still-playing iframe survives a top-frame URL
+ * change. Never bumps updatedAt for a gone frame. Returns "delete" when the
+ * caller should drop the tab entry, otherwise the mutated entry.
+ */
+export function applyGoneToEntry(entry, frameId, scope = "frame", now = Date.now()) {
+  if (!entry) return "delete";
+  if (scope === "tab") return "delete";
+  if (frameId === 0) entry.top = null;
+  else if (entry.frames) delete entry.frames[frameId];
+  pruneFrames(entry, now);
+  const frames = [];
+  if (entry.top) frames.push(entry.top);
+  for (const frame of Object.values(entry.frames || {})) frames.push(frame);
+  if (!frames.length) return "delete";
+  return entry;
+}
+
+/** Bounded ack-retry delays: 1 s, 2 s, 4 s, then the watchdog recovers. */
+export const ACK_RETRY_DELAYS = Object.freeze([1000, 2000, 4000]);
+
+/** Delay for the nth consecutive ack rejection (0-based), or null to stop. */
+export function nextAckRetryDelay(attempt) {
+  return Number.isInteger(attempt) && attempt >= 0 && attempt < ACK_RETRY_DELAYS.length
+    ? ACK_RETRY_DELAYS[attempt]
+    : null;
+}
+
+/** Null publishes are suppressed this long after boot until state arrives. */
+export const BOOT_SUPPRESS_MS = 60000;
+
+/** Delayed clear for a tab navigation the worker cannot see a URL for. */
+export const NO_URL_CLEAR_DELAY_MS = 1500;
+
+/**
+ * True while a tabs.onUpdated signal carries no usable URL but looks like a
+ * navigation (loading status or discarded tab). The worker cannot read the
+ * URL — it is gated without the tabs permission — so the caller schedules a
+ * delayed clear that any arriving crp-state cancels.
+ */
+export function isBlindReloadSignal(changeInfo) {
+  if (!changeInfo || typeof changeInfo !== "object") return false;
+  return changeInfo.status === "loading" || changeInfo.discarded === true;
 }
 
 /* =========================================================== runtime ====== */
@@ -369,11 +478,35 @@ if (hasChrome) {
   let lastActivity = null;
   let lastExtract = null;
   let lastSentJson = "";
+  let lastSent = null;
   let desiredActivity;
+  let ackRetryCount = 0;
+  let ackRetryTimer = null;
+  // A restart must not blank a live presence before any tab has reported.
+  let seenState = false;
+  const bootAt = Date.now();
+  // Delayed clears for navigations whose URL the worker cannot see.
+  const pendingNoUrlClears = new Map();
+  // Last payload that could not be sent while the bridge was offline (null
+  // included — it carries the same flag so a clear is never swallowed).
+  let stashedActivity = null;
+  let hasStashed = false;
+  // Dedupe for storage writes: recompute runs on every report and every 30 s
+  // alarm tick, so identical payloads (including disabled idle ticks) skip.
+  let lastPersistedJson = "";
 
   const limiter = createCoalescingLimiter({
     send: (activity) => sendActivity(activity)
   });
+
+  function flushStashed() {
+    if (!hasStashed) return;
+    if (!port || bridgeState !== "connected") return;
+    const payload = stashedActivity;
+    hasStashed = false;
+    stashedActivity = null;
+    limiter.push(payload);
+  }
 
   function statusPayload() {
     return {
@@ -381,6 +514,7 @@ if (hasChrome) {
       appName,
       lastError,
       lastActivity,
+      lastSent,
       clientIdPresent: Boolean(clientId),
       enabled,
       updatedAt: Date.now()
@@ -389,6 +523,12 @@ if (hasChrome) {
 
   function persist() {
     const status = statusPayload();
+    // updatedAt changes every call, so it is excluded from the dedupe key:
+    // idle ticks with the same bridge/activity/enabled state write nothing.
+    const { updatedAt: _drop, ...stable } = status;
+    const key = JSON.stringify([stable, lastExtract]);
+    if (key === lastPersistedJson) return;
+    lastPersistedJson = key;
     const writes = [];
     try {
       if (chromeApi.storage && chromeApi.storage.session) {
@@ -420,6 +560,11 @@ if (hasChrome) {
       port.onDisconnect.removeListener(onPortDisconnect);
     } catch {
       /* already torn down */
+    }
+    try {
+      port.disconnect();
+    } catch {
+      /* already disconnected */
     }
     port = null;
   }
@@ -454,6 +599,7 @@ if (hasChrome) {
         backoffMs = BACKOFF_MIN_MS;
         appName = message.appName || appName;
         setBridge("connected");
+        flushStashed();
         pushActivity(true);
       } else if (message.state === "error") {
         setBridge("error", message.detail || "Discord rejected the connection");
@@ -465,11 +611,37 @@ if (hasChrome) {
     if (message.t === "ack") {
       if (message.ok) {
         backoffMs = BACKOFF_MIN_MS;
+        ackRetryCount = 0;
+        if (ackRetryTimer) {
+          clearTimeout(ackRetryTimer);
+          ackRetryTimer = null;
+        }
         if (message.appName) appName = message.appName;
         if (bridgeState !== "connected") setBridge("connected");
         else persist();
+        flushStashed();
       } else {
-        setBridge("error", message.error || "Discord rejected the activity");
+        // Record the rejection without latching the bridge to "error": a
+        // slow connect acks "not connected" while the handshake is in flight.
+        const next = applyAckResult({ bridgeState, lastError }, message);
+        lastError = next.lastError;
+        // The rejected payload was recorded as sent, so an identical
+        // keepalive would never retry: reset the dedupe and re-push with
+        // bounded backoff, then leave the watchdog to recover.
+        lastSentJson = "";
+        persist();
+        if (ackRetryTimer) {
+          clearTimeout(ackRetryTimer);
+          ackRetryTimer = null;
+        }
+        const delay = nextAckRetryDelay(ackRetryCount);
+        if (delay !== null) {
+          ackRetryCount += 1;
+          ackRetryTimer = setTimeout(() => {
+            ackRetryTimer = null;
+            pushActivity(true);
+          }, delay);
+        }
       }
       return;
     }
@@ -511,12 +683,26 @@ if (hasChrome) {
   /* ---------------------------------------------------------- activity -- */
 
   function sendActivity(activity) {
-    if (!enabled) return;
+    // A null clear must still go through while disabled so turning presence
+    // off actually clears Discord; ordinary payloads stay gated.
+    if (!enabled && activity !== null) return;
     if (!port) ensurePort();
-    if (!port || bridgeState !== "connected") return;
+    if (!port || bridgeState !== "connected") {
+      // Keep the last payload (null included) and replay it on the next
+      // status/ack instead of dropping it while offline.
+      stashedActivity = activity;
+      hasStashed = true;
+      return;
+    }
     const json = JSON.stringify(activity);
     if (json === lastSentJson) return;
-    if (post({ t: "activity", activity })) lastSentJson = json;
+    if (post({ t: "activity", activity })) {
+      lastSentJson = json;
+      lastSent = activity;
+    } else {
+      stashedActivity = activity;
+      hasStashed = true;
+    }
   }
 
   function resolvedTabs(now = Date.now()) {
@@ -533,7 +719,6 @@ if (hasChrome) {
     const best = pickBestTab(resolvedTabs());
     desiredActivity = best ? buildActivity(best, Date.now(), { synopsis: synopsisEnabled }) : null;
     lastActivity = desiredActivity;
-    if (!desiredActivity) lastSentJson = "";
     persist();
     pushActivity(false);
   }
@@ -547,8 +732,16 @@ if (hasChrome) {
       return;
     }
     if (desiredActivity === undefined) return;
+    // A restart must not blank a live presence before any tab has reported:
+    // suppress the boot-time null until the first crp-state or 60 s after
+    // boot, after which a closed site still clears.
+    if (desiredActivity === null && !seenState && Date.now() - bootAt < BOOT_SUPPRESS_MS) return;
     if (!port) ensurePort();
-    if (bridgeState !== "connected") return;
+    if (bridgeState !== "connected") {
+      stashedActivity = desiredActivity;
+      hasStashed = true;
+      return;
+    }
     const json = JSON.stringify(desiredActivity);
     if (!force && json === lastSentJson) return;
     limiter.push(desiredActivity);
@@ -573,6 +766,12 @@ if (hasChrome) {
   function handleState(message, sender) {
     const tab = sender && sender.tab;
     if (!tab || tab.id === undefined) return;
+    // Only our own content scripts may report: the sender id must match and
+    // the frame or tab URL must be an https Crunchyroll page.
+    if (!sender || sender.id !== chromeApi.runtime.id) return;
+    if (!isCrunchyrollPageUrl(sender.url) && !isCrunchyrollPageUrl(tab.url)) return;
+    seenState = true;
+    cancelNoUrlClear(tab.id);
     const carriesData =
       message.hasVideo === true ||
       METADATA_FIELDS.some((field) => message[field] !== null && message[field] !== undefined);
@@ -618,16 +817,36 @@ if (hasChrome) {
     recompute();
   }
 
-  function handleGone(sender) {
+  function scheduleNoUrlClear(tabId) {
+    if (pendingNoUrlClears.has(tabId)) return;
+    if (!tabStates.has(tabId)) return;
+    pendingNoUrlClears.set(
+      tabId,
+      setTimeout(() => {
+        pendingNoUrlClears.delete(tabId);
+        if (tabStates.delete(tabId)) recompute();
+      }, NO_URL_CLEAR_DELAY_MS)
+    );
+  }
+
+  function cancelNoUrlClear(tabId) {
+    const timer = pendingNoUrlClears.get(tabId);
+    if (timer === undefined) return;
+    clearTimeout(timer);
+    pendingNoUrlClears.delete(tabId);
+  }
+
+  function handleGone(message, sender) {
     const tab = sender && sender.tab;
     if (!tab || tab.id === undefined) return;
+    cancelNoUrlClear(tab.id);
     const entry = tabStates.get(tab.id);
     if (!entry) return;
     const frameId = frameIdOf(sender);
-    if (frameId === 0) entry.top = null;
-    else delete entry.frames[frameId];
-    entry.updatedAt = Date.now();
-    if (!resolveTab(entry)) tabStates.delete(tab.id);
+    const scope = message && typeof message.scope === "string" ? message.scope : undefined;
+    // Tab scope (pagehide) deletes the whole entry; frame scope (SPA URL
+    // change) drops just that frame so a still-playing iframe survives.
+    if (applyGoneToEntry(entry, frameId, scope) === "delete") tabStates.delete(tab.id);
     recompute();
   }
 
@@ -635,10 +854,33 @@ if (hasChrome) {
 
   function armWatchdog() {
     if (!chromeApi.alarms) return;
+    const create = () => {
+      try {
+        chromeApi.alarms.create(ALARM_NAME, {
+          periodInMinutes: ALARM_PERIOD_MINUTES,
+          delayInMinutes: ALARM_PERIOD_MINUTES
+        });
+      } catch {
+        /* permission revoked mid-session */
+      }
+    };
     try {
-      chromeApi.alarms.create(ALARM_NAME, {
-        periodInMinutes: ALARM_PERIOD_MINUTES,
-        delayInMinutes: ALARM_PERIOD_MINUTES
+      const getter = chromeApi.alarms.get;
+      if (typeof getter !== "function") {
+        create();
+        return;
+      }
+      const probed = getter.call(chromeApi.alarms, ALARM_NAME);
+      if (probed && typeof probed.then === "function") {
+        probed.then((existing) => {
+          if (!existing) create();
+        }, create);
+        return;
+      }
+      // Callback-style get: only create when no alarm exists yet, so a
+      // reboot never resets the watchdog countdown.
+      getter.call(chromeApi.alarms, ALARM_NAME, (existing) => {
+        if (!existing) create();
       });
     } catch {
       /* permission revoked mid-session */
@@ -661,6 +903,9 @@ if (hasChrome) {
   function reconnect() {
     dropPort();
     lastSentJson = "";
+    hasStashed = false;
+    stashedActivity = null;
+    limiter.resetWindow();
     backoffMs = BACKOFF_MIN_MS;
     if (reconnectTimer) {
       clearTimeout(reconnectTimer);
@@ -677,7 +922,7 @@ if (hasChrome) {
         handleState(message, sender);
         return false;
       case "crp-gone":
-        handleGone(sender);
+        handleGone(message, sender);
         return false;
       case "crp-get-status":
         sendResponse(statusPayload());
@@ -727,7 +972,28 @@ if (hasChrome) {
 
   if (chromeApi.tabs && chromeApi.tabs.onRemoved) {
     chromeApi.tabs.onRemoved.addListener((tabId) => {
+      cancelNoUrlClear(tabId);
       if (tabStates.delete(tabId)) recompute();
+    });
+  }
+
+  if (chromeApi.tabs && chromeApi.tabs.onUpdated) {
+    chromeApi.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+      const url =
+        (changeInfo && typeof changeInfo.url === "string" && changeInfo.url) ||
+        (tab && typeof tab.url === "string" && tab.url) ||
+        null;
+      if (typeof url === "string" && url) {
+        // A same-tab navigation away from Crunchyroll deletes the entry
+        // immediately so presence clears within one watchdog tick.
+        if (!isCrunchyrollPageUrl(url) && tabStates.delete(tabId)) recompute();
+        return;
+      }
+      // No usable URL (it is gated without the tabs permission): a loading
+      // or discarded signal may be a navigation away, so schedule a delayed
+      // clear that any arriving crp-state cancels. A Crunchyroll reload
+      // reports state within the window and never blanks.
+      if (isBlindReloadSignal(changeInfo)) scheduleNoUrlClear(tabId);
     });
   }
 

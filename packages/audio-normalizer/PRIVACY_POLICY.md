@@ -10,7 +10,6 @@ Audio Normalizer processes audio locally in the browser.
 
 ## Permissions
 
-- `tabs` is used to identify the active tab for the popup UI.
 - `storage` is used to save per-site enable/disable state locally.
 - `host_permissions` are used so the extension can normalize audio on sites the user enables.
 

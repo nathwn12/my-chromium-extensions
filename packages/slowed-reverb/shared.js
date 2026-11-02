@@ -3,7 +3,7 @@
 
   root.SlowedReverbShared = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
-  const SUPPORTED_HOSTS = new Set(['youtube.com', 'www.youtube.com', 'music.youtube.com']);
+  const SUPPORTED_HOSTS = new Set(['music.youtube.com']);
   const DEFAULT_SETTINGS = {
     slow: 1,
     reverbIntensity: 0,

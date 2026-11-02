@@ -3,7 +3,7 @@ const toggle = /** @type {HTMLInputElement} */ (document.getElementById('toggle'
 const gainSlider = /** @type {HTMLInputElement} */ (document.getElementById('gain-slider'));
 const gainValueEl = /** @type {HTMLElement} */ (document.getElementById('gain-value'));
 const hostnameEl = /** @type {HTMLElement} */ (document.getElementById('hostname'));
-const statusDotEl = /** @type {HTMLElement} */ (document.getElementById('status-dot'));
+const statusPillEl = /** @type {HTMLElement | null} */ (document.getElementById('status-pill'));
 const statusTextEl = /** @type {HTMLElement} */ (document.getElementById('status-text'));
 /** @type {NodeListOf<HTMLButtonElement>} */
 const presetButtons = document.querySelectorAll('[data-preset]');
@@ -22,6 +22,21 @@ let tabId = null;
 let hookWasActiveAt = 0;
 let lastHookActive = false;
 let statusRequestToken = 0;
+let saveInFlight = 0;
+// Persist baseline: the last gain value confirmed by the background (or
+// freshly read). `change`+`pointerup` both fire on a mouse release; the pair
+// persists exactly once because the second sees an unchanged baseline.
+// `lastLiveSent` is the newest drag-preview value applied transiently to the
+// tab; while it differs from the baseline the 750 ms poll must not snap the
+// slider back.
+let lastPersistedGain = null;
+let lastLiveSent = null;
+let livePreviewInFlight = false;
+// Value with a persist currently in flight. `change` and `pointerup` fire
+// back-to-back on a mouse release while the first persist is still in
+// flight (baseline updates only on success), so the baseline alone cannot
+// dedupe the pair — the in-flight target can.
+let persistTargetGain = null;
 let runtimeActivationState = 'idle';
 let runtimeActivationMessage = '';
 let softWakePromise = null;
@@ -42,9 +57,15 @@ const ACTIVE_STALE_MS = 3000;
 // out until the clock caught up. The popup always renders what the
 // background returned, never what it sent; a response missing the stored
 // truth is a failure, not a success.
-// No `unload` flush: every change is already sent on its `change`/
-// `input` event (RESEARCH §6: the popup document is unloaded on close with no
-// flush facility).
+// Gain persistence: a slider drag persists ONCE (on `change`/`pointerup`,
+// deduped to one write per value), never per `input` tick — a 30-step drag
+// used to cost ~90 storage gets, 30 tab queries and 60 messages. During the
+// drag each tick only renders locally and live-applies the latest value to
+// the tab as a transient session preview (no storage, no broadcast); the
+// release-time persist clears the preview via the storage change it makes.
+// No `unload` flush: every change is persisted on its `change`/
+// `pointerup` event (RESEARCH §6: the popup document is unloaded on close
+// with no flush facility).
 
 /**
  * Require the background's stored truth. The popup renders what the
@@ -75,6 +96,8 @@ async function revertToStoredTruth() {
     throw new Error(String((state && state.error) || 'read failed'));
   }
   applyControlState({ enabled: state.enabled, gainDb: state.gainDb });
+  lastPersistedGain = popupShared.clampGainDb(state.gainDb);
+  lastLiveSent = null;
   return state;
 }
 
@@ -96,13 +119,23 @@ gainSlider.addEventListener('input', () => {
   const gainDb = popupShared.clampGainDb(gainSlider.value);
   gainSlider.value = String(gainDb);
   renderGain(gainDb);
-  // Immediate dispatch: no debounce queue, no `unload` flush, no popup-side
-  // chain. RESEARCH §6: the popup document is unloaded on close with no
-  // documented flush facility, so any queued-but-unwritten value would be
-  // lost. Each input sends its own field-level intent at once; the
-  // background applies it on arrival (last-accepted-write-wins) and returns
-  // the stored truth, which the popup renders.
-  void saveGainInner(gainDb);
+  // Drag preview only: render locally and live-apply the latest value to
+  // the tab as a transient session override (no storage read, no write, no
+  // broadcast). Persistence waits for `change`/`pointerup` below.
+  void pumpLivePreview();
+});
+
+gainSlider.addEventListener('change', () => {
+  if (gainSlider.disabled) return;
+  // The release-time persist: one field-level intent per value. `change`
+  // and `pointerup` both fire on a mouse release; the dedupe inside makes
+  // the pair exactly one storage write and one broadcast.
+  void persistDragGain();
+});
+
+gainSlider.addEventListener('pointerup', () => {
+  if (gainSlider.disabled) return;
+  void persistDragGain();
 });
 
 gainSlider.addEventListener('pointerdown', () => {
@@ -158,6 +191,8 @@ async function init() {
     toggle.checked = state ? Boolean(state.enabled) : false;
     gainSlider.value = String(popupShared.clampGainDb(state?.gainDb));
     renderGain(gainSlider.value);
+    lastPersistedGain = popupShared.clampGainDb(state?.gainDb);
+    lastLiveSent = null;
     toggle.disabled = false;
     syncGainControlState();
     syncPresetControlState();
@@ -203,6 +238,7 @@ async function toggleSite() {
   syncGainControlState();
 
   const wanted = toggle.checked;
+  saveInFlight += 1;
   try {
     // Field-level intent: ONLY the toggled field. Never send gainDb
     // from a cache — a concurrent sibling popup may have
@@ -249,6 +285,7 @@ async function toggleSite() {
     await refreshDocumentStatus();
     reportWriteError(reverted ? 'Could not save. Reverted.' : 'Could not save. State unknown — reopen the popup and try again.');
   } finally {
+    saveInFlight -= 1;
     toggle.disabled = false;
     syncGainControlState();
     syncPresetControlState();
@@ -259,7 +296,9 @@ async function toggleSite() {
 
 async function saveGainInner(gainDb) {
   if (!toggle.checked) return;
+  saveInFlight += 1;
   const wantedGain = popupShared.clampGainDb(gainDb);
+  persistTargetGain = wantedGain;
   try {
     // Field-level intent: ONLY gainDb. Never send enabled
     // from this popup's cache — a sibling popup may own a newer value.
@@ -275,6 +314,8 @@ async function saveGainInner(gainDb) {
     const nextGain = popupShared.clampGainDb(res.gainDb);
     gainSlider.value = String(nextGain);
     renderGain(nextGain);
+    lastPersistedGain = nextGain;
+    lastLiveSent = null;
     if (tabId) {
       await chrome.tabs.sendMessage(tabId, {
         type: 'SET_DOCUMENT_STATE',
@@ -290,7 +331,50 @@ async function saveGainInner(gainDb) {
       reverted = true;
     } catch {}
     reportWriteError(reverted ? 'Could not save gain. Reverted.' : 'Could not save gain. State unknown — reopen the popup and try again.');
+  } finally {
+    saveInFlight -= 1;
+    if (saveInFlight === 0) persistTargetGain = null;
   }
+}
+
+// Release-time persist for a slider drag: one field-level intent per value.
+// Called by both `change` and `pointerup` (both fire on a mouse release);
+// the baseline + in-flight-target dedupe makes the pair exactly one storage
+// write and — via the background's single broadcast per write — one broadcast.
+async function persistDragGain() {
+  if (!toggle.checked) return;
+  const gainDb = popupShared.clampGainDb(gainSlider.value);
+  if (gainDb === lastPersistedGain || gainDb === persistTargetGain) return;
+  await saveGainInner(gainDb);
+}
+
+// Drag preview: live-apply the slider's latest value to the tab as a
+// transient session override (no storage read, no write, no broadcast), at
+// most one send outstanding; a tick that lands mid-send re-pumps once so
+// the release-time persist always carries the final value.
+async function pumpLivePreview() {
+  if (livePreviewInFlight || !tabId || !siteKey || !toggle.checked) return;
+  livePreviewInFlight = true;
+  try {
+    const gainDb = popupShared.clampGainDb(gainSlider.value);
+    lastLiveSent = gainDb;
+    await chrome.tabs.sendMessage(tabId, {
+      type: 'SET_DOCUMENT_STATE',
+      siteKey,
+      enabled: true,
+      gainDb,
+      transient: true,
+    }, { frameId: 0 }).catch(() => {});
+  } finally {
+    livePreviewInFlight = false;
+  }
+  if (toggle.checked && popupShared.clampGainDb(gainSlider.value) !== lastLiveSent) {
+    void pumpLivePreview();
+  }
+}
+
+function hasUnsavedPreview() {
+  return lastLiveSent !== null && lastLiveSent !== lastPersistedGain;
 }
 
 /**
@@ -301,6 +385,8 @@ async function saveGainInner(gainDb) {
  */
 async function saveResetInner() {
   if (!toggle.checked) return;
+  saveInFlight += 1;
+  persistTargetGain = 0;
   try {
     const res = await chrome.runtime.sendMessage({
       type: 'SET_SITE_STATE',
@@ -315,6 +401,8 @@ async function saveResetInner() {
     const nextGain = popupShared.clampGainDb(res.gainDb);
     gainSlider.value = String(nextGain);
     renderGain(nextGain);
+    lastPersistedGain = nextGain;
+    lastLiveSent = null;
     if (tabId) {
       await chrome.tabs.sendMessage(tabId, {
         type: 'SET_DOCUMENT_STATE',
@@ -330,6 +418,9 @@ async function saveResetInner() {
       reverted = true;
     } catch {}
     reportWriteError(reverted ? 'Could not save. Reverted.' : 'Could not save. State unknown — reopen the popup and try again.');
+  } finally {
+    saveInFlight -= 1;
+    if (saveInFlight === 0) persistTargetGain = null;
   }
 }
 
@@ -412,10 +503,16 @@ async function refreshDocumentStatus() {
     const activating = Boolean(doc?.activating);
     const lastError = String(doc?.lastError || '');
 
-    applyControlState({
-      enabled,
-      gainDb: doc?.gainDb,
-    });
+    // A save in flight owns the controls: the 750ms poll must not snap
+    // them back to pre-save document state mid-write. A drag preview owns
+    // them too: while the transient preview differs from the persisted
+    // baseline the poll reports status without touching the slider.
+    if (saveInFlight === 0 && !hasUnsavedPreview()) {
+      applyControlState({
+        enabled,
+        gainDb: doc?.gainDb,
+      });
+    }
 
     if (hookActive) {
       hookWasActiveAt = Date.now();
@@ -486,8 +583,21 @@ function getStatusText({ enabled, hookActive, activating, lastError }) {
 }
 
 function renderStatus({ indicator, text }) {
-  statusDotEl.className = indicator === 'green' ? 'green' : indicator === 'red' ? 'red' : '';
   statusTextEl.textContent = text;
+  if (!statusPillEl) return;
+  if (indicator === 'green') {
+    statusPillEl.textContent = 'Active';
+    statusPillEl.dataset.state = 'connected';
+  } else if (indicator === 'red') {
+    statusPillEl.textContent = 'Error';
+    statusPillEl.dataset.state = 'error';
+  } else if (/off for this site/i.test(text)) {
+    statusPillEl.textContent = 'Off';
+    statusPillEl.dataset.state = 'off';
+  } else {
+    statusPillEl.textContent = 'Waiting';
+    statusPillEl.dataset.state = 'off';
+  }
 }
 
 function renderGain(gainDb) {
@@ -500,6 +610,7 @@ function applyControlState({ enabled, gainDb }) {
   toggle.checked = Boolean(enabled);
   gainSlider.value = String(popupShared.clampGainDb(gainDb));
   renderGain(gainSlider.value);
+  lastPersistedGain = popupShared.clampGainDb(gainDb);
   syncGainControlState();
   syncPresetControlState();
 }

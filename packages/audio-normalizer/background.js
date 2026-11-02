@@ -91,6 +91,22 @@ async function readSiteRecord(siteKey) {
   if (existing && typeof existing === 'object') {
     return { record: backgroundShared.normalizeSiteRecord(existing), fromLegacy: false };
   }
+  // Pre-full-key data lives under the collapsed per-site key
+  // (`site:github.io`). Read it as a legacy fallback; callers persist the
+  // migrated record under the FULL key on their next write (`fromLegacy`).
+  // (`legacySiteStorageKey` is new in shared.js; the any-alias keeps this
+  // file green until the type declaration catches up.)
+  const sharedAny = /** @type {any} */ (backgroundShared);
+  const legacyPerKey = typeof sharedAny.legacySiteStorageKey === 'function'
+    ? sharedAny.legacySiteStorageKey(siteKey)
+    : '';
+  if (legacyPerKey && legacyPerKey !== perKey) {
+    const legacyStored = await chrome.storage.local.get([legacyPerKey]);
+    const legacyExisting = legacyStored[legacyPerKey];
+    if (legacyExisting && typeof legacyExisting === 'object') {
+      return { record: backgroundShared.normalizeSiteRecord(legacyExisting), fromLegacy: true };
+    }
+  }
   const migrated = backgroundShared.migrateLegacyToRecord(
     /** @type {Record<string, unknown>} */ (stored.siteSettings || {}),
     /** @type {Record<string, unknown>} */ (stored.activeSites || {}),
@@ -234,6 +250,62 @@ function getTabSiteKey(tab) {
   return backgroundShared.getSiteKey(backgroundShared.extractHostname(tab.url));
 }
 
+// A tab matches a broadcast site key on the FULL key or the legacy
+// collapsed key (pre-full-key tabs and records compare collapsed).
+function tabMatchesSiteKey(tabUrl, siteKey) {
+  if (typeof tabUrl !== 'string' || !siteKey) return false;
+  const hostname = backgroundShared.extractHostname(tabUrl);
+  return backgroundShared.getSiteKey(hostname) === siteKey
+    || backgroundShared.getLegacySiteKey(hostname) === siteKey;
+}
+
+// Coalesced broadcast: one storage write (or a same-tick burst of them)
+// produces exactly ONE broadcast per site with the re-read truth. Rapid
+// slider persists collapse here instead of fanning out per write.
+const pendingBroadcastSites = new Set();
+let broadcastFlushTimer = null;
+function scheduleSiteBroadcast(siteKey) {
+  if (!siteKey) return;
+  pendingBroadcastSites.add(siteKey);
+  if (broadcastFlushTimer) return;
+  broadcastFlushTimer = setTimeout(() => {
+    broadcastFlushTimer = null;
+    const sites = Array.from(pendingBroadcastSites);
+    pendingBroadcastSites.clear();
+    for (const site of sites) {
+      flushSiteBroadcast(site);
+    }
+  }, 0);
+}
+function flushSiteBroadcast(siteKey) {
+  chrome.tabs.query({}, (tabs) => {
+    void (async () => {
+      let current;
+      try {
+        const { record } = await readSiteRecord(siteKey);
+        // Stale broadcast: stored truth moved on (e.g. re-enabled after
+        // this disable change). Send the current truth. Fail closed: when
+        // the re-read itself fails the truth is unknown, so send nothing
+        // rather than a possibly stale captured change.
+        current = record;
+      } catch {
+        // Fail closed on a read failure: no broadcast without truth.
+        return;
+      }
+      tabs.forEach(tab => {
+        if (tab.url && tab.id && tabMatchesSiteKey(tab.url, siteKey)) {
+          chrome.tabs.sendMessage(tab.id, {
+            type: 'TOGGLE_CHANGED',
+            siteKey,
+            enabled: current.enabled,
+            gainDb: current.gainDb,
+          }, { frameId: 0 }).catch(() => {});
+        }
+      });
+    })();
+  });
+}
+
 async function hasInjectedContentScript(tabId) {
   try {
     // Target the top frame only (frameId 0: RESEARCH §5.3). Without frameId
@@ -245,12 +317,28 @@ async function hasInjectedContentScript(tabId) {
   }
 }
 
-async function injectMainWorldScript(tabId, file) {
-  await chrome.scripting.executeScript({
-    target: { tabId },
-    files: [file],
-    world: 'MAIN',
-  });
+async function injectMainWorldScript(tabId, file, frameId) {
+  // Frame-targeted MAIN-world injection: a video inside a cross-origin
+  // iframe runs in its own frame, so the top-frame default never reaches it.
+  // Content scripts run in every frame (all_frames) and their sender carries
+  // the originating frameId — target exactly that frame. A missing frameId
+  // means a tab-level call (no sender frame): default to frame 0 only then.
+  const target = (typeof frameId === 'number' && Number.isFinite(frameId))
+    ? { tabId, frameIds: [frameId] }
+    : { tabId };
+  try {
+    await chrome.scripting.executeScript({
+      target,
+      files: [file],
+      world: 'MAIN',
+    });
+    return { ok: true };
+  } catch (e) {
+    // A frame that disappears mid-call (navigation, removal) is a routine
+    // race: return an error object, never throw, so the caller reports
+    // status instead of faulting the message channel.
+    return { ok: false, error: String(e && e.message || e) };
+  }
 }
 
 async function injectTabScripts(tabId) {
@@ -564,7 +652,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       case 'INJECT_PAGE_HOOK': {
         const tabId = _sender?.tab?.id;
         if (!tabId) throw new Error('No tab ID for page hook injection.');
-        await injectMainWorldScript(tabId, 'page-hook.js');
+        // Sender-frame targeting: content scripts in iframes carry their
+        // frameId; tab-level calls have none and default to frame 0.
+        const senderFrameId = (typeof _sender?.frameId === 'number' && Number.isFinite(_sender.frameId))
+          ? _sender.frameId
+          : 0;
+        const injected = await injectMainWorldScript(tabId, 'page-hook.js', senderFrameId);
+        if (!injected?.ok) return { ok: false, error: injected?.error || 'Page hook injection failed.' };
         return { ok: true };
       }
       case 'SOFT_RECHECK_DOCUMENT': {
@@ -678,7 +772,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
             const { record } = await readSiteRecord(backgroundShared.getSiteKey(siteKey) || siteKey);
             if (record.enabled !== Boolean(newToggles[siteKey])) return;
             tabs.forEach(tab => {
-              if (tab.url && tab.id && backgroundShared.getSiteKey(backgroundShared.extractHostname(tab.url)) === siteKey) {
+              if (tab.url && tab.id && tabMatchesSiteKey(tab.url, siteKey)) {
                 chrome.tabs.sendMessage(tab.id, {
                   type: 'TOGGLE_CHANGED',
                   siteKey,
@@ -692,11 +786,13 @@ chrome.storage.onChanged.addListener((changes, area) => {
       }
     }
   }
-  // Per-site path: a `site:<key>` change broadcasts to the top frame only.
+  // Per-site path: a `site:<key>` change broadcasts to the top frame only,
+  // coalesced to one broadcast per site per tick (see scheduleSiteBroadcast).
   // A delayed `enabled:false` change must not overwrite a newer activation.
   // The `newRec` captured from the change record may already be stale by the
-  // time the async `tabs.query` returns, so re-read the stored truth and
-  // broadcast that; fail closed (no broadcast) when the re-read fails.
+  // time the async `tabs.query` returns, so the flush re-reads the stored
+  // truth and broadcasts that; fail closed (no broadcast) when the re-read
+  // fails.
   for (const [key, change] of Object.entries(changes)) {
     if (!backgroundShared.isSiteStorageKey(key)) continue;
     const siteKey = backgroundShared.siteKeyFromStorageKey(key);
@@ -710,31 +806,6 @@ chrome.storage.onChanged.addListener((changes, area) => {
     if (!newRec) continue;
     if (oldRec && oldRec.enabled === newRec.enabled
       && oldRec.gainDb === newRec.gainDb) continue;
-    chrome.tabs.query({}, (tabs) => {
-      void (async () => {
-        let current;
-        try {
-          const { record } = await readSiteRecord(siteKey);
-          // Stale broadcast: stored truth moved on (e.g. re-enabled after
-          // this disable change). Send the current truth. Fail closed: when
-          // the re-read itself fails the truth is unknown, so send nothing
-          // rather than a possibly stale captured change.
-          current = record;
-        } catch {
-          // Fail closed on a read failure: no broadcast without truth.
-          return;
-        }
-        tabs.forEach(tab => {
-          if (tab.url && tab.id && backgroundShared.getSiteKey(backgroundShared.extractHostname(tab.url)) === siteKey) {
-            chrome.tabs.sendMessage(tab.id, {
-              type: 'TOGGLE_CHANGED',
-              siteKey,
-              enabled: current.enabled,
-              gainDb: current.gainDb,
-            }, { frameId: 0 }).catch(() => {});
-          }
-        });
-      })();
-    });
+    scheduleSiteBroadcast(siteKey);
   }
 });

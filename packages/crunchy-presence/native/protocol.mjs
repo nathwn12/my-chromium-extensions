@@ -75,8 +75,11 @@ function validateButtons(buttons) {
     } catch {
       return fail(`buttons[${i}].url must be an absolute URL`);
     }
-    if (url.protocol !== 'https:' && url.protocol !== 'http:') {
-      return fail(`buttons[${i}].url must be http(s)`);
+    if (url.protocol !== 'https:') {
+      return fail(`buttons[${i}].url must be an https Crunchyroll URL`);
+    }
+    if (!/(^|\.)crunchyroll\.com$/i.test(url.hostname)) {
+      return fail(`buttons[${i}].url must be an https Crunchyroll URL`);
     }
   }
   return pass(buttons);

@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="audio/icon-128.png" width="120" height="120" alt="Audio Normalizer icon" />
+  <img src="icons/icon128.png" width="128" height="128" alt="Audio Normalizer icon" />
 </p>
 <h1 align="center">Audio Normalizer</h1>
 <p align="center"><strong>Keep every site at one comfortable loudness in Chrome and Brave.</strong></p>
@@ -14,7 +14,7 @@ git clone https://github.com/nathwn12/audio-normalizer.git
 
 Then open `chrome://extensions`, enable **Developer mode**, click **Load unpacked**, and select the cloned folder (the one containing `manifest.json`). Visit a site with audio, click the extension icon, and switch **Active** on for that site.
 
-Once loaded, the extension measures the loudness of the sites you activate and moves each one toward its -20 LUFS program target and levels loud and quiet passages within each program instead of leaving loud and quiet tabs far apart. It adjusts tab audio gain locally in your browser; it asks for `storage`, `tabs`, `scripting`, plus read access to `http`/`https` pages so it can process their audio.
+Once loaded, the extension measures the loudness of the sites you activate and moves each one toward its -20 LUFS program target and levels loud and quiet passages within each program instead of leaving loud and quiet tabs far apart. It adjusts tab audio gain locally in your browser; it asks for `storage` and `scripting`, plus read access to `http`/`https` pages so it can process their audio.
 
 ### Offline or pinned
 
@@ -26,11 +26,11 @@ cd audio-normalizer
 git checkout 862797bf53accbb8964595bf55638bdc272551d7
 ```
 
-Then load it unpacked with the steps above.
+Then load it unpacked with the steps above. The extension only processes sites you switch on — each hostname opts in separately.
 
 ## Use it
 
-Open a page that plays audio and click the extension icon. The popup names the current site. Switch **Active** on; the setting is saved per site, so it holds across tabs. Drag the gain slider (-12 to +12 dB) for an immediate output trim, or pick **Speech**, **Music**, or **Boost**. Click the reset button to return a site to defaults.
+Open a page that plays audio and click the extension icon. The popup names the current site. Switch **Active** on; the setting is saved per site (each hostname opts in separately), so it holds across tabs. Drag the gain slider (-12 to +12 dB) for an immediate output trim, or pick **Speech**, **Music**, or **Boost**. Click the reset button to zero the gain for this site (Active stays on).
 
 ## What you get
 

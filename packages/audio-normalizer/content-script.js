@@ -24,6 +24,7 @@
    *   pendingProbe: ({ requestId: string, promise: Promise<boolean>, resolve: (v: boolean) => void, timeoutId: number } | null),
    *   popupProbe: (Promise<boolean> | null),
    *   syncInFlight: boolean, queuedSyncReason: string,
+   *   activeSync: (Promise<void> | null), initialSyncDone: boolean,
    *   bootstrapped: boolean, activationRetryTimer: (number | null),
    *   activationRetryCount: number, spaWatchTimer: (number | null)
    * }} */
@@ -44,6 +45,8 @@
     popupProbe: null,
     syncInFlight: false,
     queuedSyncReason: '',
+    activeSync: null,
+    initialSyncDone: false,
     bootstrapped: false,
     activationRetryTimer: null,
     activationRetryCount: 0,
@@ -251,6 +254,23 @@
       const rec = contentShared.normalizeSiteRecord(perValue);
       return { enabled: rec.enabled, gainDb: rec.gainDb };
     }
+    // Pre-full-key fallback (read-only here; the background migrates on its
+    // next write): a collapsed per-site record (`site:github.io`) still
+    // authorizes every full host it used to cover.
+    // (`legacySiteStorageKey` is new in shared.js; the any-alias keeps this
+    // file green until the type declaration catches up.)
+    const sharedAny = /** @type {any} */ (contentShared);
+    const legacyPerKey = typeof sharedAny.legacySiteStorageKey === 'function'
+      ? sharedAny.legacySiteStorageKey(state.siteKey)
+      : '';
+    if (legacyPerKey && legacyPerKey !== perKey) {
+      const legacyStored = await chrome.storage.local.get([legacyPerKey]);
+      const legacyValue = legacyStored[legacyPerKey];
+      if (legacyValue && typeof legacyValue === 'object') {
+        const rec = contentShared.normalizeSiteRecord(legacyValue);
+        return { enabled: rec.enabled, gainDb: rec.gainDb };
+      }
+    }
     // Lossless legacy fallback: normalise every legacy shape (settings,
     // actives AND toggles) before matching, so a `www.`-only entry is found
     // from the canonical key. Read-only — persistence belongs to the
@@ -304,7 +324,8 @@
       return;
     }
 
-    void sync(reason);
+    state.activeSync = sync(reason).catch(() => {});
+    void state.activeSync;
   }
 
   function clearActivationRetry() {
@@ -315,11 +336,35 @@
     state.activationRetryCount = 0;
   }
 
+  function getWorkletUrl() {
+    try {
+      return chrome.runtime.getURL('audio/normalizer-worklet.js');
+    } catch {
+      return '';
+    }
+  }
+
+  function postStart(reason) {
+    // Worklet URL contract: the ISOLATED content script is the only party
+    // that knows chrome.runtime.getURL, so every START carries it for the
+    // MAIN-world hook (which cannot call chrome.runtime.getURL reliably).
+    postToPage('START', { reason, gainDb: state.gainDb, workletUrl: getWorkletUrl() });
+  }
+
+  // Liveness re-sync: a hook that was injected but is no longer alive
+  // (probe timeout, popup probe timeout, HOOK_STOPPED while still enabled)
+  // must re-sync via the existing activation retry/backoff — never a busy
+  // loop (scheduleActivationRetry caps at ACTIVATE_RETRY_COUNT).
+  function scheduleLivenessResync(reason) {
+    if (!state.enabled || !state.siteKey) return;
+    if (!state.injected || state.hookAlive) return;
+    scheduleActivationRetry(reason);
+  }
+
   function scheduleActivationRetry(reason) {
     if (!state.enabled || !state.siteKey) return;
 
     clearActivationRetry();
-
     const tick = () => {
       state.activationRetryTimer = null;
 
@@ -328,7 +373,7 @@
         return;
       }
 
-      postToPage('START', { reason, gainDb: state.gainDb });
+      postToPage('START', { reason, gainDb: state.gainDb, workletUrl: getWorkletUrl() });
       postToPage('SET_GAIN', { gainDb: state.gainDb });
 
       state.activationRetryCount += 1;
@@ -375,14 +420,20 @@
     }
     // Transient path: apply the message's fields to the live document without
     // touching storage. Missing fields fall back to stored defaults via a
-    // single read; nothing is persisted.
-    const base = await readStoredConfig();
-    const enabled = Object.prototype.hasOwnProperty.call(message, 'enabled')
-      ? Boolean(message.enabled)
-      : base.enabled;
-    const gainDb = Object.prototype.hasOwnProperty.call(message, 'gainDb')
-      ? contentShared.clampGainDb(message.gainDb)
-      : base.gainDb;
+    // single read; when the message names every field no storage is touched
+    // (drag-preview live applies stay read-free). Nothing is persisted.
+    let enabled;
+    let gainDb;
+    const hasEnabled = Object.prototype.hasOwnProperty.call(message, 'enabled');
+    const hasGain = Object.prototype.hasOwnProperty.call(message, 'gainDb');
+    if (hasEnabled && hasGain) {
+      enabled = Boolean(message.enabled);
+      gainDb = contentShared.clampGainDb(message.gainDb);
+    } else {
+      const base = await readStoredConfig();
+      enabled = hasEnabled ? Boolean(message.enabled) : base.enabled;
+      gainDb = hasGain ? contentShared.clampGainDb(message.gainDb) : base.gainDb;
+    }
     state.transient = { enabled, gainDb };
     state.enabled = enabled;
     state.gainDb = gainDb;
@@ -402,7 +453,7 @@
 
     if (action === 'start') {
       setPendingStart();
-      postToPage('START', { reason: 'document-state', gainDb });
+      postToPage('START', { reason: 'document-state', gainDb, workletUrl: getWorkletUrl() });
       postToPage('SET_GAIN', { gainDb });
       scheduleActivationRetry('document-state');
       startSpaWatch();
@@ -502,7 +553,7 @@
 
       if (action === 'start') {
         setPendingStart();
-        postToPage('START', { reason, gainDb });
+        postToPage('START', { reason, gainDb, workletUrl: getWorkletUrl() });
         postToPage('SET_GAIN', { gainDb });
         scheduleActivationRetry(reason);
         startSpaWatch();
@@ -536,10 +587,17 @@
       }
     } finally {
       state.syncInFlight = false;
+      state.initialSyncDone = true;
       if (state.queuedSyncReason) {
         const nextReason = state.queuedSyncReason;
         state.queuedSyncReason = '';
-        void sync(nextReason);
+        state.activeSync = sync(nextReason).catch(() => {});
+        try {
+          await state.activeSync;
+        } catch {}
+      }
+      if (!state.queuedSyncReason) {
+        state.activeSync = null;
       }
     }
   }
@@ -568,7 +626,7 @@
         }
         console.log('[cs] page-hook.js injected via background');
         if (state.enabled) {
-          postToPage('START', { reason: 'inject-onload', gainDb: state.gainDb });
+          postToPage('START', { reason: 'inject-onload', gainDb: state.gainDb, workletUrl: getWorkletUrl() });
           postToPage('SET_GAIN', { gainDb: state.gainDb });
           scheduleActivationRetry('inject-onload');
         }
@@ -596,6 +654,23 @@
         clearPendingStart();
       }
       resolveProbe(true);
+      // Disabled-tab backstop: the page can set the DOM pending attribute and
+      // call revive() after Active off, re-routing audio. A hook that reports
+      // active while this tab is disabled gets an immediate STOP; the hook
+      // itself ignores the DOM fallback after stop until a real START.
+      if (!state.enabled && data.active) {
+        postToPage('STOP', { reason: 'disabled-active-backstop' });
+        state.hookActive = false;
+      }
+      // Gain re-assertion: the hook echoes its live gainDb on every status
+      // (it numbers no provenance between our SET_GAIN and a page forgery),
+      // so a page SET_GAIN that drifted the hook cannot persist — correct it
+      // at once with the stored truth.
+      if (state.enabled && typeof data.gainDb === 'number'
+        && Number.isFinite(data.gainDb)
+        && contentShared.clampGainDb(data.gainDb) !== contentShared.clampGainDb(state.gainDb)) {
+        postToPage('SET_GAIN', { gainDb: state.gainDb });
+      }
       return;
     }
 
@@ -606,6 +681,9 @@
       state.lastStatusAt = Date.now();
       clearActivationRetry();
       resolveProbe(false);
+      // Liveness: the hook died while this frame still wants audio — re-sync
+      // through the capped activation retry instead of going silent.
+      if (state.injected && !state.hookAlive) scheduleLivenessResync('hook-stopped');
     }
   }
 
@@ -651,6 +729,8 @@
         state.hookAlive = false;
         state.hookActive = false;
         resolvePending(false);
+        // Liveness: injected but dead — re-sync via capped retry, no busy loop.
+        if (state.injected && !state.hookAlive) scheduleLivenessResync('probe-timeout');
       }, HOOK_TIMEOUT_MS),
     };
 
@@ -694,6 +774,8 @@
         state.hookAlive = false;
         state.hookActive = false;
         resolve(false);
+        // Liveness: injected but dead — re-sync via capped retry, no busy loop.
+        if (state.injected && !state.hookAlive) scheduleLivenessResync('popup-probe-timeout');
       }, HOOK_TIMEOUT_MS);
 
       window.addEventListener('message', handler);
@@ -722,7 +804,21 @@
   }
 
   async function getDocumentStatus() {
-    const { enabled } = await getEffectiveDocumentState();
+    // In-memory answer: the 750 ms popup poll must NOT re-read storage in
+    // the tab (4,800 reads/hour). Storage is re-read only on
+    // `storage.onChanged` (via scheduleSync) and on explicit document-state
+    // applies. Before the first sync lands, wait for it once so the first
+    // answer is not a default-disabled snapshot.
+    if (!state.initialSyncDone) {
+      if (!state.syncInFlight && !state.activeSync) scheduleSync('popup-status-first');
+      if (state.activeSync) {
+        try {
+          await state.activeSync;
+        } catch {}
+      }
+    }
+    const enabled = state.enabled;
+    const gainDb = state.gainDb;
 
     if (enabled) {
       if (!state.injected && !state.syncInFlight) {

@@ -22,18 +22,39 @@
     "seeking",
     "seeked",
     "ended",
-    "ratechange",
-    "timeupdate"
+    "ratechange"
   ];
-  const TIMUPDATE_INTERVAL_MS = 1000;
   const URL_POLL_MS = 1000;
   const SPA_SETTLE_MS = 300;
+  // A paused video fires no media events, so re-report on a low cadence
+  // while a video element exists; otherwise the worker prunes the tab at
+  // FRAME_TTL_MS and presence flickers out.
+  const KEEPALIVE_MS = 30000;
 
   let lastHref = location.href;
   let lastInformative = false;
-  let lastTimeUpdate = 0;
   let lastVideo = null;
+  let lastReportAt = 0;
   let settleTimer = null;
+  let pollTimer = null;
+  // While disabled the 1 s poll does no DOM work; the worker clears presence.
+  let enabled = true;
+  try {
+    chrome.storage?.local?.get?.(["enabled"], (stored) => {
+      enabled = !stored || stored.enabled !== false;
+    });
+  } catch {
+    /* storage unavailable — stay enabled */
+  }
+  try {
+    chrome.storage?.onChanged?.addListener?.((changes, area) => {
+      if (area === "local" && changes && changes.enabled) {
+        enabled = changes.enabled.newValue !== false;
+      }
+    });
+  } catch {
+    /* storage unavailable — stay enabled */
+  }
 
   function send(message) {
     try {
@@ -75,6 +96,7 @@
     }
     lastInformative = true;
     lastVideo = document.querySelector("video");
+    lastReportAt = Date.now();
     send(
       Object.assign(
         {
@@ -89,11 +111,6 @@
   function onMediaEvent(event) {
     const target = event.target;
     if (!target || target.tagName !== "VIDEO") return;
-    if (event.type === "timeupdate") {
-      const now = Date.now();
-      if (now - lastTimeUpdate < TIMUPDATE_INTERVAL_MS) return;
-      lastTimeUpdate = now;
-    }
     report();
   }
 
@@ -109,14 +126,25 @@
   });
 
   window.addEventListener("pagehide", () => {
-    send({ kind: "crp-gone" });
+    if (pollTimer !== null) {
+      clearInterval(pollTimer);
+      pollTimer = null;
+    }
+    send({ kind: "crp-gone", scope: "tab" });
+  });
+
+  // bfcache restore fires pageshow (persisted) without a fresh load: report
+  // again so a back/forward restore republishes within one tick.
+  window.addEventListener("pageshow", () => {
+    lastHref = location.href;
+    report();
   });
 
   function checkUrl() {
     if (location.href === lastHref) return false;
     lastHref = location.href;
     lastInformative = false;
-    send({ kind: "crp-gone" });
+    send({ kind: "crp-gone", scope: "frame" });
     if (settleTimer) clearTimeout(settleTimer);
     settleTimer = setTimeout(() => {
       settleTimer = null;
@@ -125,10 +153,14 @@
     return true;
   }
 
-  setInterval(() => {
+  pollTimer = setInterval(() => {
+    if (!enabled) return;
     checkUrl();
     const video = document.querySelector("video");
     if (video && video !== lastVideo) report();
+    // Low-rate keepalive while a video exists so a paused tab never ages
+    // out at FRAME_TTL_MS on the worker side.
+    if (video && Date.now() - lastReportAt >= KEEPALIVE_MS) report();
   }, URL_POLL_MS);
 
   if (document.readyState === "complete" || document.readyState === "interactive") {

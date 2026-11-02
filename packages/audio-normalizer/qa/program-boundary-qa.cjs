@@ -130,7 +130,10 @@ class FakeMutationObserver {
 
 const locationStub = { href: 'https://example.com/' };
 const documentElementStub = {
-  _attrs: { 'data-tab-normalizer-pending': '1' },
+  _attrs: {
+    'data-tab-normalizer-pending': '1',
+    'data-tn-worklet-url': 'chrome-extension://test-id/audio/normalizer-worklet.js',
+  },
   getAttribute(k) { return Object.prototype.hasOwnProperty.call(this._attrs, k) ? this._attrs[k] : null; },
   removeAttribute(k) { delete this._attrs[k]; },
 };

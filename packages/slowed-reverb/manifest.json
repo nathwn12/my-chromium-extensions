@@ -16,17 +16,11 @@
     "tabs"
   ],
   "host_permissions": [
-    "https://youtube.com/*",
-    "https://www.youtube.com/*",
-    "https://m.youtube.com/*",
     "https://music.youtube.com/*"
   ],
   "content_scripts": [
     {
       "matches": [
-        "https://youtube.com/*",
-        "https://www.youtube.com/*",
-        "https://m.youtube.com/*",
         "https://music.youtube.com/*"
       ],
       "js": [
@@ -41,7 +35,7 @@
   },
   "web_accessible_resources": [{
     "resources": ["dattorro-worklet.js"],
-    "matches": ["https://youtube.com/*", "https://www.youtube.com/*", "https://m.youtube.com/*", "https://music.youtube.com/*"]
+    "matches": ["https://music.youtube.com/*"]
   }],
   "action": {
     "default_icon": {

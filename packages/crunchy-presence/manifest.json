@@ -11,7 +11,7 @@
     "alarms"
   ],
   "host_permissions": [
-    "*://*.crunchyroll.com/*"
+    "https://*.crunchyroll.com/*"
   ],
   "background": {
     "service_worker": "background.js",
@@ -20,7 +20,7 @@
   "content_scripts": [
     {
       "matches": [
-        "*://*.crunchyroll.com/*"
+        "https://*.crunchyroll.com/*"
       ],
       "js": [
         "extract.js",

@@ -139,7 +139,7 @@ testButton.addEventListener("click", async () => {
     if (!response) {
       testResult.textContent = "No response from the extension worker. Reload the extension.";
     } else if (response.queued) {
-      testResult.textContent = "Test activity sent to Discord.";
+      testResult.textContent = "Test activity queued for delivery to Discord.";
     } else {
       testResult.textContent = `Test activity built, but the bridge is "${response.bridgeState}". Start the native host, then retry.`;
     }

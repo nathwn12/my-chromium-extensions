@@ -61,7 +61,7 @@ test("manifest is MV3 with the expected identity", () => {
   assert.equal(manifest.short_name, "Crunchy");
   assert.equal(manifest.action.default_title, "Crunchy Presence");
   assert.equal(manifest.version, "1.0.0");
-  assert.ok(manifest.host_permissions.includes("*://*.crunchyroll.com/*"));
+  assert.ok(manifest.host_permissions.includes("https://*.crunchyroll.com/*"));
 });
 
 test("manifest requires Chrome 120, expressed as a major version", () => {
@@ -85,7 +85,7 @@ test("permissions stay minimal and host access is Crunchyroll only", () => {
   // nativeMessaging + storage are required by the contract; alarms is the only
   // way an MV3 service worker can run the 30s watchdog. Anything broader fails.
   assert.deepEqual(permissions, ["alarms", "nativeMessaging", "storage"]);
-  assert.deepEqual(manifest.host_permissions, ["*://*.crunchyroll.com/*"]);
+  assert.deepEqual(manifest.host_permissions, ["https://*.crunchyroll.com/*"]);
   assert.ok(!("optional_permissions" in manifest), "no optional permissions to widen scope later");
   assert.ok(!JSON.stringify(manifest).includes("<all_urls>"));
 });
@@ -93,7 +93,7 @@ test("permissions stay minimal and host access is Crunchyroll only", () => {
 test("content script covers Crunchyroll in every frame at document_idle", () => {
   assert.ok(Array.isArray(manifest.content_scripts) && manifest.content_scripts.length === 1);
   const [script] = manifest.content_scripts;
-  assert.deepEqual(script.matches, ["*://*.crunchyroll.com/*"]);
+  assert.deepEqual(script.matches, ["https://*.crunchyroll.com/*"]);
   assert.equal(script.run_at, "document_idle");
   assert.equal(script.all_frames, true);
   assert.deepEqual(script.js, ["extract.js", "content.js"]);
@@ -119,7 +119,8 @@ test("service worker, popup and options page are local files", () => {
 test("no remote code anywhere in the manifest or its HTML", () => {
   assert.ok(!("content_security_policy" in manifest), "default CSP only");
   const serialized = JSON.stringify(manifest);
-  assert.ok(!/https?:\/\//.test(serialized), "manifest references no remote URL");
+  const withoutMatches = serialized.replace(/https:\/\/\*\.(crunchyroll\.com)/g, "");
+  assert.ok(!/https?:\/\//.test(withoutMatches), "manifest references no remote URL beyond Crunchyroll match patterns");
   assert.ok(!("externally_connectable" in manifest));
   assert.ok(!("web_accessible_resources" in manifest), "nothing is exposed to the page");
 

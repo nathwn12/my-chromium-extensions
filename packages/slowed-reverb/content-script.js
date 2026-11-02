@@ -25,6 +25,8 @@
     pageHookReady: false,
     lastError: '',
     workletLoaded: false,
+    workletRetryCount: 0,
+    workletLastRetry: 0,
     lastNonzeroIntensity: 0,
   };
 
@@ -51,6 +53,7 @@
       applyRuntimeState(runtime);
     } catch {
       state.lastError = 'Runtime unavailable.';
+      queueRecovery('bootstrap');
       syncAllMedia();
     }
   }
@@ -88,7 +91,7 @@
       }
 
       if (message?.type === 'TOGGLE_CHANGED') {
-        applyRuntimeState({ bypass: !message.enabled });
+        applyRuntimeState({ bypass: !message.enabled, eligible: state.eligible });
         sendResponse({ ok: true });
         return false;
       }
@@ -148,12 +151,15 @@
       if (!data || data.__slra !== true) return;
 
       if (data.type === 'SLRA_PAGE_REVIVE') {
-        queueRecovery(data.reason || 'page-hook');
+        const now = Date.now();
+        if (now - lastPageMessageRecovery >= 1000) {
+          lastPageMessageRecovery = now;
+          queueRecovery(data.reason || 'page-hook');
+        }
       }
 
       if (data.type === 'SLRA_PAGE_HOOK_READY') {
         state.pageHookReady = true;
-        state.lastError = '';
       }
     });
 
@@ -182,6 +188,7 @@
   }
 
 function applyRuntimeState(runtime) {
+  if (runtime && runtime.ok === false) return;
   state.eligible = Boolean(runtime?.eligible !== false);
   state.bypass = Boolean(runtime?.bypass);
   if (runtime?.settings !== undefined) {
@@ -206,6 +213,7 @@ function applyRuntimeState(runtime) {
 
   let recoveryTimer = null;
   let rateWatchdogTimer = null;
+  let lastPageMessageRecovery = 0;
   const ATTACH_RETRY_MAX_ATTEMPTS = 20;
   const ATTACH_RETRY_MAX_DELAY_MS = 2000;
   // Mute enforcement is a correction loop against a page that may fight back.
@@ -223,6 +231,25 @@ function applyRuntimeState(runtime) {
     stopRateWatchdog();
     rateWatchdogTimer = setInterval(() => {
       if (!state.eligible || state.bypass) return;
+      if (state.context && state.context.state !== 'running') {
+        void resumeContext();
+      }
+      if (!state.workletLoaded && state.context && state.context.state === 'running') {
+        const now = Date.now();
+        if (state.workletRetryCount < 3 && now - state.workletLastRetry >= 5000) {
+          state.workletRetryCount += 1;
+          state.workletLastRetry = now;
+          const workletContext = state.context;
+          void workletContext.audioWorklet.addModule(chrome.runtime.getURL('dattorro-worklet.js')).then(() => {
+            state.workletLoaded = true;
+            state.workletRetryCount = 0;
+            state.lastError = '';
+            syncAllMedia();
+          }).catch((workletError) => {
+            state.lastError = 'Worklet: ' + (workletError && workletError.message ? workletError.message : workletError);
+          });
+        }
+      }
       for (const controller of state.media.values()) {
         if (!controller.attached || controller.failed) continue;
         // Mute is part of the contract, not just an attach-time action: the page
@@ -381,7 +408,11 @@ function applyRuntimeState(runtime) {
 
     controller.volumeHandler = () => {
       if (controller.attached && controller.masterGain) {
-        rampGain(controller.masterGain.gain, controller.media.volume);
+        if (controller.sourceStale) {
+          rampGain(controller.masterGain.gain, 0);
+        } else {
+          rampGain(controller.masterGain.gain, controller.media.volume);
+        }
       }
       enforceElementMute(controller);
     };
@@ -440,6 +471,7 @@ function applyRuntimeState(runtime) {
     }
     const attempt = controller.attachAttempts || 0;
     if (attempt >= ATTACH_RETRY_MAX_ATTEMPTS) {
+      controller.attachAttempts = 0;
       teardownController(controller, false, state.context);
       return;
     }
@@ -482,14 +514,21 @@ function applyRuntimeState(runtime) {
     }
     if (!isMediaReadyForAttach(controller.media)) return false;
 
+    if (state.context && state.context.state === 'closed') {
+      state.context = null;
+      state.workletLoaded = false;
+    }
+
     const context = getAudioContext();
     if (!state.workletLoaded || context.state !== 'running') return false;
 
     controller.failed = false;
     controller.attachError = '';
 
+    let stream = null;
+    let source = null;
     try {
-      const stream = captureMediaStream(controller.media);
+      stream = captureMediaStream(controller.media);
       if (!stream) {
         throw new Error('captureStream unavailable for this media element.');
       }
@@ -516,7 +555,7 @@ function applyRuntimeState(runtime) {
         return false;
       }
 
-      const source = context.createMediaStreamSource(stream);
+      source = context.createMediaStreamSource(stream);
       const dryGain = context.createGain();
       const masterGain = context.createGain();
       const dattorroNode = new AudioWorkletNode(context, 'dattorro-reverb');
@@ -559,6 +598,19 @@ function applyRuntimeState(runtime) {
       });
       return true;
     } catch (error) {
+      if (source) {
+        disconnectNode(source);
+      }
+      if (stream) {
+        stream.getTracks().forEach((track) => {
+          try {
+            track.stop();
+          } catch {
+            // Track already stopped.
+          }
+        });
+      }
+      controller.media.muted = false;
       controller.failed = true;
       controller.attachError = 'Could not attach audio effect.';
       state.lastError = String(error && error.message ? error.message : error);
@@ -610,7 +662,9 @@ function applyRuntimeState(runtime) {
       }
 
       // The stale window unmuted the element on purpose; a live source means
-      // the element goes back to mirroring `attached`.
+      // the element goes back to mirroring `attached`. A spent 8/s budget
+      // must not leave the element unmuted on a live graph.
+      resetMuteDampener(controller);
       enforceElementMute(controller);
 
       disconnectNode(previousSource);
@@ -625,7 +679,21 @@ function applyRuntimeState(runtime) {
       }
       return true;
     } catch (error) {
-      // Never leave the element muted without an audio path.
+      // Never leave the element muted without an audio path: drop the stale
+      // tap before unmuting so the old source cannot keep playing underneath.
+      disconnectNode(controller.source);
+      if (controller.stream) {
+        controller.stream.getTracks().forEach((track) => {
+          try {
+            track.stop();
+          } catch {
+            // Track already stopped.
+          }
+        });
+      }
+      controller.stream = null;
+      controller.source = null;
+      controller.sourceStale = true;
       if (capturedStream) {
         capturedStream.getTracks().forEach((track) => {
           try {
@@ -684,9 +752,23 @@ function applyRuntimeState(runtime) {
       const url = chrome.runtime.getURL('dattorro-worklet.js');
       await context.audioWorklet.addModule(url);
       state.workletLoaded = true;
+      state.workletRetryCount = 0;
       syncAllMedia();
     } catch (e) {
       state.lastError = 'Worklet: ' + (e.message || e);
+      if (!state.workletLoaded && context.state === 'running') {
+        try {
+          const url = chrome.runtime.getURL('dattorro-worklet.js');
+          await context.audioWorklet.addModule(url);
+          state.workletLoaded = true;
+          state.workletRetryCount = 0;
+          state.lastError = '';
+          syncAllMedia();
+        } catch (retryError) {
+          state.lastError = 'Worklet: ' + (retryError.message || retryError);
+          state.workletLastRetry = Date.now();
+        }
+      }
     }
   }
 
@@ -776,12 +858,20 @@ function applyRuntimeState(runtime) {
     const media = controller.media;
     if (!media || media.muted === true) return;
     if (controller.internalMuteWrite) return;
-    if (!claimMuteCorrection(controller)) return;
+    if (!claimMuteCorrection(controller)) {
+      if (controller.masterGain) {
+        rampGain(controller.masterGain.gain, 0);
+      }
+      return;
+    }
 
     controller.internalMuteWrite = true;
 
     try {
       media.muted = true;
+      if (controller.masterGain && !controller.sourceStale) {
+        rampGain(controller.masterGain.gain, media.volume);
+      }
     } finally {
       queueMicrotask(() => {
         controller.internalMuteWrite = false;
@@ -914,7 +1004,7 @@ function applyRuntimeState(runtime) {
     try {
       applyPitchState(media, controller.originalPitch);
       media.playbackRate = controller.originalRate;
-      media.muted = controller.originalMuted;
+      media.muted = false;
     } catch {
       // Ignore restore failures.
     } finally {
@@ -984,17 +1074,19 @@ function applyRuntimeState(runtime) {
     if (!state.eligible) {
       text = 'Unsupported page.';
     } else if (state.bypass) {
-      text = 'Power off for this tab.';
+      text = 'Power off for this site.';
     } else if (failedCount && !attachedCount) {
       text = 'Could not attach to page audio.';
     } else if (!totalCount) {
       text = 'Waiting for media.';
-    } else if (isNeutral(state.settings)) {
+    } else if (attachedCount > 0 && isNeutral(state.settings)) {
       text = 'Active, neutral.';
     } else if (failedCount) {
       text = 'Active with some attach failures.';
-    } else {
+    } else if (attachedCount > 0) {
       text = 'Active.';
+    } else {
+      text = 'Waiting for media.';
     }
 
     return {
@@ -1002,7 +1094,7 @@ function applyRuntimeState(runtime) {
       eligible: state.eligible,
       bypass: state.bypass,
       active,
-      neutral: active && isNeutral(state.settings),
+      neutral: active && attachedCount > 0 && isNeutral(state.settings),
       attachedCount,
       failedCount,
       totalCount,

@@ -126,6 +126,10 @@ input[type="text"] {
   letter-spacing: 0.06em;
 }
 
+#clientId::placeholder {
+  color: #9aa3af;
+}
+
 input[type="text"]:focus-visible,
 textarea:focus-visible,
 button:focus-visible,
@@ -201,6 +205,11 @@ button.primary:hover {
   border: 1px solid var(--line);
   font-size: 13px;
   background: #0f1319;
+  white-space: nowrap;
+}
+
+#bridgeState.pill {
+  justify-self: start;
 }
 
 .pill[data-state="connected"] {
@@ -236,4 +245,11 @@ button.primary:hover {
   clip: rect(0 0 0 0);
   white-space: nowrap;
   border: 0;
+}
+
+@media (max-width: 480px) {
+  .status > div {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
 }

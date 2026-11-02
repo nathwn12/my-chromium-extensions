@@ -125,7 +125,7 @@ async function resolveSettingsForTab(tabId) {
   const siteKey = tab ? extractHostname(tab.url) : '';
   const session = await getTabSession(tabId);
 
-  if (session) {
+  if (session && !siteKey) {
     return { eligible, siteKey, settings: normalizeSettings(session) };
   }
 
@@ -251,9 +251,23 @@ chrome.runtime.onInstalled.addListener(() => {
 });
 
 // onStartup does not fire when the worker wakes from idle, so rehydrate
-// best-effort on every SW evaluation. Must never throw at import.
+// best-effort once, gated by a session flag so idle wakes do not reflood
+// every tab. Must never throw at import.
 try {
-  void scheduleRehydrate().catch(() => {});
+  void (async () => {
+    try {
+      const flag = await chrome.storage.session.get({ slowedReverbRehydrated: false });
+      if (flag && flag.slowedReverbRehydrated) return;
+      try {
+        await chrome.storage.session.set({ slowedReverbRehydrated: true });
+      } catch {
+        // Best effort only.
+      }
+    } catch {
+      // No session storage: fall through to a single rehydrate.
+    }
+    await scheduleRehydrate().catch(() => {});
+  })().catch(() => {});
 } catch {
   // Never throw at import.
 }

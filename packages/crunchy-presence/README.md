@@ -18,7 +18,7 @@ The card's title is the name of the Discord application behind the presence: `Cr
 | | |
 | --- | --- |
 | Windows | 10 or 11 (registry entries and named pipes) |
-| Chrome | 156 or newer (`minimum_chrome_version` in the manifest) |
+| Chrome | 120 or newer (`minimum_chrome_version` in the manifest) |
 | Node | 22 or newer, to run the installer and the native host |
 | Discord | Desktop app running and signed in; Canary is fine |
 

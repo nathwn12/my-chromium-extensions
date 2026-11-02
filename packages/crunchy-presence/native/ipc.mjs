@@ -147,7 +147,10 @@ export class DiscordPipeClient {
     this.logger = { ...defaultLogger, ...(options.logger ?? {}) };
     this.pid = options.pid ?? process.pid;
 
-    this.rateLimit = options.rateLimit ?? 4;
+    // Backstop guard only: the extension already coalesces to 4 ordinary
+    // sends per 20 s plus bypassing clears, so the host allows bursts up to
+    // 5 per 20 s without adding a second throttle layer.
+    this.rateLimit = options.rateLimit ?? 5;
     this.rateWindowMs = options.rateWindowMs ?? 20_000;
     this.backoffStart = options.backoffStart ?? 250;
     this.backoffMax = options.backoffMax ?? 5_000;
@@ -168,6 +171,7 @@ export class DiscordPipeClient {
     this._pending = new Map();
     this._sentAt = [];
     this._queued = undefined;
+    this._flushFailures = 0;
     this._flushTimer = null;
     this._reconnectTimer = null;
     this._backoff = this.backoffStart;
@@ -493,6 +497,9 @@ export class DiscordPipeClient {
   }
 
   async _sendGuarded(activity) {
+    // A null clear bypasses the bucket: it is sent immediately even when the
+    // window is full, so presence never takes ~20 s to clear.
+    if (activity === null || activity === undefined) return this._sendNow(null);
     this._prune();
     if (this._sentAt.length >= this.rateLimit) {
       // Coalesce: the newest activity wins, older deferred ones are dropped.
@@ -506,8 +513,19 @@ export class DiscordPipeClient {
   _scheduleFlush() {
     if (this._flushTimer) return;
     this._prune();
-    const oldest = this._sentAt[0] ?? this.timers.now();
-    const wait = Math.max(0, oldest + this.rateWindowMs - this.timers.now()) + 1;
+    // An empty window sends at once; otherwise wait for the oldest send to
+    // age out.
+    const windowWait =
+      this._sentAt.length === 0
+        ? 1
+        : Math.max(0, this._sentAt[0] + this.rateWindowMs - this.timers.now()) + 1;
+    // A rejected flush backs off (1 s, 2 s, 4 s, capped) instead of spinning
+    // on the window edge.
+    const retryWait =
+      (this._flushFailures || 0) > 0
+        ? 1000 * 2 ** (Math.min(this._flushFailures, 3) - 1)
+        : 0;
+    const wait = Math.max(windowWait, retryWait);
     this._flushTimer = this.timers.setTimeout(() => {
       this._flushTimer = null;
       this._flush().catch((error) => this.logger.error(`discord activity flush failed: ${error.message}`));
@@ -516,11 +534,28 @@ export class DiscordPipeClient {
 
   async _flush() {
     if (this._queued === undefined) return;
-    if (!this.ready) return;
+    if (!this.ready) {
+      // The pipe is down but a payload is queued: reschedule instead of
+      // stranding it, so the next window or reconnect delivers it.
+      this._scheduleFlush();
+      return;
+    }
     const pending = this._queued;
     this._queued = undefined;
     const result = await this._sendNow(pending.activity);
-    if (!result.ok) this.logger.warn(`discord activity flush rejected: ${result.error}`);
+    if (result.ok) {
+      this._flushFailures = 0;
+    } else {
+      this.logger.warn(`discord activity flush rejected: ${result.error}`);
+      if (this._queued === undefined) {
+        // No newer payload superseded the failed one: keep it and retry
+        // with backoff until it sends or a newer payload takes its place.
+        this._queued = pending;
+        this._flushFailures = Math.min((this._flushFailures || 0) + 1, 3);
+      } else {
+        this._flushFailures = 0;
+      }
+    }
     if (this._queued !== undefined) this._scheduleFlush();
   }
 

@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Adversarial hardening (13 findings): the hook no longer labels its own `createMediaElementSource` captures as page WebAudio (own captures run under `internalWiring`, so a context close/recover can re-attach); content scripts reach `about:blank`/srcdoc/opaque-origin iframes (`match_origin_as_fallback`); the worklet URL origin is pinned to the content-script-set value at load (a page START can no longer pin a foreign `chrome-extension://` id) and the hook echoes `gainDb` on every status so a page `SET_GAIN` is corrected at once; `HOOK_ERROR` always carries `state.lastError`; a page-defined `window.__tabNormalizerHookV5` no longer blocks the real hook (early-return only on the `__tnConnect` patch); site keys are the full hostname (`alice.github.io` no longer shares `github.io`'s toggle, collapsed keys survive read-only with migration on first write); the DOM pending fallback is ignored after stop until a real START (plus a content-script STOP backstop for disabled-but-active hooks); the unused `tabs` permission is gone (policy line with it) and `page-hook.js` left `web_accessible_resources`; the reset button zeroes gain (Active stays on) and the copy no longer claims every tab is normalized (per-site opt-in).
+- Leak/perf: `emptied`/`ended`/removal disconnect the source, drop it from both sets and clear `__tnAttached` (replays reuse the live source instead of re-capturing); closed-context sessions are pruned and hook-created contexts close when idle; `GET_DOCUMENT_STATUS` answers from in-memory state (storage re-read only on `storage.onChanged`); a slider drag persists once on `change`/`pointerup` (live preview is a transient, storage-free tab apply) with one broadcast per write.
+
+- Popup uses the card/pill shell (320px grid, header with native 32px icon plus `#status-pill`, one card holding the gain slider and presets, native checkbox toggle, footer Reset, `#status-text` detail line); the status poll still skips `applyControlState` while a save is in flight so controls cannot snap back mid-write.
+
+- Top-frame video, cross-origin iframes, and open shadow-root video now normalize (autoplay-blocked contexts recover on gesture; DRM and closed shadow roots fall back to raw audio): the page hook injects into the sender frame (`frameIds: [sender.frameId]`, frame 0 only for tab-level calls, disappearing frames report an error), the worklet URL travels in the START message from the ISOLATED content script (page DOM is only the pending-start fallback; anything but a `chrome-extension:` URL ending in `/audio/normalizer-worklet.js` fails closed), a pending `resume()` never blocks session readiness (bounded 400 ms `resumeWithTimeout`, gesture retry registered first), an injected-but-dead hook re-syncs via the capped activation retry, the 1.5 s guard restores mute only while still guard-muted, re-enabling mints one fresh program generation with a single `reset-program` (never at attach), and open shadow roots are walked (attachShadow patched, observer-identity check so a second start re-observes the same root).
+
 ## [5.4.2] - 2026-10-21
 
 ### Fixed

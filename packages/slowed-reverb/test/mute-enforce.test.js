@@ -21,7 +21,7 @@ const path = require('path');
 const vm = require('vm');
 
 function createContentEnv() {
-  const stats = { captureCalls: 0, contexts: 0, ramped: 0 };
+  const stats = { captureCalls: 0, contexts: 0, ramped: 0, rampedValues: [], disconnects: 0 };
 
   // Controllable timers: fake setTimeout, inert setInterval (the 2s watchdog is
   // exercised by the real-browser harness, not here).
@@ -124,14 +124,20 @@ function createContentEnv() {
       this.audioWorklet = { addModule: async () => {} };
     }
     createMediaStreamSource() {
-      return { connect() {}, disconnect() {} };
+      return {
+        connect() {},
+        disconnect() {
+          stats.disconnects++;
+        },
+      };
     }
     createGain() {
       return {
         gain: {
           value: 0,
-          setTargetAtTime() {
+          setTargetAtTime(value) {
             stats.ramped++;
+            stats.rampedValues.push(value);
           },
         },
         connect() {},
@@ -204,6 +210,11 @@ function createContentEnv() {
   function sendRuntime(msg) {
     for (const fn of runtimeHandlers) fn(msg, {}, () => {});
   }
+  function queryLive() {
+    let out = null;
+    for (const fn of runtimeHandlers) fn({ type: 'GET_LIVE_STATUS' }, {}, (v) => { out = v; });
+    return out;
+  }
   function fireDoc(type, target) {
     for (const fn of docListeners[type] || []) fn({ target });
   }
@@ -227,6 +238,7 @@ function createContentEnv() {
   return {
     stats,
     sendRuntime,
+    queryLive,
     fireDoc,
     addMedia,
     settle,
@@ -340,6 +352,55 @@ async function main() {
     media.muted === false,
     'expected false while bypassed, got ' + media.muted
   );
+
+  // --- regression: autoplay-muted track restores audible on bypass ---
+  // YouTube starts muted; the extension's own `muted = true` must never be
+  // recorded as the page's mute and written back on teardown (bypass must
+  // leave `media.muted === false` with the graph detached).
+  env.sendRuntime({
+    type: 'APPLY_TAB_STATE',
+    eligible: true,
+    bypass: false,
+    settings: { slow: 0.8, reverbIntensity: 0.5 },
+  });
+  const autoMuted = env.addMedia();
+  autoMuted.muted = true;
+  env.fireDoc('play', autoMuted);
+  for (let i = 0; i < 40 && autoMuted.playbackRate !== 0.8; i++) {
+    await env.settle(2);
+    env.runTimers(50);
+  }
+  check(
+    'setup: autoplay-muted element attached still muted',
+    autoMuted.muted === true && autoMuted.playbackRate === 0.8,
+    'muted=' + autoMuted.muted + ' rate=' + autoMuted.playbackRate
+  );
+  autoMuted.muted = false;
+  autoMuted.dispatchEvent(new Event('volumechange'));
+  check(
+    'autoplay-muted + page unmute re-mutes while attached',
+    autoMuted.muted === true,
+    'expected true while attached, got ' + autoMuted.muted
+  );
+  env.sendRuntime({
+    type: 'APPLY_TAB_STATE',
+    eligible: true,
+    bypass: true,
+    settings: { slow: 0.8, reverbIntensity: 0.5 },
+  });
+  await env.settle(2);
+  check(
+    'bypass restores autoplay-muted element audible',
+    autoMuted.muted === false,
+    'expected false after bypass, got ' + autoMuted.muted
+  );
+  autoMuted.dispatchEvent(new Event('volumechange'));
+  check(
+    'bypassed autoplay-muted element stays unmuted (graph detached)',
+    autoMuted.muted === false,
+    'expected false while bypassed, got ' + autoMuted.muted
+  );
+  autoMuted.isConnected = false;
 
   // --- hostile page: restore `muted = false` on every volumechange ----------
   // A page that unmutes itself from its own volumechange listener turns mute
@@ -603,6 +664,534 @@ async function main() {
     'cool-down expires: the next unmute is corrected again',
     burstCorrections - burstStart === 9,
     'expected 9 after the 1000 ms cool-down, got ' + (burstCorrections - burstStart)
+  );
+
+  // --- regression: track-change doubling + YouTube Music scope ---------------
+  const src = fs.readFileSync(path.join(__dirname, '..', 'content-script.js'), 'utf8');
+  const manifestText = fs.readFileSync(path.join(__dirname, '..', 'manifest.json'), 'utf8');
+  const sharedText = fs.readFileSync(path.join(__dirname, '..', 'shared.js'), 'utf8');
+  const popupText = fs.readFileSync(path.join(__dirname, '..', 'popup.js'), 'utf8');
+  const backgroundText = fs.readFileSync(path.join(__dirname, '..', 'background.js'), 'utf8');
+  const privacyText = fs.readFileSync(path.join(__dirname, '..', 'PRIVACY_POLICY.md'), 'utf8');
+  const storeText = fs.readFileSync(path.join(__dirname, '..', 'STORE_SUBMISSION.md'), 'utf8');
+  const manifest = JSON.parse(manifestText);
+
+  // A. sourceStale volumechange keeps the graph silent (no doubled track).
+  const staleM = env.addMedia();
+  env.fireDoc('play', staleM);
+  for (let i = 0; i < 40 && staleM.muted !== true; i++) {
+    await env.settle(2);
+    env.runTimers(50);
+  }
+  check('setup: stale-track element attached and muted', staleM.muted === true);
+  staleM.dispatchEvent(new Event('emptied'));
+  check('setup: emptied unmutes into the stale window', staleM.muted === false);
+  let mark = env.stats.rampedValues.length;
+  staleM.dispatchEvent(new Event('volumechange'));
+  check(
+    'sourceStale + volumechange keeps masterGain at 0 (no doubled track)',
+    env.stats.rampedValues.length > mark && env.stats.rampedValues[env.stats.rampedValues.length - 1] === 0,
+    'last ramped gain=' + env.stats.rampedValues[env.stats.rampedValues.length - 1]
+  );
+  check(
+    'sourceStale + volumechange leaves the element unmuted (stale window holds)',
+    staleM.muted === false,
+    'expected false, got ' + staleM.muted
+  );
+  for (let i = 0; i < 40 && staleM.muted !== true; i++) {
+    await env.settle(2);
+    env.runTimers(50);
+  }
+  check('setup: rebuild re-mutes the stale-track element', staleM.muted === true);
+
+  // B. the contract mute must NOT silence the graph: while attached the
+  // element stays muted and the graph plays at media.volume.
+  mark = env.stats.rampedValues.length;
+  staleM.dispatchEvent(new Event('volumechange'));
+  check(
+    'attached + muted + volumechange keeps masterGain at media.volume (graph plays while attached)',
+    env.stats.rampedValues.length > mark && env.stats.rampedValues[env.stats.rampedValues.length - 1] === staleM.volume,
+    'last ramped gain=' + env.stats.rampedValues[env.stats.rampedValues.length - 1]
+  );
+  check(
+    'attached + muted + volumechange leaves the element muted (contract holds)',
+    staleM.muted === true,
+    'expected true, got ' + staleM.muted
+  );
+
+  // B2. regression: the attach-time contract mute queues a volumechange that
+  // must not ramp the graph to 0 (fails on pre-fix bytes where
+  // volumeHandler mapped media.muted to masterGain 0).
+  const contractM = env.addMedia();
+  contractM.volume = 0.7;
+  env.fireDoc('play', contractM);
+  for (let i = 0; i < 40 && contractM.muted !== true; i++) {
+    await env.settle(2);
+    env.runTimers(50);
+  }
+  check('setup: contract element attached, muted, non-neutral', contractM.muted === true && contractM.playbackRate === 0.8);
+  mark = env.stats.rampedValues.length;
+  contractM.dispatchEvent(new Event('volumechange'));
+  check(
+    'contract mute + volumechange keeps masterGain at media.volume (not 0)',
+    env.stats.rampedValues.length > mark && env.stats.rampedValues[env.stats.rampedValues.length - 1] === contractM.volume,
+    'last ramped gain=' + env.stats.rampedValues[env.stats.rampedValues.length - 1]
+  );
+  check(
+    'contract mute + volumechange leaves the element muted',
+    contractM.muted === true,
+    'expected true, got ' + contractM.muted
+  );
+  contractM.dispatchEvent(new Event('emptied'));
+  check('setup: emptied marks the contract element stale and unmutes', contractM.muted === false);
+  mark = env.stats.rampedValues.length;
+  contractM.dispatchEvent(new Event('volumechange'));
+  check(
+    'contract element stale + volumechange ramps masterGain to 0',
+    env.stats.rampedValues.length > mark && env.stats.rampedValues[env.stats.rampedValues.length - 1] === 0,
+    'last ramped gain=' + env.stats.rampedValues[env.stats.rampedValues.length - 1]
+  );
+  for (let i = 0; i < 40 && contractM.muted !== true; i++) {
+    await env.settle(2);
+    env.runTimers(50);
+  }
+  check('setup: contract element rebuilt and re-muted', contractM.muted === true);
+  mark = env.stats.rampedValues.length;
+  contractM.dispatchEvent(new Event('volumechange'));
+  check(
+    'rebuilt contract element + volumechange ramps masterGain back to media.volume',
+    env.stats.rampedValues.length > mark && env.stats.rampedValues[env.stats.rampedValues.length - 1] === contractM.volume,
+    'last ramped gain=' + env.stats.rampedValues[env.stats.rampedValues.length - 1]
+  );
+  check(
+    'rebuilt contract element stays muted after volumechange',
+    contractM.muted === true,
+    'expected true, got ' + contractM.muted
+  );
+
+  // C. rebuild resets the mute budget.
+  const budgetM = env.addMedia();
+  env.fireDoc('play', budgetM);
+  for (let i = 0; i < 40 && budgetM.muted !== true; i++) {
+    await env.settle(2);
+    env.runTimers(50);
+  }
+  check('setup: budget element attached and muted', budgetM.muted === true);
+  env.fireDoc('play', budgetM);
+  await env.settle(2);
+  env.runTimers(50);
+  for (let i = 0; i < 8; i++) {
+    budgetM.muted = false;
+    budgetM.dispatchEvent(new Event('volumechange'));
+    await Promise.resolve();
+  }
+  await Promise.resolve();
+  budgetM.muted = false;
+  budgetM.dispatchEvent(new Event('volumechange'));
+  await Promise.resolve();
+  check('setup: budget spent (9th unmute refused)', budgetM.muted === false);
+  // loadedmetadata enters the stale window WITHOUT resetting the dampener
+  // (unlike emptied), so a spent budget is still spent when the rebuild runs.
+  budgetM.dispatchEvent(new Event('loadedmetadata'));
+  for (let i = 0; i < 40 && budgetM.muted !== true; i++) {
+    await env.settle(2);
+    env.runTimers(50);
+  }
+  check('rebuild after a spent budget re-mutes (loadedmetadata path)', budgetM.muted === true);
+  budgetM.muted = false;
+  budgetM.dispatchEvent(new Event('volumechange'));
+  await Promise.resolve();
+  check(
+    'rebuild resets the mute budget (post-track-change unmute is corrected)',
+    budgetM.muted === true,
+    'element left unmuted on a live graph, got ' + budgetM.muted
+  );
+
+  // D. failed rebuild disconnects the stale tap.
+  const failM = env.addMedia();
+  env.fireDoc('play', failM);
+  for (let i = 0; i < 40 && failM.muted !== true; i++) {
+    await env.settle(2);
+    env.runTimers(50);
+  }
+  check('setup: fail-path element attached and muted', failM.muted === true);
+  const disconnectsBefore = env.stats.disconnects;
+  failM.captureStream = () => null;
+  failM.dispatchEvent(new Event('emptied'));
+  // Settle only: microtasks run the failed rebuild, but no fake timer fires,
+  // so the retry chain cannot advance to mask the catch path.
+  await env.settle(6);
+  check(
+    'failed rebuild disconnects the stale source tap',
+    env.stats.disconnects > disconnectsBefore,
+    'no disconnect after failed rebuild'
+  );
+  check(
+    'failed rebuild leaves the element unmuted (never muted without a path)',
+    failM.muted === false,
+    'expected false, got ' + failM.muted
+  );
+
+  // E. attach-attempt lockout resets at the cap.
+  const capM = env.addMedia();
+  capM.paused = true;
+  env.fireDoc('play', capM);
+  for (let i = 0; i < 80; i++) {
+    env.runTimers(20);
+    await env.settle(1);
+  }
+  // One more not-ready sync after the cap: a reset counter schedules a fresh
+  // retry, while a stuck counter hits the cap again and goes quiet.
+  env.fireDoc('play', capM);
+  await env.settle(1);
+  const pendingAfterCap = env.pendingTimers();
+  check(
+    'attach retries continue after the cap (no 5-minute lockout)',
+    pendingAfterCap > 0,
+    'no retry scheduled after the cap, pending=' + pendingAfterCap
+  );
+  capM.paused = false;
+  env.fireDoc('play', capM);
+  let capped = false;
+  for (let i = 0; i < 40; i++) {
+    await env.settle(2);
+    env.runTimers(50);
+    if (capM.muted === true && capM.playbackRate === 0.8) {
+      capped = true;
+      break;
+    }
+  }
+  check('attach lockout resets at the cap (element attaches after 20 failures)', capped);
+
+  // F. live status is not Active with zero attached.
+  const lonely = env.addMedia();
+  lonely.paused = true;
+  env.fireDoc('play', lonely);
+  await env.settle(2);
+  for (const m of [media, rateMedia, burst, staleM, contractM, budgetM, failM, capM]) {
+    m.isConnected = false;
+  }
+  env.sendRuntime({ type: 'SLRA_PAGE_REVIVE', reason: 'test' });
+  for (let i = 0; i < 40; i++) {
+    await env.settle(2);
+    env.runTimers(50);
+  }
+  const live = env.queryLive();
+  check('setup: live status readable', Boolean(live && live.ok));
+  check(
+    'live status is not Active with zero attached',
+    Boolean(live) && live.attachedCount === 0 && live.text !== 'Active.',
+    'got attachedCount=' + (live && live.attachedCount) + ' text=' + JSON.stringify(live && live.text)
+  );
+
+  // G. scope is YouTube Music only.
+  const granted = manifest.host_permissions || [];
+  const injected = (manifest.content_scripts && manifest.content_scripts[0] && manifest.content_scripts[0].matches) || [];
+  const warMatches = (((manifest.web_accessible_resources || [])[0] || {}).matches) || [];
+  const scopeUrls = granted.concat(injected, warMatches);
+  check(
+    'only music.youtube.com is granted/injected/exposed',
+    scopeUrls.length > 0 && scopeUrls.every((u) => u === 'https://music.youtube.com/*'),
+    'matches=' + JSON.stringify(scopeUrls)
+  );
+  check(
+    'SUPPORTED_HOSTS is music.youtube.com only',
+    sharedText.indexOf("new Set(['music.youtube.com'])") !== -1,
+    'SUPPORTED_HOSTS still names another host'
+  );
+  check(
+    'popup is YouTube Music only',
+    popupText.indexOf('Only works on YouTube Music.') !== -1 &&
+      popupText.replace(/music\.youtube\.com/g, '').indexOf('youtube.com') === -1,
+    'popup still names YouTube'
+  );
+
+  // H. static guards for the remaining fixes (each fails on the pre-fix bytes).
+  const volumeBlock = (src.match(/controller\.volumeHandler = \(\) => \{[\s\S]*?enforceElementMute\(controller\);\s*\};/) || [])[0] || '';
+  check(
+    'volumeHandler ramps on sourceStale only, never on media.muted (static)',
+    volumeBlock.indexOf('controller.sourceStale') !== -1 && volumeBlock.indexOf('controller.media.muted') === -1,
+    'volumeHandler still maps media.muted to masterGain 0'
+  );
+  check(
+    'rebuild resets the mute budget (static)',
+    /resetMuteDampener\(controller\);\s+enforceElementMute\(controller\);/.test(src),
+    'no resetMuteDampener before the rebuild re-mute'
+  );
+  check(
+    'failed rebuild disconnects the stale tap (static)',
+    /disconnectNode\(controller\.source\);[\s\S]{0,800}if \(capturedStream\)/.test(src),
+    'no disconnectNode(controller.source) in the rebuild catch path'
+  );
+  check(
+    'attachAttempts resets at the cap (static)',
+    /controller\.attachAttempts = 0;\s+teardownController\(controller, false/.test(src),
+    'no attachAttempts reset before the cap teardown'
+  );
+  check(
+    'TOGGLE_CHANGED preserves eligibility (static)',
+    /TOGGLE_CHANGED[\s\S]{0,160}eligible: state\.eligible/.test(src),
+    'site-toggle broadcast can resurrect eligibility'
+  );
+  check(
+    'failed popup toggle restores the real state (static)',
+    popupText.indexOf('!bypass;') === -1,
+    'catch still checks the attempted value back'
+  );
+  check(
+    'bootstrap recovers on runtime failure (static)',
+    src.indexOf("queueRecovery('bootstrap')") !== -1,
+    'no queueRecovery in the bootstrap catch'
+  );
+  check(
+    'worklet retries while the context runs (static)',
+    /!state\.workletLoaded && context\.state === 'running'/.test(src),
+    'no addModule retry'
+  );
+  check(
+    'teardown restores unmuted unconditionally (static)',
+    src.indexOf('lastObservedMuted') === -1 &&
+      /restoreMediaPlaybackState[\s\S]*?media\.muted = false;/.test(src),
+    'teardown still restores observed mute'
+  );
+
+  // I. adversarial repair lane (each fails on the pre-fix bytes).
+  // --- I1 mute-budget doubling: refusal must silence the graph ---
+  const dbl = env.addMedia();
+  env.fireDoc('play', dbl);
+  for (let i = 0; i < 40 && dbl.muted !== true; i++) {
+    await env.settle(2);
+    env.runTimers(50);
+  }
+  check('setup: doubling element attached and muted', dbl.muted === true);
+  env.fireDoc('play', dbl);
+  await env.settle(2);
+  env.runTimers(50);
+  for (let i = 0; i < 8; i++) {
+    dbl.muted = false;
+    dbl.dispatchEvent(new Event('volumechange'));
+    await Promise.resolve();
+  }
+  await Promise.resolve();
+  dbl.muted = false;
+  dbl.dispatchEvent(new Event('volumechange'));
+  await Promise.resolve();
+  check('setup: doubling budget spent (9th unmute refused)', dbl.muted === false);
+  check(
+    'mute-budget refusal ramps masterGain to 0 (no doubled track)',
+    env.stats.rampedValues.length > 0 && env.stats.rampedValues[env.stats.rampedValues.length - 1] === 0,
+    'last ramped gain=' + env.stats.rampedValues[env.stats.rampedValues.length - 1]
+  );
+  env.advance(1001);
+  dbl.muted = false;
+  dbl.dispatchEvent(new Event('volumechange'));
+  await Promise.resolve();
+  check(
+    'mute-budget recovery ramps masterGain back to media.volume',
+    dbl.muted === true && env.stats.rampedValues[env.stats.rampedValues.length - 1] === dbl.volume,
+    'muted=' + dbl.muted + ' last=' + env.stats.rampedValues[env.stats.rampedValues.length - 1]
+  );
+
+  // --- I2 storage outage: {ok:false} must not become state ---
+  const outageM = dbl;
+  env.sendRuntime({
+    type: 'APPLY_TAB_STATE',
+    ok: false,
+    eligible: false,
+    bypass: true,
+    settings: { slow: 0.8, reverbIntensity: 0.5 },
+  });
+  await env.settle(2);
+  check(
+    'storage outage {ok:false} is ignored (element stays muted)',
+    outageM.muted === true,
+    'expected true, got ' + outageM.muted
+  );
+  check(
+    'storage outage {ok:false} is ignored (static)',
+    src.indexOf('runtime && runtime.ok === false') !== -1,
+    'no ok:false guard in applyRuntimeState'
+  );
+
+  // --- I3 neutral with zero attached is not Active ---
+  env.sendRuntime({
+    type: 'APPLY_TAB_STATE',
+    eligible: true,
+    bypass: false,
+    settings: { slow: 1, reverbIntensity: 0 },
+  });
+  await env.settle(2);
+  for (const m of [media, rateMedia, burst, staleM, contractM, budgetM, failM, capM, dbl]) {
+    m.isConnected = false;
+  }
+  lonely.isConnected = true;
+  env.sendRuntime({ type: 'SLRA_PAGE_REVIVE', reason: 'test' });
+  for (let i = 0; i < 40; i++) {
+    await env.settle(2);
+    env.runTimers(50);
+  }
+  const neutralLive = env.queryLive();
+  check('setup: neutral live status readable', Boolean(neutralLive && neutralLive.ok));
+  check(
+    'neutral + zero attached is not "Active, neutral."',
+    Boolean(neutralLive) && neutralLive.attachedCount === 0 && neutralLive.text !== 'Active, neutral.',
+    'got attachedCount=' + (neutralLive && neutralLive.attachedCount) + ' text=' + JSON.stringify(neutralLive && neutralLive.text)
+  );
+  check(
+    'neutral + zero attached reports neutral:false',
+    Boolean(neutralLive) && neutralLive.attachedCount === 0 && neutralLive.neutral === false,
+    'got neutral=' + (neutralLive && neutralLive.neutral)
+  );
+
+  // --- I static guards ---
+  check(
+    'context race: watchdog resumes a non-running context (static)',
+    src.indexOf("state.context && state.context.state !== 'running'") !== -1 &&
+      /if \(state\.context && state\.context\.state !== 'running'\)[\s\S]{0,120}resumeContext\(\)/.test(src),
+    'no watchdog resume'
+  );
+  check(
+    'closed context is recreated (static)',
+    src.indexOf("state.context.state === 'closed'") !== -1 &&
+      src.indexOf('state.context = null') !== -1 &&
+      /state\.context = null;\s+state\.workletLoaded = false;/.test(src),
+    'no closed-context recreate'
+  );
+  check(
+    'mute-budget refusal silences the graph (static)',
+    /if \(!claimMuteCorrection\(controller\)\) \{\s+if \(controller\.masterGain\)/.test(src),
+    'no masterGain ramp on refusal'
+  );
+  check(
+    'mute-budget recovery restores the graph (static)',
+    src.indexOf('controller.masterGain && !controller.sourceStale') !== -1,
+    'no masterGain restore on correction'
+  );
+  check(
+    'dead worklet reloads from the watchdog (static)',
+    src.indexOf('state.workletRetryCount < 3') !== -1 &&
+      src.indexOf('state.workletLastRetry') !== -1 &&
+      src.indexOf('>= 5000') !== -1 &&
+      src.indexOf('state.workletRetryCount = 0') !== -1,
+    'no bounded 3x5s watchdog reload'
+  );
+  check(
+    'failed rebuild stops the old stream and clears taps (static)',
+    /if \(controller\.stream\)[\s\S]{0,200}track\.stop\(\)[\s\S]{0,200}controller\.stream = null;\s+controller\.source = null;\s+controller\.sourceStale = true;/.test(src),
+    'no old-stream stop/null/sourceStale in rebuild catch'
+  );
+  check(
+    'false status gated on attachedCount (static)',
+    src.indexOf("attachedCount > 0 && isNeutral(state.settings)") !== -1 &&
+      src.indexOf('active && attachedCount > 0 && isNeutral(state.settings)') !== -1,
+    'neutral status not gated on attachedCount'
+  );
+  check(
+    'stored site settings beat a stale tab session (static)',
+    /if \(session && !siteKey\)/.test(backgroundText),
+    'tab session still overrides stored site settings'
+  );
+  check(
+    'popup does not race the background siteToggles write (static)',
+    popupText.indexOf('await saveSiteState') === -1,
+    'popup still writes siteToggles after SET_TAB_BYPASS'
+  );
+  check(
+    'manifest permissions include scripting, storage, tabs (static)',
+    Array.isArray(manifest.permissions) &&
+      manifest.permissions.indexOf('scripting') !== -1 &&
+      manifest.permissions.indexOf('storage') !== -1 &&
+      manifest.permissions.indexOf('tabs') !== -1,
+    'permissions=' + JSON.stringify(manifest.permissions)
+  );
+  check(
+    'manifest host_permissions is exactly music.youtube.com (static)',
+    JSON.stringify(manifest.host_permissions) === JSON.stringify(['https://music.youtube.com/*']),
+    'host_permissions=' + JSON.stringify(manifest.host_permissions)
+  );
+  check(
+    'manifest content_scripts.matches is music.youtube.com only (static)',
+    Array.isArray(manifest.content_scripts) &&
+      manifest.content_scripts.length > 0 &&
+      manifest.content_scripts.every((entry) =>
+        Array.isArray(entry.matches) &&
+        entry.matches.length > 0 &&
+        entry.matches.every((u) => u === 'https://music.youtube.com/*')),
+    'content_scripts=' + JSON.stringify((manifest.content_scripts || []).map((e) => e.matches))
+  );
+  check(
+    'manifest WAR matches music.youtube.com only and resources exactly dattorro-worklet.js (static)',
+    Array.isArray(manifest.web_accessible_resources) &&
+      manifest.web_accessible_resources.length > 0 &&
+      manifest.web_accessible_resources.every((entry) =>
+        Array.isArray(entry.matches) &&
+        entry.matches.length > 0 &&
+        entry.matches.every((u) => u === 'https://music.youtube.com/*') &&
+        Array.isArray(entry.resources) &&
+        JSON.stringify(entry.resources) === JSON.stringify(['dattorro-worklet.js'])),
+    'war=' + JSON.stringify(manifest.web_accessible_resources)
+  );
+  const throttleBlock = (popupText.match(/function throttledApply[\s\S]*?\n\}/) || [])[0] || '';
+  const liveBlock = (popupText.match(/function applyLiveSettings[\s\S]*?\n\}/) || [])[0] || '';
+  check(
+    'live drag sends APPLY_LIVE_SETTINGS only, never applySettings/persist (static)',
+    throttleBlock.indexOf('applyLiveSettings(') !== -1 &&
+      throttleBlock.indexOf('void applySettings(') === -1 &&
+      throttleBlock.indexOf('SET_SITE_SETTINGS') === -1 &&
+      liveBlock.indexOf('APPLY_LIVE_SETTINGS') !== -1 &&
+      liveBlock.indexOf('SET_SITE_SETTINGS') === -1 &&
+      liveBlock.indexOf('void applySettings(') === -1,
+    'input path still persists via applySettings'
+  );
+  check(
+    'persist happens on pointerup/change only (static)',
+    popupText.indexOf("addEventListener('pointerup'") !== -1 &&
+      popupText.indexOf("addEventListener('change'") !== -1 &&
+      popupText.indexOf('SET_SITE_SETTINGS') !== -1,
+    'missing pointerup/change persist'
+  );
+  check(
+    'ensureAttached hoists stream/source and cleans up on failure (static)',
+    src.indexOf('let stream = null;') !== -1 &&
+      src.indexOf('let source = null;') !== -1 &&
+      src.indexOf('stream = captureMediaStream') !== -1 &&
+      src.indexOf('source = context.createMediaStreamSource(stream);') !== -1,
+    'stream/source not hoisted above try'
+  );
+  check(
+    'import-time rehydrate is gated by a session flag (static)',
+    backgroundText.indexOf('chrome.storage.session') !== -1 &&
+      backgroundText.indexOf('slowedReverbRehydrated') !== -1,
+    'no session gate on import-time rehydrate'
+  );
+  check(
+    'waiting pill uses idle, off stays for bypass (static)',
+    popupText.indexOf("dataset.state = 'idle'") !== -1 &&
+      /power off\|off for[\s\S]{0,120}dataset\.state = 'off'/.test(popupText),
+    'waiting pill still shares off grey'
+  );
+  check(
+    'privacy policy is YouTube Music only (static)',
+    privacyText.indexOf('YouTube Music only') !== -1 &&
+      privacyText.indexOf('YouTube and YouTube Music') === -1,
+    'privacy still names YouTube + Music'
+  );
+  check(
+    'store submission is YouTube Music only (static)',
+    storeText.indexOf('YouTube Music') !== -1 &&
+      storeText.indexOf('YouTube and YouTube Music') === -1,
+    'store submission still names YouTube + Music'
+  );
+  const pageMsgBlock = (src.match(/window\.addEventListener\('message',[\s\S]*?\n    \}\);/) || [])[0] || '';
+  check(
+    'page messages never clear lastError (static)',
+    pageMsgBlock.indexOf('lastError') === -1,
+    'page-message handler still clears lastError'
+  );
+  check(
+    'page-message recovery is rate-limited to 1 s (static)',
+    pageMsgBlock.indexOf('lastPageMessageRecovery') !== -1 && pageMsgBlock.indexOf('>= 1000') !== -1,
+    'no 1 s rate limit on page-message recovery'
   );
 
   env.restoreTimers();

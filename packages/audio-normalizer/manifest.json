@@ -3,7 +3,7 @@
   "name": "Audio Normalizer",
   "short_name": "Normalizer",
   "version": "5.4.2",
-  "description": "Normalize every tab's audio to a steady level, locally.",
+  "description": "Normalize per-site audio to a steady level, locally.",
   "icons": {
     "16": "icons/icon16.png",
     "32": "icons/icon32.png",
@@ -12,7 +12,6 @@
   },
   "permissions": [
     "storage",
-    "tabs",
     "scripting"
   ],
   "host_permissions": [
@@ -24,12 +23,13 @@
       "matches": ["<all_urls>"],
       "js": ["shared.js", "content-script.js"],
       "run_at": "document_start",
-      "all_frames": true
+      "all_frames": true,
+      "match_origin_as_fallback": true
     }
   ],
   "web_accessible_resources": [
     {
-      "resources": ["page-hook.js", "audio/normalizer-worklet.js"],
+      "resources": ["audio/normalizer-worklet.js"],
       "matches": ["<all_urls>"]
     }
   ],

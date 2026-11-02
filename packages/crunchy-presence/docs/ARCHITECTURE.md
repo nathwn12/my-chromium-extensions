@@ -7,7 +7,7 @@ How one Crunchyroll tab becomes a Discord activity, what crosses each boundary, 
 ```
 Crunchyroll tab
   → content.js (extract.js)              read DOM + mediaSession, report flat state
-  → background.js (merge per tab, throttle)   one record per tab, 4 sends / 20 s
+  → background.js (merge per tab, throttle)   one record per tab, 4 ordinary sends / 20 s (null clears bypass uncounted)
   → native host (host.mjs → ipc.mjs)      validate, frame, speak Discord IPC
   → \\.\pipe\discord-ipc-N                local named pipe, N = 0..9
   → Discord                               SET_ACTIVITY, type 3 (WATCHING)
@@ -22,7 +22,7 @@ Chrome starts the host as a child process through the registered `host.cmd`. Chr
 | Component | Runs in | Job |
 | --- | --- | --- |
 | `extract.js` | content script, every frame | pure extraction from a document/navigator pair; never throws |
-| `content.js` | content script, every frame | report `crp-state` on media events, URL changes and visibility changes |
+| `content.js` | content script, every frame | report `crp-state` on media events (no `timeupdate`), URL changes, visibility changes, bfcache `pageshow` restores, plus a 30 s keepalive while a video exists |
 | `background.js` | MV3 service worker | keep per-tab state, pick one activity, throttle, own the native port and reconnect |
 | `options.js` / `popup.js` | extension pages | Application ID, synopsis option, status, diagnostics, enable toggle, current buttons |
 | `native\host.mjs` | Node child of Chrome | message loop, Discord handshake, activity forwarding, retry |
@@ -58,8 +58,8 @@ The host sends this as `SET_ACTIVITY` with `args: { pid, activity }`. Everything
 | `type` | `3` (WATCHING) | must be exactly 3 |
 | `details` | series name, else episode title; with a synopsis, ``<series> · S1 E5`` when both numbers are known | ≤ 128 characters |
 | `state` | smart-truncated synopsis when one is shown, else `S1 E5 · 12:34 / 24:00` | ≤ 128 characters |
-| `timestamps.start` | now − position, epoch ms | integer, end > start |
-| `timestamps.end` | now + (duration − position), epoch ms | integer |
+| `timestamps.start` | now - position, epoch ms, both floored to whole seconds so an unchanged position second yields identical bytes and the worker dedupe fires | integer, end > start |
+| `timestamps.end` | now + (duration - position), epoch ms, same second quantisation | integer |
 | `assets.large_image` | Crunchyroll artwork `https` URL, or a Discord asset key | non-empty |
 | `assets.large_text` | episode title, else series | ≤ 128 characters |
 | `buttons` | `Watch Episode` → episode URL, `View Series` → series URL; a lone episode link is labelled `Watch on Crunchyroll` | ≤ 2, label ≤ 32, url https Crunchyroll |
@@ -85,10 +85,12 @@ The host scans `\\.\pipe\discord-ipc-0` through `-9` in order and stops at the f
 
 ## Rate guard
 
-- At most 4 activity sends per rolling 20 s, at two layers: the service worker's coalescing limiter and the host client's guarded sender.
+- At most 4 ordinary activity sends per rolling 20 s at the service worker's coalescing limiter, which is the binding guard; the host keeps a backstop of 5 per 20 s so a burst is not double-throttled. A null clear bypasses the bucket on both sides — it is sent immediately and never counted — so the window holds at most 4 ordinary sends plus clears, inside Discord's 5/20 s.
+- In normal use play, pause, seek and clear each land sub-second: the content script sends no `timeupdate` reports, so position drift never spends the budget, and only a fifth ordinary update inside the same 20 s window is coalesced (deferred to the window edge, newest wins).
 - Coalescing keeps the newest payload; older deferred payloads are dropped, never queued as a backlog.
-- The host only counts successful `SET_ACTIVITY` replies toward the window; queued frames are flushed when the window frees.
-- The worker drops a send when the serialized activity equals the last one sent, so a steady page does not spend the budget.
+- A payload that cannot send while the bridge is offline is stashed (null included) and flushed on the next connected status or ack. A rejected ack resets the send dedupe and re-pushes with bounded backoff (1 s, 2 s, 4 s, max 3), after which the watchdog recovers.
+- The host only counts successful `SET_ACTIVITY` replies toward the window; queued frames are flushed when the window frees, a flush with the pipe down reschedules instead of stranding the payload, and a rejected flush is kept and retried with backoff until it sends or a newer payload supersedes it. Queued sends ack `{ok: true, queued: true}` so the extension never latches an error for an accepted delivery.
+- The worker drops a send when the serialized activity equals the last one sent, so a steady page does not spend the budget; timestamps are second-quantised so the comparison can hit. The status payload carries `lastSent` (what the port last accepted) alongside the desired `lastActivity`, and the popup renders `lastSent`.
 
 ## Extraction layers
 
@@ -128,7 +130,7 @@ A meta description carries the episode title before the synopsis, so that prefix
 The content script runs with `all_frames: true`, so the top page and the player frame both report. The worker keys state by `sender.tab.id`:
 
 - One record per tab. The newest informative report from any frame in that tab becomes the tab's record.
-- A report with neither a video nor real metadata is ignored by the content script; `crp-gone` removes the tab's record.
+- A report with neither a video nor real metadata is ignored by the content script; `crp-gone` carries a scope — `pagehide` sends `scope: "tab"` and deletes the whole tab entry at once, an SPA URL change sends `scope: "frame"` and drops just that frame (the entry is deleted only when no frames remain) so a still-playing iframe survives a top-frame navigation. A same-tab navigation away from Crunchyroll drops the entry via `tabs.onUpdated`, and a loading/discarded signal with no readable URL schedules a 1.5 s clear that any arriving `crp-state` cancels, so a reload never blanks.
 - Across tabs, a playing tab beats a paused one; ties go to the most recently updated tab.
 - A tab is eligible when it has a video and is either playing or on screen. A paused tab that is hidden stops counting.
 - The service worker recomputes the single activity after every report, tab close, wake or reconnect.
@@ -137,11 +139,11 @@ The content script runs with `all_frames: true`, so the top page and the player 
 
 | Failure | Behaviour |
 | --- | --- |
-| Native port dies | worker reconnects with backoff from 500 ms to 8 s |
+| Native port dies | worker reconnects with backoff from 500 ms to 8 s, resets the coalescing window and replays the stashed payload |
 | Discord IPC pipe drops | host client reconnects from 250 ms to 5 s and republishes the last activity |
-| Discord is not running yet | host retries the handshake from 1 s to 30 s, then keeps the last activity for replay |
-| Service worker sleeps | a 30 s `alarms` watchdog wakes it, reopens the port and pings |
-| Page is a SPA navigation | the content script sends `crp-gone`, waits 300 ms for the new page, then reports again |
+| Discord is not running yet | host retries the handshake from 1 s to 30 s, emits `connected` on the first success, then keeps the last activity for replay |
+| Service worker sleeps | a 30 s `alarms` watchdog wakes it, reopens the port and pings; the alarm is only created when absent so a reboot never resets the countdown. A restart suppresses the boot-time null publish until the first `crp-state` or 60 s after boot, so a restart never blanks a live presence while a closed site still clears. |
+| Page is a SPA navigation | the content script sends `crp-gone`, waits 300 ms for the new page, then reports again; a same-tab navigation away from Crunchyroll deletes the tab entry at once; a bfcache restore reports again on `pageshow` |
 
 ## Limitations
 
@@ -152,5 +154,5 @@ The content script runs with `all_frames: true`, so the top page and the player 
 | Redesigns | Selectors are layered with generic fallbacks, but a Crunchyroll markup change can still blank fields until `RULES` in `extract.js` is updated. |
 | Local only | No account, no sync, no history. Presence exists only while this machine runs Chrome, the host and Discord. |
 | Chrome only | The manifest targets Chrome 156+ on Windows. Edge and Brave registry keys are written by the shared installer but are not part of the documented setup. |
-| Sleep | A sleeping tab stops producing events; the watchdog can reconnect but cannot invent playback state. |
+| Sleep | A sleeping tab stops producing events; a paused tab re-reports every 30 s so it survives the 120 s frame TTL, and the watchdog reconnects but cannot invent playback state. |
 | Unknown pages | A Crunchyroll page with no video and no metadata reports nothing, so the activity clears rather than guessing. |

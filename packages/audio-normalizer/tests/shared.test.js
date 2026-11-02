@@ -8,6 +8,9 @@ const {
   getPopupIndicator,
   getSiteConfig,
   getSiteKey,
+  getLegacySiteKey,
+  legacySiteStorageKey,
+  siteStorageKey,
   migrateActiveSites,
   migrateSiteSettings,
   normalizeSiteRecord,
@@ -20,9 +23,21 @@ test('getSiteKey collapses localhost ports', () => {
   assert.equal(getSiteKey('127.0.0.1:8080'), '127.0.0.1');
 });
 
-test('getSiteKey collapses sibling subdomains', () => {
-  assert.equal(getSiteKey('www.youtube.com'), 'youtube.com');
-  assert.equal(getSiteKey('music.youtube.com'), 'youtube.com');
+test('getSiteKey keeps the full hostname (no shared toggles)', () => {
+  assert.equal(getSiteKey('www.youtube.com'), 'www.youtube.com');
+  assert.equal(getSiteKey('music.youtube.com'), 'music.youtube.com');
+  // The reported defect: GitHub Pages sites must not share one toggle.
+  assert.equal(getSiteKey('alice.github.io'), 'alice.github.io');
+  assert.equal(getSiteKey('bob.github.io'), 'bob.github.io');
+  assert.notEqual(getSiteKey('alice.github.io'), getSiteKey('bob.github.io'));
+});
+
+test('getLegacySiteKey is the read-only collapsed fallback', () => {
+  assert.equal(getLegacySiteKey('www.youtube.com'), 'youtube.com');
+  assert.equal(getLegacySiteKey('music.youtube.com'), 'youtube.com');
+  assert.equal(getLegacySiteKey('alice.github.io'), 'github.io');
+  assert.equal(legacySiteStorageKey('alice.github.io'), 'site:github.io');
+  assert.equal(siteStorageKey('alice.github.io'), 'site:alice.github.io');
 });
 
 test('migrateActiveSites keeps enabled site keys', () => {
@@ -108,7 +123,7 @@ test('stored per-site settings round-trip unchanged', () => {
     'youtube.com': { enabled: true, gainDb: 3 },
   });
   assert.deepEqual(getSiteConfig(stored, {}, 'music.youtube.com'), {
-    siteKey: 'youtube.com',
+    siteKey: 'music.youtube.com',
     enabled: true,
     gainDb: 3,
   });

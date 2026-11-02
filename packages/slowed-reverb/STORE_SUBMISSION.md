@@ -19,4 +19,4 @@
 
 - Test install in a clean Chrome profile
 - Test speed slider and reverb controls
-- Check console for errors on YouTube and YouTube Music
+- Check console for errors on YouTube Music

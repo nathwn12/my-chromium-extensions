@@ -248,7 +248,7 @@ test("a crp-gone video frame is replaced by whatever frames remain", () => {
   assert.equal(merged.series, "Frieren");
 });
 
-test("limiter allows 4 per 20s and coalesces the newest value", () => {
+test("limiter caps ordinary payloads at max and coalesces the newest value", () => {
   const sent = [];
   const scheduled = [];
   let now = 0;
@@ -263,6 +263,8 @@ test("limiter allows 4 per 20s and coalesces the newest value", () => {
     }
   });
 
+  // Ordinary updates fill the whole window (4 per 20 s); a null clear
+  // bypasses the bucket instead of spending a reserved token.
   for (const value of ["a", "b", "c", "d", "e", "f", "g"]) limiter.push(value);
   assert.deepEqual(sent, ["a", "b", "c", "d"]);
   assert.equal(limiter.pending, "g");

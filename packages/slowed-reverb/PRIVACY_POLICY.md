@@ -12,7 +12,7 @@ Slowed Reverb processes audio locally in the browser.
 
 - `tabs` is used to identify the active tab for the popup UI.
 - `storage` is used to save per-site settings locally.
-- `host_permissions` are limited to YouTube and YouTube Music only.
+- `host_permissions` are limited to YouTube Music only.
 
 ## Contact
 

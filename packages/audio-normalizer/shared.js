@@ -20,7 +20,30 @@
     }
   }
 
+  // Canonical site key: the FULL normalized hostname. `alice.github.io`
+  // and `bob.github.io` are different sites and must never share a toggle.
+  // The old collapsed (eTLD+1) form survives ONLY as a read-only legacy
+  // fallback (`getLegacySiteKey`) for data written before full keys existed.
   function getSiteKey(hostname) {
+    let normalized = String(hostname || '').trim().toLowerCase().replace(/\.+$/, '');
+    if (!normalized) return '';
+
+    const bracketedIpv6 = normalized.match(/^\[(.+)\](?::\d+)?$/);
+    if (bracketedIpv6) {
+      normalized = bracketedIpv6[1];
+    } else if (/^[^:]+:\d+$/.test(normalized)) {
+      normalized = normalized.replace(/:\d+$/, '');
+    }
+
+    return normalized;
+  }
+
+  // Read-only legacy fallback: the pre-full-key collapse (sibling subdomains
+  // merged, ccTLD-aware). Never used for new writes; reads consult it only
+  // when no full-key record exists, and the first write migrates to the full
+  // key. `alice.github.io` collapses to `github.io` here — that is the bug
+  // being retired, kept solely to find old rows.
+  function getLegacySiteKey(hostname) {
     let normalized = String(hostname || '').trim().toLowerCase().replace(/\.+$/, '');
     if (!normalized) return '';
 
@@ -48,10 +71,6 @@
     }
 
     return parts.slice(-2).join('.');
-  }
-
-  function getLegacySiteKey(hostname) {
-    return getSiteKey(hostname);
   }
 
   function migrateActiveSites(activeSites) {
@@ -99,6 +118,16 @@
 
   function siteStorageKey(siteKey) {
     const normalized = getSiteKey(siteKey);
+    if (!normalized) return '';
+    return SITE_KEY_PREFIX + normalized;
+  }
+
+  // Read-only legacy fallback for per-site records written before full keys
+  // existed (`site:github.io` covering every `*.github.io` host). The
+  // background migrates a hit to the full key on its next write; the content
+  // script never writes.
+  function legacySiteStorageKey(siteKey) {
+    const normalized = getLegacySiteKey(siteKey);
     if (!normalized) return '';
     return SITE_KEY_PREFIX + normalized;
   }
@@ -169,35 +198,60 @@
   function migrateLegacyToRecord(siteSettings, activeSites, siteToggles, hostnameOrSiteKey) {
     const siteKey = getSiteKey(hostnameOrSiteKey);
     if (!siteKey) return null;
+    const legacyKey = getLegacySiteKey(hostnameOrSiteKey);
     const toggles = siteToggles && typeof siteToggles === 'object' ? siteToggles : {};
     const settings = siteSettings && typeof siteSettings === 'object' ? siteSettings : {};
     const actives = activeSites && typeof activeSites === 'object' ? activeSites : {};
-    // Normalised existence: any raw key collapsing to `siteKey` counts.
-    // The old exact-match check (`settings[siteKey] || settings[raw]`)
-    // missed a `www.`-only entry when reading the canonical key and
-    // returned null, dropping gain on upgrade.
+    // Normalised existence: a raw key counts when it matches the FULL key or
+    // the legacy collapsed key. Full-key matches win for values (they are the
+    // newer, more specific truth); legacy matches keep pre-full-key users
+    // whole. `siteSettings['www.youtube.com']` is still found when reading
+    // `youtube.com` (bare host: full and legacy coincide there).
     let hasSettings = false;
     let hasToggle = false;
     let hasActive = false;
     /** @type {boolean | null} */
     let normalizedToggle = null;
+    /** @type {boolean | null} */
+    let legacyToggle = null;
     for (const [rawKey, value] of Object.entries(settings)) {
       try {
         if (getSiteKey(rawKey) === siteKey) { hasSettings = true; break; }
       } catch {}
     }
+    if (!hasSettings) {
+      for (const [rawKey, value] of Object.entries(settings)) {
+        try {
+          if (getLegacySiteKey(rawKey) === legacyKey) { hasSettings = true; break; }
+        } catch {}
+      }
+    }
     for (const [rawKey, value] of Object.entries(toggles)) {
       try {
-        if (getSiteKey(rawKey) === siteKey && typeof value === 'boolean') {
+        if (typeof value !== 'boolean') continue;
+        if (getSiteKey(rawKey) === siteKey) {
           hasToggle = true;
           normalizedToggle = value;
+        } else if (normalizedToggle === null && getLegacySiteKey(rawKey) === legacyKey) {
+          hasToggle = true;
+          legacyToggle = value;
         }
       } catch {}
+    }
+    if (normalizedToggle === null && legacyToggle !== null) {
+      normalizedToggle = legacyToggle;
     }
     for (const [rawKey, value] of Object.entries(actives)) {
       try {
         if (getSiteKey(rawKey) === siteKey && Boolean(value)) { hasActive = true; break; }
       } catch {}
+    }
+    if (!hasActive) {
+      for (const [rawKey, value] of Object.entries(actives)) {
+        try {
+          if (getLegacySiteKey(rawKey) === legacyKey && Boolean(value)) { hasActive = true; break; }
+        } catch {}
+      }
     }
     if (!hasSettings && !hasToggle && !hasActive) return null;
     const base = getSiteConfig(siteSettings, activeSites, siteKey);
@@ -217,7 +271,7 @@
     const next = {};
 
     for (const [rawKey, config] of Object.entries(siteSettings || {})) {
-      const siteKey = getSiteKey(rawKey);
+      const siteKey = getLegacySiteKey(rawKey);
       if (!siteKey) continue;
       const prev = next[siteKey];
       if (!prev) {
@@ -242,7 +296,7 @@
 
     for (const [rawKey, enabled] of Object.entries(activeSites || {})) {
       if (!enabled) continue;
-      const siteKey = getSiteKey(rawKey);
+      const siteKey = getLegacySiteKey(rawKey);
       if (!siteKey) continue;
       next[siteKey] = normalizeSiteSettings({
         ...next[siteKey],
@@ -254,7 +308,12 @@
   }
 
   function getSiteConfig(siteSettings, activeSites, hostnameOrSiteKey) {
+    // Legacy whole-map read helper: the maps it reads are keyed by the OLD
+    // collapsed form, so the lookup consults the collapsed key. The returned
+    // `siteKey` is the new canonical FULL key. Full-key records (per-site
+    // storage) never reach this helper — they are preferred before it.
     const siteKey = getSiteKey(hostnameOrSiteKey);
+    const legacyKey = getLegacySiteKey(hostnameOrSiteKey);
     const migrated = migrateSiteSettings(siteSettings, activeSites);
 
     if (!siteKey) {
@@ -263,13 +322,13 @@
 
     return {
       siteKey,
-      ...normalizeSiteSettings(migrated[siteKey]),
+      ...normalizeSiteSettings(migrated[siteKey] ?? migrated[legacyKey]),
     };
   }
 
   function setSiteConfig(siteSettings, activeSites, hostnameOrSiteKey, updates) {
     const migrated = migrateSiteSettings(siteSettings, activeSites);
-    const siteKey = getSiteKey(hostnameOrSiteKey);
+    const siteKey = getLegacySiteKey(hostnameOrSiteKey);
 
     if (!siteKey) {
       return migrated;
@@ -287,7 +346,7 @@
 
   function setSiteEnabled(activeSites, hostnameOrSiteKey, enabled) {
     const next = migrateActiveSites(activeSites);
-    const siteKey = getSiteKey(hostnameOrSiteKey);
+    const siteKey = getLegacySiteKey(hostnameOrSiteKey);
 
     if (!siteKey) {
       return next;
@@ -362,6 +421,7 @@
     // deliberately absent from this export, not an omission.
     SITE_KEY_PREFIX,
     siteStorageKey,
+    legacySiteStorageKey,
     isSiteStorageKey,
     siteKeyFromStorageKey,
     normalizeSiteRecord,

@@ -139,8 +139,18 @@ export class Host {
     }
 
     this.retryDelay = CONNECT_RETRY_START;
-    const activity = this.lastActivity === undefined ? null : this.lastActivity;
-    const result = await this.client.setActivity(activity);
+    if (this.lastActivity === undefined) {
+      // First connect with nothing to publish: report connected without
+      // pushing a null clear to Discord.
+      this.write(
+        statusMessage('connected', {
+          appName: this.client.appName ?? 'Discord',
+          user: this.client.user ?? '',
+        }),
+      );
+      return;
+    }
+    const result = await this.client.setActivity(this.lastActivity);
     this.write(
       statusMessage('connected', {
         appName: result.appName ?? this.client.appName ?? 'Discord',
@@ -186,8 +196,23 @@ export class Host {
           return;
         }
         this.retryDelay = CONNECT_RETRY_START;
-        const activity = this.lastActivity === undefined ? null : this.lastActivity;
-        await this.client.setActivity(activity);
+        if (this.lastActivity === undefined) {
+          this.write(
+            statusMessage('connected', {
+              appName: this.client.appName ?? 'Discord',
+              user: this.client.user ?? '',
+            }),
+          );
+          return;
+        }
+        const activity = this.lastActivity;
+        const result = await this.client.setActivity(activity);
+        this.write(
+          statusMessage('connected', {
+            appName: result.appName ?? this.client.appName ?? 'Discord',
+            user: this.client.user ?? '',
+          }),
+        );
       }).catch((error) => this.log(`connect retry failed: ${error.message}`));
     }, delay);
   }
@@ -365,10 +390,11 @@ export async function selftest() {
   record(
     'hello-status',
     status?.state === 'connected' &&
-      status?.appName === 'Crunchyroll Selftest' &&
+      status?.appName === 'Discord' &&
       status?.user === 'selftest',
     JSON.stringify(status ?? null),
   );
+  record('hello-skips-clear', fake.state.frames.length === 0, `${fake.state.frames.length} frames`);
   connected = status?.state === 'connected';
 
   await host.handle({ t: 'activity', id: 'n1', activity: { type: 3, details: 'Episode 1' } });
