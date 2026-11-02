@@ -24,7 +24,7 @@ Chrome starts the host as a child process through the registered `host.cmd`. Chr
 | `extension\extract.js` | content script, every frame | pure extraction from a document/navigator pair; never throws |
 | `extension\content.js` | content script, every frame | report `crp-state` on media events, URL changes and visibility changes |
 | `extension\background.js` | MV3 service worker | keep per-tab state, pick one activity, throttle, own the native port and reconnect |
-| `extension\options.js` / `popup.js` | extension pages | Application ID, status, diagnostics, enable toggle |
+| `extension\options.js` / `popup.js` | extension pages | Application ID, synopsis option, status, diagnostics, enable toggle, current buttons |
 | `native\host.mjs` | Node child of Chrome | message loop, Discord handshake, activity forwarding, retry |
 | `native\ipc.mjs` | Node | both framings, pipe scan, `SET_ACTIVITY` request/reply, rate guard |
 | `native\protocol.mjs` | Node | message and activity validation shared with the tests |
@@ -56,15 +56,15 @@ The host sends this as `SET_ACTIVITY` with `args: { pid, activity }`. Everything
 | Field | Value | Limit |
 | --- | --- | --- |
 | `type` | `3` (WATCHING) | must be exactly 3 |
-| `details` | series name, else episode title | ≤ 128 characters |
-| `state` | `S1 E5 · 12:34 / 24:00` | ≤ 128 characters |
+| `details` | series name, else episode title; with a synopsis, ``<series> · S1 E5`` when both numbers are known | ≤ 128 characters |
+| `state` | smart-truncated synopsis when one is shown, else `S1 E5 · 12:34 / 24:00` | ≤ 128 characters |
 | `timestamps.start` | now − position, epoch ms | integer, end > start |
 | `timestamps.end` | now + (duration − position), epoch ms | integer |
 | `assets.large_image` | Crunchyroll artwork `https` URL, or a Discord asset key | non-empty |
 | `assets.large_text` | episode title, else series | ≤ 128 characters |
-| `buttons` | one: `Watch on Crunchyroll` → the watch URL | ≤ 2, label ≤ 32, url http(s) |
+| `buttons` | `Watch Episode` → episode URL, `View Series` → series URL; a lone episode link is labelled `Watch on Crunchyroll` | ≤ 2, label ≤ 32, url https Crunchyroll |
 
-Timestamps are only attached while `paused` is explicitly `false` and a duration is known. Discord renders elapsed and remaining from that pair; a paused activity carries no timer. The button is only attached for an `https` Crunchyroll watch URL.
+Timestamps are only attached while `paused` is explicitly `false` and a duration is known. Discord renders elapsed and remaining from that pair; a paused activity carries no timer. When the synopsis option is on and a synopsis exists, it replaces the timer line but the timestamps stay attached. Without a synopsis the phase-1 layout is unchanged. Buttons are only attached for `https` `crunchyroll.com` URLs; when neither direct link exists, the phase-1 `pageUrl` button is used. Smart truncation fits 128 characters by cutting at the last sentence end (`. `/`! `/`? `), else the last space, strips a dangling `·`/`,`/space and appends `…` only when text was cut.
 
 ## Framing
 
@@ -104,6 +104,18 @@ The video element is read first for playback state. Metadata then follows first-
 | 6 | Watch URL | `/watch/<id>` in the page URL | eligibility signal only |
 
 Only the video element contributes playback fields: `duration`, `currentTime`, `paused`, `playbackRate`. The media pipeline behind it is never touched.
+
+### Direct links and synopsis
+
+Three more nullable fields use their own layering, all absolute `https` only:
+
+| Field | Layer order |
+| --- | --- |
+| `seriesUrl` | JSON-LD `partOfSeries.url`/`@id` → `a.show-title-link` href → nearest `a` ancestor of `a > h4` |
+| `episodeUrl` | `link[rel=canonical]` → `meta[property="og:url"]` → the page `location.href` when it matches `/watch/` |
+| `synopsis` | JSON-LD `description` → `meta[name="description"]` → `meta[property="og:description"]` → DOM description/synopsis containers (player/video/control classes skipped) |
+
+Boilerplate synopsis text is discarded: `Watch … on Crunchyroll`, any `Stream … Crunchyroll`, premium/sign-up upsell, and anything under 40 characters. Surrounding quotes are stripped. The extractor keeps up to 1000 characters; `background.js` performs the 128-character smart truncation. `content.js` forwards these fields unchanged through its existing spread of the extract result.
 
 ## Frames and per-tab merge
 

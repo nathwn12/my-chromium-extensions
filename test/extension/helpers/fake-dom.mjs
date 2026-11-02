@@ -9,27 +9,66 @@
 function parseCompound(token) {
   const compound = { tag: "", id: null, classes: [], attrs: [] };
   let rest = token;
-  const tagMatch = /^([a-zA-Z][a-zA-Z0-9-]*)/.exec(rest);
+  const tagMatch = /^(\*|[a-zA-Z][a-zA-Z0-9-]*)/.exec(rest);
   if (tagMatch) {
-    compound.tag = tagMatch[1].toLowerCase();
+    compound.tag = tagMatch[1] === "*" ? "" : tagMatch[1].toLowerCase();
     rest = rest.slice(tagMatch[1].length);
   }
-  const partRe = /#([\w-]+)|\.([\w-]+)|\[([a-zA-Z0-9_:.-]+)(?:=["']([^"']*)["'])?\]/g;
+  // [attr], [attr=value], [attr*="value" i] — the four CSS substring operators
+  // plus the case-insensitive flag the synopsis selectors rely on.
+  const partRe = /#([\w-]+)|\.([\w-]+)|\[([a-zA-Z0-9_:.-]+)(?:([*^$~|]?)=["']?([^"'\]]*)["']?(?:\s+([iIsS]))?)?\]/g;
   let m;
   while ((m = partRe.exec(rest))) {
     if (m[1]) compound.id = m[1];
     else if (m[2]) compound.classes.push(m[2]);
-    else compound.attrs.push([m[3], m[4]]);
+    else {
+      compound.attrs.push({
+        name: m[3],
+        op: m[4] || "",
+        value: m[5],
+        insensitive: Boolean(m[6])
+      });
+    }
   }
   return compound;
 }
 
+/** Split on whitespace and `>`, but never inside an attribute selector. */
+function tokenizeChain(text) {
+  const tokens = [];
+  let current = "";
+  let inBracket = false;
+  let quote = null;
+  for (const ch of text) {
+    if (quote) {
+      current += ch;
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      current += ch;
+      continue;
+    }
+    if (ch === "[") inBracket = true;
+    if (ch === "]") inBracket = false;
+    if (!inBracket && (ch === ">" || /\s/.test(ch))) {
+      if (current) {
+        tokens.push(current);
+        current = "";
+      }
+      if (ch === ">") tokens.push(">");
+      continue;
+    }
+    current += ch;
+  }
+  if (current) tokens.push(current);
+  return tokens;
+}
+
 function parseChain(text) {
   const steps = [];
-  const tokens = text
-    .replace(/\s*>\s*/g, " > ")
-    .split(/\s+/)
-    .filter(Boolean);
+  const tokens = tokenizeChain(text);
   let combinator = " ";
   for (const token of tokens) {
     if (token === ">") {
@@ -56,9 +95,31 @@ function matchesCompound(node, compound) {
     const classes = String(node.attrs.class || "").split(/\s+/).filter(Boolean);
     for (const name of compound.classes) if (!classes.includes(name)) return false;
   }
-  for (const [name, value] of compound.attrs) {
-    if (!(name in node.attrs)) return false;
-    if (value !== undefined && node.attrs[name] !== value) return false;
+  for (const attr of compound.attrs) {
+    if (!(attr.name in node.attrs)) return false;
+    if (attr.value === undefined) continue;
+    const raw = String(node.attrs[attr.name]);
+    const actual = attr.insensitive ? raw.toLowerCase() : raw;
+    const wanted = attr.insensitive ? attr.value.toLowerCase() : attr.value;
+    switch (attr.op) {
+      case "*":
+        if (!actual.includes(wanted)) return false;
+        break;
+      case "^":
+        if (!actual.startsWith(wanted)) return false;
+        break;
+      case "$":
+        if (!actual.endsWith(wanted)) return false;
+        break;
+      case "~":
+        if (!actual.split(/\s+/).includes(wanted)) return false;
+        break;
+      case "|":
+        if (actual !== wanted && !actual.startsWith(`${wanted}-`)) return false;
+        break;
+      default:
+        if (actual !== wanted) return false;
+    }
   }
   return true;
 }

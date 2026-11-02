@@ -10,6 +10,7 @@ const appEl = el("app");
 const appOverrideEl = el("app-override");
 const nowEl = el("now");
 const detailEl = el("detail");
+const buttonsEl = el("buttons");
 const enabledEl = el("enabled");
 
 function ask(message) {
@@ -45,6 +46,9 @@ async function render() {
   appOverrideEl.hidden = !override;
   enabledEl.checked = stored.enabled !== false;
 
+  buttonsEl.textContent = "";
+  buttonsEl.hidden = true;
+
   if (!status.enabled) {
     nowEl.textContent = "Presence disabled";
     detailEl.textContent = "Turn it back on with the toggle.";
@@ -55,6 +59,13 @@ async function render() {
   if (activity && activity.details) {
     nowEl.textContent = activity.details;
     detailEl.textContent = describeLine(activity);
+    const buttons = Array.isArray(activity.buttons) ? activity.buttons : [];
+    for (const button of buttons) {
+      const item = document.createElement("li");
+      item.textContent = `${button.label} — ${button.url}`;
+      buttonsEl.append(item);
+    }
+    buttonsEl.hidden = buttons.length === 0;
   } else {
     nowEl.textContent = "Nothing playing";
     detailEl.textContent = status.lastError || "Open a Crunchyroll episode to start.";

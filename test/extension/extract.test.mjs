@@ -88,6 +88,9 @@ test("mediaSession only: title/artist/artwork feed the result", () => {
     seasonNumber: null,
     episodeNumber: null,
     artworkUrl: "https://img.crunchyroll.com/large.jpg",
+    seriesUrl: null,
+    episodeUrl: "https://www.crunchyroll.com/watch/G6VU774M5/the-beginning",
+    synopsis: null,
     duration: 1440,
     position: 754,
     paused: false,
@@ -121,6 +124,9 @@ test("JSON-LD only: TVEpisode supplies series, season, episode, artwork", () => 
     seasonNumber: 1,
     episodeNumber: 5,
     artworkUrl: "https://img.crunchyroll.com/ep5.jpg",
+    seriesUrl: null,
+    episodeUrl: "https://www.crunchyroll.com/watch/GX1",
+    synopsis: null,
     duration: null,
     position: null,
     paused: null,
@@ -169,6 +175,9 @@ test("og + title only: noise stripped, SxxExx parsed, series derived", () => {
     seasonNumber: 1,
     episodeNumber: 5,
     artworkUrl: "https://img.crunchyroll.com/og.jpg",
+    seriesUrl: null,
+    episodeUrl: null,
+    synopsis: null,
     duration: null,
     position: null,
     paused: null,
@@ -192,6 +201,9 @@ test("ad frame: no video, no metadata, nothing extracted", () => {
     seasonNumber: null,
     episodeNumber: null,
     artworkUrl: null,
+    seriesUrl: null,
+    episodeUrl: null,
+    synopsis: null,
     duration: null,
     position: null,
     paused: null,
@@ -291,6 +303,8 @@ test("PreMiD selectors: #player-container video, h1.title, a > h4", () => {
   assert.equal(result.episodeTitle, "Frieren the Slayer");
   assert.equal(result.duration, 1440);
   assert.equal(result.position, 60);
+  assert.equal(result.seriesUrl, "https://www.crunchyroll.com/series/G6NQ5DWZ6");
+  assert.equal(result.episodeUrl, "https://www.crunchyroll.com/watch/G6VU774M5/x");
   assert.deepEqual(result.signals, ["video", "dom", "watchUrl", "button"]);
 });
 
@@ -332,4 +346,150 @@ test("extract() survives an empty document", () => {
   assert.deepEqual(result.signals, []);
   assert.equal(result.hasVideo, false);
   assert.equal(result.series, null);
+});
+
+/* ------------------------------------------------- phase 2: links + synopsis */
+
+const WATCH = "https://www.crunchyroll.com/watch/G6VU774M5/x";
+
+function namedMeta(name, content) {
+  return node("meta", { attrs: { name, content } });
+}
+
+test("seriesUrl: JSON-LD partOfSeries.url, then show-title-link, then a > h4 ancestor", () => {
+  const withJsonLd = makeDocument({
+    href: WATCH,
+    children: [
+      jsonLd({
+        "@type": "TVEpisode",
+        name: "Ep",
+        partOfSeries: { name: "Series", url: "https://www.crunchyroll.com/series/G1" }
+      }),
+      node("a", { attrs: { class: "show-title-link", href: "https://www.crunchyroll.com/series/G2" } })
+    ]
+  });
+  assert.equal(state(withJsonLd.doc, withJsonLd.navigator).seriesUrl, "https://www.crunchyroll.com/series/G1");
+
+  const withButton = makeDocument({
+    href: WATCH,
+    children: [node("a", { attrs: { class: "show-title-link", href: "/series/G2" } })]
+  });
+  assert.equal(
+    state(withButton.doc, withButton.navigator).seriesUrl,
+    "https://www.crunchyroll.com/series/G2"
+  );
+
+  const withHeading = makeDocument({
+    href: WATCH,
+    children: [
+      node("a", {
+        attrs: { href: "https://www.crunchyroll.com/series/G3" },
+        children: [node("h4", { text: "Series" })]
+      })
+    ]
+  });
+  assert.equal(
+    state(withHeading.doc, withHeading.navigator).seriesUrl,
+    "https://www.crunchyroll.com/series/G3"
+  );
+
+  const insecure = makeDocument({
+    href: WATCH,
+    children: [node("a", { attrs: { class: "show-title-link", href: "http://www.crunchyroll.com/series/G4" } })]
+  });
+  assert.equal(state(insecure.doc, insecure.navigator).seriesUrl, null);
+});
+
+test("episodeUrl: canonical link, then og:url, then a /watch/ location", () => {
+  const canonical = makeDocument({
+    href: "https://www.crunchyroll.com/series/G1",
+    children: [
+      node("link", { attrs: { rel: "canonical", href: "https://www.crunchyroll.com/watch/G1/canonical" } }),
+      meta("og:url", "https://www.crunchyroll.com/watch/G1/og")
+    ]
+  });
+  assert.equal(
+    state(canonical.doc, canonical.navigator).episodeUrl,
+    "https://www.crunchyroll.com/watch/G1/canonical"
+  );
+
+  const og = makeDocument({
+    href: "https://www.crunchyroll.com/series/G1",
+    children: [meta("og:url", "https://www.crunchyroll.com/watch/G1/og")]
+  });
+  assert.equal(state(og.doc, og.navigator).episodeUrl, "https://www.crunchyroll.com/watch/G1/og");
+
+  const locationOnly = makeDocument({ href: "https://www.crunchyroll.com/watch/G1/loc" });
+  assert.equal(
+    state(locationOnly.doc, locationOnly.navigator).episodeUrl,
+    "https://www.crunchyroll.com/watch/G1/loc"
+  );
+
+  const insecure = makeDocument({ href: "http://www.crunchyroll.com/watch/G1/loc" });
+  assert.equal(state(insecure.doc, insecure.navigator).episodeUrl, null);
+});
+
+test("synopsis: JSON-LD description, then meta description, og:description, DOM", () => {
+  const text = "Frieren and Fern continue their journey toward the northern lands.";
+  const ldDoc = makeDocument({
+    children: [
+      jsonLd({ "@type": "TVEpisode", name: "Ep", description: text }),
+      namedMeta("description", "Meta description that is comfortably over forty characters.")
+    ]
+  });
+  assert.equal(state(ldDoc.doc, ldDoc.navigator).synopsis, text);
+
+  const metaDoc = makeDocument({
+    children: [
+      namedMeta("description", "The meta description is long enough to be shown in Discord."),
+      meta("og:description", "The open graph description is also long enough to qualify.")
+    ]
+  });
+  assert.equal(
+    state(metaDoc.doc, metaDoc.navigator).synopsis,
+    "The meta description is long enough to be shown in Discord."
+  );
+
+  const ogDoc = makeDocument({
+    children: [meta("og:description", "The open graph description is also long enough to qualify.")]
+  });
+  assert.equal(
+    state(ogDoc.doc, ogDoc.navigator).synopsis,
+    "The open graph description is also long enough to qualify."
+  );
+
+  const domDoc = makeDocument({
+    children: [node("div", { attrs: { "data-testid": "episode-description" }, text })]
+  });
+  assert.equal(state(domDoc.doc, domDoc.navigator).synopsis, text);
+});
+
+test("synopsis DOM fallback skips player/video/control containers and strips quotes", () => {
+  const text = "\u201cA long episode synopsis that comfortably clears the forty character floor.\u201d";
+  const { doc, navigator } = makeDocument({
+    children: [
+      node("div", {
+        attrs: { class: "video-description-panel" },
+        text: "This is the player's own description text, long enough but wrong."
+      }),
+      node("div", { attrs: { class: "synopsis-copy" }, text })
+    ]
+  });
+  assert.equal(
+    state(doc, navigator).synopsis,
+    "A long episode synopsis that comfortably clears the forty character floor."
+  );
+});
+
+test("synopsis rejects watch/stream/upsell boilerplate and short text", () => {
+  const cases = [
+    "Watch Frieren Beyond Journey's End on Crunchyroll today.",
+    "Stream every episode of Frieren on Crunchyroll in HD.",
+    "Sign up for Crunchyroll Premium to unlock this episode now.",
+    "Too short to show."
+  ];
+  for (const text of cases) {
+    const { doc, navigator } = makeDocument({ children: [namedMeta("description", text)] });
+    assert.equal(state(doc, navigator).synopsis, null, text);
+  }
 });

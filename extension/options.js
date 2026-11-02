@@ -16,6 +16,7 @@ const lastErrorEl = el("lastError");
 const testButton = el("test");
 const testResult = el("test-result");
 const refreshButton = el("refresh");
+const synopsisEl = el("synopsis");
 const diagnostics = el("diagnostics");
 const copyButton = el("copy");
 const copyResult = el("copy-result");
@@ -86,9 +87,10 @@ function showError(message) {
 }
 
 async function load() {
-  const stored = await chrome.storage.local.get(["clientId", "enabled"]);
+  const stored = await chrome.storage.local.get(["clientId", "enabled", "synopsis"]);
   clientInput.value = resolveClientId(stored.clientId);
   status.enabled = stored.enabled !== false;
+  synopsisEl.checked = stored.synopsis !== false;
   status.clientIdPresent = true;
 
   const session = await chrome.storage.session.get(["crpStatus", "crpLastExtract"]);
@@ -144,6 +146,10 @@ testButton.addEventListener("click", async () => {
   } finally {
     testButton.disabled = false;
   }
+});
+
+synopsisEl.addEventListener("change", async () => {
+  await chrome.storage.local.set({ synopsis: synopsisEl.checked });
 });
 
 refreshButton.addEventListener("click", load);

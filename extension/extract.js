@@ -34,16 +34,35 @@
       fields: {
         name: "name",
         series: "partOfSeries.name",
+        seriesUrl: ["partOfSeries.url", "partOfSeries.@id"],
         season: "partOfSeason.seasonNumber",
         episode: "episodeNumber",
-        artwork: ["thumbnailUrl", "image"]
+        artwork: ["thumbnailUrl", "image"],
+        description: "description"
       }
     },
 
     meta: {
       title: 'meta[property="og:title"]',
       image: 'meta[property="og:image"]',
-      imageFallback: 'meta[name="twitter:image"]'
+      imageFallback: 'meta[name="twitter:image"]',
+      canonical: 'link[rel="canonical"]',
+      url: 'meta[property="og:url"]',
+      description: 'meta[name="description"]',
+      ogDescription: 'meta[property="og:description"]'
+    },
+
+    synopsis: {
+      minChars: 40,
+      maxChars: 1000,
+      // first selector with acceptable text wins
+      dom: [
+        '[data-testid*="description" i]',
+        '*[class*="description" i]',
+        '*[class*="synopsis" i]',
+        "#showmedia_description_text"
+      ],
+      skipClassWords: ["video", "player", "control"]
     },
 
     title: {
@@ -114,6 +133,52 @@
     if (/^https?:\/\//i.test(text)) return text.length > 1024 ? text.slice(0, 1024) : text;
     if (text.slice(0, 2) === "//") return "https:" + text;
     return null;
+  }
+
+  /**
+   * Direct links may only leave this file as an absolute https URL.
+   * A relative reference is resolved against the page URL (which must itself
+   * be https), never against an http base.
+   */
+  function absoluteHttps(value, base) {
+    if (typeof value !== "string") return null;
+    var text = value.trim();
+    if (!text) return null;
+    if (/^https:\/\//i.test(text)) return text.length > 1024 ? text.slice(0, 1024) : text;
+    if (text.slice(0, 2) === "//") return ("https:" + text).slice(0, 1024);
+    if (text.charAt(0) === "/" && typeof base === "string" && /^https:\/\//i.test(base)) {
+      var origin = /^(https:\/\/[^/]+)/i.exec(base);
+      if (origin) return (origin[1] + text).slice(0, 1024);
+    }
+    return null;
+  }
+
+  function stripQuotes(text) {
+    var pairs = { '"': '"', "'": "'", "\u201c": "\u201d", "\u2018": "\u2019" };
+    var out = text;
+    while (out.length >= 2) {
+      var first = out.charAt(0);
+      if (!pairs[first] || pairs[first] !== out.charAt(out.length - 1)) break;
+      out = out.slice(1, -1).trim();
+    }
+    return out;
+  }
+
+  function isBoilerplate(text) {
+    var lower = text.toLowerCase();
+    if (lower.indexOf("watch ") === 0 && lower.indexOf(" on crunchyroll") !== -1) return true;
+    if (/\bstream\b/i.test(text) && /crunchyroll/i.test(text)) return true;
+    if (/\b(premium|sign\s?-?up|subscribe|free\s+trial)\b/i.test(text)) return true;
+    return false;
+  }
+
+  /** Synopsis text: full length for later smart truncation, never boilerplate. */
+  function cleanSynopsis(value) {
+    if (typeof value !== "string") return null;
+    var text = stripQuotes(value.replace(/\s+/g, " ").trim());
+    if (!text || text.length < RULES.synopsis.minChars) return null;
+    if (isBoilerplate(text)) return null;
+    return text.length > RULES.synopsis.maxChars ? text.slice(0, RULES.synopsis.maxChars) : text;
   }
 
   function finite(value) {
@@ -311,13 +376,41 @@
           artwork = figureUrl(dig(item, fields.artwork[a]));
           if (artwork) break;
         }
-        if (!name && !series && season === null && episode === null && !artwork) continue;
-        if (!found) found = { name: null, series: null, season: null, episode: null, artwork: null };
+        var seriesUrl = null;
+        for (var u = 0; u < fields.seriesUrl.length; u += 1) {
+          seriesUrl = figureUrl(dig(item, fields.seriesUrl[u]));
+          if (seriesUrl) break;
+        }
+        var description = cleanSynopsis(dig(item, fields.description));
+        if (
+          !name &&
+          !series &&
+          season === null &&
+          episode === null &&
+          !artwork &&
+          !seriesUrl &&
+          !description
+        ) {
+          continue;
+        }
+        if (!found) {
+          found = {
+            name: null,
+            series: null,
+            season: null,
+            episode: null,
+            artwork: null,
+            seriesUrl: null,
+            description: null
+          };
+        }
         if (!found.name && name) found.name = name;
         if (!found.series && series) found.series = series;
         if (found.season === null && season !== null) found.season = season;
         if (found.episode === null && episode !== null) found.episode = episode;
         if (!found.artwork && artwork) found.artwork = artwork;
+        if (!found.seriesUrl && seriesUrl) found.seriesUrl = seriesUrl;
+        if (!found.description && description) found.description = description;
       }
     }
     return found;
@@ -407,6 +500,78 @@
     return null;
   }
 
+  /* ----------------------------------------------------------- direct links */
+
+  function domSynopsis(doc) {
+    for (var s = 0; s < RULES.synopsis.dom.length; s += 1) {
+      var selector = RULES.synopsis.dom[s];
+      var isClassSelector = selector.indexOf("[class*=") !== -1;
+      var nodes = queryAll(doc, selector);
+      for (var i = 0; i < nodes.length; i += 1) {
+        if (isClassSelector) {
+          var classes = String(attrOf(nodes[i], "class") || "").toLowerCase();
+          var skipped = false;
+          for (var w = 0; w < RULES.synopsis.skipClassWords.length; w += 1) {
+            if (classes.indexOf(RULES.synopsis.skipClassWords[w]) !== -1) {
+              skipped = true;
+              break;
+            }
+          }
+          if (skipped) continue;
+        }
+        var text = cleanSynopsis(textOf(nodes[i]));
+        if (text) return text;
+      }
+    }
+    return null;
+  }
+
+  function readSeriesUrl(ld, doc, base) {
+    var fromLd = ld && ld.seriesUrl ? absoluteHttps(ld.seriesUrl, base) : null;
+    if (fromLd) return fromLd;
+
+    var fromButton = absoluteHttps(attrOf(queryOne(doc, RULES.dom.button), "href"), base);
+    if (fromButton) return fromButton;
+
+    var heading = queryOne(doc, RULES.dom.series);
+    var node = heading ? heading.parentElement : null;
+    for (var depth = 0; node && depth < RULES.dom.ancestorDepth; depth += 1) {
+      if (String(node.tagName || "").toUpperCase() === "A") {
+        var fromAnchor = absoluteHttps(attrOf(node, "href"), base);
+        if (fromAnchor) return fromAnchor;
+      }
+      node = node.parentElement;
+    }
+    return null;
+  }
+
+  function readEpisodeUrl(doc, base) {
+    var canonical = absoluteHttps(attrOf(queryOne(doc, RULES.meta.canonical), "href"), base);
+    if (canonical) return canonical;
+
+    var og = absoluteHttps(attrOf(queryOne(doc, RULES.meta.url), "content"), base);
+    if (og) return og;
+
+    if (base && RULES.dom.watchPath.test(base)) return absoluteHttps(base, null);
+    return null;
+  }
+
+  function readSynopsis(ld, doc) {
+    if (ld && ld.description) return ld.description;
+
+    var metaDescription = cleanSynopsis(
+      attrOf(queryOne(doc, RULES.meta.description), "content")
+    );
+    if (metaDescription) return metaDescription;
+
+    var ogDescription = cleanSynopsis(
+      attrOf(queryOne(doc, RULES.meta.ogDescription), "content")
+    );
+    if (ogDescription) return ogDescription;
+
+    return domSynopsis(doc);
+  }
+
   /* ------------------------------------------------------------- assemble */
 
   function extract(doc, nav) {
@@ -419,6 +584,9 @@
       seasonNumber: null,
       episodeNumber: null,
       artworkUrl: null,
+      seriesUrl: null,
+      episodeUrl: null,
+      synopsis: null,
       duration: null,
       position: null,
       paused: null,
@@ -427,6 +595,10 @@
       signals: []
     };
     var signals = out.signals;
+
+    var href = "";
+    if (doc.location && typeof doc.location.href === "string") href = doc.location.href;
+    else if (root.location && typeof root.location.href === "string") href = root.location.href;
 
     // (e) the video element is the only playback truth
     var video = firstMatch(doc, RULES.dom.video);
@@ -489,16 +661,21 @@
     }
 
     // (e) watch URL / player button
-    var href = "";
-    if (doc.location && typeof doc.location.href === "string") href = doc.location.href;
-    else if (root.location && typeof root.location.href === "string") href = root.location.href;
     if (RULES.dom.watchPath.test(href)) signals.push("watchUrl");
     if (queryOne(doc, RULES.dom.button)) signals.push("button");
+
+    // (f) direct links and synopsis: layered, lowest priority last, always nullable
+    out.seriesUrl = readSeriesUrl(ld, doc, href);
+    out.episodeUrl = readEpisodeUrl(doc, href);
+    out.synopsis = readSynopsis(ld, doc);
 
     // normalise: strings capped and noise-stripped, numbers finite or null
     out.series = clean(out.series);
     out.episodeTitle = clean(out.episodeTitle);
     out.artworkUrl = cleanUrl(out.artworkUrl);
+    out.seriesUrl = absoluteHttps(out.seriesUrl, href);
+    out.episodeUrl = absoluteHttps(out.episodeUrl, href);
+    out.synopsis = cleanSynopsis(out.synopsis);
     out.seasonNumber = number(out.seasonNumber);
     out.episodeNumber = number(out.episodeNumber);
     out.duration = finite(out.duration);

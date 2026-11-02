@@ -22,7 +22,9 @@ const {
   clock,
   createCoalescingLimiter,
   mergeFrame,
-  resolveTab
+  resolveTab,
+  smartTruncate,
+  METADATA_FIELDS
 } = worker;
 
 const NOW = 1_700_000_000_000;
@@ -271,4 +273,123 @@ test("limiter allows 4 per 20s and coalesces the newest value", () => {
 
   limiter.push("h");
   assert.deepEqual(sent.at(-1), "h");
+});
+
+/* ------------------------------------------------- phase 2: links + synopsis */
+
+const EPISODE_URL = "https://www.crunchyroll.com/watch/G6VU774M5/the-beginning";
+const SERIES_URL = "https://www.crunchyroll.com/series/G6NQ5DWZ6/frieren";
+
+test("two direct links: episode first, series second", () => {
+  const activity = buildActivity(
+    playing({ episodeUrl: EPISODE_URL, seriesUrl: SERIES_URL }),
+    NOW
+  );
+  assert.deepEqual(activity.buttons, [
+    { label: "Watch Episode", url: EPISODE_URL },
+    { label: "View Series", url: SERIES_URL }
+  ]);
+});
+
+test("a lone episode link keeps the phase-1 label; a lone series link is View Series", () => {
+  const episodeOnly = buildActivity(playing({ episodeUrl: EPISODE_URL }), NOW);
+  assert.deepEqual(episodeOnly.buttons, [{ label: "Watch on Crunchyroll", url: EPISODE_URL }]);
+
+  const seriesOnly = buildActivity(playing({ seriesUrl: SERIES_URL }), NOW);
+  assert.deepEqual(seriesOnly.buttons, [{ label: "View Series", url: SERIES_URL }]);
+});
+
+test("direct links must be https Crunchyroll URLs and never exceed two buttons", () => {
+  const rejected = buildActivity(
+    playing({
+      episodeUrl: "http://www.crunchyroll.com/watch/G1",
+      seriesUrl: "https://evil.example/series/G2",
+      pageUrl: null
+    }),
+    NOW
+  );
+  assert.equal(rejected.buttons, undefined);
+
+  const mixed = buildActivity(
+    playing({ episodeUrl: EPISODE_URL, seriesUrl: "https://evil.example/series/G2", pageUrl: null }),
+    NOW
+  );
+  assert.deepEqual(mixed.buttons, [{ label: "Watch on Crunchyroll", url: EPISODE_URL }]);
+
+  const both = buildActivity(playing({ episodeUrl: EPISODE_URL, seriesUrl: SERIES_URL }), NOW);
+  assert.equal(both.buttons.length, 2);
+});
+
+test("a synopsis replaces the timer line and adds season/episode to details", () => {
+  const synopsis = "Frieren and Fern continue their journey toward the northern lands.";
+  const activity = buildActivity(playing({ synopsis }), NOW);
+  assert.equal(activity.details, "Frieren: Beyond Journey's End · S1 E5");
+  assert.equal(activity.state, synopsis);
+  assert.deepEqual(activity.timestamps, {
+    start: NOW - 754_000,
+    end: NOW + (1440 - 754) * 1000
+  });
+
+  const sparse = buildActivity(playing({ synopsis, seasonNumber: null, episodeNumber: null }), NOW);
+  assert.equal(sparse.details, "Frieren: Beyond Journey's End");
+  assert.equal(sparse.state, synopsis);
+});
+
+test("phase-1 layout is preserved when the synopsis is absent or the option is off", () => {
+  const absent = buildActivity(playing({ synopsis: null }), NOW);
+  assert.equal(absent.details, "Frieren: Beyond Journey's End");
+  assert.equal(absent.state, "S1 E5 · 12:34 / 24:00");
+
+  const disabled = buildActivity(playing({ synopsis: "A long synopsis that would otherwise be shown." }), NOW, {
+    synopsis: false
+  });
+  assert.equal(disabled.details, "Frieren: Beyond Journey's End");
+  assert.equal(disabled.state, "S1 E5 · 12:34 / 24:00");
+});
+
+test("smartTruncate only adds an ellipsis when it cuts at a word boundary", () => {
+  assert.equal(smartTruncate("Short text."), "Short text.");
+
+  const words = Array.from({ length: 40 }, (_, i) => `word${i}`).join(" ");
+  const out = smartTruncate(words, 128);
+  assert.ok(out.length <= 128);
+  assert.ok(out.endsWith("…"));
+  const body = out.slice(0, -1);
+  assert.equal(words.slice(0, body.length), body);
+  assert.equal(words[body.length], " ", "cut lands between words, never inside one");
+});
+
+test("smartTruncate prefers the last sentence end and strips a dangling separator", () => {
+  const sentences = `This is the end. ${"more words ".repeat(30)}`;
+  assert.equal(smartTruncate(sentences, 128), "This is the end.…");
+
+  const separators = `${"A".repeat(100)}· ${"B".repeat(40)}`;
+  const out = smartTruncate(separators, 128);
+  assert.equal(out, `${"A".repeat(100)}…`);
+});
+
+test("mergeFrame and resolveTab carry direct links and synopsis", () => {
+  assert.ok(METADATA_FIELDS.includes("seriesUrl"));
+  assert.ok(METADATA_FIELDS.includes("episodeUrl"));
+  assert.ok(METADATA_FIELDS.includes("synopsis"));
+
+  const entry = { tabId: 11, top: null, frames: {}, pageUrl: TAB_URL, updatedAt: 0 };
+  mergeFrame(
+    entry,
+    {
+      frameId: 0,
+      series: "Frieren",
+      seriesUrl: SERIES_URL,
+      episodeUrl: EPISODE_URL,
+      synopsis: "The journey continues north.",
+      hasVideo: false,
+      visible: true,
+      signals: ["jsonLd"]
+    },
+    1000
+  );
+  const merged = resolveTab(entry, 1100);
+  assert.equal(merged.seriesUrl, SERIES_URL);
+  assert.equal(merged.episodeUrl, EPISODE_URL);
+  assert.equal(merged.synopsis, "The journey continues north.");
 });

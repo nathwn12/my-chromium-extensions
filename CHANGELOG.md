@@ -5,6 +5,9 @@ Notable changes to this project. Dates are ISO 8601. This package is local-only 
 ## [Unreleased]
 
 - Built-in Discord application id, so the extension works with no setup; the options page can override it.
+- Direct-link buttons: up to two, `Watch Episode` then `View Series`, with the `Watch on Crunchyroll` fallback for a lone episode link.
+- Episode synopsis in presence, layered from JSON-LD, meta tags and DOM text, with boilerplate rejection and 128-character smart truncation.
+- `Show episode synopsis in presence` option (default on) and a popup preview of the buttons Discord receives.
 
 ## [1.0.0] - 2026-11-02
 

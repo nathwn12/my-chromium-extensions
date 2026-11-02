@@ -56,8 +56,19 @@
         </form>
       </section>
 
+      <section class="card" aria-labelledby="presence-title">
+        <h2 id="presence-title">2. Presence</h2>
+        <label class="toggle" for="synopsis">
+          <input id="synopsis" type="checkbox" checked />
+          <span>Show episode synopsis in presence</span>
+        </label>
+        <p class="hint">
+          When an episode has a synopsis, Discord shows it instead of the episode timer.
+        </p>
+      </section>
+
       <section class="card" aria-labelledby="status-title">
-        <h2 id="status-title">2. Status</h2>
+        <h2 id="status-title">3. Status</h2>
         <dl class="status" aria-live="polite">
           <div>
             <dt>Bridge</dt>
@@ -84,7 +95,7 @@
       </section>
 
       <section class="card" aria-labelledby="diag-title">
-        <h2 id="diag-title">3. Diagnostics</h2>
+        <h2 id="diag-title">4. Diagnostics</h2>
         <p class="hint">Last extracted page state plus bridge status. Paste this when reporting a problem.</p>
         <label class="sr-only" for="diagnostics">Diagnostics</label>
         <textarea id="diagnostics" readonly rows="12" spellcheck="false"></textarea>

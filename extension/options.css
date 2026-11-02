@@ -63,6 +63,20 @@ body {
   color: var(--muted);
 }
 
+.toggle {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-weight: 400;
+  cursor: pointer;
+}
+
+.toggle input {
+  accent-color: var(--accent);
+  width: 16px;
+  height: 16px;
+}
+
 .hint {
   color: var(--muted);
   font-size: 13px;

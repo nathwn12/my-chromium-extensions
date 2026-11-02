@@ -22,7 +22,16 @@ const BACKOFF_MIN_MS = 500;
 const BACKOFF_MAX_MS = 8000;
 
 export const FRAME_TTL_MS = 120000;
-export const METADATA_FIELDS = ["series", "episodeTitle", "seasonNumber", "episodeNumber", "artworkUrl"];
+export const METADATA_FIELDS = [
+  "series",
+  "episodeTitle",
+  "seasonNumber",
+  "episodeNumber",
+  "artworkUrl",
+  "seriesUrl",
+  "episodeUrl",
+  "synopsis"
+];
 const VIDEO_FIELDS = ["duration", "position", "paused", "playbackRate"];
 
 const chromeApi = typeof globalThis.chrome !== "undefined" ? globalThis.chrome : null;
@@ -38,6 +47,32 @@ export function clampText(value, max = MAX_TEXT) {
   const text = value.replace(/\s+/g, " ").trim();
   if (!text) return null;
   return text.length > max ? text.slice(0, max) : text;
+}
+
+/**
+ * Fit text into `max` characters: cut at the last sentence end, else the last
+ * space, strip a dangling separator and append "…" only when text was cut.
+ */
+export function smartTruncate(value, max = MAX_TEXT) {
+  if (typeof value !== "string") return null;
+  const text = value.replace(/\s+/g, " ").trim();
+  if (!text) return null;
+  if (text.length <= max) return text;
+
+  const body = text.slice(0, max);
+  let end = -1;
+  for (const mark of [". ", "! ", "? "]) {
+    const at = body.lastIndexOf(mark);
+    if (at > end) end = at;
+  }
+  if (end >= 0) {
+    end += 1; // keep the punctuation, drop the space
+  } else {
+    const space = body.lastIndexOf(" ");
+    end = space > 0 ? space : Math.max(1, max - 1);
+  }
+  const cut = body.slice(0, end).replace(/[\s·,]+$/, "");
+  return `${cut || body.slice(0, max - 1).trim()}…`;
 }
 
 /** Seconds -> "m:ss" (or "h:mm:ss" past an hour). */
@@ -98,16 +133,38 @@ export function pickButtonUrl(raw) {
 }
 
 /** Discord SET_ACTIVITY payload for one merged tab state, or null. */
-export function buildActivity(state, now = Date.now()) {
+export function buildActivity(state, now = Date.now(), options = {}) {
   if (!state) return null;
 
-  const details = clampText(state.series) || clampText(state.episodeTitle);
+  const season =
+    Number.isFinite(Number(state.seasonNumber)) && state.seasonNumber !== null
+      ? Number(state.seasonNumber)
+      : null;
+  const episode =
+    Number.isFinite(Number(state.episodeNumber)) && state.episodeNumber !== null
+      ? Number(state.episodeNumber)
+      : null;
+
+  const synopsis = options.synopsis === false ? null : smartTruncate(state.synopsis);
+  let details;
+  let stateLine;
+  if (synopsis) {
+    details = clampText(state.series);
+    if (details && season !== null && episode !== null) {
+      details = clampText(`${details} · S${season} E${episode}`);
+    }
+    if (!details) details = clampText(state.episodeTitle);
+    stateLine = synopsis;
+  } else {
+    details = clampText(state.series) || clampText(state.episodeTitle);
+    stateLine = formatStateLine(state);
+  }
   if (!details) return null;
 
   const activity = {
     type: 3, // WATCHING
     details,
-    state: formatStateLine(state)
+    state: stateLine
   };
 
   const artwork = httpsUrl(state.artworkUrl);
@@ -117,10 +174,18 @@ export function buildActivity(state, now = Date.now()) {
     if (largeText) activity.assets.large_text = largeText;
   }
 
-  const buttonUrl = pickButtonUrl(state.pageUrl);
-  if (buttonUrl) {
-    activity.buttons = [{ label: "Watch on Crunchyroll", url: buttonUrl }];
+  // Episode link first, then series link; pageUrl is only the phase-1 fallback
+  // when neither direct link was extracted.
+  const seriesUrl = pickButtonUrl(state.seriesUrl);
+  let episodeUrl = pickButtonUrl(state.episodeUrl);
+  if (!episodeUrl && !seriesUrl) episodeUrl = pickButtonUrl(state.pageUrl);
+  const buttons = [];
+  if (episodeUrl) {
+    const label = seriesUrl ? "Watch Episode" : "Watch on Crunchyroll";
+    buttons.push({ label: clampText(label, 32), url: episodeUrl });
   }
+  if (seriesUrl) buttons.push({ label: clampText("View Series", 32), url: seriesUrl });
+  if (buttons.length) activity.buttons = buttons.slice(0, 2);
 
   const position = Number(state.position);
   const duration = Number(state.duration);
@@ -176,6 +241,9 @@ export function mergeFrame(entry, frame, now = Date.now()) {
     seasonNumber: frame.seasonNumber ?? null,
     episodeNumber: frame.episodeNumber ?? null,
     artworkUrl: frame.artworkUrl ?? null,
+    seriesUrl: frame.seriesUrl ?? null,
+    episodeUrl: frame.episodeUrl ?? null,
+    synopsis: frame.synopsis ?? null,
     duration: frame.duration ?? null,
     position: frame.position ?? null,
     paused: typeof frame.paused === "boolean" ? frame.paused : null,
@@ -294,6 +362,7 @@ if (hasChrome) {
   let reconnectTimer = null;
   let clientId = null;
   let enabled = true;
+  let synopsisEnabled = true;
   let bridgeState = "idle";
   let appName = null;
   let lastError = null;
@@ -462,7 +531,7 @@ if (hasChrome) {
 
   function recompute() {
     const best = pickBestTab(resolvedTabs());
-    desiredActivity = best ? buildActivity(best) : null;
+    desiredActivity = best ? buildActivity(best, Date.now(), { synopsis: synopsisEnabled }) : null;
     lastActivity = desiredActivity;
     if (!desiredActivity) lastSentJson = "";
     persist();
@@ -517,6 +586,9 @@ if (hasChrome) {
       seasonNumber: message.seasonNumber ?? null,
       episodeNumber: message.episodeNumber ?? null,
       artworkUrl: message.artworkUrl ?? null,
+      seriesUrl: message.seriesUrl ?? null,
+      episodeUrl: message.episodeUrl ?? null,
+      synopsis: message.synopsis ?? null,
       duration: message.duration ?? null,
       position: message.position ?? null,
       paused: message.paused ?? null,
@@ -532,6 +604,9 @@ if (hasChrome) {
       seasonNumber: message.seasonNumber ?? null,
       episodeNumber: message.episodeNumber ?? null,
       artworkUrl: message.artworkUrl ?? null,
+      seriesUrl: message.seriesUrl ?? null,
+      episodeUrl: message.episodeUrl ?? null,
+      synopsis: message.synopsis ?? null,
       duration: message.duration ?? null,
       position: message.position ?? null,
       paused: message.paused ?? null,
@@ -572,12 +647,14 @@ if (hasChrome) {
 
   async function loadConfig() {
     try {
-      const stored = await chromeApi.storage.local.get(["clientId", "enabled"]);
+      const stored = await chromeApi.storage.local.get(["clientId", "enabled", "synopsis"]);
       clientId = resolveClientId(stored.clientId);
       enabled = stored.enabled !== false;
+      synopsisEnabled = stored.synopsis !== false;
     } catch {
       clientId = resolveClientId(null);
       enabled = true;
+      synopsisEnabled = true;
     }
   }
 
@@ -668,6 +745,10 @@ if (hasChrome) {
           limiter.push(null);
           lastSentJson = "null";
         }
+      }
+      if (changes.synopsis) {
+        synopsisEnabled = changes.synopsis.newValue !== false;
+        recompute();
       }
     });
   }
