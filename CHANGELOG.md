@@ -8,6 +8,7 @@ Notable changes to this project. Dates are ISO 8601. This package is local-only 
 - Direct-link buttons: up to two, `Watch Episode` then `View Series`, with the `Watch on Crunchyroll` fallback for a lone episode link.
 - Episode synopsis in presence, layered from JSON-LD, meta tags and DOM text, with boilerplate rejection and 128-character smart truncation.
 - `Show episode synopsis in presence` option (default on) and a popup preview of the buttons Discord receives.
+- JSON-LD completeness: `partOfSeries.@id`/`partOfSeason.@id` series links, `TVEpisode.url`/`@id` episode links, a clean episode title that never repeats the series, and an ISO-8601 `duration` fallback when no video element reports one.
 
 ## [1.0.0] - 2026-11-02
 

@@ -356,14 +356,14 @@ function namedMeta(name, content) {
   return node("meta", { attrs: { name, content } });
 }
 
-test("seriesUrl: JSON-LD partOfSeries.url, then show-title-link, then a > h4 ancestor", () => {
+test("seriesUrl: JSON-LD partOfSeries.@id, then show-title-link, then a > h4 ancestor", () => {
   const withJsonLd = makeDocument({
     href: WATCH,
     children: [
       jsonLd({
         "@type": "TVEpisode",
         name: "Ep",
-        partOfSeries: { name: "Series", url: "https://www.crunchyroll.com/series/G1" }
+        partOfSeries: { name: "Series", "@id": "https://www.crunchyroll.com/series/G1" }
       }),
       node("a", { attrs: { class: "show-title-link", href: "https://www.crunchyroll.com/series/G2" } })
     ]
@@ -545,4 +545,137 @@ test("synopsis rejects stream/upsell, consent, language lists and short text", (
     const { doc, navigator } = makeDocument({ children: [namedMeta("description", text)] });
     assert.equal(state(doc, navigator).synopsis, null, text);
   }
+});
+
+/* ------------------------------------- real JSON-LD: titles, links, duration */
+
+const DARLING_SERIES_URL = "https://www.crunchyroll.com/series/GY8VEQ95Y/darling-in-the-franxx";
+const DARLING_WATCH_URL = "https://www.crunchyroll.com/watch/GRDKJZ81Y/alone-and-lonesome";
+const DARLING_RAW_TITLE = "Darling in the FRANXX | E1 - Alone and Lonesome";
+const DARLING_ISO_DURATION = "PT24M0.023999999999887223S";
+
+const darlingEpisode = (overrides = {}) => ({
+  "@context": ["https://schema.org", { "@language": "en-us" }],
+  "@id": DARLING_WATCH_URL,
+  name: DARLING_RAW_TITLE,
+  "@type": "TVEpisode",
+  url: DARLING_WATCH_URL,
+  episodeNumber: 1,
+  partOfSeason: {
+    "@type": "TVSeason",
+    "@id": DARLING_SERIES_URL,
+    name: "Darling in the FRANXX",
+    seasonNumber: 1
+  },
+  partOfSeries: {
+    "@type": "TVSeries",
+    "@id": DARLING_SERIES_URL,
+    name: "Darling in the FRANXX"
+  },
+  ...overrides
+});
+
+const darlingVideo = (overrides = {}) => ({
+  "@context": "https://schema.org",
+  "@type": "VideoObject",
+  name: "Alone and Lonesome",
+  duration: DARLING_ISO_DURATION,
+  ...overrides
+});
+
+test("real TVEpisode + VideoObject: direct links and h1 title, never the raw TVEpisode name", () => {
+  const { doc, navigator } = makeDocument({
+    href: DARLING_WATCH_URL,
+    children: [
+      jsonLd(darlingEpisode()),
+      jsonLd(darlingVideo()),
+      node("link", {
+        attrs: { rel: "canonical", href: "https://www.crunchyroll.com/watch/WRONG/canonical" }
+      }),
+      node("h1", { text: "E1 - Alone and Lonesome" })
+    ]
+  });
+
+  const result = state(doc, navigator);
+  assert.equal(result.series, "Darling in the FRANXX");
+  assert.equal(result.seasonNumber, 1);
+  assert.equal(result.episodeNumber, 1);
+  assert.equal(result.episodeTitle, "E1 - Alone and Lonesome");
+  assert.notEqual(result.episodeTitle, DARLING_RAW_TITLE);
+  assert.equal(result.seriesUrl, DARLING_SERIES_URL);
+  assert.equal(result.episodeUrl, DARLING_WATCH_URL, "TVEpisode.url outranks canonical");
+  assert.equal(result.duration, 1440.024);
+});
+
+test("episodeTitle falls back to VideoObject name, then a stripped TVEpisode name", () => {
+  const videoOnly = makeDocument({
+    href: DARLING_WATCH_URL,
+    children: [jsonLd(darlingEpisode()), jsonLd(darlingVideo())]
+  });
+  assert.equal(state(videoOnly.doc, videoOnly.navigator).episodeTitle, "Alone and Lonesome");
+
+  const episodeOnly = makeDocument({
+    href: DARLING_WATCH_URL,
+    children: [jsonLd(darlingEpisode())]
+  });
+  const stripped = state(episodeOnly.doc, episodeOnly.navigator);
+  assert.equal(stripped.episodeTitle, "E1 - Alone and Lonesome");
+  assert.notEqual(stripped.episodeTitle, DARLING_RAW_TITLE);
+});
+
+test("seriesUrl: partOfSeries.@id, then partOfSeason.@id, then show-title-link", () => {
+  const seriesLd = makeDocument({
+    href: DARLING_WATCH_URL,
+    children: [jsonLd(darlingEpisode())]
+  });
+  assert.equal(state(seriesLd.doc, seriesLd.navigator).seriesUrl, DARLING_SERIES_URL);
+
+  const seasonId = "https://www.crunchyroll.com/series/GY8VEQ95Y/from-season";
+  const seasonLd = makeDocument({
+    href: DARLING_WATCH_URL,
+    children: [
+      jsonLd(
+        darlingEpisode({
+          partOfSeries: undefined,
+          partOfSeason: {
+            "@type": "TVSeason",
+            "@id": seasonId,
+            name: "Darling in the FRANXX",
+            seasonNumber: 1
+          }
+        })
+      )
+    ]
+  });
+  assert.equal(state(seasonLd.doc, seasonLd.navigator).seriesUrl, seasonId);
+
+  const buttonOnly = makeDocument({
+    href: DARLING_WATCH_URL,
+    children: [node("a", { attrs: { class: "show-title-link", href: DARLING_SERIES_URL } })]
+  });
+  assert.equal(state(buttonOnly.doc, buttonOnly.navigator).seriesUrl, DARLING_SERIES_URL);
+});
+
+test("ISO-8601 duration fills the gap when the video has no duration; video wins when it has one", () => {
+  const noVideo = makeDocument({
+    href: DARLING_WATCH_URL,
+    children: [jsonLd(darlingEpisode()), jsonLd(darlingVideo())]
+  });
+  const fromLd = state(noVideo.doc, noVideo.navigator);
+  assert.equal(fromLd.hasVideo, false);
+  assert.equal(fromLd.duration, 1440.024);
+
+  const zeroVideo = makeDocument({
+    href: DARLING_WATCH_URL,
+    children: [jsonLd(darlingVideo()), video({ duration: 0 })]
+  });
+  assert.equal(state(zeroVideo.doc, zeroVideo.navigator).duration, 1440.024);
+
+  const realVideo = makeDocument({
+    href: DARLING_WATCH_URL,
+    children: [jsonLd(darlingVideo()), video({ currentTime: 60, duration: 1200 })]
+  });
+  const fromVideo = state(realVideo.doc, realVideo.navigator);
+  assert.equal(fromVideo.hasVideo, true);
+  assert.equal(fromVideo.duration, 1200);
 });

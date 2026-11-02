@@ -393,3 +393,8 @@ test("mergeFrame and resolveTab carry direct links and synopsis", () => {
   assert.equal(merged.episodeUrl, EPISODE_URL);
   assert.equal(merged.synopsis, "The journey continues north.");
 });
+
+test("a JSON-LD duration keeps the phase-1 state line when no video reports one", () => {
+  const state = formatStateLine({ seasonNumber: 1, episodeNumber: 1, duration: 1440.024, position: 0 });
+  assert.equal(state, "S1 E1 · 0:00 / 24:00");
+});

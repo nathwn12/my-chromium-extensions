@@ -96,8 +96,8 @@ The video element is read first for playback state. Metadata then follows first-
 
 | Order | Layer | Reads | Fills |
 | --- | --- | --- | --- |
-| 1 | `mediaSession` | `navigator.mediaSession.metadata`: `title`, `artist`/`album`, `artwork` | episode title, series, artwork |
-| 2 | JSON-LD | `script[type="application/ld+json"]` with `VideoObject`, `TVEpisode` or `Episode`: `name`, `partOfSeries.name`, `partOfSeason.seasonNumber`, `episodeNumber`, `thumbnailUrl`/`image` | episode title, series, season, episode, artwork |
+| 1 | `mediaSession` | `navigator.mediaSession.metadata`: `title`, `artist`/`album`, `artwork` | series, artwork, episode title (last fallback) |
+| 2 | JSON-LD | `script[type="application/ld+json"]` with `VideoObject`, `TVEpisode` or `Episode`: `name`, `partOfSeries.name`/`@id`, `partOfSeason.@id`, `episodeNumber`, `url`/`@id`, `thumbnailUrl`/`image`, `duration` | episode title, series, season, episode, artwork, direct links, duration |
 | 3 | Open Graph | `meta[property="og:image"]`, `meta[name="twitter:image"]`, `meta[property="og:title"]` | artwork, title text |
 | 4 | Document title | `SxxExx`, `Season N Episode M`, `Ep N`; the series is the text before the match | season, episode, series |
 | 5 | DOM | `#player-container video`, `h1.title`, `a > h4`, `a.show-title-link`; generic fallbacks `video`, `h1`/`h2`, `[data-testid]` | playback state, series/episode text |
@@ -105,14 +105,20 @@ The video element is read first for playback state. Metadata then follows first-
 
 Only the video element contributes playback fields: `duration`, `currentTime`, `paused`, `playbackRate`. The media pipeline behind it is never touched.
 
+### Episode title and duration
+
+On a watch page the `h1` is the episode (`E1 - Alone and Lonesome`). The JSON-LD `VideoObject.name` is the clean title (`Alone and Lonesome`), while the `TVEpisode.name` repeats the series (`Darling in the FRANXX | E1 - Alone and Lonesome`); the raw composite never reaches `episodeTitle` while a cleaner source exists, and when it is the only source the leading `<series> | ` is removed. The order is watch-page `h1` → `VideoObject.name` → stripped `TVEpisode.name` → media-session title → `og:title` → DOM fallback.
+
+`<video>.duration` wins whenever it is finite and positive. When no video reports one (a paywalled or flat page), the JSON-LD `VideoObject.duration` is parsed from ISO-8601 — `PT24M0.023999999999887223S` → `1440.024` seconds, rounded to whole milliseconds — so the state line still renders `S1 E1 · 0:00 / 24:00`. A video duration of `0` is treated as missing, never as truth.
+
 ### Direct links and synopsis
 
 Three more nullable fields use their own layering, all absolute `https` only:
 
 | Field | Layer order |
 | --- | --- |
-| `seriesUrl` | JSON-LD `partOfSeries.url`/`@id` → `a.show-title-link` href → nearest `a` ancestor of `a > h4` |
-| `episodeUrl` | `link[rel=canonical]` → `meta[property="og:url"]` → the page `location.href` when it matches `/watch/` |
+| `seriesUrl` | JSON-LD `partOfSeries.@id` → `partOfSeason.@id` → `a.show-title-link` href → nearest `a` ancestor of `a > h4` |
+| `episodeUrl` | JSON-LD `TVEpisode.url`/`@id` → `link[rel=canonical]` → `meta[property="og:url"]` → the page `location.href` when it matches `/watch/` |
 | `synopsis` | JSON-LD `description` (VideoObject) → `meta[property="og:description"]` → `meta[name="description"]` with the leading `Watch … on Crunchyroll.` clause stripped → `[class*="expandable-section"]` text |
 
 A meta description carries the episode title before the synopsis, so that prefix is stripped rather than rejecting the whole string. Boilerplate text is discarded: any `Stream … Crunchyroll`, premium/sign-up upsell, terms/privacy/cookie consent text, comma-separated language lists, and anything under 40 characters. Surrounding quotes are stripped. The extractor keeps up to 1000 characters; `background.js` performs the 128-character smart truncation. `content.js` forwards these fields unchanged through its existing spread of the extract result.

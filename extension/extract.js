@@ -34,11 +34,13 @@
       fields: {
         name: "name",
         series: "partOfSeries.name",
-        seriesUrl: ["partOfSeries.url", "partOfSeries.@id"],
+        seriesUrl: ["partOfSeries.@id", "partOfSeason.@id"],
+        episodeUrl: ["url", "@id"],
         season: "partOfSeason.seasonNumber",
         episode: "episodeNumber",
         artwork: ["thumbnailUrl", "image"],
-        description: "description"
+        description: "description",
+        duration: "duration"
       }
     },
 
@@ -223,6 +225,19 @@
     return text.length > RULES.synopsis.maxChars ? text.slice(0, RULES.synopsis.maxChars) : text;
   }
 
+  /**
+   * The TVEpisode name is "<series> | <episode>" on the live page; remove the
+   * series half only when it duplicates the series we already resolved.
+   */
+  function stripSeriesPrefix(name, series) {
+    if (!name || !series) return name || null;
+    var prefix = series + " | ";
+    if (name.slice(0, prefix.length).toLowerCase() === prefix.toLowerCase()) {
+      return name.slice(prefix.length).trim() || null;
+    }
+    return name;
+  }
+
   function finite(value) {
     if (value === null || value === undefined || value === "") return null;
     var n = typeof value === "number" ? value : Number(value);
@@ -234,6 +249,26 @@
     if (value === null || value === undefined || value === "") return null;
     var n = Number(value);
     return Number.isFinite(n) ? n : null;
+  }
+
+  /**
+   * ISO-8601 duration -> seconds. Crunchyroll writes
+   * "PT24M0.023999999999887223S" on the VideoObject, so hours, minutes,
+   * seconds and days all parse; the result is rounded to whole milliseconds.
+   */
+  function isoDuration(value) {
+    if (typeof value !== "string") return null;
+    var m = /^P(?:(\d+(?:\.\d+)?)D)?(?:T(?:(\d+(?:\.\d+)?)H)?(?:(\d+(?:\.\d+)?)M)?(?:(\d+(?:\.\d+)?)S)?)?$/i.exec(
+      value.trim()
+    );
+    if (!m) return null;
+    var seconds =
+      Number(m[1] || 0) * 86400 +
+      Number(m[2] || 0) * 3600 +
+      Number(m[3] || 0) * 60 +
+      Number(m[4] || 0);
+    if (!Number.isFinite(seconds) || seconds <= 0) return null;
+    return Math.round(seconds * 1000) / 1000;
   }
 
   function textOf(node) {
@@ -423,7 +458,13 @@
           seriesUrl = figureUrl(dig(item, fields.seriesUrl[u]));
           if (seriesUrl) break;
         }
+        var episodeUrl = null;
+        for (var e = 0; e < fields.episodeUrl.length; e += 1) {
+          episodeUrl = figureUrl(dig(item, fields.episodeUrl[e]));
+          if (episodeUrl) break;
+        }
         var description = cleanSynopsis(dig(item, fields.description));
+        var duration = isoDuration(dig(item, fields.duration));
         if (
           !name &&
           !series &&
@@ -431,28 +472,41 @@
           episode === null &&
           !artwork &&
           !seriesUrl &&
-          !description
+          !episodeUrl &&
+          !description &&
+          duration === null
         ) {
           continue;
         }
         if (!found) {
           found = {
-            name: null,
+            videoName: null,
+            episodeName: null,
             series: null,
             season: null,
             episode: null,
             artwork: null,
             seriesUrl: null,
-            description: null
+            episodeUrl: null,
+            description: null,
+            duration: null
           };
         }
-        if (!found.name && name) found.name = name;
+        // The TVEpisode name repeats the series ("Darling in the FRANXX | E1 - …"),
+        // so keep the two names apart: the VideoObject name is the clean title.
+        if (names.indexOf("videoobject") !== -1) {
+          if (name && !found.videoName) found.videoName = name;
+        } else if (name && !found.episodeName) {
+          found.episodeName = name;
+        }
         if (!found.series && series) found.series = series;
         if (found.season === null && season !== null) found.season = season;
         if (found.episode === null && episode !== null) found.episode = episode;
         if (!found.artwork && artwork) found.artwork = artwork;
         if (!found.seriesUrl && seriesUrl) found.seriesUrl = seriesUrl;
+        if (!found.episodeUrl && episodeUrl) found.episodeUrl = episodeUrl;
         if (!found.description && description) found.description = description;
+        if (found.duration === null && duration !== null) found.duration = duration;
       }
     }
     return found;
@@ -574,7 +628,10 @@
     return null;
   }
 
-  function readEpisodeUrl(doc, base) {
+  function readEpisodeUrl(ld, doc, base) {
+    var fromLd = ld && ld.episodeUrl ? absoluteHttps(ld.episodeUrl, base) : null;
+    if (fromLd) return fromLd;
+
     var canonical = absoluteHttps(attrOf(queryOne(doc, RULES.meta.canonical), "href"), base);
     if (canonical) return canonical;
 
@@ -640,11 +697,11 @@
       out.playbackRate = finite(video.playbackRate);
     }
 
-    // (a) media session
+    // (a) media session: series/artwork feed the result now; its title is a
+    // fallback after the page h1 and JSON-LD names.
     var session = readMediaSession(nav);
     if (session) {
       signals.push("mediaSession");
-      if (session.title) out.episodeTitle = session.title;
       if (session.series) out.series = session.series;
       if (session.artwork) out.artworkUrl = session.artwork;
     }
@@ -653,12 +710,27 @@
     var ld = readJsonLd(doc);
     if (ld) {
       signals.push("jsonLd");
-      if (!out.episodeTitle && ld.name) out.episodeTitle = ld.name;
       if (!out.series && ld.series) out.series = ld.series;
       if (out.seasonNumber === null && ld.season !== null) out.seasonNumber = ld.season;
       if (out.episodeNumber === null && ld.episode !== null) out.episodeNumber = ld.episode;
       if (!out.artworkUrl && ld.artwork) out.artworkUrl = ld.artwork;
+      // A paywalled page has no <video> duration; the VideoObject still knows it.
+      if (ld.duration !== null && (out.duration === null || out.duration <= 0)) {
+        out.duration = ld.duration;
+      }
     }
+
+    // Episode title: on a watch page the h1 is already the episode
+    // ("E1 - Alone and Lonesome"), the VideoObject name is clean ("Alone and
+    // Lonesome"), and the TVEpisode name repeats the series, so it is only a
+    // stripped last resort. Series pages keep their own heading out of this.
+    var heading = null;
+    if (RULES.dom.watchPath.test(href)) {
+      heading = documentHeading(doc);
+      if (heading && out.series && heading.toLowerCase() === out.series.toLowerCase()) heading = null;
+    }
+    var ldTitle = ld ? ld.videoName || stripSeriesPrefix(ld.episodeName, out.series) : null;
+    out.episodeTitle = heading || ldTitle || (session && session.title) || null;
 
     // (c) open graph
     var meta = readMeta(doc);
@@ -695,7 +767,7 @@
 
     // (f) direct links and synopsis: layered, lowest priority last, always nullable
     out.seriesUrl = readSeriesUrl(ld, doc, href);
-    out.episodeUrl = readEpisodeUrl(doc, href);
+    out.episodeUrl = readEpisodeUrl(ld, doc, href);
     out.synopsis = readSynopsis(ld, doc);
 
     // normalise: strings capped and noise-stripped, numbers finite or null
