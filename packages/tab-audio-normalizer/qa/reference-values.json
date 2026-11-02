@@ -1,0 +1,114 @@
+{
+  "fixtures": {
+    "gated-silence": {
+      "integratedLufs": -9.156486440002528,
+      "truePeakDbTp": -6.020599913279623,
+      "truePeakDbtp": -6.020599913279623,
+      "lra": 4.7711191395537735,
+      "sampleRate": 48000,
+      "channels": 1,
+      "frames": 2400000,
+      "source": "reference-meter"
+    },
+    "inter-sample-peak": {
+      "integratedLufs": 0.16560517707174094,
+      "truePeakDbTp": 0.030873620405998944,
+      "truePeakDbtp": 0.030873620405998944,
+      "lra": 2.5516544432946375e-10,
+      "sampleRate": 48000,
+      "channels": 1,
+      "frames": 1440000,
+      "source": "reference-meter"
+    },
+    "mono-sine-1khz": {
+      "integratedLufs": -23.003596552335488,
+      "truePeakDbTp": -19.999999870570157,
+      "truePeakDbtp": -19.999999870570157,
+      "lra": 1.1013412404281553e-12,
+      "sampleRate": 48000,
+      "channels": 1,
+      "frames": 1440000,
+      "source": "reference-meter"
+    },
+    "pink-ish": {
+      "integratedLufs": -27.90821287769558,
+      "truePeakDbTp": -13.7423430455462,
+      "truePeakDbtp": -13.7423430455462,
+      "lra": 0.051492133310592436,
+      "sampleRate": 48000,
+      "channels": 1,
+      "frames": 1440000,
+      "source": "reference-meter"
+    },
+    "quiet-passage": {
+      "integratedLufs": -9.089830664817882,
+      "truePeakDbTp": -6.020599913279623,
+      "truePeakDbtp": -6.020599913279623,
+      "lra": 1.7607552491785619,
+      "sampleRate": 48000,
+      "channels": 1,
+      "frames": 1440000,
+      "source": "reference-meter"
+    },
+    "sine-1khz-fs-20": {
+      "integratedLufs": -23.003596552335488,
+      "truePeakDbTp": -19.999999870570157,
+      "truePeakDbtp": -19.999999870570157,
+      "lra": 1.1013412404281553e-12,
+      "sampleRate": 48000,
+      "channels": 1,
+      "frames": 1440000,
+      "source": "reference-meter"
+    },
+    "sine-1khz-fs-50": {
+      "integratedLufs": -53.009854970890515,
+      "truePeakDbTp": -50.006258127068726,
+      "truePeakDbtp": -50.006258127068726,
+      "lra": 3.055333763768431e-13,
+      "sampleRate": 48000,
+      "channels": 1,
+      "frames": 1440000,
+      "source": "reference-meter"
+    },
+    "sine-1khz-loud": {
+      "integratedLufs": -3.1790750218601147,
+      "truePeakDbTp": -0.17547831709888279,
+      "truePeakDbtp": -0.17547831709888279,
+      "lra": 7.567280135845067e-13,
+      "sampleRate": 48000,
+      "channels": 1,
+      "frames": 1440000,
+      "source": "reference-meter"
+    },
+    "surround-51": {
+      "integratedLufs": -4.488567636076295,
+      "truePeakDbTp": -6.012800349876986,
+      "truePeakDbtp": -6.012800349876986,
+      "lra": 9.019451852054772e-12,
+      "sampleRate": 48000,
+      "channels": 6,
+      "frames": 960000,
+      "source": "reference-meter"
+    },
+    "ref-44100-sine-1khz-fs-20": {
+      "integratedLufs": -23.000839228513264,
+      "truePeakDbTp": -19.995011782791327,
+      "truePeakDbtp": -19.995011782791327,
+      "lra": 1.623590151211829e-12,
+      "sampleRate": 44100,
+      "channels": 1,
+      "frames": 1323000,
+      "source": "reference-meter"
+    },
+    "ref-51-surround-lfe": {
+      "integratedLufs": -4.521707563010616,
+      "truePeakDbTp": -6.020599913279623,
+      "truePeakDbtp": -6.020599913279623,
+      "lra": 3.4638958368304884e-13,
+      "sampleRate": 48000,
+      "channels": 6,
+      "frames": 480000,
+      "source": "reference-meter"
+    }
+  }
+}
