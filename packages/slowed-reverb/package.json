@@ -1,4 +1,5 @@
 {
+  "name": "slowed-reverb",
   "license": "MIT",
   "scripts": {
     "lint": "eslint .",

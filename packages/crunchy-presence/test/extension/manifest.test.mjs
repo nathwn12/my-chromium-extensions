@@ -2,7 +2,8 @@ import { test, before } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, mkdtempSync, mkdirSync, copyFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
@@ -56,7 +57,9 @@ before(() => {
 
 test("manifest is MV3 with the expected identity", () => {
   assert.equal(manifest.manifest_version, 3);
-  assert.equal(manifest.name, "Crunchyroll Discord Presence");
+  assert.equal(manifest.name, "Crunchy Presence");
+  assert.equal(manifest.short_name, "Crunchy");
+  assert.equal(manifest.action.default_title, "Crunchy Presence");
   assert.equal(manifest.version, "1.0.0");
   assert.ok(manifest.host_permissions.includes("*://*.crunchyroll.com/*"));
 });
@@ -144,10 +147,23 @@ test("icons are declared at 16/32/48/128 and are real PNGs of that size", () => 
 });
 
 test("icon generator is deterministic", () => {
-  const first = ICON_SIZES.map((size) => readFileSync(join(extensionDir, "icons", `icon${size}.png`)));
-  execFileSync(process.execPath, [generator], { stdio: "pipe" });
-  const second = ICON_SIZES.map((size) => readFileSync(join(extensionDir, "icons", `icon${size}.png`)));
-  for (let i = 0; i < ICON_SIZES.length; i += 1) {
-    assert.ok(first[i].equals(second[i]), `icon${ICON_SIZES[i]}.png is byte-identical across runs`);
+  // The shipped icons are authored artwork, not generator output, so run the
+  // generator from a scratch copy: it writes next to itself, never into icons/.
+  const scratch = mkdtempSync(join(tmpdir(), "crunchy-icons-"));
+  try {
+    const toolsDir = join(scratch, "tools");
+    mkdirSync(toolsDir, { recursive: true });
+    const copy = join(toolsDir, "make-icons.mjs");
+    copyFileSync(generator, copy);
+    const read = () => ICON_SIZES.map((size) => readFileSync(join(scratch, "icons", `icon${size}.png`)));
+    execFileSync(process.execPath, [copy], { stdio: "pipe" });
+    const first = read();
+    execFileSync(process.execPath, [copy], { stdio: "pipe" });
+    const second = read();
+    for (let i = 0; i < ICON_SIZES.length; i += 1) {
+      assert.ok(first[i].equals(second[i]), `icon${ICON_SIZES[i]}.png is byte-identical across runs`);
+    }
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
   }
 });

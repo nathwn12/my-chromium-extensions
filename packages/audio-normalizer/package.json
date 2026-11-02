@@ -1,5 +1,5 @@
 {
-  "name": "loudness-normalization",
+  "name": "audio-normalizer",
   "private": true,
   "version": "5.4.2",
   "type": "commonjs",

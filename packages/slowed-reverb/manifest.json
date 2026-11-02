@@ -1,13 +1,14 @@
 {
   "manifest_version": 3,
-  "name": "Slowed Reverb Audio",
+  "name": "Slowed Reverb",
+  "short_name": "Slowed Reverb",
   "version": "1.0.2",
-  "description": "Slow YouTube audio and add built-in reverb locally.",
+  "description": "Slow and reverb any tab's audio, locally.",
   "icons": {
-    "16": "audio/icon-16.png",
-    "32": "audio/icon-32.png",
-    "48": "audio/icon-48.png",
-    "128": "audio/icon-128.png"
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
   },
   "permissions": [
     "scripting",
@@ -44,12 +45,12 @@
   }],
   "action": {
     "default_icon": {
-      "16": "audio/icon-16.png",
-      "32": "audio/icon-32.png",
-      "48": "audio/icon-48.png",
-      "128": "audio/icon-128.png"
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
     },
-    "default_title": "Slowed Reverb Audio",
+    "default_title": "Slowed Reverb",
     "default_popup": "popup.html"
   }
 }
