@@ -113,9 +113,9 @@ Three more nullable fields use their own layering, all absolute `https` only:
 | --- | --- |
 | `seriesUrl` | JSON-LD `partOfSeries.url`/`@id` → `a.show-title-link` href → nearest `a` ancestor of `a > h4` |
 | `episodeUrl` | `link[rel=canonical]` → `meta[property="og:url"]` → the page `location.href` when it matches `/watch/` |
-| `synopsis` | JSON-LD `description` → `meta[name="description"]` → `meta[property="og:description"]` → DOM description/synopsis containers (player/video/control classes skipped) |
+| `synopsis` | JSON-LD `description` (VideoObject) → `meta[property="og:description"]` → `meta[name="description"]` with the leading `Watch … on Crunchyroll.` clause stripped → `[class*="expandable-section"]` text |
 
-Boilerplate synopsis text is discarded: `Watch … on Crunchyroll`, any `Stream … Crunchyroll`, premium/sign-up upsell, and anything under 40 characters. Surrounding quotes are stripped. The extractor keeps up to 1000 characters; `background.js` performs the 128-character smart truncation. `content.js` forwards these fields unchanged through its existing spread of the extract result.
+A meta description carries the episode title before the synopsis, so that prefix is stripped rather than rejecting the whole string. Boilerplate text is discarded: any `Stream … Crunchyroll`, premium/sign-up upsell, terms/privacy/cookie consent text, comma-separated language lists, and anything under 40 characters. Surrounding quotes are stripped. The extractor keeps up to 1000 characters; `background.js` performs the 128-character smart truncation. `content.js` forwards these fields unchanged through its existing spread of the extract result.
 
 ## Frames and per-tab merge
 

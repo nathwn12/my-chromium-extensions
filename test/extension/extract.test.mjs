@@ -429,63 +429,116 @@ test("episodeUrl: canonical link, then og:url, then a /watch/ location", () => {
   assert.equal(state(insecure.doc, insecure.navigator).episodeUrl, null);
 });
 
-test("synopsis: JSON-LD description, then meta description, og:description, DOM", () => {
-  const text = "Frieren and Fern continue their journey toward the northern lands.";
+const REAL_SYNOPSIS =
+  "The land has fallen into ruin, and children represent the last hope for humanity. One of them, Hiro, fails to live up to that purpose and decides to walk away from it all.... until he meets a girl with horns.";
+const REAL_META = `Watch Darling in the FRANXX Alone and Lonesome, on Crunchyroll. ${REAL_SYNOPSIS}`;
+const REAL_SERIES_URL = "https://www.crunchyroll.com/series/GY8VEQ95Y/darling-in-the-franxx";
+const REAL_WATCH_URL = "https://www.crunchyroll.com/watch/GRDKJZ81Y/alone-and-lonesome";
+
+test("real capture: VideoObject synopsis, show-title link and canonical episode URL", () => {
+  const { doc, navigator } = makeDocument({
+    href: REAL_WATCH_URL,
+    children: [
+      jsonLd({
+        "@type": "VideoObject",
+        name: "Alone and Lonesome",
+        description: REAL_SYNOPSIS,
+        partOfSeries: { name: "Darling in the FRANXX", url: REAL_SERIES_URL }
+      }),
+      meta("og:description", REAL_SYNOPSIS),
+      namedMeta("description", REAL_META),
+      node("link", { attrs: { rel: "canonical", href: REAL_WATCH_URL } }),
+      meta("og:url", REAL_WATCH_URL),
+      node("a", {
+        attrs: { class: "show-title-link", href: REAL_SERIES_URL },
+        children: [node("h4", { text: "Darling in the FRANXX" })]
+      }),
+      node("h1", { text: "E1 - Alone and Lonesome" }),
+      node("div", {
+        attrs: { class: "expandable-section__text--abc" },
+        text: "Join for free or go Premium."
+      })
+    ]
+  });
+
+  const result = state(doc, navigator);
+  assert.equal(result.synopsis, REAL_SYNOPSIS);
+  assert.equal(result.seriesUrl, REAL_SERIES_URL);
+  assert.equal(result.episodeUrl, REAL_WATCH_URL);
+  assert.equal(result.series, "Darling in the FRANXX");
+});
+
+test("og:description survives untouched", () => {
+  assert.equal(REAL_SYNOPSIS.length, 208);
+  const { doc, navigator } = makeDocument({
+    children: [meta("og:description", REAL_SYNOPSIS)]
+  });
+  assert.equal(state(doc, navigator).synopsis, REAL_SYNOPSIS);
+});
+
+test("meta description strips the Watch…on Crunchyroll. prefix to the synopsis", () => {
+  const metaOnly = makeDocument({ children: [namedMeta("description", REAL_META)] });
+  assert.equal(state(metaOnly.doc, metaOnly.navigator).synopsis, REAL_SYNOPSIS);
+
+  const both = makeDocument({
+    children: [meta("og:description", REAL_SYNOPSIS), namedMeta("description", REAL_META)]
+  });
+  assert.equal(state(both.doc, both.navigator).synopsis, REAL_SYNOPSIS);
+});
+
+test("synopsis precedence: JSON-LD description, og:description, meta description, expandable-section", () => {
+  const ogText = "The open graph description is the one that survives from this document.";
+  const metaText = `Watch Whatever on Crunchyroll. ${ogText}`;
+
   const ldDoc = makeDocument({
     children: [
-      jsonLd({ "@type": "TVEpisode", name: "Ep", description: text }),
-      namedMeta("description", "Meta description that is comfortably over forty characters.")
+      jsonLd({ "@type": "TVEpisode", name: "Ep", description: REAL_SYNOPSIS }),
+      meta("og:description", ogText),
+      namedMeta("description", metaText)
     ]
   });
-  assert.equal(state(ldDoc.doc, ldDoc.navigator).synopsis, text);
-
-  const metaDoc = makeDocument({
-    children: [
-      namedMeta("description", "The meta description is long enough to be shown in Discord."),
-      meta("og:description", "The open graph description is also long enough to qualify.")
-    ]
-  });
-  assert.equal(
-    state(metaDoc.doc, metaDoc.navigator).synopsis,
-    "The meta description is long enough to be shown in Discord."
-  );
+  assert.equal(state(ldDoc.doc, ldDoc.navigator).synopsis, REAL_SYNOPSIS);
 
   const ogDoc = makeDocument({
-    children: [meta("og:description", "The open graph description is also long enough to qualify.")]
+    children: [meta("og:description", ogText), namedMeta("description", metaText)]
   });
-  assert.equal(
-    state(ogDoc.doc, ogDoc.navigator).synopsis,
-    "The open graph description is also long enough to qualify."
-  );
+  assert.equal(state(ogDoc.doc, ogDoc.navigator).synopsis, ogText);
+
+  const metaDoc = makeDocument({ children: [namedMeta("description", metaText)] });
+  assert.equal(state(metaDoc.doc, metaDoc.navigator).synopsis, ogText);
 
   const domDoc = makeDocument({
-    children: [node("div", { attrs: { "data-testid": "episode-description" }, text })]
+    children: [node("div", { attrs: { class: "expandable-section__text--abc" }, text: ogText })]
   });
-  assert.equal(state(domDoc.doc, domDoc.navigator).synopsis, text);
+  assert.equal(state(domDoc.doc, domDoc.navigator).synopsis, ogText);
 });
 
-test("synopsis DOM fallback skips player/video/control containers and strips quotes", () => {
-  const text = "\u201cA long episode synopsis that comfortably clears the forty character floor.\u201d";
-  const { doc, navigator } = makeDocument({
+test("expandable-section synopsis is quote-stripped; Join for free is never used", () => {
+  const quoted = `\u201c${REAL_SYNOPSIS}\u201d`;
+  const valid = makeDocument({
+    children: [node("div", { attrs: { class: "expandable-section__text--abc" }, text: quoted })]
+  });
+  assert.equal(state(valid.doc, valid.navigator).synopsis, REAL_SYNOPSIS);
+
+  const garbage = makeDocument({
     children: [
       node("div", {
-        attrs: { class: "video-description-panel" },
-        text: "This is the player's own description text, long enough but wrong."
+        attrs: { class: "expandable-section__text--abc" },
+        text: "Join for free or go Premium."
       }),
-      node("div", { attrs: { class: "synopsis-copy" }, text })
+      node("div", { attrs: { class: "synopsis-copy" }, text: REAL_SYNOPSIS })
     ]
   });
-  assert.equal(
-    state(doc, navigator).synopsis,
-    "A long episode synopsis that comfortably clears the forty character floor."
-  );
+  assert.equal(state(garbage.doc, garbage.navigator).synopsis, null);
 });
 
-test("synopsis rejects watch/stream/upsell boilerplate and short text", () => {
+test("synopsis rejects stream/upsell, consent, language lists and short text", () => {
   const cases = [
-    "Watch Frieren Beyond Journey's End on Crunchyroll today.",
     "Stream every episode of Frieren on Crunchyroll in HD.",
     "Sign up for Crunchyroll Premium to unlock this episode now.",
+    "We've Updated Our Terms and Privacy Policy before you continue.",
+    "English, Spanish, Portuguese, French",
+    "Watch Frieren Beyond Journey's End on Crunchyroll today.",
     "Too short to show."
   ];
   for (const text of cases) {

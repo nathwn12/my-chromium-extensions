@@ -55,14 +55,36 @@
     synopsis: {
       minChars: 40,
       maxChars: 1000,
-      // first selector with acceptable text wins
-      dom: [
-        '[data-testid*="description" i]',
-        '*[class*="description" i]',
-        '*[class*="synopsis" i]',
-        "#showmedia_description_text"
-      ],
-      skipClassWords: ["video", "player", "control"]
+      // the real synopsis node is expandable-section__text--…
+      dom: ['*[class*="expandable-section" i]'],
+      // meta[name="description"] is prefixed with this clause, not boilerplate
+      watchPrefix: /^Watch\b.*?\bon Crunchyroll\b[.,!?]?\s*/i,
+      terms: /\b(we'?ve updated our terms|updated our terms|terms of (use|service)|privacy (policy|notice)|cookie (policy|consent))\b/i,
+      languages: [
+        "english",
+        "spanish",
+        "español",
+        "espanol",
+        "portuguese",
+        "português",
+        "portugues",
+        "french",
+        "français",
+        "francais",
+        "german",
+        "deutsch",
+        "italian",
+        "italiano",
+        "russian",
+        "русский",
+        "arabic",
+        "hindi",
+        "japanese",
+        "korean",
+        "chinese",
+        "tamil",
+        "telugu"
+      ]
     },
 
     title: {
@@ -164,11 +186,31 @@
     return out;
   }
 
+  /** Remove the leading "Watch … on Crunchyroll." clause from a meta description. */
+  function stripWatchPrefix(value) {
+    if (typeof value !== "string") return value;
+    return value.replace(RULES.synopsis.watchPrefix, "");
+  }
+
+  function isLanguageList(text) {
+    var parts = text.split(",");
+    if (parts.length < 4) return false;
+    var hits = 0;
+    for (var i = 0; i < parts.length; i += 1) {
+      var part = parts[i].trim().toLowerCase();
+      if (!part || part.split(/\s+/).length > 3) return false;
+      if (RULES.synopsis.languages.indexOf(part) !== -1) hits += 1;
+    }
+    return hits >= 2;
+  }
+
   function isBoilerplate(text) {
     var lower = text.toLowerCase();
     if (lower.indexOf("watch ") === 0 && lower.indexOf(" on crunchyroll") !== -1) return true;
     if (/\bstream\b/i.test(text) && /crunchyroll/i.test(text)) return true;
     if (/\b(premium|sign\s?-?up|subscribe|free\s+trial)\b/i.test(text)) return true;
+    if (RULES.synopsis.terms.test(text)) return true;
+    if (isLanguageList(text)) return true;
     return false;
   }
 
@@ -504,21 +546,8 @@
 
   function domSynopsis(doc) {
     for (var s = 0; s < RULES.synopsis.dom.length; s += 1) {
-      var selector = RULES.synopsis.dom[s];
-      var isClassSelector = selector.indexOf("[class*=") !== -1;
-      var nodes = queryAll(doc, selector);
+      var nodes = queryAll(doc, RULES.synopsis.dom[s]);
       for (var i = 0; i < nodes.length; i += 1) {
-        if (isClassSelector) {
-          var classes = String(attrOf(nodes[i], "class") || "").toLowerCase();
-          var skipped = false;
-          for (var w = 0; w < RULES.synopsis.skipClassWords.length; w += 1) {
-            if (classes.indexOf(RULES.synopsis.skipClassWords[w]) !== -1) {
-              skipped = true;
-              break;
-            }
-          }
-          if (skipped) continue;
-        }
         var text = cleanSynopsis(textOf(nodes[i]));
         if (text) return text;
       }
@@ -559,15 +588,15 @@
   function readSynopsis(ld, doc) {
     if (ld && ld.description) return ld.description;
 
-    var metaDescription = cleanSynopsis(
-      attrOf(queryOne(doc, RULES.meta.description), "content")
-    );
-    if (metaDescription) return metaDescription;
-
     var ogDescription = cleanSynopsis(
       attrOf(queryOne(doc, RULES.meta.ogDescription), "content")
     );
     if (ogDescription) return ogDescription;
+
+    var metaDescription = cleanSynopsis(
+      stripWatchPrefix(attrOf(queryOne(doc, RULES.meta.description), "content"))
+    );
+    if (metaDescription) return metaDescription;
 
     return domSynopsis(doc);
   }
