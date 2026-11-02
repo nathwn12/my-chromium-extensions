@@ -226,15 +226,21 @@
   }
 
   /**
-   * The TVEpisode name is "<series> | <episode>" on the live page; remove the
-   * series half only when it duplicates the series we already resolved.
+   * The TVEpisode name is "<series> | <episode>" on the live page. Remove the
+   * series half when it duplicates the resolved series, and still cut a leading
+   * "<something> | " when no series resolved: the raw composite must never
+   * reach the presence, whatever the page omitted.
    */
   function stripSeriesPrefix(name, series) {
-    if (!name || !series) return name || null;
-    var prefix = series + " | ";
-    if (name.slice(0, prefix.length).toLowerCase() === prefix.toLowerCase()) {
-      return name.slice(prefix.length).trim() || null;
+    if (!name) return null;
+    if (series) {
+      var prefix = series + " | ";
+      if (name.slice(0, prefix.length).toLowerCase() === prefix.toLowerCase()) {
+        return name.slice(prefix.length).trim() || null;
+      }
     }
+    var bar = name.indexOf(" | ");
+    if (bar > 0) return name.slice(bar + 3).trim() || null;
     return name;
   }
 

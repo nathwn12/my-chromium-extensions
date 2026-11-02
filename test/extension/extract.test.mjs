@@ -621,6 +621,24 @@ test("episodeTitle falls back to VideoObject name, then a stripped TVEpisode nam
   const stripped = state(episodeOnly.doc, episodeOnly.navigator);
   assert.equal(stripped.episodeTitle, "E1 - Alone and Lonesome");
   assert.notEqual(stripped.episodeTitle, DARLING_RAW_TITLE);
+
+  // No series identity anywhere (no partOfSeries/partOfSeason name, no DOM
+  // heading): the composite must still be cut, never returned raw.
+  const noSeries = makeDocument({
+    href: DARLING_WATCH_URL,
+    children: [
+      jsonLd({
+        "@type": "TVEpisode",
+        "@id": DARLING_WATCH_URL,
+        url: DARLING_WATCH_URL,
+        name: DARLING_RAW_TITLE,
+        episodeNumber: 1
+      })
+    ]
+  });
+  const bare = state(noSeries.doc, noSeries.navigator);
+  assert.equal(bare.episodeTitle, "E1 - Alone and Lonesome");
+  assert.notEqual(bare.episodeTitle, DARLING_RAW_TITLE);
 });
 
 test("seriesUrl: partOfSeries.@id, then partOfSeason.@id, then show-title-link", () => {
