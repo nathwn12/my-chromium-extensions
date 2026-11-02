@@ -54,6 +54,6 @@ packages/
 
 Local-first: unpacked loading only, no store listing, no npm release, no telemetry.
 
-## License
+## Links
 
-MIT — see [LICENSE](LICENSE).
+- [MIT](LICENSE)
