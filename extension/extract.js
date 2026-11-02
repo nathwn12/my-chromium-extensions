@@ -117,7 +117,15 @@
         "series",
         "home",
         "sign in",
-        "premium"
+        "premium",
+        // site chrome that the SPA renders before the watch page settles
+        "explore",
+        "browse",
+        "search",
+        "news",
+        "games",
+        "account",
+        "settings"
       ]
     }
   };
