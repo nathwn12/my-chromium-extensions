@@ -1105,6 +1105,13 @@ async function main() {
     'permissions=' + JSON.stringify(manifest.permissions)
   );
   check(
+    'manifest description names YouTube Music, not any tab (static)',
+    typeof manifest.description === 'string' &&
+      manifest.description.indexOf('YouTube Music') !== -1 &&
+      manifest.description.indexOf('any tab') === -1,
+    'description=' + JSON.stringify(manifest.description)
+  );
+  check(
     'manifest host_permissions is exactly music.youtube.com (static)',
     JSON.stringify(manifest.host_permissions) === JSON.stringify(['https://music.youtube.com/*']),
     'host_permissions=' + JSON.stringify(manifest.host_permissions)
