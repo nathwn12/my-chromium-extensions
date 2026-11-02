@@ -1,4 +1,4 @@
-# Crunchyroll Discord Presence
+# Crunchy Presence
 
 Shows the Crunchyroll episode you are watching as Discord rich presence. Local only: a Chrome MV3 extension reads the page, a small Node native host forwards the activity to Discord over its local IPC pipe, and nothing is uploaded anywhere.
 
@@ -32,7 +32,7 @@ From the repository root:
 node scripts/install-host.mjs
 ```
 
-This writes `%LOCALAPPDATA%\crunchyroll-discord-presence\host.cmd` and `host-manifest.json`, registers the host for Chrome (and for Edge and Brave, which share the installer), then prints a PASS/FAIL line per check and the extension ID it registered against. `node scripts/install-host.mjs --check` verifies without writing.
+This writes `%LOCALAPPDATA%\crunchy-presence\host.cmd` and `host-manifest.json`, registers the host for Chrome (and for Edge and Brave, which share the installer), then prints a PASS/FAIL line per check and the extension ID it registered against. `node scripts/install-host.mjs --check` verifies without writing.
 
 ### 2. Load the extension
 

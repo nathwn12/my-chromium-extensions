@@ -2,7 +2,7 @@
 
 ## Ready
 
-- Extension name matches listing: `Slowed Reverb Audio`
+- Extension name matches listing: `Slowed Reverb`
 - Icons present: 16, 32, 48, 128
 - No remote code loading
 - Audio processing stays local

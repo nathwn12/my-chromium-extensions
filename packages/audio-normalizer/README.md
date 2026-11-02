@@ -1,7 +1,7 @@
 <p align="center">
-  <img src="audio/icon-128.png" width="120" height="120" alt="Tab Audio Normalizer icon" />
+  <img src="audio/icon-128.png" width="120" height="120" alt="Audio Normalizer icon" />
 </p>
-<h1 align="center">Tab Audio Normalizer</h1>
+<h1 align="center">Audio Normalizer</h1>
 <p align="center"><strong>Keep every site at one comfortable loudness in Chrome and Brave.</strong></p>
 
 ## Install
@@ -9,7 +9,7 @@
 There is no store listing, so you load it unpacked from source. Clone the repo first:
 
 ```bash
-git clone https://github.com/nathwn12/tab-audio-normalizer.git
+git clone https://github.com/nathwn12/audio-normalizer.git
 ```
 
 Then open `chrome://extensions`, enable **Developer mode**, click **Load unpacked**, and select the cloned folder (the one containing `manifest.json`). Visit a site with audio, click the extension icon, and switch **Active** on for that site.
@@ -21,8 +21,8 @@ Once loaded, the extension measures the loudness of the sites you activate and m
 There is no build step, so the checked-out folder is the extension. To pin an exact copy:
 
 ```bash
-git clone https://github.com/nathwn12/tab-audio-normalizer.git
-cd tab-audio-normalizer
+git clone https://github.com/nathwn12/audio-normalizer.git
+cd audio-normalizer
 git checkout 862797bf53accbb8964595bf55638bdc272551d7
 ```
 
@@ -51,7 +51,7 @@ Open a page that plays audio and click the extension icon. The popup names the c
 
 ## Links
 
-- Source: https://github.com/nathwn12/tab-audio-normalizer
+- Source: https://github.com/nathwn12/audio-normalizer
 - Privacy policy: [PRIVACY_POLICY.md](PRIVACY_POLICY.md)
 - Release history: [CHANGELOG.md](CHANGELOG.md)
 - License: [LICENSE](LICENSE) (MIT)

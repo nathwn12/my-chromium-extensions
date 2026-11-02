@@ -1,5 +1,5 @@
 /* eslint-disable */
-// Global type declarations for the Tab Audio Normalizer extension
+// Global type declarations for the Audio Normalizer extension
 // These ensure tsc --checkJs passes on the JS source files
 
 /** Typed interface matching the API returned by shared.js factory function */

@@ -85,7 +85,7 @@ export async function removeHost(options = {}) {
 const USAGE = `usage: node scripts/uninstall-host.mjs [--check] [--json]
 
 Removes the three native messaging registry keys and
-%LOCALAPPDATA%\\crunchyroll-discord-presence. --check only reports presence.`;
+%LOCALAPPDATA%\\crunchy-presence. --check only reports presence.`;
 
 function parseArgs(argv) {
   const options = { check: false, json: false, help: false };

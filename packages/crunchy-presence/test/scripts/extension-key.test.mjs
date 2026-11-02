@@ -226,7 +226,7 @@ test('installHost --check writes nothing and reports a missing install', async (
   const result = await installHost({ root, localAppData, exec: registry.exec, check: true });
   assert.equal(result.ok, false);
   assert.equal(registry.calls.filter((args) => args[0] === 'add').length, 0);
-  assert.equal(existsSync(path.join(localAppData, 'crunchyroll-discord-presence')), false);
+  assert.equal(existsSync(path.join(localAppData, 'crunchy-presence')), false);
 });
 
 test('verifyHost fails when a registry default points somewhere else', async (t) => {

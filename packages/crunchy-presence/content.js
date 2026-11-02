@@ -1,5 +1,5 @@
 /**
- * Crunchyroll Discord Presence — content script (classic script).
+ * Crunchy Presence — content script (classic script).
  *
  * Reads the page through `extract.js` (loaded first by the manifest) and
  * reports flat `{kind:"crp-state", ...}` payloads to the service worker.

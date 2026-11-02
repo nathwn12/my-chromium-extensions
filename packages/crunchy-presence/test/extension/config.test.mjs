@@ -24,7 +24,7 @@ test("the built-in application ID is a real ID the native host accepts", () => {
 });
 
 test("HOST_NAME is the native messaging host the installer registers", () => {
-  assert.equal(HOST_NAME, "com.nathwn12.crunchyroll_presence");
+  assert.equal(HOST_NAME, "com.nathwn12.crunchy_presence");
 });
 
 test("resolveClientId falls back to the built-in for missing or malformed values", () => {

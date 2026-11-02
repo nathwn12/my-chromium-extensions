@@ -2,7 +2,7 @@
 
 ## Ready
 
-- Extension name matches listing: `Tab Audio Normalizer`
+- Extension name matches listing: `Audio Normalizer`
 - Icons present: 16, 32, 48, 128
 - No remote code loading
 - Audio processing stays local

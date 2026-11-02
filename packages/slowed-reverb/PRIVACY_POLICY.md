@@ -1,6 +1,6 @@
 # Privacy Policy
 
-Slowed Reverb Audio processes audio locally in the browser.
+Slowed Reverb processes audio locally in the browser.
 
 ## Data Collection
 

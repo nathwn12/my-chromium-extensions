@@ -19,8 +19,8 @@ import { REPO_ROOT, deriveIdFromManifest } from './extension-key.mjs';
 
 const execFileAsync = promisify(execFile);
 
-export const HOST_NAME = 'com.nathwn12.crunchyroll_presence';
-export const INSTALL_DIR_NAME = 'crunchyroll-discord-presence';
+export const HOST_NAME = 'com.nathwn12.crunchy_presence';
+export const INSTALL_DIR_NAME = 'crunchy-presence';
 
 export const REGISTRY_ROOTS = Object.freeze([
   { label: 'Chrome', key: 'HKCU\\Software\\Google\\Chrome\\NativeMessagingHosts' },
@@ -60,13 +60,13 @@ export function installPaths({ root = REPO_ROOT, localAppData = process.env.LOCA
 }
 
 export function buildHostCmd({ nodePath, hostScript }) {
-  return `@echo off\r\nrem Chrome native messaging host for crunchyroll-discord-presence\r\n"${nodePath}" "${hostScript}" %*\r\n`;
+  return `@echo off\r\nrem Chrome native messaging host for crunchy-presence\r\n"${nodePath}" "${hostScript}" %*\r\n`;
 }
 
 export function buildHostManifest({ hostPath, extensionId }) {
   return {
     name: HOST_NAME,
-    description: 'Crunchyroll Discord presence native messaging host',
+    description: 'Crunchy Presence native messaging host',
     path: hostPath,
     type: 'stdio',
     allowed_origins: [`chrome-extension://${extensionId}/`],

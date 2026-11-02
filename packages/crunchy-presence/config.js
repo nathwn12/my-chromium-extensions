@@ -5,7 +5,7 @@
  * application, so there is no paste step. A stored 17-20 digit ID overrides it.
  */
 
-export const HOST_NAME = "com.nathwn12.crunchyroll_presence";
+export const HOST_NAME = "com.nathwn12.crunchy_presence";
 export const DEFAULT_CLIENT_ID = "1566530911514923188";
 
 const CLIENT_ID_RE = /^[0-9]{17,20}$/;

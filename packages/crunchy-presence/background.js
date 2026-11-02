@@ -1,5 +1,5 @@
 /**
- * Crunchyroll Discord Presence — MV3 service worker (module).
+ * Crunchy Presence — MV3 service worker (module).
  *
  * The pure helpers at the top are exported so the test suite can import this
  * file without a `chrome` global; everything that touches the extension APIs

@@ -1,7 +1,7 @@
 <p align="center">
-  <img src="audio/icon-128.png" width="120" height="120" alt="Slowed Reverb Audio icon" />
+  <img src="audio/icon-128.png" width="120" height="120" alt="Slowed Reverb icon" />
 </p>
-<h1 align="center">Slowed Reverb Audio</h1>
+<h1 align="center">Slowed Reverb</h1>
 <p align="center"><strong>Slow a YouTube track and wash it in plate reverb, right in your browser.</strong></p>
 
 ## Install
@@ -9,7 +9,7 @@
 Clone the repo, then load it as an unpacked extension:
 
 ```sh
-git clone https://github.com/nathwn12/slowed-reverb-audio.git
+git clone https://github.com/nathwn12/slowed-reverb.git
 ```
 
 Open `chrome://extensions`, switch on Developer mode, choose Load unpacked, and select the repo folder holding `manifest.json`.
@@ -21,8 +21,8 @@ Once it loads, open a YouTube or YouTube Music tab, start playback, and click th
 Pin one exact commit for a repeatable install:
 
 ```sh
-git clone https://github.com/nathwn12/slowed-reverb-audio.git
-git -C slowed-reverb-audio checkout 4efc3c2a25b2cd1b6e3dd9e9e81ec55f822dca71
+git clone https://github.com/nathwn12/slowed-reverb.git
+git -C slowed-reverb checkout 4efc3c2a25b2cd1b6e3dd9e9e81ec55f822dca71
 ```
 
 There is no hosted page, so the repo folder itself is the install source. Reload the extension from `chrome://extensions` after you pull new commits.
@@ -58,7 +58,7 @@ Your per-site speed, reverb, and Active state persist across restart and apply a
 
 ## Links
 
-- Repository: https://github.com/nathwn12/slowed-reverb-audio
+- Repository: https://github.com/nathwn12/slowed-reverb
 - Privacy policy: PRIVACY_POLICY.md
 - Changelog: CHANGELOG.md
 - License: MIT, see [LICENSE](LICENSE)

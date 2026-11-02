@@ -1,5 +1,5 @@
 /**
- * Crunchyroll Discord Presence — DOM extraction.
+ * Crunchy Presence — DOM extraction.
  *
  * Loaded by the manifest as a *classic* content script (Chrome cannot load
  * content scripts as ES modules), so it exposes `globalThis.CrunchyrollExtract`.

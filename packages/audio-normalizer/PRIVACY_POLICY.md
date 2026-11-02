@@ -1,6 +1,6 @@
 # Privacy Policy
 
-Tab Audio Normalizer processes audio locally in the browser.
+Audio Normalizer processes audio locally in the browser.
 
 ## Data Collection
 
