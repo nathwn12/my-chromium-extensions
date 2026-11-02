@@ -1,0 +1,53 @@
+{
+  "manifest_version": 3,
+  "name": "Crunchyroll Discord Presence",
+  "version": "1.0.0",
+  "description": "Show what you are watching on Crunchyroll as Discord rich presence. Runs entirely on this machine.",
+  "minimum_chrome_version": "120",
+  "permissions": [
+    "nativeMessaging",
+    "storage",
+    "alarms"
+  ],
+  "host_permissions": [
+    "*://*.crunchyroll.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://*.crunchyroll.com/*"
+      ],
+      "js": [
+        "extract.js",
+        "content.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": true
+    }
+  ],
+  "action": {
+    "default_title": "Crunchyroll Discord Presence",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAkBEsjck6wg0NeN69lz2i+d9K4KzEA7nvkvbIwlE1C7zkhycKSG9UyStn0WQPHJH76yvcEl28UORDEg/DLGJoCr/Ws7tRMOyl1BodD04MeNfUoJyGfHjvHTr9dCXdBbd3vxU63R4gAJ+jFbgqkq9zz42l0QumBdpS0xWym37kHIVva5GfQg9Zrs/DlnGfhLumPkg9OFEk+05LnHVS/KF8oqhRKoLgi/gmCa098Y8rFgXmMQMgzSTvWai7oxqlwoJzdZEnGEs7kcu3Nq5WononrhnvT6k0pm2ziAxQXpvR5u7Bg6PIjdVtWlKjPOS9YiqDO4DF1Bk2CBZALPxBi3og5QIDAQAB"
+}

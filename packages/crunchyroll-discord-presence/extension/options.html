@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Crunchyroll Discord Presence — Settings</title>
+    <link rel="stylesheet" href="options.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="hero">
+        <img src="icons/icon48.png" alt="" width="40" height="40" />
+        <div>
+          <h1>Crunchyroll Discord Presence</h1>
+          <p class="sub">Local only. Nothing leaves this machine except the Discord IPC call.</p>
+        </div>
+      </header>
+
+      <section class="card" aria-labelledby="setup-title">
+        <h2 id="setup-title">1. Discord application</h2>
+        <p class="hint">
+          Presence works out of the box with the built-in <strong>Crunchyroll</strong> application. Save a
+          different application ID only if you want your own application name and artwork in Discord.
+        </p>
+        <ol class="steps">
+          <li>
+            Open
+            <a href="https://discord.com/developers/applications" target="_blank" rel="noreferrer noopener"
+              >discord.com/developers/applications</a
+            >.
+          </li>
+          <li>Click <em>New Application</em>, name it, and create it.</li>
+          <li>Copy the <em>Application ID</em> from the General Information page.</li>
+        </ol>
+
+        <form id="client-form" novalidate>
+          <label for="clientId">Application ID (built-in: Crunchyroll)</label>
+          <div class="row">
+            <input
+              id="clientId"
+              name="clientId"
+              type="text"
+              inputmode="numeric"
+              autocomplete="off"
+              spellcheck="false"
+              maxlength="20"
+              placeholder="123456789012345678"
+              aria-describedby="clientId-help clientId-error"
+            />
+            <button type="submit" class="primary">Save</button>
+          </div>
+          <p id="clientId-help" class="hint">
+            17 to 20 digits. Clear the field and save to switch back to the built-in application.
+          </p>
+          <p id="clientId-error" class="error" role="alert" hidden></p>
+        </form>
+      </section>
+
+      <section class="card" aria-labelledby="presence-title">
+        <h2 id="presence-title">2. Presence</h2>
+        <label class="toggle" for="synopsis">
+          <input id="synopsis" type="checkbox" checked />
+          <span>Show episode synopsis in presence</span>
+        </label>
+        <p class="hint">
+          When an episode has a synopsis, Discord shows it instead of the episode timer.
+        </p>
+      </section>
+
+      <section class="card" aria-labelledby="status-title">
+        <h2 id="status-title">3. Status</h2>
+        <dl class="status" aria-live="polite">
+          <div>
+            <dt>Bridge</dt>
+            <dd id="bridgeState" class="pill">unknown</dd>
+          </div>
+          <div>
+            <dt>Discord application</dt>
+            <dd id="appName">—</dd>
+          </div>
+          <div>
+            <dt>Current activity</dt>
+            <dd id="currentActivity">—</dd>
+          </div>
+          <div>
+            <dt>Last error</dt>
+            <dd id="lastError">—</dd>
+          </div>
+        </dl>
+        <div class="row">
+          <button id="test" type="button">Test presence</button>
+          <button id="refresh" type="button">Refresh</button>
+        </div>
+        <p id="test-result" class="hint" role="status"></p>
+      </section>
+
+      <section class="card" aria-labelledby="diag-title">
+        <h2 id="diag-title">4. Diagnostics</h2>
+        <p class="hint">Last extracted page state plus bridge status. Paste this when reporting a problem.</p>
+        <label class="sr-only" for="diagnostics">Diagnostics</label>
+        <textarea id="diagnostics" readonly rows="12" spellcheck="false"></textarea>
+        <div class="row">
+          <button id="copy" type="button">Copy diagnostics</button>
+          <span id="copy-result" class="hint" role="status"></span>
+        </div>
+      </section>
+    </main>
+    <script type="module" src="options.js"></script>
+  </body>
+</html>
