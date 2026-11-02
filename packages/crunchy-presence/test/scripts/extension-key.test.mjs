@@ -147,7 +147,7 @@ test('--print emits the id on its own line', async (t) => {
 /* --------------------------------------------------------------- installer */
 
 test('host manifest and launcher are built from absolute paths', () => {
-  const paths = installPaths({ root: 'Q:\\repo', localAppData: 'C:\\Users\\x\\AppData\\Local' });
+  const paths = installPaths({ root: 'Q:\\repo', localAppData: 'C:\\example\\AppData\\Local' });
   const manifest = buildHostManifest({ hostPath: paths.cmd, extensionId: FIXTURE_ID });
   assert.equal(manifest.name, HOST_NAME);
   assert.equal(manifest.type, 'stdio');
