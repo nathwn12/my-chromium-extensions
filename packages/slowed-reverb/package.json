@@ -3,7 +3,7 @@
   "license": "MIT",
   "scripts": {
     "lint": "eslint .",
-    "test": "node test/mute-enforce.test.js"
+    "test": "node ../../scripts/run-tests.mjs test"
   },
   "devDependencies": {
     "@playwright/test": "^1.59.1",

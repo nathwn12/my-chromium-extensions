@@ -3,20 +3,25 @@ on:
   push:
   pull_request:
   workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   audio-normalizer:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version-file: .nvmrc
           cache: npm
       - name: Install (root lockfile)
         run: npm ci
       - name: Tests
         working-directory: packages/audio-normalizer
-        run: node --test tests/
+        run: npm test
       - name: Feed transition QA
         working-directory: packages/audio-normalizer
         run: node qa/feed-transition-qa.cjs
@@ -27,34 +32,34 @@ jobs:
         working-directory: packages/audio-normalizer
         run: npm run typecheck
   slowed-reverb:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version-file: .nvmrc
           cache: npm
       - name: Install (root lockfile)
         run: npm ci
       - name: Lint
         working-directory: packages/slowed-reverb
         run: npm run lint
-      - name: Mute enforce test
+      - name: Tests
         working-directory: packages/slowed-reverb
-        run: node test/mute-enforce.test.js
+        run: npm test
   crunchy-presence:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version-file: .nvmrc
           cache: npm
       - name: Install (root lockfile)
         run: npm ci
-      - name: Test
+      - name: Tests
         working-directory: packages/crunchy-presence
         run: npm test
       - name: Native host selftest
         working-directory: packages/crunchy-presence
-        run: node native/host.mjs --selftest
+        run: npm run selftest

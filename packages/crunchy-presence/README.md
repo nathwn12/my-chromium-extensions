@@ -72,8 +72,8 @@ The options page carries one **Application ID** field, pre-filled with the built
 ## Checks
 
 ```
-node --test test/
-node native/host.mjs --selftest
+npm test
+npm run selftest
 ```
 
 The first runs the test suite. The second exercises the host end to end against an in-process fake Discord pipe and prints JSON with an `ok` flag.

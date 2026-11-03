@@ -43,6 +43,12 @@ Open a page that plays audio and click the extension icon. The popup names the c
 - Quiet-passage lift and level-step recovery are fixed: the dialogue fixture's quiet section rises +6.74 dB, its loud:quiet spread shrinks 12.89 dB (26.02 → 13.13), its tail settles at -20.00 LUFS, and the 60 s-quiet/30 s-loud step lands at -20.40 LUFS (delta -0.40, tolerance ±1.0) — measured offline in the loudness harness (qa/loudness-verify.cjs, release gate), not verified in a browser.
 - Feed scroll without jumpscares: a new video in a scroll feed starts at the previous video's settled gain and is re-levelled from a fresh 50 ms probe, so a louder next video is cut within ~250 ms (within 1.5 dB of its own settled gain; same-loudness moves <= 0.5 dB; quiet next videos are never boosted) — measured offline, not verified in a browser.
 
+## Checks
+
+```
+npm test
+```
+
 ## Requirements
 
 - Chrome or Brave on desktop (Chromium with Manifest V3 support). Firefox is not supported.
