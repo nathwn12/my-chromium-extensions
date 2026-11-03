@@ -32,6 +32,6 @@
 
 ## Git Hygiene
 - Run `git status` before committing. `.gitignore` is aggressive (`*.json`, `tests/`, `qa/`) — new docs/config are silently ignored; only already-tracked files stay tracked.
-- Tracked extension files: `background.js`, `content-script.js`, `page-hook.js`, `popup.js`, `popup.html`, `shared.js`, `manifest.json`, `audio/`, `global.d.ts`, `README.md`, `PRIVACY_POLICY.md`, `STORE_SUBMISSION.md`. `package-lock.json`, `tests/`, `qa/`, `.opencode/`, `node_modules/` stay local (`package.json` / `tsconfig.json` are tracked).
+- Tracked extension files: `background.js`, `content-script.js`, `page-hook.js`, `popup.js`, `popup.html`, `shared.js`, `manifest.json`, `audio/`, `global.d.ts`, `README.md`, `PRIVACY_POLICY.md`, `STORE_SUBMISSION.md`, `tests/`. `package-lock.json`, `qa/` (except tracked exceptions), `.opencode/`, `node_modules/` stay local (`package.json` / `tsconfig.json` are tracked).
 - Tracked QA exceptions: `qa/loudness-verify.cjs` (release gate), `qa/feed-transition-qa.cjs`, `qa/program-boundary-qa.cjs` — the `.gitignore` exceptions keep exactly these three tracked; fixtures/outputs stay ignored.
 - Consult `docs/DELETION_LOG.md` before deleting code — it records prior dead-code removals and ISOLATED/MAIN duplication rationale.

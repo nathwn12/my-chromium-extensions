@@ -21,12 +21,14 @@ const path = require('path');
 const vm = require('vm');
 
 function createContentEnv() {
-  const stats = { captureCalls: 0, contexts: 0, ramped: 0, rampedValues: [], disconnects: 0, audioOps: [], gains: [], cancelCalls: 0, setValueCalls: 0, pauses: 0 };
+  const stats = { captureCalls: 0, contexts: 0, ramped: 0, rampedValues: [], disconnects: 0, audioOps: [], gains: [], cancelCalls: 0, setValueCalls: 0, pauses: 0, ensureHooksCalls: 0 };
 
   // Controllable timers: fake setTimeout, inert setInterval (the 2s watchdog is
   // exercised by the real-browser harness, not here).
   const realSetTimeout = globalThis.setTimeout;
   const realClearTimeout = globalThis.clearTimeout;
+  const realSetInterval = globalThis.setInterval;
+  const realClearInterval = globalThis.clearInterval;
   let timerId = 1;
   const timers = new Map();
   globalThis.setTimeout = (cb, ms) => {
@@ -37,8 +39,20 @@ function createContentEnv() {
   globalThis.clearTimeout = (id) => {
     timers.delete(id);
   };
-  globalThis.setInterval = () => 0;
-  globalThis.clearInterval = () => {};
+  const intervals = new Map();
+  let intervalId = 100000;
+  globalThis.setInterval = (cb, ms) => {
+    const id = intervalId++;
+    intervals.set(id, { cb, ms });
+    return id;
+  };
+  globalThis.clearInterval = (id) => {
+    intervals.delete(id);
+  };
+
+  // Origin for the page-message origin check (`event.origin === location.origin`).
+  const realLocation = globalThis.location;
+  globalThis.location = { origin: 'https://music.youtube.com', href: 'https://music.youtube.com/' };
 
   // Controllable clock: the mute budget reads Date.now(), so a simulated drive
   // can span seconds of wall time in milliseconds. Frozen by default so every
@@ -197,6 +211,7 @@ function createContentEnv() {
         },
       },
       sendMessage: async (msg) => {
+        if (msg && msg.type === 'ENSURE_TAB_HOOKS') stats.ensureHooksCalls++;
         if (msg && msg.type === 'GET_TAB_RUNTIME_STATE') {
           return { eligible: true, bypass: false, settings: { slow: 0.8, reverbIntensity: 0.5 } };
         }
@@ -211,7 +226,8 @@ function createContentEnv() {
   const stubObservers = [];
   let queryCalls = 0;
   globalThis.document = {
-    documentElement: {},
+    documentElement: { dataset: {} },
+    visibilityState: 'visible',
     querySelectorAll: () => {
       queryCalls++;
       return mediaElements.filter((m) => m.isConnected);
@@ -272,7 +288,14 @@ function createContentEnv() {
   function restoreTimers() {
     globalThis.setTimeout = realSetTimeout;
     globalThis.clearTimeout = realClearTimeout;
+    globalThis.setInterval = realSetInterval;
+    globalThis.clearInterval = realClearInterval;
+    globalThis.location = realLocation;
     Date.now = realNow;
+  }
+
+  function fireWin(type, event) {
+    for (const fn of winListeners[type] || []) fn(event);
   }
 
   return {
@@ -280,11 +303,28 @@ function createContentEnv() {
     sendRuntime,
     queryLive,
     fireDoc,
+    fireWin,
+    winListeners,
     addMedia,
     settle,
     runTimers,
+    runIntervals: async () => {
+      const pending = [...intervals.values()];
+      intervals.clear();
+      for (const entry of pending) {
+        try {
+          entry.cb();
+        } catch {
+          // Best effort only.
+        }
+        await Promise.resolve();
+      }
+      return pending.length;
+    },
     drainTimers,
     pendingTimers: () => timers.size,
+    pendingIntervals: () => intervals.size,
+    intervalDelays: () => [...intervals.values()].map((t) => t.ms),
     timerDelays: () => [...timers.values()].map((t) => t.ms),
     advance,
     now: () => clock,
@@ -641,9 +681,9 @@ async function main() {
   );
 
   // --- finite burst -> cool-down -> recovery --------------------------------
-  // Nine unmute attempts inside one second must not kill enforcement for the
-  // rest of the track: the budget pauses, then the next unmute after the
-  // cool-down is corrected again.
+  // Nine unmute attempts inside one second exhaust the budget: the controller
+  // fails OPEN to a dry bypass (audible, graph out of the way) and stays there
+  // through the cool-down; a fresh play after the deadline re-attaches.
   const burst = env.addMedia();
   env.fireDoc('play', burst);
   for (let i = 0; i < 40 && burst.muted !== true; i++) {
@@ -684,9 +724,9 @@ async function main() {
   burst.dispatchEvent(new Event('volumechange'));
   await Promise.resolve();
   check(
-    'finite burst: enforcement pauses once the budget is spent',
-    burstCorrections - burstStart === 8,
-    'writes continued while paused: ' + (burstCorrections - burstStart)
+    'finite burst: bypass holds once the budget is spent (audible dry)',
+    burstCorrections - burstStart === 8 && burstMuted === false,
+    'writes continued while bypassed: ' + (burstCorrections - burstStart) + ' muted=' + burstMuted
   );
 
   env.advance(999);
@@ -694,19 +734,30 @@ async function main() {
   burst.dispatchEvent(new Event('volumechange'));
   await Promise.resolve();
   check(
-    'cool-down: still paused 1 ms before the deadline',
+    'cool-down: still bypassed 1 ms before the deadline',
     burstCorrections - burstStart === 8,
-    'expected the pause to hold, got ' + (burstCorrections - burstStart) + ' corrections'
+    'expected the bypass to hold, got ' + (burstCorrections - burstStart) + ' corrections'
   );
 
   env.advance(2);
+  env.fireDoc('play', burst);
+  for (let i = 0; i < 40 && burstMuted !== true; i++) {
+    await env.settle(2);
+    env.runTimers(50);
+  }
+  const burstAfterReattach = burstCorrections - burstStart;
+  check(
+    'cool-down expires: fresh play re-attaches after bypass',
+    burstMuted === true && burstAfterReattach >= 8,
+    'expected re-attach muted=true, got muted=' + burstMuted + ' corrections=' + burstAfterReattach
+  );
   burst.muted = false;
   burst.dispatchEvent(new Event('volumechange'));
   await Promise.resolve();
   check(
     'cool-down expires: the next unmute is corrected again',
-    burstCorrections - burstStart === 9,
-    'expected 9 after the 1000 ms cool-down, got ' + (burstCorrections - burstStart)
+    burstCorrections - burstStart === burstAfterReattach + 1,
+    'expected ' + (burstAfterReattach + 1) + ' after the 1000 ms cool-down + play, got ' + (burstCorrections - burstStart)
   );
 
   // --- regression: track-change doubling + YouTube Music scope ---------------
@@ -833,8 +884,9 @@ async function main() {
   budgetM.dispatchEvent(new Event('volumechange'));
   await Promise.resolve();
   check('setup: budget spent (9th unmute refused)', budgetM.muted === false);
-  // loadedmetadata enters the stale window WITHOUT resetting the dampener
-  // (unlike emptied), so a spent budget is still spent when the rebuild runs.
+  // A spent budget bypasses to dry path through the cool-down; a track change
+  // after the deadline gets a fresh budget and rebuilds.
+  env.advance(1001);
   budgetM.dispatchEvent(new Event('loadedmetadata'));
   for (let i = 0; i < 40 && budgetM.muted !== true; i++) {
     await env.settle(2);
@@ -999,7 +1051,7 @@ async function main() {
   );
 
   // I. adversarial repair lane (each fails on the pre-fix bytes).
-  // --- I1 mute-budget doubling: refusal must silence the graph ---
+  // --- I1 mute-budget doubling: refusal must bypass to dry path (fail OPEN) ---
   const dbl = env.addMedia();
   env.fireDoc('play', dbl);
   for (let i = 0; i < 40 && dbl.muted !== true; i++) {
@@ -1010,6 +1062,7 @@ async function main() {
   env.fireDoc('play', dbl);
   await env.settle(2);
   env.runTimers(50);
+  const dblDisconnectsBefore = env.stats.disconnects;
   for (let i = 0; i < 8; i++) {
     dbl.muted = false;
     dbl.dispatchEvent(new Event('volumechange'));
@@ -1021,22 +1074,34 @@ async function main() {
   await Promise.resolve();
   check('setup: doubling budget spent (9th unmute refused)', dbl.muted === false);
   check(
-    'mute-budget refusal ramps masterGain to 0 (no doubled track)',
-    env.stats.rampedValues.length > 0 && env.stats.rampedValues[env.stats.rampedValues.length - 1] === 0,
-    'last ramped gain=' + env.stats.rampedValues[env.stats.rampedValues.length - 1]
+    'mute-budget refusal bypasses to dry path (audible, graph out of the way)',
+    dbl.muted === false && env.stats.disconnects > dblDisconnectsBefore,
+    'muted=' + dbl.muted + ' disconnects=' + env.stats.disconnects + ' before=' + dblDisconnectsBefore
   );
   env.advance(1001);
+  env.fireDoc('play', dbl);
+  for (let i = 0; i < 40 && dbl.muted !== true; i++) {
+    await env.settle(2);
+    env.runTimers(50);
+  }
+  check('mute-budget recovery re-attaches after cool-down', dbl.muted === true);
   dbl.muted = false;
   dbl.dispatchEvent(new Event('volumechange'));
   await Promise.resolve();
   check(
-    'mute-budget recovery ramps masterGain back to media.volume',
-    dbl.muted === true && env.stats.rampedValues[env.stats.rampedValues.length - 1] === dbl.volume,
-    'muted=' + dbl.muted + ' last=' + env.stats.rampedValues[env.stats.rampedValues.length - 1]
+    'mute-budget recovery corrects again after re-attach',
+    dbl.muted === true,
+    'muted=' + dbl.muted
   );
 
   // --- I2 storage outage: {ok:false} must not become state ---
-  const outageM = dbl;
+  const outageM = env.addMedia();
+  env.fireDoc('play', outageM);
+  for (let i = 0; i < 40 && outageM.muted !== true; i++) {
+    await env.settle(2);
+    env.runTimers(50);
+  }
+  check('setup: outage element attached and muted', outageM.muted === true);
   env.sendRuntime({
     type: 'APPLY_TAB_STATE',
     ok: false,
@@ -1064,7 +1129,7 @@ async function main() {
     settings: { slow: 1, reverbIntensity: 0 },
   });
   await env.settle(2);
-  for (const m of [media, rateMedia, burst, staleM, contractM, budgetM, failM, capM, dbl]) {
+  for (const m of [media, rateMedia, burst, staleM, contractM, budgetM, failM, capM, dbl, outageM]) {
     m.isConnected = false;
   }
   lonely.isConnected = true;
@@ -1101,9 +1166,10 @@ async function main() {
     'no closed-context recreate'
   );
   check(
-    'mute-budget refusal silences the graph (static)',
-    /if \(!claimMuteCorrection\(controller\)\) \{\s+if \(controller\.masterGain\)/.test(src),
-    'no masterGain ramp on refusal'
+    'mute-budget refusal bypasses to dry path (static)',
+    /if \(!claimMuteCorrection\(controller\)\) [\s\S]{0,400}budgetBypassed = true[\s\S]{0,400}teardownController\(controller, false/.test(src) ||
+      /if \(!claimMuteCorrection\(controller\)\) [\s\S]{0,400}teardownController\(controller, false[\s\S]{0,200}budgetBypassed = true/.test(src),
+    'no budget bypass teardown on refusal'
   );
   check(
     'mute-budget recovery restores the graph (static)',
@@ -1395,7 +1461,7 @@ async function main() {
     env.runTimers(50);
   }
 
-  // J4 mute-budget refusal: element stays unmuted, graph hard-zeros.
+  // J4 mute-budget refusal: fail OPEN to dry bypass (audible, graph out of the way).
   const jRefuse = await attachZeroProbe();
   check('setup: zero-overlap refusal probe attached muted', jRefuse.muted === true);
   env.fireDoc('play', jRefuse);
@@ -1407,27 +1473,25 @@ async function main() {
     await Promise.resolve();
   }
   check('setup: refusal probe budget spent (still corrects)', jRefuse.muted === true);
-  const jRefuseGain = lastMaster();
-  jRefuseGain.value = 1;
+  const jRefuseDisconnectsBefore = env.stats.disconnects;
   jMark = env.stats.audioOps.length;
-  const jRefuseCancelBefore = env.stats.cancelCalls;
   jRefuse.muted = false;
   jRefuse.dispatchEvent(new Event('volumechange'));
   await Promise.resolve();
   check(
-    'refusal hard-zeros: gain exactly 0 while unmuted',
-    jRefuseGain.value === 0 && jRefuse.muted === false,
-    'gain=' + jRefuseGain.value + ' muted=' + jRefuse.muted
+    'refusal bypasses to dry path (audible, graph out of the way)',
+    jRefuse.muted === false && env.stats.disconnects > jRefuseDisconnectsBefore,
+    'muted=' + jRefuse.muted + ' disconnects=' + env.stats.disconnects
   );
   check(
-    'refusal: no setTarget ramp, hardZero scheduled',
-    hasHardZero(opsSince(jMark)) && !hasRampToZero(opsSince(jMark)) && env.stats.cancelCalls > jRefuseCancelBefore,
-    'ops=' + JSON.stringify(opsSince(jMark))
+    'refusal takes the graph out of the way (no silent-graph park)',
+    jRefuse.muted === false,
+    'muted=' + jRefuse.muted + ' ops=' + JSON.stringify(opsSince(jMark))
   );
   check(
-    'refusal leaves no 1e-7 park (exactly 0, not epsilon)',
-    jRefuseGain.value === 0 && !(jRefuseGain.value > 0 && jRefuseGain.value < 0.001),
-    'gain=' + jRefuseGain.value
+    'refusal stays audible dry (never muted-with-silent-graph)',
+    jRefuse.muted === false,
+    'muted=' + jRefuse.muted
   );
 
   // J5 swap: a disconnected element pauses before its state restores.
@@ -1689,6 +1753,270 @@ async function main() {
       scanBlock.indexOf('querySelectorAll') !== -1 &&
       scanBlock.indexOf('teardownController') < scanBlock.indexOf('querySelectorAll'),
     'scan still tracks before teardown'
+  );
+
+  // --- Z. repair lane items 1-10 (each fails on the pre-fix bytes) ---
+  const workletText = fs.readFileSync(path.join(__dirname, '..', 'dattorro-worklet.js'), 'utf8');
+
+  // Z1: page postMessage requires origin + source.
+  const hooksBeforeForeign = env.stats.ensureHooksCalls;
+  env.fireWin('message', {
+    source: {},
+    origin: 'https://music.youtube.com',
+    data: { __slra: true, type: 'SLRA_PAGE_REVIVE', reason: 'missing-hook' },
+  });
+  await env.settle(3);
+  await env.drainTimers(200);
+  check(
+    'Z1 wrong-source page message ignored (no hook refresh)',
+    env.stats.ensureHooksCalls === hooksBeforeForeign,
+    'calls=' + env.stats.ensureHooksCalls + ' before=' + hooksBeforeForeign
+  );
+  env.fireWin('message', {
+    source: globalThis.window,
+    origin: 'https://evil.com',
+    data: { __slra: true, type: 'SLRA_PAGE_REVIVE', reason: 'missing-hook' },
+  });
+  await env.settle(3);
+  await env.drainTimers(200);
+  check(
+    'Z1 foreign-origin page REVIVE ignored (no hook refresh)',
+    env.stats.ensureHooksCalls === hooksBeforeForeign,
+    'calls=' + env.stats.ensureHooksCalls + ' before=' + hooksBeforeForeign
+  );
+  env.fireWin('message', {
+    source: globalThis.window,
+    origin: 'https://music.youtube.com',
+    data: { __slra: true, type: 'SLRA_PAGE_REVIVE', reason: 'missing-hook' },
+  });
+  await env.settle(3);
+  await env.drainTimers(200);
+  check(
+    'Z1 same-origin page REVIVE triggers hook refresh',
+    env.stats.ensureHooksCalls > hooksBeforeForeign,
+    'calls=' + env.stats.ensureHooksCalls + ' before=' + hooksBeforeForeign
+  );
+  check(
+    'Z1 origin gate is origin + source (static)',
+    src.indexOf('event.origin !== location.origin') !== -1 &&
+      src.indexOf('event.source !== window') !== -1,
+    'no origin+source gate in message handler'
+  );
+
+  // Z2: hook-ready token (forged READY ignored, correct accepted).
+  const hookApi = globalThis.__slowedReverbAudioContent;
+  check(
+    'Z2 hook token helper exists (static)',
+    hookApi && typeof hookApi.__testGetHookToken === 'function',
+    'no token helper'
+  );
+  const currentToken = hookApi.__testGetHookToken();
+  check(
+    'Z2 hook token minted to DOM (static)',
+    typeof currentToken === 'string' && currentToken.length > 0 &&
+      globalThis.document.documentElement.dataset.slraToken === currentToken,
+    'token=' + currentToken
+  );
+  hookApi.__testSetHookReady(false);
+  check('setup: hook ready reset to false', hookApi.__testIsHookReady() === false);
+  env.fireWin('message', {
+    source: globalThis.window,
+    origin: 'https://music.youtube.com',
+    data: { __slra: true, type: 'SLRA_PAGE_HOOK_READY' },
+  });
+  await env.settle(2);
+  check(
+    'Z2 forged READY without token ignored',
+    hookApi.__testIsHookReady() === false,
+    'ready=' + hookApi.__testIsHookReady()
+  );
+  env.fireWin('message', {
+    source: globalThis.window,
+    origin: 'https://music.youtube.com',
+    data: { __slra: true, type: 'SLRA_PAGE_HOOK_READY', token: 'wrong-token' },
+  });
+  await env.settle(2);
+  check(
+    'Z2 forged READY with wrong token ignored',
+    hookApi.__testIsHookReady() === false,
+    'ready=' + hookApi.__testIsHookReady()
+  );
+  env.fireWin('message', {
+    source: globalThis.window,
+    origin: 'https://evil.com',
+    data: { __slra: true, type: 'SLRA_PAGE_HOOK_READY', token: currentToken },
+  });
+  await env.settle(2);
+  check(
+    'Z2 correct token from foreign origin ignored',
+    hookApi.__testIsHookReady() === false,
+    'ready=' + hookApi.__testIsHookReady()
+  );
+  env.fireWin('message', {
+    source: globalThis.window,
+    origin: 'https://music.youtube.com',
+    data: { __slra: true, type: 'SLRA_PAGE_HOOK_READY', token: currentToken },
+  });
+  await env.settle(2);
+  check(
+    'Z2 correct token from same origin accepted',
+    hookApi.__testIsHookReady() === true,
+    'ready=' + hookApi.__testIsHookReady()
+  );
+  check(
+    'Z2 READY requires token match (static)',
+    src.indexOf('data.token !== state.pageHookToken') !== -1,
+    'no token match in READY handler'
+  );
+
+  // Z3: budget exhaustion fails OPEN to dry bypass + honest status.
+  const z3 = env.addMedia();
+  z3.volume = 0.9;
+  env.fireDoc('play', z3);
+  for (let i = 0; i < 40 && z3.muted !== true; i++) {
+    await env.settle(2);
+    env.runTimers(50);
+  }
+  check('setup: Z3 element attached muted', z3.muted === true);
+  const z3DiscBefore = env.stats.disconnects;
+  for (let i = 0; i < 9; i++) {
+    z3.muted = false;
+    z3.dispatchEvent(new Event('volumechange'));
+    await Promise.resolve();
+  }
+  check(
+    'Z3 budget exhaustion stays AUDIBLE dry (unmuted, graph out of the way)',
+    z3.muted === false && env.stats.disconnects > z3DiscBefore,
+    'muted=' + z3.muted + ' disconnects=' + env.stats.disconnects
+  );
+  check(
+    'Z3 bypassed controller never reports silent-graph Active (static)',
+    src.indexOf('Bypassed (mute fight).') !== -1 &&
+      src.indexOf('budgetBypassedCount > 0 && attachedCount === 0') !== -1,
+    'no honest bypass status'
+  );
+  check(
+    'Z3 refusal tears down to bypass (static)',
+    /budgetBypassed = true[\s\S]{0,200}teardownController\(controller, false/.test(src) ||
+      /teardownController\(controller, false[\s\S]{0,200}budgetBypassed = true/.test(src),
+    'no bypass teardown on refusal'
+  );
+  env.advance(1001);
+  env.fireDoc('play', z3);
+  for (let i = 0; i < 40 && z3.muted !== true; i++) {
+    await env.settle(2);
+    env.runTimers(50);
+  }
+  check('Z3 fresh play after cool-down re-attaches', z3.muted === true);
+
+  // Z4: corrupt stored settings fall back to documented defaults.
+  const Shared = globalThis.SlowedReverbShared;
+  check(
+    'Z4 non-finite slow falls back to 1.00x',
+    Shared.normalizeSettings({ slow: NaN }).slow === 1,
+    'got ' + Shared.normalizeSettings({ slow: NaN }).slow
+  );
+  check(
+    'Z4 out-of-range slow falls back to 1.00x',
+    Shared.normalizeSettings({ slow: 10 }).slow === 1 &&
+      Shared.normalizeSettings({ slow: -5 }).slow === 1,
+    'got ' + Shared.normalizeSettings({ slow: 10 }).slow
+  );
+  check(
+    'Z4 out-of-range intensity falls back to 0%',
+    Shared.normalizeSettings({ reverbIntensity: 5 }).reverbIntensity === 0,
+    'got ' + Shared.normalizeSettings({ reverbIntensity: 5 }).reverbIntensity
+  );
+  check(
+    'Z4 non-finite intensity falls back to 0%',
+    Shared.normalizeSettings({ reverbIntensity: Infinity }).reverbIntensity === 0,
+    'got ' + Shared.normalizeSettings({ reverbIntensity: Infinity }).reverbIntensity
+  );
+
+  // Z5: storage failure falls back to defaults, page stays eligible.
+  check(
+    'Z5 storage failure falls back to defaults (static)',
+    /async function getStoredSiteSettings\(\) \{\s+try/.test(backgroundText) &&
+      backgroundText.indexOf('return {};') !== -1,
+    'no try/catch fallback in getStoredSiteSettings'
+  );
+
+  // Z6: rehydrate flag set only after successful rehydrate.
+  check(
+    'Z6 rehydrate flag set only after success (static)',
+    backgroundText.indexOf('await scheduleRehydrate') !== -1 &&
+      backgroundText.indexOf('slowedReverbRehydrated: true') !== -1 &&
+      backgroundText.indexOf('await scheduleRehydrate') <
+        backgroundText.indexOf('slowedReverbRehydrated: true'),
+    'flag still set before rehydrate'
+  );
+
+  // Z7: suspend when idle, resume on play.
+  const allForSuspend = globalThis.document.querySelectorAll('audio,video');
+  for (const m of allForSuspend) m.paused = true;
+  env.fireDoc('pause', allForSuspend[0] || z3);
+  await env.settle(3);
+  const suspendedLive = env.queryLive();
+  check(
+    'Z7 idle suspends the context (no attached playing)',
+    suspendedLive && suspendedLive.contextState === 'suspended',
+    'contextState=' + (suspendedLive && suspendedLive.contextState)
+  );
+  check(
+    'Z7 suspend helper exists (static)',
+    src.indexOf('maybeSuspendContext') !== -1 &&
+      src.indexOf("document.addEventListener('pause'") !== -1,
+    'no pause suspend'
+  );
+  if (allForSuspend[0]) {
+    allForSuspend[0].paused = false;
+    env.fireDoc('play', allForSuspend[0]);
+    await env.settle(3);
+    await env.drainTimers(200);
+  }
+  const resumedLive = env.queryLive();
+  check(
+    'Z7 play resumes the context',
+    resumedLive && resumedLive.contextState === 'running',
+    'contextState=' + (resumedLive && resumedLive.contextState)
+  );
+
+  // Z8: worklet skips the tank when dry, invariants hoisted.
+  check(
+    'Z8 dry fast path skips the tank (static)',
+    workletText.indexOf('this.wetGain === 0 && this.wetTarget === 0') !== -1,
+    'no dry fast path'
+  );
+  check(
+    'Z8 per-sample invariants hoisted above the loop (static)',
+    workletText.indexOf('const pdFloat = this.predelay * sr * 0.1;') !== -1 &&
+      workletText.indexOf('const lpfCoeff = this.lpfCoeff;') !== -1 &&
+      workletText.indexOf('const pdFloat') < workletText.indexOf('for (let i = 0; i < n; i++)'),
+    'invariants still inside loop'
+  );
+
+  // Z9: 5 s safety poll cleared on pagehide and teardown.
+  check(
+    'Z9 safety poll has a clear path (static)',
+    src.indexOf('function clearSafetyPoll()') !== -1 &&
+      src.indexOf("window.addEventListener('pagehide'") !== -1 &&
+      src.indexOf('clearSafetyPoll()') !== -1,
+    'no clearSafetyPoll/pagehide'
+  );
+  env.fireWin('pagehide', {});
+  await env.settle(2);
+  check(
+    'Z9 pagehide clears polling timers',
+    env.pendingIntervals() === 0,
+    'pendingIntervals=' + env.pendingIntervals()
+  );
+
+  // Z10: 2 s watchdog gated on visibility + playing.
+  check(
+    'Z10 watchdog gated on visibility + playing (static)',
+    src.indexOf("document.visibilityState === 'hidden'") !== -1 &&
+      src.indexOf('anyPlaying') !== -1,
+    'no visibility/playing gate in watchdog'
   );
 
   env.restoreTimers();

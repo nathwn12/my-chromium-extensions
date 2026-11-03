@@ -96,8 +96,12 @@ async function clearTabBypass(tabId) {
 }
 
 async function getStoredSiteSettings() {
-  const stored = await chrome.storage.local.get({ [SITE_SETTINGS_KEY]: {} });
-  return stored[SITE_SETTINGS_KEY] || {};
+  try {
+    const stored = await chrome.storage.local.get({ [SITE_SETTINGS_KEY]: {} });
+    return stored[SITE_SETTINGS_KEY] || {};
+  } catch {
+    return {};
+  }
 }
 
 async function setStoredSiteSettings(siteKey, settings) {
@@ -258,15 +262,15 @@ try {
     try {
       const flag = await chrome.storage.session.get({ slowedReverbRehydrated: false });
       if (flag && flag.slowedReverbRehydrated) return;
-      try {
-        await chrome.storage.session.set({ slowedReverbRehydrated: true });
-      } catch {
-        // Best effort only.
-      }
     } catch {
       // No session storage: fall through to a single rehydrate.
     }
     await scheduleRehydrate().catch(() => {});
+    try {
+      await chrome.storage.session.set({ slowedReverbRehydrated: true });
+    } catch {
+      // Best effort only.
+    }
   })().catch(() => {});
 } catch {
   // Never throw at import.

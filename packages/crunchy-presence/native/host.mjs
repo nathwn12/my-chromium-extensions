@@ -134,7 +134,10 @@ export class Host {
       await this.client.connect();
     } catch (error) {
       this.write(statusMessage('error', { detail: error.message, code: error.code ?? null }));
-      this.scheduleConnectRetry();
+      // A permanent handshake rejection (invalid client id) never recovers
+      // on retry: hold the error until a new hello carries a new id.
+      if (!error || !error.fatal) this.scheduleConnectRetry();
+      else this.log(`discord ipc permanent failure, waiting for a new client id: ${error.message}`);
       return;
     }
 
@@ -191,6 +194,10 @@ export class Host {
         try {
           await this.client.connect();
         } catch (error) {
+          if (error && error.fatal) {
+            this.log(`discord ipc permanent failure, waiting for a new client id: ${error.message}`);
+            return;
+          }
           this.log(`discord ipc still unavailable: ${error.message}`);
           this.scheduleConnectRetry();
           return;

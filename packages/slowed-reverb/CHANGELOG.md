@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Repair lane: page-message origin+token hardening, mute-budget fail-open to dry bypass with honest status, corrupt-setting fallback to defaults, storage-failure eligible fallback, rehydrate flag only after success, idle context suspend/resume, worklet dry fast-path with hoisted invariants, safety-poll pagehide/teardown clear, and visibility/playing watchdog gating.
+- DSP repair: hard clamp to [-1, 1] instead of the per-sample soft-clip (transfer now 0.0 dB below 1.0); equal-power wet/dry crossfade with full wet at 100% and <1 dB dip anywhere; sub-1e-20 tank flush kills denormals after 40 s silence with the audible tail intact; fractional preDelay reads plus a continuous per-sample LFO remove the 2048-sample click (1.13x of baseline); DC-blocker (~178 Hz), wet-beam (~4.87 kHz) and LFO rate (0.673 Hz) are now derived from the live sampleRate so all three hold at 44.1/48/96 kHz; the 353/3627 early-reflection taps move from the 4453-sample loop to the 4217-sample loop per Dattorro's figure (266/2974 move the other way, swapping which tank feeds the left/right early taps).
+
 ## [1.0.3] - 2026-11-03
 
 ### Fixed

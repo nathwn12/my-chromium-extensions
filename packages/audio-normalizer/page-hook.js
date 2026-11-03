@@ -176,7 +176,12 @@
   // tracks lastResetGeneration / pendingResetGeneration; the active
   // program element is activeProgramElement.
   const elementProgramGenerations = new WeakMap();
-  // Element -> live MediaElementAudioSourceNode (see attach/detach paths).
+  // Durable per-document map: element -> { source, session }. NEVER deleted
+  // for the life of the document (WeakMap key, so a discarded element can
+  // still be collected; the live AudioNodes stay pinned only by the owning
+  // session's `sources` set). Removal never disconnects and never drops the
+  // entry: a re-inserted element reuses the SAME source with zero re-capture
+  // (a second createMediaElementSource on one element throws).
   const elementSources = new WeakMap();
   let currentProgramGeneration = 0;
   let activeProgramElement = null;
@@ -343,15 +348,27 @@
   }
 
   // Close a hook-created (media-kind) context once it routes nothing and the
-  // hook is inactive. A context that ever captured keeps its latch: a
-  // MediaElementSource is bound to its first context for the element's
-  // life, and churn (ended/emptied) empties mediaElements while the
-  // element is still in the DOM — closing then makes the retry throw and
-  // latch __tnWebAudio forever. Never close a context that ever captured;
-  // the context is pre-warmed per document so the close saves nothing.
+  // hook is inactive. A context that ever captured NEVER closes: its
+  // sources cannot be re-captured elsewhere, and closing would make every
+  // later retry throw and latch __tnWebAudio forever. When such a context
+  // is idle (no present elements) and the hook is inactive it is suspended
+  // to release CPU instead; the next attach resumes it. The media session
+  // is pre-warmed per document so the close saves nothing.
   function maybeCloseIdleMediaSession(session) {
     if (!session || session.kind !== 'media') return;
-    if (session.captured) return;
+    if (session.captured) {
+      // Captured latch: close is impossible after any capture — suspend
+      // when idle and inactive, never close, never tear down.
+      if (session.mediaElements.size !== 0) return;
+      if (state.active) return;
+      try {
+        if (typeof session.context.suspend === 'function'
+          && session.context.state === 'running') {
+          void session.context.suspend().catch(() => {});
+        }
+      } catch {}
+      return;
+    }
     if (session.mediaElements.size !== 0) return;
     if (session.sources.size !== 0) return;
     if (state.active) return;
@@ -575,6 +592,55 @@
 
     let observerTimer = null;
     let pendingBatches = [];
+    // Feed-starvation guard: one flush never walks an unbounded queue.
+    // A mutation storm is sliced into capped flushes; the remainder is
+    // carried over to the next tick, never dropped.
+    const MAX_MUTATIONS_PER_FLUSH = 200;
+
+    function flushMutations() {
+      observerTimer = null;
+      const batch = pendingBatches.slice(0, MAX_MUTATIONS_PER_FLUSH);
+      pendingBatches = pendingBatches.slice(batch.length);
+      for (const m of batch) {
+        for (const node of m.removedNodes ?? []) {
+          // Detach first so removed elements leave the present set: the
+          // source stays connected and the cache entry is kept.
+          // (A later re-insert re-attaches, reusing the live source.)
+          try {
+            if (!(node instanceof Element)) continue;
+            if (isMediaElement(node)) {
+              detachMediaElement(node);
+            }
+            for (const media of node.querySelectorAll?.('audio, video') ?? []) {
+              detachMediaElement(media);
+            }
+            // No querySelectorAll('*') walk here: removals inside a shadow
+            // tree arrive as their own mutations (every open root is
+            // observed), so a descendant sweep would only re-walk the
+            // subtree at O(size) per mutation.
+          } catch {}
+        }
+        for (const node of m.addedNodes) {
+          if (!(node instanceof Element)) continue;
+          if (isMediaElement(node)) {
+            void attachMediaElement(node);
+          }
+          for (const media of node.querySelectorAll?.('audio, video') ?? []) {
+            void attachMediaElement(media);
+          }
+          // A subtree added under a shadow host arrives as one Element:
+          // observe its own open root. Descendant hosts need no sweep —
+          // patchAttachShadow captures every root created after injection
+          // and scanShadowRoots covers roots that already existed.
+          try {
+            if (node.shadowRoot) observeShadowRoot(node.shadowRoot);
+          } catch {}
+        }
+      }
+      if (pendingBatches.length > 0) {
+        observerTimer = setTimeout(flushMutations, 0);
+      }
+    }
 
     state.observer = new MutationObserver((mutations) => {
       if (!state.active) return;
@@ -583,55 +649,7 @@
       for (const m of mutations ?? []) pendingBatches.push(m);
       if (observerTimer) return;
 
-      observerTimer = setTimeout(() => {
-        observerTimer = null;
-        const batch = pendingBatches;
-        pendingBatches = [];
-        for (const m of batch) {
-          for (const node of m.removedNodes ?? []) {
-            // Detach first so removed elements stop pinning sessions: the
-            // source is disconnected and every strong reference is dropped.
-            // (A later re-insert re-attaches, reusing the live source.)
-            try {
-              if (!(node instanceof Element)) continue;
-              if (isMediaElement(node)) {
-                detachMediaElement(node);
-              }
-              for (const media of node.querySelectorAll?.('audio, video') ?? []) {
-                detachMediaElement(media);
-              }
-              try {
-                for (const nested of node.querySelectorAll?.('*') ?? []) {
-                  if (nested.shadowRoot) {
-                    for (const media of nested.shadowRoot.querySelectorAll?.('audio, video') ?? []) {
-                      detachMediaElement(media);
-                    }
-                  }
-                }
-              } catch {}
-            } catch {}
-          }
-          for (const node of m.addedNodes) {
-            if (!(node instanceof Element)) continue;
-            if (isMediaElement(node)) {
-              void attachMediaElement(node);
-            }
-            for (const media of node.querySelectorAll?.('audio, video') ?? []) {
-              void attachMediaElement(media);
-            }
-            // A subtree added under a shadow host arrives as one Element:
-            // sweep its open shadow root (and nested roots) for media.
-            try {
-              if (node.shadowRoot) observeShadowRoot(node.shadowRoot);
-            } catch {}
-            try {
-              for (const nested of node.querySelectorAll?.('*') ?? []) {
-                if (nested.shadowRoot) observeShadowRoot(nested.shadowRoot);
-              }
-            } catch {}
-          }
-        }
-      }, 100);
+      observerTimer = setTimeout(flushMutations, 100);
     });
 
     state.observer.observe(document.documentElement || document, {
@@ -1011,9 +1029,9 @@
       mediaElement.addEventListener('loadstart', () => markProgramDirty(mediaElement));
       mediaElement.addEventListener('emptied', () => {
         markProgramDirty(mediaElement);
-        // The element's current source is spent: disconnect it and drop the
-        // strong references so a removed element can be collected. A replay
-        // re-attaches (reusing the live source when its context survived).
+        // The program is spent: leave the present set so a replay
+        // re-attaches (reusing the cached source). The source stays
+        // connected and the cache entry is kept.
         detachMediaElement(mediaElement);
       });
       mediaElement.addEventListener('ended', () => {
@@ -1168,32 +1186,17 @@
     }
   }
 
-  // Detach one element: disconnect its live source(s), drop every strong
-  // reference (sessions, sources, mediaElements) so a removed element can be
-  // collected, and clear `__tnAttached` so a later replay re-attaches.
-  // The element keeps `__tnSource` when its context is still live so the
-  // replay reconnects the SAME source (a MediaElementSource can be created
-  // only once per element — re-capturing throws InvalidStateError).
+  // Detach one element: drop only the present-element membership
+  // (session.mediaElements) and `__tnAttached` so a replay re-attaches.
+  // The source stays connected and the elementSources entry is NEVER
+  // deleted: the element simply stops producing audio while removed, and a
+  // re-insert reuses the SAME source with zero re-capture (a second
+  // createMediaElementSource on one element throws InvalidStateError).
   /** @param {any} mediaElement */
   function detachMediaElement(mediaElement) {
     if (!mediaElement) return;
-    const known = elementSources.get(mediaElement);
     for (const session of Array.from(sessions)) {
       if (!session.mediaElements.has(mediaElement)) continue;
-      if (known && session.sources.has(known)) {
-        try { known.disconnect(); } catch {}
-        session.sources.delete(known);
-      } else {
-        // Fallback: disconnect any source tagged for this element.
-        for (const source of Array.from(session.sources)) {
-          try {
-            if (source && source.mediaElement === mediaElement) {
-              try { source.disconnect(); } catch {}
-              session.sources.delete(source);
-            }
-          } catch {}
-        }
-      }
       session.mediaElements.delete(mediaElement);
       maybeCloseIdleMediaSession(session);
       maybeDisarmAttachedResume();
@@ -1267,6 +1270,52 @@
   /** @param {any} mediaElement */
   async function attachMediaElement(mediaElement) {
     if (!state.active || !isMediaElement(mediaElement) || mediaElement.__tnAttached) return;
+    // Durable reuse first: a cached source is reconnected and reused even
+    // when the element was later labelled page-wired (a failed page-side
+    // capture labels __tnWebAudio, but that must never block our own cached
+    // route). createMediaElementSource is never called twice per element.
+    const cachedEntry = elementSources.get(mediaElement);
+    const cachedSource = cachedEntry && cachedEntry.source
+      ? cachedEntry.source
+      : (cachedEntry && typeof cachedEntry.connect === 'function' ? cachedEntry : null);
+    if (cachedSource) {
+      watchProgramBoundaries(mediaElement);
+      if (/** @type {any} */ (mediaElement).__tnGuarding) return;
+      // Arm synchronously (before the first await) so the patched play(),
+      // which calls the original right after this, can only produce silence
+      // until routing.
+      armHookGuard(mediaElement);
+      try {
+        const session = await ensureMediaSession();
+        await resumeWithTimeout(session.context, RESUME_TIMEOUT_MS);
+        // Prefer the session that owns the source; it stays alive because a
+        // captured context never closes.
+        let owner = session;
+        try {
+          const s = cachedEntry && cachedEntry.session;
+          if (s && s.context && s.context.state !== 'closed' && s.inputNode) owner = s;
+        } catch {}
+        const target = (owner && owner.inputNode) || (session && session.inputNode);
+        try { if (target) cachedSource.connect(target); } catch {}
+        try {
+          if (owner) {
+            owner.sources.add(cachedSource);
+            owner.mediaElements.add(mediaElement);
+          }
+        } catch {}
+        // Routing is live: restore the pre-guard muted value.
+        restoreHookGuard(mediaElement);
+        mediaElement.__tnAttached = true;
+        ensureAttachedResumeListeners();
+        console.log('[hook] media element attached:', mediaElement.tagName, mediaElement.src?.slice(0, 60));
+        reportStatus('HOOK_STATUS');
+      } catch (e) {
+        restoreHookGuard(mediaElement);
+        console.error('[hook] attachMediaElement failed:', e.message || e);
+        setError(`Attach media failed: ${e.message || e}`);
+      }
+      return;
+    }
     if (mediaElement.__tnWebAudio) return;
     watchProgramBoundaries(mediaElement);
     if (/** @type {any} */ (mediaElement).__tnGuarding) return;
@@ -1290,23 +1339,13 @@
         ensureAttachedResumeListeners();
         return;
       }
-      // Reconnect fast path: a live source from an earlier attach is reused
-      // (re-capturing the same element throws InvalidStateError). Only a
-      // dead-context source falls through to a fresh capture.
-      const knownSource = elementSources.get(mediaElement);
-      const liveSource = knownSource
-        && knownSource.context === session.context
-        && session.context.state !== 'closed'
-        ? knownSource
-        : null;
-      if (liveSource) {
-        // Reconnect the SAME source (re-capturing the same element throws
-        // InvalidStateError) and restore the set membership detach dropped.
-        try { liveSource.connect(session.inputNode); } catch {}
-        session.sources.add(liveSource);
-      } else {
-        // Our own capture must not be mistaken for page wiring (see
-        // patchCreateMediaElementSource): run it under internalWiring.
+      // Fresh capture only: any cached source was already handled above
+      // (reused before the page-wiring gate), so reaching here with a cache
+      // entry means it arrived concurrently — capture would throw, the
+      // catch below skips cleanly. Our own capture must not be mistaken
+      // for page wiring (see patchCreateMediaElementSource): run it under
+      // internalWiring.
+      {
         state.internalWiring = true;
         let source = null;
         try {
@@ -1314,12 +1353,10 @@
         } finally {
           state.internalWiring = false;
         }
-        try { source.mediaElement = mediaElement; } catch {}
-        try { source.context = session.context; } catch {}
         try { source.connect(session.inputNode); } catch {}
         try {
           /** @type {any} */ (mediaElement).__tnSource = source;
-          elementSources.set(mediaElement, source);
+          elementSources.set(mediaElement, { source, session });
         } catch {}
         session.sources.add(source);
         session.captured = true;
@@ -1334,6 +1371,11 @@
     } catch (e) {
       restoreHookGuard(mediaElement);
       if (e instanceof DOMException && e.name === 'InvalidStateError') {
+        // No cached source and capture threw: the page (or a previous hook
+        // instance) owns this element. Record it and skip — the element is
+        // left unmuted and untouched (guard already restored). This latch
+        // never blocks a cached source: reuse is checked before the
+        // page-wiring gate above.
         mediaElement.__tnWebAudio = true;
         console.log('[hook] media element already connected to another source, skipping');
       } else {
@@ -1408,8 +1450,10 @@
       }
     } catch {}
 
-    // Disconnect every element source and drop the strong references so
-    // removed elements and dead contexts can be collected; elements that
+    // Teardown runs only for contexts that never captured or are already
+    // closed (captured sessions suspend instead and never reach here via
+    // idle): disconnect every element source and drop the strong
+    // references so dead contexts can be collected; elements that
     // are still in the document re-attach on the next recovery pass.
     for (const source of Array.from(session.sources)) {
       try { source.disconnect(); } catch {}

@@ -84,7 +84,8 @@
     );
   }
 
-  function report() {
+  function report(isKeepalive = false) {
+    if (!enabled) return;
     const state = extract();
     if (!informative(state)) {
       if (lastInformative) {
@@ -103,24 +104,35 @@
           kind: "crp-state",
           visible: document.visibilityState !== "hidden"
         },
-        state
+        state,
+        isKeepalive ? { keepalive: true } : null
       )
     );
   }
 
   function onMediaEvent(event) {
+    if (!enabled) return;
     const target = event.target;
     if (!target || target.tagName !== "VIDEO") return;
-    report();
+    report(false);
   }
 
   MEDIA_EVENTS.forEach((name) => {
     document.addEventListener(name, onMediaEvent, true);
   });
 
-  document.addEventListener("visibilitychange", report);
+  document.addEventListener("visibilitychange", () => {
+    if (!enabled) return;
+    report(false);
+  });
 
   window.addEventListener("popstate", () => {
+    lastHref = "";
+    checkUrl();
+  });
+
+  // hashchange fires for same-document navigations that popstate misses.
+  window.addEventListener("hashchange", () => {
     lastHref = "";
     checkUrl();
   });
@@ -137,7 +149,8 @@
   // again so a back/forward restore republishes within one tick.
   window.addEventListener("pageshow", () => {
     lastHref = location.href;
-    report();
+    if (!enabled) return;
+    report(false);
   });
 
   function checkUrl() {
@@ -148,20 +161,53 @@
     if (settleTimer) clearTimeout(settleTimer);
     settleTimer = setTimeout(() => {
       settleTimer = null;
-      report();
+      if (!enabled) return;
+      report(false);
     }, SPA_SETTLE_MS);
     return true;
   }
 
-  pollTimer = setInterval(() => {
+  pollTimer = setInterval(tick, URL_POLL_MS);
+
+  // The 1 Hz poll runs only while a video actually exists: observer-driven
+  // detection (player container mutations plus popstate/hashchange) covers
+  // URL changes, so an idle page without a video holds no wakeups.
+  function tick() {
     if (!enabled) return;
     checkUrl();
     const video = document.querySelector("video");
-    if (video && video !== lastVideo) report();
+    if (!video) {
+      if (pollTimer !== null) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+      }
+      return;
+    }
+    if (video && video !== lastVideo) report(false);
     // Low-rate keepalive while a video exists so a paused tab never ages
-    // out at FRAME_TTL_MS on the worker side.
-    if (video && Date.now() - lastReportAt >= KEEPALIVE_MS) report();
-  }, URL_POLL_MS);
+    // out at FRAME_TTL_MS on the worker side. Marked keepalive so it never
+    // re-ranks the multi-tab winner.
+    if (video && Date.now() - lastReportAt >= KEEPALIVE_MS) report(true);
+  }
+
+  try {
+    const target =
+      document.querySelector("#player-container") || document.documentElement || document;
+    const observer = new MutationObserver(() => {
+      if (!enabled) return;
+      checkUrl();
+      const video = document.querySelector("video");
+      if (video) {
+        if (pollTimer === null) pollTimer = setInterval(tick, URL_POLL_MS);
+        if (video !== lastVideo) report(false);
+      }
+    });
+    if (target && typeof observer.observe === "function") {
+      observer.observe(target, { childList: true, subtree: true });
+    }
+  } catch {
+    /* MutationObserver unavailable — the poll still covers URL changes */
+  }
 
   if (document.readyState === "complete" || document.readyState === "interactive") {
     report();

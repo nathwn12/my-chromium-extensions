@@ -24,6 +24,7 @@
     listenersReady: false,
     lifecycleListenersReady: false,
     pageHookReady: false,
+    pageHookToken: '',
     lastError: '',
     workletLoaded: false,
     workletRetryCount: 0,
@@ -36,11 +37,21 @@
       queueScan();
       void bootstrap(false);
     },
+    __testGetHookToken() {
+      return state.pageHookToken;
+    },
+    __testIsHookReady() {
+      return state.pageHookReady;
+    },
+    __testSetHookReady(value) {
+      state.pageHookReady = Boolean(value);
+    },
   };
 
   void bootstrap(true);
 
   async function bootstrap(ensureHooks) {
+    mintPageHookToken();
     ensureGlobalListeners();
     ensureLifecycleListeners();
     ensureObserver();
@@ -136,6 +147,16 @@
       }, { passive: true, capture: true });
     });
 
+    document.addEventListener('pause', () => {
+      queueMicrotask(() => {
+        try {
+          maybeSuspendContext();
+        } catch {
+          // Best effort only.
+        }
+      });
+    }, true);
+
     state.listenersReady = true;
   }
 
@@ -152,8 +173,23 @@
       if (document.visibilityState === 'visible') revive('visibilitychange');
     }, { passive: true });
 
+    window.addEventListener('pagehide', () => {
+      clearSafetyPoll();
+      stopRateWatchdog();
+      try {
+        maybeSuspendContext();
+      } catch {
+        // Best effort only.
+      }
+    }, { passive: true });
+
     window.addEventListener('message', (event) => {
       if (event.source !== window) return;
+      try {
+        if (event.origin !== location.origin) return;
+      } catch {
+        return;
+      }
       const data = event.data;
       if (!data || data.__slra !== true) return;
 
@@ -166,6 +202,8 @@
       }
 
       if (data.type === 'SLRA_PAGE_HOOK_READY') {
+        if (typeof data.token !== 'string' || data.token.length === 0) return;
+        if (data.token !== state.pageHookToken) return;
         state.pageHookReady = true;
       }
     });
@@ -232,6 +270,55 @@
     }, 5000);
   }
 
+  function clearSafetyPoll() {
+    if (state.safetyPollTimer !== null) {
+      clearInterval(state.safetyPollTimer);
+      state.safetyPollTimer = null;
+    }
+  }
+
+  function mintPageHookToken() {
+    let token = '';
+    try {
+      const bytes = new Uint8Array(16);
+      if (globalThis.crypto && typeof globalThis.crypto.getRandomValues === 'function') {
+        globalThis.crypto.getRandomValues(bytes);
+        token = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+      }
+    } catch {
+      token = '';
+    }
+    if (!token) {
+      token = Math.random().toString(36).slice(2) + Date.now().toString(36);
+    }
+    state.pageHookToken = token;
+    try {
+      if (document && document.documentElement && document.documentElement.dataset) {
+        document.documentElement.dataset.slraToken = token;
+      }
+    } catch {
+      // Best effort only.
+    }
+    return token;
+  }
+
+  function maybeSuspendContext() {
+    if (!state.context || state.context.state !== 'running') return;
+    if (typeof state.context.suspend !== 'function') return;
+    for (const controller of state.media.values()) {
+      if (controller.attached && controller.media && !controller.media.paused && !controller.media.ended) {
+        return;
+      }
+    }
+    try {
+      void Promise.resolve(state.context.suspend()).catch(() => {
+        // Best effort only.
+      });
+    } catch {
+      // Best effort only.
+    }
+  }
+
 function applyRuntimeState(runtime) {
   if (runtime && runtime.ok === false) return;
   state.eligible = Boolean(runtime?.eligible !== false);
@@ -295,6 +382,16 @@ function applyRuntimeState(runtime) {
     stopRateWatchdog();
     rateWatchdogTimer = setInterval(() => {
       if (!state.eligible || state.bypass) return;
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      let anyPlaying = false;
+      for (const controller of state.media.values()) {
+        const element = controller.media;
+        if (element && !element.paused && !element.ended) {
+          anyPlaying = true;
+          break;
+        }
+      }
+      if (!anyPlaying) return;
       if (state.context && state.context.state !== 'running') {
         void resumeContext();
       }
@@ -363,12 +460,17 @@ function applyRuntimeState(runtime) {
   async function requestHookRefresh(reason) {
     if (state.hookRefreshQueued) return;
     state.hookRefreshQueued = true;
+    const token = mintPageHookToken();
 
     try {
-      await chrome.runtime.sendMessage({
+      const result = await chrome.runtime.sendMessage({
         type: 'ENSURE_TAB_HOOKS',
         reason: String(reason || 'recovery'),
+        token,
       });
+      if (result && result.ok !== false) {
+        state.pageHookReady = true;
+      }
     } catch {
       // Best effort only.
     } finally {
@@ -435,6 +537,8 @@ function applyRuntimeState(runtime) {
       internalMuteWrite: false,
       muteCorrections: [],
       mutePausedUntil: 0,
+      budgetBypassed: false,
+      budgetBypassedUntil: 0,
       lastPostedParams: null,
       rateHandler: null,
       resetHandler: null,
@@ -509,6 +613,12 @@ function applyRuntimeState(runtime) {
     } else if ((!state.eligible || state.bypass) && rateWatchdogTimer !== null) {
       stopRateWatchdog();
     }
+    if ((!state.eligible || state.bypass) && state.safetyPollTimer !== null) {
+      clearSafetyPoll();
+    } else if (state.eligible && !state.bypass && state.safetyPollTimer === null) {
+      ensureSafetyPoll();
+    }
+    maybeSuspendContext();
   }
 
   function syncMediaController(controller, retryCount = 0) {
@@ -517,6 +627,14 @@ function applyRuntimeState(runtime) {
     if (!state.eligible || state.bypass) {
       applyBypassState(controller);
       return;
+    }
+
+    if (controller.budgetBypassed) {
+      if (Date.now() < controller.budgetBypassedUntil) {
+        return;
+      }
+      controller.budgetBypassed = false;
+      controller.budgetBypassedUntil = 0;
     }
 
     void resumeContext();
@@ -657,7 +775,7 @@ function applyRuntimeState(runtime) {
       // (`enforceElementMute` gates on `attached`). The budget is cleared just
       // below, so this single write never eats into the correction allowance.
       controller.media.muted = true;
-      rampGain(dryGain.gain, 1 - initialParams.wetGain);
+      rampGain(dryGain.gain, Math.sqrt(Math.max(0, 1 - initialParams.wetGain * initialParams.wetGain)));
       rampGain(masterGain.gain, controller.media.volume);
 
       controller.stream = stream;
@@ -871,7 +989,10 @@ function applyRuntimeState(runtime) {
       decayDiff1: 0.65 + i * 0.05,
       decay: Math.pow(i, 0.75) * 0.58,
       damping: Math.min(0.5 + Math.pow(i, 0.6) * 0.4, 0.78),
-      wetGain: Math.pow(i, 0.75) * 0.42,
+      // Equal-power crossfade: wet keeps the perceptual i^0.75 curve with full
+      // wet at i=1, and dry = sqrt(1 - wet^2) so the uncorrelated sum holds
+      // 0 dB at every setting (dry is derived at the rampGain sites below).
+      wetGain: Math.pow(i, 0.75),
     };
   }
 
@@ -907,7 +1028,7 @@ function applyRuntimeState(runtime) {
     controller.lastPostedParams = signature;
     controller.dattorroNode.port.postMessage({ type: 'setParams', params });
     if (controller.dryGain) {
-      rampGain(controller.dryGain.gain, 1 - params.wetGain);
+      rampGain(controller.dryGain.gain, Math.sqrt(Math.max(0, 1 - params.wetGain * params.wetGain)));
     }
   }
 
@@ -927,6 +1048,8 @@ function applyRuntimeState(runtime) {
     if (!controller) return;
     controller.muteCorrections.length = 0;
     controller.mutePausedUntil = 0;
+    controller.budgetBypassed = false;
+    controller.budgetBypassedUntil = 0;
   }
 
   // Rolling-window budget plus a cool-down. Prune corrections older than the
@@ -959,9 +1082,11 @@ function applyRuntimeState(runtime) {
     if (!media || media.muted === true) return;
     if (controller.internalMuteWrite) return;
     if (!claimMuteCorrection(controller)) {
-      if (controller.masterGain) {
-        hardZero(controller.masterGain.gain);
-      }
+      const pausedUntil = controller.mutePausedUntil;
+      teardownController(controller, false, state.context);
+      controller.budgetBypassed = true;
+      controller.budgetBypassedUntil = pausedUntil;
+      maybeSuspendContext();
       return;
     }
 
@@ -1077,6 +1202,15 @@ function applyRuntimeState(runtime) {
       }
     }
 
+    if (removeCompletely && state.media.size <= 1) {
+      clearSafetyPoll();
+    }
+    try {
+      maybeSuspendContext();
+    } catch {
+      // Best effort only.
+    }
+
     if (removeCompletely) {
       if (controller.rateHandler) {
         controller.media.removeEventListener('ratechange', controller.rateHandler);
@@ -1172,10 +1306,12 @@ function applyRuntimeState(runtime) {
   function getLiveStatus() {
     let attachedCount = 0;
     let failedCount = 0;
+    let budgetBypassedCount = 0;
 
     for (const controller of state.media.values()) {
       if (controller.failed) failedCount += 1;
       if (controller.attached) attachedCount += 1;
+      if (controller.budgetBypassed) budgetBypassedCount += 1;
     }
 
     const totalCount = state.media.size;
@@ -1188,6 +1324,8 @@ function applyRuntimeState(runtime) {
       text = 'Power off for this site.';
     } else if (failedCount && !attachedCount) {
       text = 'Could not attach to page audio.';
+    } else if (budgetBypassedCount > 0 && attachedCount === 0) {
+      text = 'Bypassed (mute fight).';
     } else if (!totalCount) {
       text = 'Waiting for media.';
     } else if (attachedCount > 0 && isNeutral(state.settings)) {

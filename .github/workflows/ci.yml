@@ -14,6 +14,9 @@ jobs:
           cache: npm
       - name: Install (root lockfile)
         run: npm ci
+      - name: Tests
+        working-directory: packages/audio-normalizer
+        run: node --test tests/
       - name: Feed transition QA
         working-directory: packages/audio-normalizer
         run: node qa/feed-transition-qa.cjs

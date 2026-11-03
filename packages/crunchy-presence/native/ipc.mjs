@@ -78,6 +78,10 @@ export class DiscordFrameDecoder {
       const op = this.buffer.readUInt32LE(0);
       const length = this.buffer.readUInt32LE(4);
       if (length > MAX_DISCORD_FRAME) {
+        // Reset so one bad length does not poison every later chunk; the
+        // caller destroys/reconnects and the next bytes decode cleanly.
+        this.buffer = Buffer.alloc(0);
+        this.skipped += 1;
         throw new ProtocolError(`discord frame too large: ${length} bytes`);
       }
       if (this.buffer.length < 8 + length) break;
@@ -108,6 +112,10 @@ export class NativeMessageDecoder {
       if (this.buffer.length < 4) break;
       const length = this.buffer.readUInt32LE(0);
       if (length > MAX_NATIVE_MESSAGE) {
+        // Reset so one bad length does not poison every later chunk: drop
+        // the corrupt prefix and resync on the next frame boundary.
+        this.buffer = Buffer.alloc(0);
+        this.skipped += 1;
         throw new ProtocolError(`native message too large: ${length} bytes`);
       }
       if (this.buffer.length < 4 + length) break;
@@ -207,9 +215,13 @@ export class DiscordPipeClient {
       } catch (error) {
         lastError = error;
         this._teardown();
+        // A permanent handshake rejection (dead/wrong application id) will
+        // fail identically on every pipe: stop probing and surface it.
+        if (error && error.fatal) break;
         this.logger.warn(`discord ipc probe failed on ${pipePath}: ${error.message}`);
       }
     }
+    if (lastError && lastError.fatal) throw lastError;
     throw lastError ?? new ProtocolError('no discord ipc pipe found');
   }
 
@@ -454,6 +466,11 @@ export class DiscordPipeClient {
     }
     if (op === OP.CLOSE) {
       this.logger.warn('discord ipc sent CLOSE');
+      if (this._readyWaiter) {
+        const err = new ProtocolError('discord ipc handshake rejected (CLOSE)', null);
+        err.fatal = true;
+        this._readyWaiter.reject(err);
+      }
       try {
         this.socket?.destroy();
       } catch {
@@ -466,6 +483,20 @@ export class DiscordPipeClient {
     if (payload?.evt === 'READY') {
       this._readyWaiter?.resolve(payload);
       return;
+    }
+    // A handshake ERROR (dead or wrong application id) carries no nonce, so
+    // the nonce path below would only log it and the hello would time out.
+    // Surface the real reason and fail fast instead of "handshake timed out".
+    if (payload?.evt === 'ERROR' && this._readyWaiter) {
+      const nonce = payload?.nonce;
+      if (typeof nonce !== 'string' || !this._pending.has(nonce)) {
+        const detail = payload?.data?.message ?? 'Discord rejected the handshake';
+        const code = Number.isInteger(payload?.data?.code) ? payload.data.code : null;
+        const err = new ProtocolError(String(detail), code);
+        err.fatal = true;
+        this._readyWaiter.reject(err);
+        return;
+      }
     }
     const nonce = payload?.nonce;
     if (typeof nonce === 'string' && this._pending.has(nonce)) {

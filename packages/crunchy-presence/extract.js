@@ -134,7 +134,12 @@
 
   function clean(value) {
     if (typeof value !== "string") return null;
-    var text = value.replace(/\s+/g, " ").trim();
+    // Strip bidi controls and zero-width characters before capping: U+202E
+    // can reverse-render and U+200B-D/U+2066-69 invisibly pad the card.
+    var text = value
+      .replace(/[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF\u061C\u180E]/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
     var changed = true;
     var i;
     while (changed) {
@@ -227,7 +232,9 @@
   /** Synopsis text: full length for later smart truncation, never boilerplate. */
   function cleanSynopsis(value) {
     if (typeof value !== "string") return null;
-    var text = stripQuotes(value.replace(/\s+/g, " ").trim());
+    var text = stripQuotes(
+      value.replace(/[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF\u061C\u180E]/g, "").replace(/\s+/g, " ").trim()
+    );
     if (!text || text.length < RULES.synopsis.minChars) return null;
     if (isBoilerplate(text)) return null;
     return text.length > RULES.synopsis.maxChars ? text.slice(0, RULES.synopsis.maxChars) : text;

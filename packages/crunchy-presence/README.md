@@ -67,7 +67,7 @@ The options page carries one **Application ID** field, pre-filled with the built
 | Presence never appears | Discord is not running, activity sharing is off, or the host is not registered | Discord → Settings → Activity Privacy → turn on **Share your detected activities**; confirm the desktop app (not the browser) is running and signed in; run `node packages/crunchy-presence/scripts/install-host.mjs --check` and expect PASS on every line |
 | Host not found | The folder moved after install, or Chrome still holds the old host registration | Re-run `node packages/crunchy-presence/scripts/install-host.mjs`, then reload the extension on `chrome://extensions` |
 | Stops after the tab sleeps | Chrome suspends background tabs and the service worker, so no new state arrives | The 30 s watchdog alarm reconnects the worker, and the host republishes the last activity on reconnect; wake the tab and the next media event restores live state |
-| Ads or no video | An ad break has no episode metadata | Presence clears while the ad runs and returns when the episode resumes |
+| Ads or no video | No ad signal is detected; an ad break keeps the episode card up until playback state changes | Wait for the episode to resume; the card already shows the episode |
 
 ## Checks
 

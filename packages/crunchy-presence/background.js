@@ -41,11 +41,13 @@ export const hasChrome = Boolean(
 
 /* ================================================================ pure ==== */
 
-/** Collapse whitespace, drop empties, hard-cap at 128 characters. */
+/** Collapse whitespace, drop empties and single chars, hard-cap at 128 characters. */
 export function clampText(value, max = MAX_TEXT) {
   if (typeof value !== "string") return null;
   const text = value.replace(/\s+/g, " ").trim();
-  if (!text) return null;
+  // Discord requires details/state to be 2-128 chars: a single char is
+  // invalid, so fall back instead of sending it.
+  if (!text || text.length < 2) return null;
   return text.length > max ? text.slice(0, max) : text;
 }
 
@@ -126,7 +128,11 @@ export function pickButtonUrl(raw) {
     const url = new URL(raw);
     if (url.protocol !== "https:") return null;
     if (!/(^|\.)crunchyroll\.com$/i.test(url.hostname)) return null;
-    return url.toString();
+    const out = url.toString();
+    // Discord rejects button URLs over 512 chars: reject so the caller
+    // falls back to the next candidate instead of sending an invalid card.
+    if (out.length > 512) return null;
+    return out;
   } catch {
     return null;
   }
@@ -214,15 +220,18 @@ export function isEligible(tab) {
   return tab.paused === false || tab.visible !== false;
 }
 
-/** Playing beats paused; ties break on the most recently updated tab. */
+/** Playing beats paused; ties break on the last real playback event.
+ * A 30 s keepalive refreshes liveness (receivedAt/updatedAt) but never
+ * re-ranks: only a non-keepalive report advances `rankAt`. */
 export function pickBestTab(tabs) {
   const list = Object.values(tabs || {}).filter(isEligible);
   if (!list.length) return null;
   const rank = (tab) => (tab.paused === false ? 2 : 1);
+  const stamp = (tab) => tab.rankAt ?? tab.updatedAt ?? 0;
   list.sort((a, b) => {
     const byRank = rank(b) - rank(a);
     if (byRank !== 0) return byRank;
-    return (b.updatedAt || 0) - (a.updatedAt || 0);
+    return stamp(b) - stamp(a);
   });
   return list[0] || null;
 }
@@ -264,6 +273,13 @@ export function mergeFrame(entry, frame, now = Date.now()) {
   if (stored.frameId === 0) entry.top = stored;
   else entry.frames[stored.frameId] = stored;
   entry.updatedAt = Math.max(entry.updatedAt || 0, stored.receivedAt);
+  // A keepalive keeps frames alive for pruning but must never re-rank the
+  // winner: only a real playback event advances rankAt.
+  if (frame.keepalive !== true) {
+    entry.rankAt = Math.max(entry.rankAt || 0, stored.receivedAt);
+  } else if (entry.rankAt === undefined) {
+    entry.rankAt = entry.rankAt || 0;
+  }
   pruneFrames(entry, now);
   return entry;
 }
@@ -289,8 +305,10 @@ export function resolveTab(entry, now = Date.now()) {
   const videoFrame = byRecency.find((frame) => frame.hasVideo) || null;
 
   const pick = (field) => {
-    if (top && top[field] !== null) return top[field];
-    for (const frame of byRecency) if (frame[field] !== null) return frame[field];
+    // Metadata is trusted from the top frame only: any subdomain iframe
+    // could otherwise forge the card via the old any-frame fallback. Video
+    // truth still comes from the newest video frame below.
+    if (top && top[field] !== null && top[field] !== undefined) return top[field];
     return null;
   };
 
@@ -300,7 +318,8 @@ export function resolveTab(entry, now = Date.now()) {
     hasVideo: Boolean(videoFrame),
     visible: top ? top.visible !== false : byRecency[0].visible !== false,
     signals: [...new Set(frames.flatMap((frame) => frame.signals))],
-    updatedAt: entry.updatedAt || 0
+    updatedAt: entry.updatedAt || 0,
+    rankAt: entry.rankAt ?? entry.updatedAt ?? 0
   };
   for (const field of METADATA_FIELDS) resolved[field] = pick(field);
   for (const field of VIDEO_FIELDS) resolved[field] = videoFrame ? videoFrame[field] : null;
@@ -312,7 +331,10 @@ export function resolveTab(entry, now = Date.now()) {
  * newest wins. A null clear bypasses the bucket entirely — it is sent
  * immediately and never counted — so at most `max` ordinary sends plus
  * clears share a window (Discord allows 5/20 s; the worker sends at most
- * 4 ordinary). `schedule` is injectable so tests never need real timers.
+ * 4 ordinary). A pause/resume transition (timestamps appear or vanish)
+ * bypasses the same way: a pause must not wait ~20 s while Discord
+ * animates a live bar past the pause point. `schedule` is injectable so
+ * tests never need real timers.
  */
 export function createCoalescingLimiter({
   send,
@@ -325,6 +347,23 @@ export function createCoalescingLimiter({
   let pending = null;
   let hasPending = false;
   let timer = null;
+  // Timestamps presence of the last payload that actually sent: true while
+  // playing, false while paused/cleared, null before the first send.
+  let lastHadTimestamps = null;
+
+  function markSent(payload) {
+    if (payload === null || payload === undefined) lastHadTimestamps = false;
+    else lastHadTimestamps = Boolean(payload.timestamps);
+  }
+
+  function sendBypass(payload) {
+    try {
+      send(payload);
+    } catch {
+      /* a dead port is handled by the port's own disconnect path */
+    }
+    markSent(payload);
+  }
 
   function flush() {
     timer = null;
@@ -344,6 +383,7 @@ export function createCoalescingLimiter({
     } catch {
       /* a dead port is handled by the port's own disconnect path */
     }
+    markSent(payload);
   }
 
   return {
@@ -352,11 +392,24 @@ export function createCoalescingLimiter({
         // A clear never waits behind an ordinary update and never spends the
         // budget: bypass the bucket, keep any deferred ordinary payload for
         // its own window.
-        try {
-          send(payload);
-        } catch {
-          /* a dead port is handled by the port's own disconnect path */
+        sendBypass(payload);
+        return;
+      }
+      const had = Boolean(payload && payload.timestamps);
+      if (lastHadTimestamps !== null && had !== lastHadTimestamps) {
+        // Pause/resume transition: send immediately without spending the
+        // budget and drop any stale deferred ordinary payload it supersedes.
+        pending = null;
+        hasPending = false;
+        if (timer) {
+          try {
+            clearTimeout(timer);
+          } catch {
+            /* timer already fired */
+          }
+          timer = null;
         }
+        sendBypass(payload);
         return;
       }
       pending = payload;
@@ -414,6 +467,25 @@ export function isCrunchyrollPageUrl(raw) {
 }
 
 /**
+ * True while a non-top frame URL may contribute state: an https Crunchyroll
+ * watch page on the same origin as the tab. Any other subdomain frame is
+ * untrusted for card metadata (video truth still merges, metadata does not).
+ */
+export function isTrustedFrameUrl(frameUrl, tabUrl) {
+  try {
+    if (typeof frameUrl !== "string" || typeof tabUrl !== "string") return false;
+    const frame = new URL(frameUrl);
+    const tab = new URL(tabUrl);
+    if (frame.protocol !== "https:" || tab.protocol !== "https:") return false;
+    if (frame.origin !== tab.origin) return false;
+    if (!/(^|\.)crunchyroll\.com$/i.test(frame.hostname)) return false;
+    return /\/watch\/[A-Z0-9]+/i.test(frame.pathname + frame.search + frame.hash);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Apply a crp-gone report to one tab entry. A tab-scoped gone (pagehide)
  * deletes the whole tab; a frame-scoped gone (SPA URL change, quiet iframe)
  * drops just that frame so a still-playing iframe survives a top-frame URL
@@ -445,6 +517,20 @@ export function nextAckRetryDelay(attempt) {
 
 /** Null publishes are suppressed this long after boot until state arrives. */
 export const BOOT_SUPPRESS_MS = 60000;
+
+/** A ping with no pong inside this window marks the bridge disconnected. */
+export const PONG_TIMEOUT_MS = 10000;
+
+/**
+ * True when a ping is still awaiting its pong past the bounded window: the
+ * host is hung and the bridge must be marked disconnected so the normal
+ * reconnect path runs. Pure so tests can prove the timeout without timers.
+ */
+export function isPongOverdue(lastPingAt, lastPongAt, now = Date.now(), timeoutMs = PONG_TIMEOUT_MS) {
+  if (!Number.isFinite(lastPingAt) || lastPingAt <= 0) return false;
+  if (Number.isFinite(lastPongAt) && lastPongAt >= lastPingAt) return false;
+  return now - lastPingAt >= timeoutMs;
+}
 
 /** Delayed clear for a tab navigation the worker cannot see a URL for. */
 export const NO_URL_CLEAR_DELAY_MS = 1500;
@@ -494,6 +580,10 @@ if (hasChrome) {
   // Dedupe for storage writes: recompute runs on every report and every 30 s
   // alarm tick, so identical payloads (including disabled idle ticks) skip.
   let lastPersistedJson = "";
+  // Hung-host detection: the last ping/pong wall-clock times. A ping with
+  // no pong inside PONG_TIMEOUT_MS marks the bridge disconnected.
+  let lastPingAt = 0;
+  let lastPongAt = 0;
 
   const limiter = createCoalescingLimiter({
     send: (activity) => sendActivity(activity)
@@ -647,6 +737,7 @@ if (hasChrome) {
     }
     if (message.t === "pong") {
       backoffMs = BACKOFF_MIN_MS;
+      lastPongAt = Date.now();
       return;
     }
   }
@@ -725,7 +816,10 @@ if (hasChrome) {
 
   function pushActivity(force) {
     if (!enabled) {
-      if (port && bridgeState === "connected") {
+      // Send the clear once on the enabled->disabled transition, then stay
+      // silent: every recompute while disabled must not push another null
+      // through the bypass buckets.
+      if (port && bridgeState === "connected" && lastSentJson !== "null") {
         limiter.push(null);
         lastSentJson = "null";
       }
@@ -752,7 +846,7 @@ if (hasChrome) {
   function entryFor(tab) {
     let entry = tabStates.get(tab.id);
     if (!entry) {
-      entry = { tabId: tab.id, top: null, frames: {}, pageUrl: tab.url || null, updatedAt: 0 };
+      entry = { tabId: tab.id, top: null, frames: {}, pageUrl: tab.url || null, updatedAt: 0, rankAt: 0 };
       tabStates.set(tab.id, entry);
     }
     if (tab.url) entry.pageUrl = tab.url;
@@ -778,23 +872,30 @@ if (hasChrome) {
     if (!carriesData) return;
 
     const entry = entryFor(tab);
+    const frameId = frameIdOf(sender);
+    // Card metadata is trusted from the top frame, or from a frame whose
+    // URL is a watch page on the same origin. Any other frame (for example
+    // a compromised subdomain iframe) contributes video truth only.
+    const trustedMetadata =
+      frameId === 0 || isTrustedFrameUrl(sender.url, tab.url) || isTrustedFrameUrl(sender.url, entry.pageUrl);
     mergeFrame(entry, {
-      frameId: frameIdOf(sender),
-      series: message.series ?? null,
-      episodeTitle: message.episodeTitle ?? null,
-      seasonNumber: message.seasonNumber ?? null,
-      episodeNumber: message.episodeNumber ?? null,
-      artworkUrl: message.artworkUrl ?? null,
-      seriesUrl: message.seriesUrl ?? null,
-      episodeUrl: message.episodeUrl ?? null,
-      synopsis: message.synopsis ?? null,
+      frameId,
+      series: trustedMetadata ? (message.series ?? null) : null,
+      episodeTitle: trustedMetadata ? (message.episodeTitle ?? null) : null,
+      seasonNumber: trustedMetadata ? (message.seasonNumber ?? null) : null,
+      episodeNumber: trustedMetadata ? (message.episodeNumber ?? null) : null,
+      artworkUrl: trustedMetadata ? (message.artworkUrl ?? null) : null,
+      seriesUrl: trustedMetadata ? (message.seriesUrl ?? null) : null,
+      episodeUrl: trustedMetadata ? (message.episodeUrl ?? null) : null,
+      synopsis: trustedMetadata ? (message.synopsis ?? null) : null,
       duration: message.duration ?? null,
       position: message.position ?? null,
       paused: message.paused ?? null,
       playbackRate: message.playbackRate ?? null,
       hasVideo: message.hasVideo === true,
       visible: message.visible !== false,
-      signals: Array.isArray(message.signals) ? message.signals : []
+      signals: Array.isArray(message.signals) ? message.signals : [],
+      keepalive: message.keepalive === true
     });
 
     lastExtract = {
@@ -965,7 +1066,21 @@ if (hasChrome) {
     chromeApi.alarms.onAlarm.addListener((alarm) => {
       if (!alarm || alarm.name !== ALARM_NAME) return;
       if (!port) ensurePort();
-      else if (bridgeState === "connected") post({ t: "ping" });
+      else if (bridgeState === "connected") {
+        // A hung host keeps the port open but never pongs: a ping with no
+        // pong inside the bounded window marks the bridge disconnected and
+        // runs the normal reconnect instead of staying "connected" forever.
+        if (isPongOverdue(lastPingAt, lastPongAt, Date.now())) {
+          dropPort();
+          setBridge("disconnected", "native host pong timeout");
+          scheduleReconnect();
+        } else if (post({ t: "ping" })) {
+          if (lastPingAt === 0 || (lastPongAt >= lastPingAt && lastPongAt !== 0)) {
+            // Fresh ping; the next tick proves the pong arrived.
+          }
+          lastPingAt = Date.now();
+        }
+      }
       recompute();
     });
   }
@@ -1007,7 +1122,7 @@ if (hasChrome) {
       if (changes.enabled) {
         enabled = changes.enabled.newValue !== false;
         if (enabled) reconnect();
-        else {
+        else if (lastSentJson !== "null") {
           limiter.push(null);
           lastSentJson = "null";
         }

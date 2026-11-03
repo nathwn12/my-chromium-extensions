@@ -24,6 +24,15 @@ class DelayLine {
     const off = this.taps[name];
     return off !== undefined ? this.buf[(t + off) & this.mask] : 0;
   }
+
+  readFrac(t, offset) {
+    const pos = t + offset;
+    const i0 = Math.floor(pos);
+    const frac = pos - i0;
+    const a = this.buf[i0 & this.mask];
+    const b = this.buf[(i0 + 1) & this.mask];
+    return a + (b - a) * frac;
+  }
 }
 
 // Dattorro's 1997 paper specifies its delay lengths in milliseconds; the integer
@@ -36,8 +45,8 @@ const INPUT_DIFF_MS = [4.771345, 3.595309, 12.734787, 9.307483]; // 142, 107, 37
 const MOD_DELAY_MS = [22.579886, 30.509727]; // 672, 908
 const PRE_DAMP_MS = [149.625349, 141.695508]; // 4453, 4217
 const PRE_DAMP_TAPS_MS = [
-  [11.861161, 121.870905, 66.866033], // 353, 3627, 1990
-  [8.937872, 99.929438, 70.931756], // 266, 2974, 2111
+  [8.937872, 99.929438, 66.866033], // 266, 2974, 1990
+  [11.861161, 121.870905, 70.931756], // 353, 3627, 2111
 ];
 const DECAY_DIFF2_MS = [60.481839, 89.244313]; // 1800, 2656
 const DECAY_DIFF2_TAPS_MS = [
@@ -128,6 +137,17 @@ class DattorroReverbProcessor extends AudioWorkletProcessor {
     this.inDiff = INPUT_DIFF_MS.map((ms) => this.allpassLine(ms));
 
     this.modDepth = 8;
+    // LFO triangle period is 65536 samples at the 44.1 kHz reference (1.486 s);
+    // the per-sample step scales with the live rate so the shimmer rate in Hz
+    // is identical at 44.1/48/96 kHz.
+    this.lfoInc = 44100 / (2048 * this.sr);
+    // One-pole corners measured from the 44.1 kHz reference coefficients
+    // (hpf 0.025 -> ~178 Hz DC blocker, lpf 0.5 -> ~4.87 kHz wet beam); the
+    // live coefficients invert the mapping so the corners stay put at any rate.
+    const hpfFc = (-Math.log(1 - 0.025) * 44100) / (2 * Math.PI);
+    const lpfFc = (-Math.log(1 - 0.5) * 44100) / (2 * Math.PI);
+    this.hpfCoeff = 1 - Math.exp((-2 * Math.PI * hpfFc) / this.sr);
+    this.lpfCoeff = 1 - Math.exp((-2 * Math.PI * lpfFc) / this.sr);
     this.modDelay1 = this.modDelay(MOD_DELAY_MS[0]);
     this.modDelay2 = this.modDelay(MOD_DELAY_MS[1]);
     this.modPhase = 0;
@@ -169,6 +189,34 @@ class DattorroReverbProcessor extends AudioWorkletProcessor {
     return delayed + gain * temp;
   }
 
+  allpassMod(dl, gain, x) {
+    const delayed = dl.readFrac(this.t, dl.offset);
+    const temp = x - gain * delayed;
+    dl.write(this.t, temp);
+    return delayed + gain * temp;
+  }
+
+  flushDenormals() {
+    const flushBuf = (buf) => {
+      for (let i = 0; i < buf.length; i++) {
+        if (Math.abs(buf[i]) < 1e-20) buf[i] = 0;
+      }
+    };
+    flushBuf(this.preBuf);
+    for (const d of this.inDiff) flushBuf(d.buf);
+    flushBuf(this.modDelay1.buf);
+    flushBuf(this.modDelay2.buf);
+    for (const dl of this.preDampDL) flushBuf(dl.buf);
+    for (const dl of this.decayDiff2) flushBuf(dl.buf);
+    for (const dl of this.postDampDL) flushBuf(dl.buf);
+    if (Math.abs(this.preFilter) < 1e-20) this.preFilter = 0;
+    if (Math.abs(this.hpf) < 1e-20) this.hpf = 0;
+    for (let c = 0; c < 2; c++) {
+      if (Math.abs(this.damping[c]) < 1e-20) this.damping[c] = 0;
+      if (Math.abs(this.wetLpf[c]) < 1e-20) this.wetLpf[c] = 0;
+    }
+  }
+
   process(inputs, outputs) {
     const inp = inputs[0];
     const out = outputs[0];
@@ -181,20 +229,37 @@ class DattorroReverbProcessor extends AudioWorkletProcessor {
     const outR = out.length > 1 ? out[1] : out[0];
     const sr = this.sr;
     const wetAlpha = 1 - Math.exp(-1 / (0.005 * sr));
+    const pdFloat = this.predelay * sr * 0.1;
+    const lpfCoeff = this.lpfCoeff;
+    const hpfCoeff = this.hpfCoeff;
+    this.flushDenormals();
+
+    if (this.wetGain === 0 && this.wetTarget === 0) {
+      for (let i = 0; i < n; i++) {
+        outL[i] = 0;
+        outR[i] = 0;
+      }
+      this.t += n;
+      return true;
+    }
 
     for (let i = 0; i < n; i++) {
       let x = (L[i] + R[i]) * 0.5;
 
       this.preBuf[this.preIdx] = x;
       this.preIdx = (this.preIdx + 1) % this.preBuf.length;
-      const pdSamps = Math.floor(this.predelay * sr * 0.1);
-      const rdIdx = (this.preIdx - pdSamps + this.preBuf.length) % this.preBuf.length;
-      x = this.preBuf[rdIdx];
+      // Fractional pre-delay with linear interpolation: no integer stepping.
+      let rPos = this.preIdx - pdFloat;
+      if (rPos < 0) rPos += this.preBuf.length;
+      const r0 = Math.floor(rPos);
+      const rFrac = rPos - r0;
+      const rA = this.preBuf[r0 % this.preBuf.length];
+      const rB = this.preBuf[(r0 + 1) % this.preBuf.length];
+      x = rA + (rB - rA) * rFrac;
 
       this.preFilter += (x - this.preFilter) * this.preFilterAmt;
       x = this.preFilter;
 
-      const hpfCoeff = 0.025;
       this.hpf += hpfCoeff * (x - this.hpf);
       x = x - this.hpf;
 
@@ -204,18 +269,22 @@ class DattorroReverbProcessor extends AudioWorkletProcessor {
         x = this.allpassAp(d.buf, d.mask, d.off, g, x);
       }
 
-      if ((this.t & 0x7ff) === 0) {
-        // Slow triangle LFO: sweep the modulated-delay read offsets a few
-        // samples each way so the reverb tail stays shimmering, not metallic.
-        if (this.modPhase >= this.modDepth) this.modDir = -1;
-        if (this.modPhase <= -this.modDepth) this.modDir = 1;
-        this.modPhase += this.modDir;
-        this.modDelay1.offset = this.modDelay1.base + this.modPhase;
-        this.modDelay2.offset = this.modDelay2.base + this.modPhase;
+      // Slow triangle LFO, continuous per-sample step (no 2048-sample integer
+      // ticks): the offsets below stay fractional and are read with linear
+      // interpolation, so there is no sample-to-sample click.
+      this.modPhase += this.modDir * this.lfoInc;
+      if (this.modPhase >= this.modDepth) {
+        this.modPhase = this.modDepth;
+        this.modDir = -1;
+      } else if (this.modPhase <= -this.modDepth) {
+        this.modPhase = -this.modDepth;
+        this.modDir = 1;
       }
+      this.modDelay1.offset = this.modDelay1.base + this.modPhase;
+      this.modDelay2.offset = this.modDelay2.base + this.modPhase;
 
       let x1 = x + this.postDampDL[1].read(this.t) * this.decayAmt;
-      x1 = this.allpassDL(this.modDelay1, -this.decayDiff1Amt, x1);
+      x1 = this.allpassMod(this.modDelay1, -this.decayDiff1Amt, x1);
       this.preDampDL[0].write(this.t, x1);
       x1 = this.preDampDL[0].read(this.t);
       this.damping[0] += (x1 - this.damping[0]) * this.dampingAmt;
@@ -225,7 +294,7 @@ class DattorroReverbProcessor extends AudioWorkletProcessor {
       this.postDampDL[0].write(this.t, x1);
 
       let x2 = x + this.postDampDL[0].read(this.t) * this.decayAmt;
-      x2 = this.allpassDL(this.modDelay2, -this.decayDiff1Amt, x2);
+      x2 = this.allpassMod(this.modDelay2, -this.decayDiff1Amt, x2);
       this.preDampDL[1].write(this.t, x2);
       x2 = this.preDampDL[1].read(this.t);
       this.damping[1] += (x2 - this.damping[1]) * this.dampingAmt;
@@ -241,7 +310,6 @@ class DattorroReverbProcessor extends AudioWorkletProcessor {
         outL[i] = 0;
         outR[i] = 0;
       } else {
-        const lpfCoeff = 0.5;
         const wL = (this.preDampDL[1].readTap(this.t, 'out1')
               + this.preDampDL[1].readTap(this.t, 'out2')
               - this.decayDiff2[1].readTap(this.t, 'out2')
@@ -260,8 +328,8 @@ class DattorroReverbProcessor extends AudioWorkletProcessor {
         this.wetLpf[0] += lpfCoeff * (wL - this.wetLpf[0]);
         this.wetLpf[1] += lpfCoeff * (wR - this.wetLpf[1]);
 
-        outL[i] = this.wetGain * (this.wetLpf[0] / (1 + Math.abs(this.wetLpf[0])));
-        outR[i] = this.wetGain * (this.wetLpf[1] / (1 + Math.abs(this.wetLpf[1])));
+        outL[i] = Math.max(-1, Math.min(1, this.wetGain * this.wetLpf[0]));
+        outR[i] = Math.max(-1, Math.min(1, this.wetGain * this.wetLpf[1]));
       }
 
       this.t++;

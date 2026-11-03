@@ -5,7 +5,6 @@
 .opencode/
 
 # Local tests and QA harness
-tests/
 qa/
 
 # Dependencies

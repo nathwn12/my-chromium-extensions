@@ -9,18 +9,18 @@
     reverbIntensity: 0,
   };
 
-  function clamp(value, min, max) {
-    const numeric = Number(value);
-    if (!Number.isFinite(numeric)) return min;
-    return Math.min(max, Math.max(min, numeric));
-  }
-
   function clampSlow(value) {
-    return Math.round(clamp(value, 0.7, 1.3) * 100) / 100;
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return DEFAULT_SETTINGS.slow;
+    if (numeric < 0.7 || numeric > 1.3) return DEFAULT_SETTINGS.slow;
+    return Math.round(numeric * 100) / 100;
   }
 
   function clampIntensity(value) {
-    return Math.round(clamp(value, 0, 1) * 100) / 100;
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return DEFAULT_SETTINGS.reverbIntensity;
+    if (numeric < 0 || numeric > 1) return DEFAULT_SETTINGS.reverbIntensity;
+    return Math.round(numeric * 100) / 100;
   }
 
   function normalizeSettings(raw) {

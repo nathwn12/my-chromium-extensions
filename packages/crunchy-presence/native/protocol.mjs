@@ -33,6 +33,9 @@ export function validateClientId(clientId) {
 
 function validateText(value, field) {
   if (typeof value !== 'string') return fail(`${field} must be a string`);
+  if (value.length < 2) {
+    return fail(`${field} must be at least 2 characters (got ${value.length})`);
+  }
   if (value.length > MAX_TEXT_LENGTH) {
     return fail(`${field} must be at most ${MAX_TEXT_LENGTH} characters (got ${value.length})`);
   }

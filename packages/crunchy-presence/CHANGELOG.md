@@ -4,6 +4,8 @@ Notable changes to this project. Dates are ISO 8601. This package is local-only 
 
 ## [Unreleased]
 
+- Adversarial repair: keepalives carry a flag and never re-rank the multi-tab winner (`rankAt` only on real events); disabled sends one null clear then stays silent with content media events gated; pause/resume transitions bypass the limiter uncounted; handshake ERROR surfaces its message/code as fatal with no retry until the id changes; a ping with no pong in 10 s marks the bridge disconnected; framing errors reset the decoder so the next frame decodes; `clean` strips bidi/zero-width chars; button URLs over 512 chars are rejected with fallback; metadata trusts the top frame (or same-origin watch frame) only; details/state enforce the 2-char minimum with fallback; URL changes use `popstate`/`hashchange` plus a player-container observer with the poll running only while a video exists; README states ad breaks keep the episode card.
+
 ## [1.0.1] - 2026-11-03
 
 - Crunchyroll-only hardening and idle savings: artwork and button URLs are restricted to `https://*.crunchyroll.com` (matching the button rule), the manifest and page-URL predicate are https-only, `crp-state` requires the extension sender id plus a Crunchyroll URL, storage writes dedupe identical payloads (including disabled idle ticks), the content-script poll clears on `pagehide` and skips while disabled, the `#clientId` placeholder meets 4.5:1, and the popup toggle reads "Active".
