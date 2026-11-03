@@ -1,4 +1,8 @@
-# Crunchy Presence
+<p align="center">
+  <img src="icons/icon128.png" width="128" height="128" alt="Crunchy Presence icon" />
+</p>
+<h1 align="center">Crunchy Presence</h1>
+<p align="center"><strong>Show the Crunchyroll episode you are watching as Discord rich presence.</strong></p>
 
 Shows the Crunchyroll episode you are watching as Discord rich presence. Local only: a Chrome MV3 extension reads the page, a small Node native host forwards the activity to Discord over its local IPC pipe, and nothing is uploaded anywhere.
 
@@ -91,3 +95,11 @@ Then remove the extension from `chrome://extensions`.
 - `docs/ARCHITECTURE.md` — data flow, message contract, framing, rate guard, extraction layers.
 - `docs/RESEARCH.md` — dated sources behind the protocol and selector choices.
 - `AGENTS.md` — repository rules.
+
+<!-- nathwn12 house footer: identical in every repo. Do not edit. -->
+<p align="center">
+  <a href="https://github.com/nathwn12"><img src="assets/signature.svg" width="96" alt="nathwn12" /></a>
+</p>
+<p align="center">
+  <sub>Built by <a href="https://github.com/nathwn12">nathwn12</a> · <a href="https://github.com/nathwn12?tab=repositories">All projects</a></sub>
+</p>
