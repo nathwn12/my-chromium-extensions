@@ -1,14 +1,14 @@
 # AGENTS
 
 ## Repo Shape
-- MV3 Chromium-only extension (no Firefox). No build step — load repo root as unpacked extension.
+- MV3 Chromium-only extension (no Firefox). No build step — load this package dir (`packages/audio-normalizer`) as unpacked extension.
 - Entrypoints: `background.js` (service worker, `importScripts('shared.js')`), `content-script.js` + `shared.js` (ISOLATED, `document_start`, all frames per `manifest.json`), `page-hook.js` (MAIN world via `chrome.scripting.executeScript`, patches `AudioContext` / `AudioNode.connect` / `HTMLMediaElement.play`), `popup.html`/`popup.js`, `audio/normalizer-worklet.js` (AudioWorkletProcessor loaded by `page-hook.js`).
 
 ## Commands
 - `node tests/shared.test.js` — unit tests; run when touching `shared.js`. Currently 19/19 pass.
 - `node qa/feed-transition-qa.cjs` — feed-boundary (reset-program) transitions; pure Node, allowed.
 - `node qa/program-boundary-qa.cjs` — page-hook program handoff; pure Node, allowed.
-- `npm run typecheck` — `tsc --noEmit` with `checkJs`. Needs `npm install` first (`package.json`/`tsconfig.json` are gitignored local-only). Only root `*.js` + `*.d.ts` are checked; `tests/` excluded, `qa/*.cjs` never typechecked.
+- `npm run typecheck` — `tsc --noEmit` with `checkJs`. Needs `npm install` first (`package.json`/`tsconfig.json` are tracked; only `package-lock.json` is gitignored local-only). Only root `*.js` + `*.d.ts` are checked; `tests/` excluded, `qa/*.cjs` never typechecked.
 - `node qa/extension-qa.cjs` - popup/content-script flow. **BANNED from execution (see Audio Safety).**
 - `node qa/responsive-normalizer-qa.cjs` - AudioWorklet loud/quiet/burst/toggle scenarios. **BANNED from execution (see Audio Safety): launches Chromium and plays audio via a real AudioContext.**
 - QA loads Playwright from hardcoded Scoop path; override with `TN_PLAYWRIGHT_PATH`. `TN_QA_HEADLESS=0` for visible browser (default headless). **Do not run either QA script - see Audio Safety.**
@@ -32,6 +32,6 @@
 
 ## Git Hygiene
 - Run `git status` before committing. `.gitignore` is aggressive (`*.json`, `tests/`, `qa/`) — new docs/config are silently ignored; only already-tracked files stay tracked.
-- Tracked extension files: `background.js`, `content-script.js`, `page-hook.js`, `popup.js`, `popup.html`, `shared.js`, `manifest.json`, `audio/`, `global.d.ts`, `README.md`, `PRIVACY_POLICY.md`, `STORE_SUBMISSION.md`. `package.json` / `tsconfig.json` / `package-lock.json`, `tests/`, `qa/`, `.opencode/`, `node_modules/` stay local.
+- Tracked extension files: `background.js`, `content-script.js`, `page-hook.js`, `popup.js`, `popup.html`, `shared.js`, `manifest.json`, `audio/`, `global.d.ts`, `README.md`, `PRIVACY_POLICY.md`, `STORE_SUBMISSION.md`. `package-lock.json`, `tests/`, `qa/`, `.opencode/`, `node_modules/` stay local (`package.json` / `tsconfig.json` are tracked).
 - Tracked QA exceptions: `qa/loudness-verify.cjs` (release gate), `qa/feed-transition-qa.cjs`, `qa/program-boundary-qa.cjs` — the `.gitignore` exceptions keep exactly these three tracked; fixtures/outputs stay ignored.
 - Consult `docs/DELETION_LOG.md` before deleting code — it records prior dead-code removals and ISOLATED/MAIN duplication rationale.

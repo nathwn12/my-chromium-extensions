@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.3] - 2026-11-03
+
 ### Fixed
 
 - Track-switch doubling: rebuild confirms the element mute before any gain rises (pre-mute ramp deleted), no-audio-track paths hard-zero `masterGain` before unmuting while the old tap is still connected, and a generation counter bumped on teardown/stale transitions lets stale async resumes and retries die instead of writing mute/gain. Invariant: `audible(controller) === (attached && !sourceStale)`.

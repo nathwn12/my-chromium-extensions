@@ -9,6 +9,7 @@
 *.md
 !README.md
 !CHANGELOG.md
+!AGENTS.md
 *.zip
 /.agnes/
 /output/

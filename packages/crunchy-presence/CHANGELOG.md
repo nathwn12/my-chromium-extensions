@@ -4,6 +4,8 @@ Notable changes to this project. Dates are ISO 8601. This package is local-only 
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-11-03
+
 - Crunchyroll-only hardening and idle savings: artwork and button URLs are restricted to `https://*.crunchyroll.com` (matching the button rule), the manifest and page-URL predicate are https-only, `crp-state` requires the extension sender id plus a Crunchyroll URL, storage writes dedupe identical payloads (including disabled idle ticks), the content-script poll clears on `pagehide` and skips while disabled, the `#clientId` placeholder meets 4.5:1, and the popup toggle reads "Active".
 
 - Repair pass: the native port is disconnected on every drop so reconnects leak no host process; disabling presence still sends the null clear; the worker sends 4 ordinary updates per 20 s while null clears bypass uncounted on both sides (host backstop 5/20 s); rejected acks reset the send dedupe and retry with 1 s/2 s/4 s backoff; blind loading/discarded signals schedule a 1.5 s clear cancelled by arriving state; `crp-gone` is tab-scoped on `pagehide` and frame-scoped on SPA URL changes so a playing iframe survives; the first hello sends no null clear; the watchdog no longer re-sends idle nulls; boot suppresses the null publish until first state or 60 s; the popup renders `lastSent`; the options test button reports "queued" when queued.

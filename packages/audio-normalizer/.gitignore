@@ -19,6 +19,7 @@ node_modules/
 Thumbs.db
 *.log
 *.json
+!package.json
 
 # Tracked acceptance harness; fixtures stay ignored
 !qa/

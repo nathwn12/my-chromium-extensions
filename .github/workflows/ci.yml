@@ -1,0 +1,57 @@
+name: ci
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+jobs:
+  audio-normalizer:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install (root lockfile)
+        run: npm ci
+      - name: Feed transition QA
+        working-directory: packages/audio-normalizer
+        run: node qa/feed-transition-qa.cjs
+      - name: Program boundary QA
+        working-directory: packages/audio-normalizer
+        run: node qa/program-boundary-qa.cjs
+      - name: Typecheck
+        working-directory: packages/audio-normalizer
+        run: npm run typecheck
+  slowed-reverb:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install (root lockfile)
+        run: npm ci
+      - name: Lint
+        working-directory: packages/slowed-reverb
+        run: npm run lint
+      - name: Mute enforce test
+        working-directory: packages/slowed-reverb
+        run: node test/mute-enforce.test.js
+  crunchy-presence:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install (root lockfile)
+        run: npm ci
+      - name: Test
+        working-directory: packages/crunchy-presence
+        run: npm test
+      - name: Native host selftest
+        working-directory: packages/crunchy-presence
+        run: node native/host.mjs --selftest

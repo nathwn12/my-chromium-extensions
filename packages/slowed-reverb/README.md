@@ -9,7 +9,8 @@
 Clone the repo, then load it as an unpacked extension:
 
 ```sh
-git clone https://github.com/nathwn12/slowed-reverb.git
+git clone https://github.com/nathwn12/my-chromium-extensions.git
+cd my-chromium-extensions/packages/slowed-reverb
 ```
 
 Open `chrome://extensions`, switch on Developer mode, choose Load unpacked, and select the repo folder holding `manifest.json`.
@@ -21,9 +22,11 @@ Once it loads, open a YouTube Music tab, start playback, and click the extension
 Pin one exact commit for a repeatable install:
 
 ```sh
-git clone https://github.com/nathwn12/slowed-reverb.git
-git -C slowed-reverb checkout 4efc3c2a25b2cd1b6e3dd9e9e81ec55f822dca71
+git clone https://github.com/nathwn12/my-chromium-extensions.git
+git -C my-chromium-extensions checkout cbfa27d3d53aca4d585d81cf4cf88876ba0684e0
 ```
+
+The package path is unchanged: `packages/slowed-reverb`.
 
 There is no hosted page, so the repo folder itself is the install source. Reload the extension from `chrome://extensions` after you pull new commits.
 
@@ -37,7 +40,7 @@ Drag the smaller slider to set reverb from 0 percent to 100 percent.
 
 Switch Active off to hear the raw mix again without losing your settings.
 
-Press the reset arrow to return to 1.00x and 0 percent.
+Press the **Reset** button to return to 1.00x and 0 percent.
 
 Your per-site speed, reverb, and Active state persist across restart and apply again on first play.
 
@@ -58,7 +61,7 @@ Your per-site speed, reverb, and Active state persist across restart and apply a
 
 ## Links
 
-- Repository: https://github.com/nathwn12/slowed-reverb
+- Repository: https://github.com/nathwn12/my-chromium-extensions/tree/main/packages/slowed-reverb
 - Privacy policy: PRIVACY_POLICY.md
 - Changelog: CHANGELOG.md
 - License: MIT, see [LICENSE](LICENSE)

@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Audio Normalizer",
   "short_name": "Normalizer",
-  "version": "5.4.2",
+  "version": "5.4.3",
   "description": "Normalize per-site audio to a steady level, locally.",
   "icons": {
     "16": "icons/icon16.png",

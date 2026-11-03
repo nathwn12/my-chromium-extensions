@@ -36,6 +36,48 @@
       new Promise((resolve) => setTimeout(resolve, timeoutMs)),
     ]).then(() => {});
   }
+  // Cheap re-armed resume for attached elements: a single document-level
+  // play/playing capture pair resumes any suspended session that still
+  // holds elements. Registered once, removed only when no session holds
+  // elements. Gesture listeners in createMediaSession cover click/touch/
+  // key/pointerdown; this covers feed autoplay (play events with no
+  // gesture) while the tab is active.
+  let attachedResumeArmed = false;
+  function resumeAttachedSessions() {
+    for (const session of sessions) {
+      try {
+        if (session.mediaElements.size === 0) continue;
+        if (session.context.state === 'suspended'
+          && typeof session.context.resume === 'function') {
+          void resumeWithTimeout(session.context, RESUME_TIMEOUT_MS);
+        }
+      } catch {}
+    }
+    maybeDisarmAttachedResume();
+  }
+  function ensureAttachedResumeListeners() {
+    if (attachedResumeArmed) return;
+    attachedResumeArmed = true;
+    try {
+      document.addEventListener('play', resumeAttachedSessions, true);
+      document.addEventListener('playing', resumeAttachedSessions, true);
+    } catch {}
+  }
+  function maybeDisarmAttachedResume() {
+    if (!attachedResumeArmed) return;
+    let held = false;
+    try {
+      for (const session of sessions) {
+        if (session.mediaElements.size !== 0) { held = true; break; }
+      }
+    } catch {}
+    if (held) return;
+    attachedResumeArmed = false;
+    try {
+      document.removeEventListener('play', resumeAttachedSessions, true);
+      document.removeEventListener('playing', resumeAttachedSessions, true);
+    } catch {}
+  }
   // Worklet URL contract: the ONLY trusted source is the START message from
   // the ISOLATED content script (which knows chrome.runtime.getURL). The
   // page-writable DOM attribute is kept ONLY as the pending-start fallback
@@ -287,21 +329,32 @@
     }
 
     // Close hook-created media contexts that no longer route anything; a
-    // fresh one is pre-warmed on the next start. Sessions that still hold
-    // elements stay alive (their sources cannot be re-captured elsewhere).
+    // fresh one is pre-warmed on the next start. Sessions that ever
+    // captured stay alive (their sources cannot be re-captured elsewhere).
     for (const session of Array.from(sessions)) {
       maybeCloseIdleMediaSession(session);
     }
+    try {
+      deferredCaptureElements.clear();
+    } catch {}
+    maybeDisarmAttachedResume();
 
     reportStatus('HOOK_STOPPED');
   }
 
   // Close a hook-created (media-kind) context once it routes nothing and the
-  // hook is inactive. Never closes page-owned contexts or sessions that
-  // still hold media elements.
+  // hook is inactive. A context that ever captured keeps its latch: a
+  // MediaElementSource is bound to its first context for the element's
+  // life, and churn (ended/emptied) empties mediaElements while the
+  // element is still in the DOM — closing then makes the retry throw and
+  // latch __tnWebAudio forever. Never close a context that ever captured;
+  // the context is pre-warmed per document so the close saves nothing.
   function maybeCloseIdleMediaSession(session) {
-    if (!session || session.kind !== 'media' || state.active) return;
+    if (!session || session.kind !== 'media') return;
+    if (session.captured) return;
     if (session.mediaElements.size !== 0) return;
+    if (session.sources.size !== 0) return;
+    if (state.active) return;
     try {
       if (typeof session.context.close === 'function'
         && session.context.state !== 'closed') {
@@ -521,14 +574,20 @@
     }
 
     let observerTimer = null;
+    let pendingBatches = [];
 
     state.observer = new MutationObserver((mutations) => {
       if (!state.active) return;
+      // Coalesce, never drop: a removal landing inside the 100 ms window
+      // is queued and detached on the next flush.
+      for (const m of mutations ?? []) pendingBatches.push(m);
       if (observerTimer) return;
 
       observerTimer = setTimeout(() => {
         observerTimer = null;
-        for (const m of mutations) {
+        const batch = pendingBatches;
+        pendingBatches = [];
+        for (const m of batch) {
           for (const node of m.removedNodes ?? []) {
             // Detach first so removed elements stop pinning sessions: the
             // source is disconnected and every strong reference is dropped.
@@ -712,11 +771,14 @@
         document.removeEventListener('click', resumeOnInteraction);
         document.removeEventListener('touchstart', resumeOnInteraction);
         document.removeEventListener('keydown', resumeOnInteraction);
+        document.removeEventListener('pointerdown', resumeOnInteraction);
       }
     };
     document.addEventListener('click', resumeOnInteraction);
     document.addEventListener('touchstart', resumeOnInteraction);
     document.addEventListener('keydown', resumeOnInteraction);
+    document.addEventListener('pointerdown', resumeOnInteraction);
+    ensureAttachedResumeListeners();
 
     // Bounded resume: never blocks session creation under the autoplay
     // policy; the gesture listeners above retry on interaction.
@@ -726,6 +788,7 @@
       document.removeEventListener('click', resumeOnInteraction);
       document.removeEventListener('touchstart', resumeOnInteraction);
       document.removeEventListener('keydown', resumeOnInteraction);
+      document.removeEventListener('pointerdown', resumeOnInteraction);
     }
 
     const session = createSession(context, 'media');
@@ -762,6 +825,8 @@
       sources: new Set(),
       mediaElements: new Set(),
       kind,
+      captured: false,
+      processorFailures: 0,
       lastResetGeneration: null,
       pendingResetGeneration: null,
     };
@@ -822,14 +887,26 @@
 
       workletNode.onprocessorerror = (e) => {
         console.error('[hook] worklet processor error:', e);
+        // Never leave a dead worklet wired: bypass at once so the element
+        // keeps playing unprocessed, then retry with backoff. Repeated
+        // failure stays in bypass (audible) rather than silent.
+        try { session.inputNode.disconnect(workletNode); } catch {}
+        try { workletNode.disconnect(session.outputNode); } catch {}
+        try { session.inputNode.disconnect(session.outputNode); } catch {}
+        try { session.inputNode.connect(session.outputNode); } catch {}
         session.workletNode = null;
+        session.processorFailures = (session.processorFailures || 0) + 1;
         setError('Audio processor error. Retrying…');
         if (!state.recovering) {
           state.recovering = true;
+          const delay = session.processorFailures > 2 ? 2000 : 500;
           setTimeout(() => {
             state.recovering = false;
-            void recoverAudio();
-          }, 500);
+            try {
+              if (session.processorFailures > 4) return;
+              void recoverAudio();
+            } catch {}
+          }, delay);
         }
       };
 
@@ -854,8 +931,15 @@
     try { session.inputNode.disconnect(workletNode); } catch {}
     try { workletNode.disconnect(session.outputNode); } catch {}
 
-    session.inputNode.connect(workletNode);
-    workletNode.connect(session.outputNode);
+    try {
+      session.inputNode.connect(workletNode);
+      workletNode.connect(session.outputNode);
+    } catch {
+      // A throwing connect must never leave input->worklet with no path
+      // to output: fall back to the direct (unprocessed but audible) path.
+      bypassSession(session);
+      return;
+    }
     session.workletNode = workletNode;
   }
 
@@ -873,6 +957,14 @@
 
     try {
       session.inputNode.connect(session.outputNode);
+    } catch {}
+    // Best-effort resume toward audible: when the site is disabled the
+    // graph is input->destination, which is silent while suspended.
+    try {
+      if (session.context.state === 'suspended'
+        && typeof session.context.resume === 'function') {
+        void resumeWithTimeout(session.context, RESUME_TIMEOUT_MS);
+      }
     } catch {}
   }
 
@@ -1104,9 +1196,13 @@
       }
       session.mediaElements.delete(mediaElement);
       maybeCloseIdleMediaSession(session);
+      maybeDisarmAttachedResume();
     }
     try {
       mediaElement.__tnAttached = false;
+    } catch {}
+    try {
+      deferredCaptureElements.delete(mediaElement);
     } catch {}
   }
 
@@ -1122,6 +1218,52 @@
     }
   }
 
+  // Deferred capture: elements skipped while the context is suspended
+  // re-attempt once on the next user gesture or play event. Never more
+  // than one pending retry per element; dropped when the site disables.
+  const deferredCaptureElements = new Set();
+  function queueDeferredCapture(mediaElement) {
+    if (!mediaElement || deferredCaptureElements.has(mediaElement)) return;
+    deferredCaptureElements.add(mediaElement);
+    const retry = () => {
+      if (!deferredCaptureElements.has(mediaElement)) return;
+      deferredCaptureElements.delete(mediaElement);
+      try {
+        mediaElement.removeEventListener?.('play', retry);
+        mediaElement.removeEventListener?.('playing', retry);
+      } catch {}
+      if (!state.active) return;
+      void attachMediaElement(mediaElement);
+    };
+    try {
+      mediaElement.addEventListener?.('play', retry);
+      mediaElement.addEventListener?.('playing', retry);
+    } catch {}
+    const gestureRetry = () => {
+      if (!deferredCaptureElements.has(mediaElement)) {
+        try { document.removeEventListener('click', gestureRetry); } catch {}
+        try { document.removeEventListener('pointerdown', gestureRetry); } catch {}
+        try { document.removeEventListener('keydown', gestureRetry); } catch {}
+        return;
+      }
+      deferredCaptureElements.delete(mediaElement);
+      try { document.removeEventListener('click', gestureRetry); } catch {}
+      try { document.removeEventListener('pointerdown', gestureRetry); } catch {}
+      try { document.removeEventListener('keydown', gestureRetry); } catch {}
+      try {
+        mediaElement.removeEventListener?.('play', retry);
+        mediaElement.removeEventListener?.('playing', retry);
+      } catch {}
+      if (!state.active) return;
+      void attachMediaElement(mediaElement);
+    };
+    try {
+      document.addEventListener('click', gestureRetry);
+      document.addEventListener('pointerdown', gestureRetry);
+      document.addEventListener('keydown', gestureRetry);
+    } catch {}
+  }
+
   /** @param {any} mediaElement */
   async function attachMediaElement(mediaElement) {
     if (!state.active || !isMediaElement(mediaElement) || mediaElement.__tnAttached) return;
@@ -1135,6 +1277,19 @@
     try {
       const session = await ensureMediaSession();
       await resumeWithTimeout(session.context, RESUME_TIMEOUT_MS);
+      // Gate: per Web Audio, createMediaElementSource permanently steals
+      // the element's direct output. A suspended/closed context therefore
+      // means permanent silence — never capture into one. Restore the
+      // guard (unmuted, untouched) and retry on the next gesture/play.
+      if (!session || session.context.state !== 'running') {
+        restoreHookGuard(mediaElement);
+        try {
+          mediaElement.__tnAttached = false;
+        } catch {}
+        queueDeferredCapture(mediaElement);
+        ensureAttachedResumeListeners();
+        return;
+      }
       // Reconnect fast path: a live source from an earlier attach is reused
       // (re-capturing the same element throws InvalidStateError). Only a
       // dead-context source falls through to a fresh capture.
@@ -1167,11 +1322,13 @@
           elementSources.set(mediaElement, source);
         } catch {}
         session.sources.add(source);
+        session.captured = true;
       }
       // Routing is live: restore the pre-guard muted value.
       restoreHookGuard(mediaElement);
       mediaElement.__tnAttached = true;
       session.mediaElements.add(mediaElement);
+      ensureAttachedResumeListeners();
       console.log('[hook] media element attached:', mediaElement.tagName, mediaElement.src?.slice(0, 60));
       reportStatus('HOOK_STATUS');
     } catch (e) {
@@ -1272,6 +1429,9 @@
     if (mediaSessions.get(document) === session) {
       mediaSessions.delete(document);
     }
+    try {
+      maybeDisarmAttachedResume();
+    } catch {}
   }
 
   function setError(message) {

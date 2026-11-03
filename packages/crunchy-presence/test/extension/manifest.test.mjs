@@ -16,6 +16,15 @@ const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const ICON_SIZES = [16, 32, 48, 128];
 
 const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+const changelogPath = join(extensionDir, "CHANGELOG.md");
+
+function newestReleasedVersion(text) {
+  for (const line of text.split(/\r?\n/)) {
+    const match = line.match(/^## \[(\d+\.\d+\.\d+)\]/);
+    if (match) return match[1];
+  }
+  throw new Error("no released ## [x.y.z] heading found");
+}
 
 function readPng(relative) {
   const path = join(extensionDir, relative);
@@ -60,7 +69,12 @@ test("manifest is MV3 with the expected identity", () => {
   assert.equal(manifest.name, "Crunchy Presence");
   assert.equal(manifest.short_name, "Crunchy");
   assert.equal(manifest.action.default_title, "Crunchy Presence");
-  assert.equal(manifest.version, "1.0.0");
+  assert.match(manifest.version, /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/, "strict semver MAJOR.MINOR.PATCH");
+  const changelog = readFileSync(changelogPath, "utf8");
+  assert.equal(manifest.version, newestReleasedVersion(changelog), "version equals newest released changelog heading");
+  const mismatch = manifest.version === "0.0.0" ? "9.9.9" : "0.0.0";
+  const fixture = `# Changelog\n\n## [Unreleased]\n\n## [${mismatch}] - 2099-01-01\n`;
+  assert.notEqual(manifest.version, newestReleasedVersion(fixture), "comparison rejects a mismatched changelog version");
   assert.ok(manifest.host_permissions.includes("https://*.crunchyroll.com/*"));
 });
 

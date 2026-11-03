@@ -4,9 +4,9 @@ Three Chromium extensions, loaded unpacked from this repository. Nothing is publ
 
 | Extension | What it does | Version |
 | --- | --- | --- |
-| [Audio Normalizer](packages/audio-normalizer) | Applies one target loudness to every site through a local audio graph. | 5.4.2 |
-| [Slowed Reverb](packages/slowed-reverb) | Slows YouTube playback and adds plate reverb in a local audio graph. | 1.0.2 |
-| [Crunchy Presence](packages/crunchy-presence) | Reports the Crunchyroll episode being watched as Discord rich presence. | 1.0.0 |
+| [Audio Normalizer](packages/audio-normalizer) | Applies one target loudness to every site through a local audio graph. | 5.4.3 |
+| [Slowed Reverb](packages/slowed-reverb) | Slows YouTube playback and adds plate reverb in a local audio graph. | 1.0.3 |
+| [Crunchy Presence](packages/crunchy-presence) | Reports the Crunchyroll episode being watched as Discord rich presence. | 1.0.1 |
 
 ## Install
 

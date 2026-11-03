@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Feed silence on autoplay-gated tabs (e.g. TikTok): the hook never captures into a non-running context (guard restored, one re-attempt on the next gesture or play event); a context that ever captured is never closed (capture latch survives ended/emptied churn); worklet processor errors and throwing connects fall back to the audible input-to-output path with backoff; gesture resume covers pointerdown plus play/playing while elements are attached; disabling the site keeps captured elements on the resumed bypass path; MutationObserver removals coalesce instead of dropping inside the debounce window.
+
+## [5.4.3] - 2026-11-03
+
+### Fixed
+
 - Adversarial hardening (13 findings): the hook no longer labels its own `createMediaElementSource` captures as page WebAudio (own captures run under `internalWiring`, so a context close/recover can re-attach); content scripts reach `about:blank`/srcdoc/opaque-origin iframes (`match_origin_as_fallback`); the worklet URL origin is pinned to the content-script-set value at load (a page START can no longer pin a foreign `chrome-extension://` id) and the hook echoes `gainDb` on every status so a page `SET_GAIN` is corrected at once; `HOOK_ERROR` always carries `state.lastError`; a page-defined `window.__tabNormalizerHookV5` no longer blocks the real hook (early-return only on the `__tnConnect` patch); site keys are the full hostname (`alice.github.io` no longer shares `github.io`'s toggle, collapsed keys survive read-only with migration on first write); the DOM pending fallback is ignored after stop until a real START (plus a content-script STOP backstop for disabled-but-active hooks); the unused `tabs` permission is gone (policy line with it) and `page-hook.js` left `web_accessible_resources`; the reset button zeroes gain (Active stays on) and the copy no longer claims every tab is normalized (per-site opt-in).
 - Leak/perf: `emptied`/`ended`/removal disconnect the source, drop it from both sets and clear `__tnAttached` (replays reuse the live source instead of re-capturing); closed-context sessions are pruned and hook-created contexts close when idle; `GET_DOCUMENT_STATUS` answers from in-memory state (storage re-read only on `storage.onChanged`); a slider drag persists once on `change`/`pointerup` (live preview is a transient, storage-free tab apply) with one broadcast per write.
 

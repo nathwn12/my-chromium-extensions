@@ -9,7 +9,8 @@
 There is no store listing, so you load it unpacked from source. Clone the repo first:
 
 ```bash
-git clone https://github.com/nathwn12/audio-normalizer.git
+git clone https://github.com/nathwn12/my-chromium-extensions.git
+cd my-chromium-extensions/packages/audio-normalizer
 ```
 
 Then open `chrome://extensions`, enable **Developer mode**, click **Load unpacked**, and select the cloned folder (the one containing `manifest.json`). Visit a site with audio, click the extension icon, and switch **Active** on for that site.
@@ -21,12 +22,11 @@ Once loaded, the extension measures the loudness of the sites you activate and m
 There is no build step, so the checked-out folder is the extension. To pin an exact copy:
 
 ```bash
-git clone https://github.com/nathwn12/audio-normalizer.git
-cd audio-normalizer
-git checkout 862797bf53accbb8964595bf55638bdc272551d7
+git clone https://github.com/nathwn12/my-chromium-extensions.git
+git -C my-chromium-extensions checkout cbfa27d3d53aca4d585d81cf4cf88876ba0684e0
 ```
 
-Then load it unpacked with the steps above. The extension only processes sites you switch on — each hostname opts in separately.
+Then load `my-chromium-extensions/packages/audio-normalizer` unpacked with the steps above. The package path is unchanged. The extension only processes sites you switch on — each hostname opts in separately.
 
 ## Use it
 
@@ -34,7 +34,7 @@ Open a page that plays audio and click the extension icon. The popup names the c
 
 ## What you get
 
-- One **Active** toggle per site, remembered across tabs.
+- One **Active** **switch** per site, remembered across tabs.
 - Human-comfort loudness: within-program levelling (dead-band AGC — no adaptation inside ±2.5 LU of the program, engagement outside it) plus slow normalisation toward a fixed **-20 LUFS** program target, driven by gated integrated loudness per ITU-R BS.1770-4 / EBU R128 and measured from the levelled signal.
 - Speech, Music, and Boost presets plus a manual gain slider (-12 to +12 dB); the slider is an immediate output trim, separate from the target.
 - Fully local processing: your audio never leaves the browser.
@@ -51,7 +51,7 @@ Open a page that plays audio and click the extension icon. The popup names the c
 
 ## Links
 
-- Source: https://github.com/nathwn12/audio-normalizer
+- Source: https://github.com/nathwn12/my-chromium-extensions/tree/main/packages/audio-normalizer
 - Privacy policy: [PRIVACY_POLICY.md](PRIVACY_POLICY.md)
 - Release history: [CHANGELOG.md](CHANGELOG.md)
 - License: [LICENSE](LICENSE) (MIT)
