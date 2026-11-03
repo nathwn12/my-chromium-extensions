@@ -6,17 +6,6 @@
 
 Shows the Crunchyroll episode you are watching as Discord rich presence. Local only: a Chrome MV3 extension reads the page, a small Node native host forwards the activity to Discord over its local IPC pipe, and nothing is uploaded anywhere.
 
-## What Discord shows
-
-- Activity type **WATCHING**.
-- Line 1: the series name (the episode title when the series is unknown); with a synopsis, `Frieren · S1 E5` when both numbers are known.
-- Line 2: the episode synopsis when it exists and the setting is on, otherwise `S1 E5 · 12:34 / 24:00` - season, episode, position and duration.
-- A timer: elapsed on the left, remaining on the right, driven by start/end timestamps. Omitted while paused.
-- Artwork: the episode image from Crunchyroll, handed to Discord as an external `https` URL.
-- Up to two buttons: **Watch Episode** and **View Series**, pointing at the episode and series pages. A lone episode link is labelled **Watch on Crunchyroll**, and the phase-1 button remains when no direct link is found.
-
-The card's title is the name of the Discord application behind the presence: `Crunchyroll` by default, and whatever application the options page points at.
-
 ## Requirements
 
 | | |
@@ -45,6 +34,17 @@ This writes `%LOCALAPPDATA%\crunchy-presence\host.cmd` and `host-manifest.json`,
 3. **Load unpacked**, then select this package folder (the one holding `manifest.json`).
 
 The manifest carries a fixed `key`, so the extension keeps the same ID across reloads and machines. The host's `allowed_origins` names exactly that ID.
+
+## What Discord shows
+
+- Activity type **WATCHING**.
+- Line 1: the series name (the episode title when the series is unknown); with a synopsis, `Frieren · S1 E5` when both numbers are known.
+- Line 2: the episode synopsis when it exists and the setting is on, otherwise `S1 E5 · 12:34 / 24:00` - season, episode, position and duration.
+- A timer: elapsed on the left, remaining on the right, driven by start/end timestamps. Omitted while paused.
+- Artwork: the episode image from Crunchyroll, handed to Discord as an external `https` URL.
+- Up to two buttons: **Watch Episode** and **View Series**, pointing at the episode and series pages. A lone episode link is labelled **Watch on Crunchyroll**, and the phase-1 button remains when no direct link is found.
+
+The card's title is the name of the Discord application behind the presence: `Crunchyroll` by default, and whatever application the options page points at.
 
 ## The built-in application
 
