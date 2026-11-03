@@ -43,7 +43,15 @@ async function render() {
   const status = live || stored.crpStatus || {};
   const state = status.bridgeState || "unknown";
 
-  bridge.textContent = state;
+  const bridgeLabels = {
+    unknown: "Not connected",
+    connected: "Connected",
+    connecting: "Connecting",
+    disconnected: "Disconnected",
+    error: "Error",
+    idle: "Idle",
+  };
+  bridge.textContent = bridgeLabels[state] ?? (state.charAt(0).toUpperCase() + state.slice(1));
   bridge.dataset.state = state;
   appEl.textContent = override ? `App: custom ${effective}` : "App: Crunchyroll";
   appOverrideEl.hidden = !override;

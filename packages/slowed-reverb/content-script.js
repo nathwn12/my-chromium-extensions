@@ -17,6 +17,7 @@
     eligible: false,
     media: new Map(),
     observer: null,
+    safetyPollTimer: null,
     scanQueued: false,
     hookRefreshQueued: false,
     context: null,
@@ -107,7 +108,9 @@
       // fought the last track must not leave the next one permanently unmuted.
       resetMuteDampener(controller);
       syncMediaController(controller);
+      const generation = controller.generation;
       void resumeContext().then(() => {
+        if (generation !== controller.generation) return;
         syncMediaController(controller);
       });
     }, true);
@@ -116,8 +119,12 @@
       const media = event.target;
       if (!(media instanceof HTMLMediaElement)) return;
       trackMedia(media);
+      const staleController = state.media.get(media);
+      const playingGeneration = staleController ? staleController.generation : 0;
       void resumeContext().then(() => {
-        syncMediaController(state.media.get(media));
+        const current = state.media.get(media);
+        if (!current || playingGeneration !== current.generation) return;
+        syncMediaController(current);
       });
     }, true);
 
@@ -173,18 +180,56 @@
   function ensureObserver() {
     if (state.observer) return;
 
-    let observerTimer = null;
-
-    state.observer = new MutationObserver(() => {
-      if (observerTimer) return;
-      observerTimer = setTimeout(() => {
-        observerTimer = null;
-        queueScan();
-      }, 50);
+    // Fast path: react only to media adds/removes on the next microtask via
+    // queueScan (which coalesces with scanQueued, so a DOM storm schedules at
+    // most one scan). Unrelated mutations are ignored; the slow safety poll
+    // below is the backstop for a missed record.
+    state.observer = new MutationObserver((records) => {
+      if (!isMediaMutation(records)) return;
+      queueScan();
     });
 
     const root = document.documentElement || document;
     state.observer.observe(root, { childList: true, subtree: true });
+    ensureSafetyPoll();
+  }
+
+  function isMediaNode(node) {
+    if (!node) return false;
+    if (node instanceof HTMLMediaElement) return true;
+    const tag = node.tagName;
+    if (typeof tag === 'string') {
+      const upper = tag.toUpperCase();
+      if (upper === 'VIDEO' || upper === 'AUDIO') return true;
+    }
+    // Subtree add: a wrapper DIV whose descendants contain media.
+    if (typeof node.querySelectorAll === 'function') {
+      try {
+        if (node.querySelectorAll('audio,video').length > 0) return true;
+      } catch {
+        // Non-element subtree; fall through.
+      }
+    }
+    return false;
+  }
+
+  function isMediaMutation(records) {
+    for (const record of records || []) {
+      for (const node of record.addedNodes || []) {
+        if (isMediaNode(node)) return true;
+      }
+      for (const node of record.removedNodes || []) {
+        if (isMediaNode(node)) return true;
+      }
+    }
+    return false;
+  }
+
+  function ensureSafetyPoll() {
+    if (state.safetyPollTimer !== null) return;
+    state.safetyPollTimer = setInterval(() => {
+      queueScan();
+    }, 5000);
   }
 
 function applyRuntimeState(runtime) {
@@ -199,6 +244,25 @@ function applyRuntimeState(runtime) {
   }
   state.lastError = '';
     syncAllMedia();
+  }
+
+  // Audibility invariant: audible(controller) === (attached && !sourceStale).
+  // While the pipeline is live the element stays muted and masterGain carries
+  // media.volume; in every other state the element is unmuted and masterGain
+  // is hard-zeroed. Every media.muted / masterGain.gain write touched on this
+  // pass derives from that predicate: mute-first rebuild, hard-zeroed
+  // no-audio unmute, generation-guarded async resumes. (Deliberately not
+  // consolidated into a single setter on this pass.)
+  function isAudible(controller) {
+    return Boolean(controller && controller.attached && !controller.sourceStale);
+  }
+
+  // Stale-attach guard: bumped on every teardown/stale transition; async
+  // continuations capture controller.generation and return early on mismatch,
+  // so a resolve after teardown can never write muted or gain.
+  function bumpGeneration(controller) {
+    if (!controller) return;
+    controller.generation = (controller.generation || 0) + 1;
   }
 
   function queueScan() {
@@ -328,17 +392,21 @@ function applyRuntimeState(runtime) {
   }
 
   function scanMediaElements() {
-    document.querySelectorAll('audio,video').forEach((media) => {
-      if (media instanceof HTMLMediaElement) {
-        trackMedia(media);
-      }
-    });
-
+    // Swap order: tear down (pause/mute) disconnected controllers BEFORE
+    // tracking the replacement, so the old output never layers under the new
+    // attach. Teardown runs restoreMediaPlaybackState, which pauses a
+    // disconnected element before restoring its playback state.
     for (const [media, controller] of state.media.entries()) {
       if (media.isConnected) continue;
       teardownController(controller, true, state.context);
       state.media.delete(media);
     }
+
+    document.querySelectorAll('audio,video').forEach((media) => {
+      if (media instanceof HTMLMediaElement) {
+        trackMedia(media);
+      }
+    });
   }
 
   function trackMedia(media) {
@@ -350,6 +418,7 @@ function applyRuntimeState(runtime) {
       attachedSrc: '',
       sourceStale: false,
       failed: false,
+      generation: 0,
       pendingRetry: null,
       attachAttempts: 0,
       lastAttachReset: 0,
@@ -387,8 +456,9 @@ function applyRuntimeState(runtime) {
       resetMuteDampener(controller);
       if (controller.attached) {
         controller.sourceStale = true;
+        bumpGeneration(controller);
         if (controller.masterGain) {
-          rampGain(controller.masterGain.gain, 0);
+          hardZero(controller.masterGain.gain);
         }
         controller.media.muted = false;
       }
@@ -398,8 +468,9 @@ function applyRuntimeState(runtime) {
     controller.loadHandler = () => {
       if (controller.attached) {
         controller.sourceStale = true;
+        bumpGeneration(controller);
         if (controller.masterGain) {
-          rampGain(controller.masterGain.gain, 0);
+          hardZero(controller.masterGain.gain);
         }
         controller.media.muted = false;
       }
@@ -409,7 +480,7 @@ function applyRuntimeState(runtime) {
     controller.volumeHandler = () => {
       if (controller.attached && controller.masterGain) {
         if (controller.sourceStale) {
-          rampGain(controller.masterGain.gain, 0);
+          hardZero(controller.masterGain.gain);
         } else {
           rampGain(controller.masterGain.gain, controller.media.volume);
         }
@@ -477,8 +548,10 @@ function applyRuntimeState(runtime) {
     }
     const delay = Math.min(200 * (attempt + 1), ATTACH_RETRY_MAX_DELAY_MS);
     controller.attachAttempts = attempt + 1;
+    const retryGeneration = controller.generation;
     controller.pendingRetry = setTimeout(() => {
       controller.pendingRetry = null;
+      if (retryGeneration !== controller.generation) return;
       if (!controller.media.isConnected) return;
       if (!state.eligible || state.bypass) return;
       syncMediaController(controller, attempt + 1);
@@ -541,8 +614,9 @@ function applyRuntimeState(runtime) {
           }
         });
 
-        // No audio track yet: leave the element unmuted and retry later rather
-        // than muting it against a silent stream (mirrors rebuildStreamSource).
+        // No audio track yet: the old tap is still connected, so hard-zero the
+        // graph BEFORE unmuting. audible(controller) === (attached && !stale):
+        // an unmuted element implies gain === 0.
         stream.getTracks().forEach((track) => {
           try {
             track.stop();
@@ -550,7 +624,11 @@ function applyRuntimeState(runtime) {
             // Track already stopped.
           }
         });
+        if (controller.masterGain) {
+          hardZero(controller.masterGain.gain);
+        }
         controller.sourceStale = true;
+        bumpGeneration(controller);
         controller.media.muted = false;
         return false;
       }
@@ -593,7 +671,9 @@ function applyRuntimeState(runtime) {
       resetMuteDampener(controller);
       controller.lastPostedParams = JSON.stringify(initialParams);
       controller.attachError = '';
+      const attachGeneration = controller.generation;
       void resumeContext().then(() => {
+        if (attachGeneration !== controller.generation) return;
         syncMediaController(controller, 0);
       });
       return true;
@@ -628,8 +708,9 @@ function applyRuntimeState(runtime) {
       capturedStream = stream;
 
       if (!stream.getAudioTracks().length) {
-        // No audio track yet: leave the element unmuted and retry later rather
-        // than muting it against a silent stream.
+        // No audio track yet: the old tap is still connected, so hard-zero the
+        // graph BEFORE unmuting. audible(controller) === (attached && !stale):
+        // an unmuted element implies gain === 0.
         stream.getTracks().forEach((track) => {
           try {
             track.stop();
@@ -637,7 +718,11 @@ function applyRuntimeState(runtime) {
             // Track already stopped.
           }
         });
+        if (controller.masterGain) {
+          hardZero(controller.masterGain.gain);
+        }
         controller.sourceStale = true;
+        bumpGeneration(controller);
         controller.media.muted = false;
         return false;
       }
@@ -657,13 +742,13 @@ function applyRuntimeState(runtime) {
       controller.attachError = '';
 
       void resumeContext();
-      if (controller.masterGain) {
-        rampGain(controller.masterGain.gain, controller.media.volume);
-      }
 
-      // The stale window unmuted the element on purpose; a live source means
-      // the element goes back to mirroring `attached`. A spent 8/s budget
-      // must not leave the element unmuted on a live graph.
+      // Mute-first rebuild: the stale window unmuted the element on purpose,
+      // so confirm the mute BEFORE any gain rises. The pre-mute rampGain that
+      // sat here put a full-level overlap on the track-switch path and is
+      // deleted: enforceElementMute below mutes first and only then ramps to
+      // media.volume, so audible(controller) === (attached && !sourceStale).
+      // A spent 8/s budget must not leave the element unmuted on a live graph.
       resetMuteDampener(controller);
       enforceElementMute(controller);
 
@@ -694,6 +779,7 @@ function applyRuntimeState(runtime) {
       controller.stream = null;
       controller.source = null;
       controller.sourceStale = true;
+      bumpGeneration(controller);
       if (capturedStream) {
         capturedStream.getTracks().forEach((track) => {
           try {
@@ -799,6 +885,20 @@ function applyRuntimeState(runtime) {
     param.setTargetAtTime(value, state.context.currentTime, tau);
   }
 
+  // Zero-overlap unmute: cancel any scheduled ramp and drop the gain to 0 in
+  // the same sample, so the element's own output and the graph are never both
+  // audible. Order matters: cancel, hard-zero, and only then `muted = false`.
+  // `rampGain` stays for genuine fade-ins (attach, rebuild, correction).
+  function hardZero(param) {
+    if (!param || !state.context) return;
+    try {
+      param.cancelScheduledValues(state.context.currentTime);
+    } catch {
+      // Already silent or no scheduled events.
+    }
+    param.setValueAtTime(0, state.context.currentTime);
+  }
+
   function updateWetChain(controller) {
     if (!controller.dattorroNode) return;
     const params = computePostParams(state.settings.reverbIntensity);
@@ -854,13 +954,13 @@ function applyRuntimeState(runtime) {
   // during its own start sequence, so re-assert the contract at every
   // volumechange and from the watchdog instead of only at attach time.
   function enforceElementMute(controller) {
-    if (!controller || !controller.attached || controller.sourceStale) return;
+    if (!isAudible(controller)) return;
     const media = controller.media;
     if (!media || media.muted === true) return;
     if (controller.internalMuteWrite) return;
     if (!claimMuteCorrection(controller)) {
       if (controller.masterGain) {
-        rampGain(controller.masterGain.gain, 0);
+        hardZero(controller.masterGain.gain);
       }
       return;
     }
@@ -890,7 +990,7 @@ function applyRuntimeState(runtime) {
     const intendedPitch = neutral
       ? controller.originalPitch
       : { preservesPitch: false, mozPreservesPitch: false, webkitPreservesPitch: false };
-    const intendedMuted = controller.attached && !controller.sourceStale;
+    const intendedMuted = isAudible(controller);
 
     if (media.playbackRate === intendedRate && media.muted === intendedMuted && pitchStateMatches(media, intendedPitch)) {
       return;
@@ -924,6 +1024,7 @@ function applyRuntimeState(runtime) {
   function teardownController(controller, removeCompletely, context) {
     if (!controller) return;
     cancelAttachRetry(controller);
+    bumpGeneration(controller);
 
     // Only touch the element's playback state when this controller actually
     // attached and changed it. While bypassed (or before a first attach) the
@@ -998,6 +1099,16 @@ function applyRuntimeState(runtime) {
 
   function restoreMediaPlaybackState(controller) {
     const media = controller.media;
+    // Element swap: a removed element can still be playing while its
+    // replacement attaches. Pause a disconnected element before restoring
+    // playback state so the old output never layers under the new one.
+    if (media && media.isConnected === false) {
+      try {
+        media.pause();
+      } catch {
+        // Pause is best effort.
+      }
+    }
     resetMuteDampener(controller);
     controller.internalRateWrite = true;
 

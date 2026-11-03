@@ -17,6 +17,7 @@ Notable changes to this project. Dates are ISO 8601. This package is local-only 
 - Direct-link buttons: up to two, `Watch Episode` then `View Series`, with the `Watch on Crunchyroll` fallback for a lone episode link.
 - Episode synopsis in presence, layered from JSON-LD, meta tags and DOM text, with boilerplate rejection and 128-character smart truncation.
 - `Show episode synopsis in presence` option (default on) and a popup preview of the buttons Discord receives.
+- Popup/options toggles are 36x20 switches (track `var(--line)` off / `var(--accent)` on, 16px knob, 16px travel, `prefers-reduced-motion` disables the transition) with `role="switch"` on the enable control, `:focus-visible` ring, and a dimmed `:disabled` state; the popup pill is 20px tall, the header icon loads `icons/icon24.png` at native 24px, the options hero text uses integer line-heights so the 40px icon lands on an integer CSS pixel, and the popup markup reads "Active" statically.
 - JSON-LD completeness: `partOfSeries.@id`/`partOfSeason.@id` series links, `TVEpisode.url`/`@id` episode links, a clean episode title that never repeats the series, and an ISO-8601 `duration` fallback when no video element reports one.
 
 ## [1.0.0] - 2026-11-02

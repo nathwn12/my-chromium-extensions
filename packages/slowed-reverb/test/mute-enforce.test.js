@@ -21,7 +21,7 @@ const path = require('path');
 const vm = require('vm');
 
 function createContentEnv() {
-  const stats = { captureCalls: 0, contexts: 0, ramped: 0, rampedValues: [], disconnects: 0 };
+  const stats = { captureCalls: 0, contexts: 0, ramped: 0, rampedValues: [], disconnects: 0, audioOps: [], gains: [], cancelCalls: 0, setValueCalls: 0, pauses: 0 };
 
   // Controllable timers: fake setTimeout, inert setInterval (the 2s watchdog is
   // exercised by the real-browser harness, not here).
@@ -87,12 +87,19 @@ function createContentEnv() {
       this.muted = false;
       this.volume = 1;
       this.paused = false;
+      this.pauseCalled = false;
       this.ended = false;
       this.readyState = 4;
       this.currentSrc = 'https://www.youtube.com/watch?v=stub';
       this.srcObject = null;
       this.isConnected = true;
       this.mutedWrites = [];
+    }
+
+    pause() {
+      this.paused = true;
+      this.pauseCalled = true;
+      stats.pauses++;
     }
 
     captureStream() {
@@ -132,14 +139,35 @@ function createContentEnv() {
       };
     }
     createGain() {
-      return {
-        gain: {
-          value: 0,
-          setTargetAtTime(value) {
-            stats.ramped++;
-            stats.rampedValues.push(value);
-          },
+      const holder = { current: 0 };
+      const gain = {
+        get value() {
+          return holder.current;
         },
+        set value(v) {
+          holder.current = v;
+        },
+        cancelScheduledValues() {
+          stats.cancelCalls++;
+          stats.audioOps.push({ op: 'cancel' });
+        },
+        setValueAtTime(value, when) {
+          holder.current = value;
+          stats.setValueCalls++;
+          if (value === 0) stats.immediateZeros = (stats.immediateZeros || 0) + 1;
+          stats.audioOps.push({ op: 'setValue', value });
+          stats.rampedValues.push(value);
+          void when;
+        },
+        setTargetAtTime(value) {
+          stats.ramped++;
+          stats.rampedValues.push(value);
+          stats.audioOps.push({ op: 'setTarget', value });
+        },
+      };
+      stats.gains.push(gain);
+      return {
+        gain,
         connect() {},
         disconnect() {},
       };
@@ -180,9 +208,14 @@ function createContentEnv() {
 
   const docListeners = {};
   const winListeners = {};
+  const stubObservers = [];
+  let queryCalls = 0;
   globalThis.document = {
     documentElement: {},
-    querySelectorAll: () => mediaElements.filter((m) => m.isConnected),
+    querySelectorAll: () => {
+      queryCalls++;
+      return mediaElements.filter((m) => m.isConnected);
+    },
     addEventListener: (type, fn) => {
       (docListeners[type] = docListeners[type] || []).push(fn);
     },
@@ -193,7 +226,14 @@ function createContentEnv() {
     },
   };
   globalThis.MutationObserver = class {
-    observe() {}
+    constructor(cb) {
+      this.callback = cb;
+      this.targets = [];
+      stubObservers.push(this);
+    }
+    observe(target, options) {
+      this.targets.push({ target, options });
+    }
     disconnect() {}
   };
   globalThis.HTMLMediaElement = StubMedia;
@@ -245,9 +285,12 @@ function createContentEnv() {
     runTimers,
     drainTimers,
     pendingTimers: () => timers.size,
+    timerDelays: () => [...timers.values()].map((t) => t.ms),
     advance,
     now: () => clock,
     restoreTimers,
+    stubObservers,
+    queryCalls: () => queryCalls,
   };
 }
 
@@ -1199,6 +1242,453 @@ async function main() {
     'page-message recovery is rate-limited to 1 s (static)',
     pageMsgBlock.indexOf('lastPageMessageRecovery') !== -1 && pageMsgBlock.indexOf('>= 1000') !== -1,
     'no 1 s rate limit on page-message recovery'
+  );
+
+  // --- J. zero-overlap: hardZero before every unmute ---
+  // The stub models the exponential ramp: setTargetAtTime never touches
+  // .value immediately, while hardZero (cancel + setValueAtTime(0)) does.
+  // Each site first simulates a settled audible graph (gain.value = 1),
+  // then fires the handler synchronously and asserts the immediate gain is
+  // exactly 0 at the unmuted instant with no setTarget(0) ramp.
+  env.sendRuntime({
+    type: 'APPLY_TAB_STATE',
+    eligible: true,
+    bypass: false,
+    settings: { slow: 0.8, reverbIntensity: 0.5 },
+  });
+  await env.settle(2);
+
+  async function attachZeroProbe() {
+    const m = env.addMedia();
+    m.volume = 1;
+    env.fireDoc('play', m);
+    for (let i = 0; i < 40 && m.muted !== true; i++) {
+      await env.settle(2);
+      env.runTimers(50);
+    }
+    return m;
+  }
+  function lastMaster() {
+    return env.stats.gains[env.stats.gains.length - 1];
+  }
+  function opsSince(mark) {
+    return env.stats.audioOps.slice(mark);
+  }
+  function hasRampToZero(ops) {
+    return ops.some((o) => o.op === 'setTarget' && o.value === 0);
+  }
+  function hasHardZero(ops) {
+    return ops.some((o) => o.op === 'setValue' && o.value === 0);
+  }
+
+  // J1 emptied: hard-zero then unmute, in that order.
+  const jEmptied = await attachZeroProbe();
+  check('setup: zero-overlap emptied probe attached muted', jEmptied.muted === true);
+  const jEmptiedGain = lastMaster();
+  jEmptiedGain.value = 1;
+  let jEmptiedAtUnmute = null;
+  let jEmptiedOpAtUnmute = null;
+  let jEmptiedMuted = jEmptied.muted;
+  Object.defineProperty(jEmptied, 'muted', {
+    configurable: true,
+    get: () => jEmptiedMuted,
+    set: (next) => {
+      const b = Boolean(next);
+      if (b === jEmptiedMuted) return;
+      if (b === false) {
+        jEmptiedAtUnmute = jEmptiedGain.value;
+        jEmptiedOpAtUnmute = env.stats.audioOps[env.stats.audioOps.length - 1] || null;
+      }
+      jEmptiedMuted = b;
+    },
+  });
+  let jMark = env.stats.audioOps.length;
+  const jCancelBefore = env.stats.cancelCalls;
+  jEmptied.dispatchEvent(new Event('emptied'));
+  check(
+    'emptied hard-zeros: gain exactly 0 at unmute instant',
+    jEmptiedAtUnmute === 0,
+    'got ' + jEmptiedAtUnmute
+  );
+  check(
+    'emptied hard-zeros: no setTarget ramp immediately before unmute',
+    Boolean(jEmptiedOpAtUnmute) && jEmptiedOpAtUnmute.op === 'setValue' && jEmptiedOpAtUnmute.value === 0,
+    'op before unmute=' + JSON.stringify(jEmptiedOpAtUnmute)
+  );
+  check(
+    'emptied hard-zeros: cancel + setValue(0) scheduled',
+    hasHardZero(opsSince(jMark)) && env.stats.cancelCalls > jCancelBefore && !hasRampToZero(opsSince(jMark)),
+    'ops=' + JSON.stringify(opsSince(jMark))
+  );
+  for (let i = 0; i < 40 && jEmptiedMuted !== true; i++) {
+    await env.settle(2);
+    env.runTimers(50);
+  }
+
+  // J2 loadedmetadata: same ordering.
+  const jLoad = await attachZeroProbe();
+  check('setup: zero-overlap load probe attached muted', jLoad.muted === true);
+  const jLoadGain = lastMaster();
+  jLoadGain.value = 1;
+  let jLoadAtUnmute = null;
+  let jLoadOpAtUnmute = null;
+  let jLoadMuted = jLoad.muted;
+  Object.defineProperty(jLoad, 'muted', {
+    configurable: true,
+    get: () => jLoadMuted,
+    set: (next) => {
+      const b = Boolean(next);
+      if (b === jLoadMuted) return;
+      if (b === false) {
+        jLoadAtUnmute = jLoadGain.value;
+        jLoadOpAtUnmute = env.stats.audioOps[env.stats.audioOps.length - 1] || null;
+      }
+      jLoadMuted = b;
+    },
+  });
+  jMark = env.stats.audioOps.length;
+  const jLoadCancelBefore = env.stats.cancelCalls;
+  jLoad.dispatchEvent(new Event('loadedmetadata'));
+  check(
+    'loadedmetadata hard-zeros: gain exactly 0 at unmute instant',
+    jLoadAtUnmute === 0,
+    'got ' + jLoadAtUnmute
+  );
+  check(
+    'loadedmetadata hard-zeros: no setTarget ramp immediately before unmute',
+    Boolean(jLoadOpAtUnmute) && jLoadOpAtUnmute.op === 'setValue' && jLoadOpAtUnmute.value === 0,
+    'op before unmute=' + JSON.stringify(jLoadOpAtUnmute)
+  );
+  check(
+    'loadedmetadata hard-zeros: cancel + setValue(0) scheduled',
+    hasHardZero(opsSince(jMark)) && env.stats.cancelCalls > jLoadCancelBefore && !hasRampToZero(opsSince(jMark)),
+    'ops=' + JSON.stringify(opsSince(jMark))
+  );
+  for (let i = 0; i < 40 && jLoadMuted !== true; i++) {
+    await env.settle(2);
+    env.runTimers(50);
+  }
+
+  // J3 sourceStale volumechange: graph stays at exactly 0 while unmuted.
+  const jStale = await attachZeroProbe();
+  check('setup: zero-overlap stale probe attached muted', jStale.muted === true);
+  const jStaleGain = lastMaster();
+  jStaleGain.value = 1;
+  jStale.dispatchEvent(new Event('emptied'));
+  check('setup: stale probe unmuted into the stale window', jStale.muted === false);
+  jStaleGain.value = 1;
+  jMark = env.stats.audioOps.length;
+  const jStaleCancelBefore = env.stats.cancelCalls;
+  jStale.dispatchEvent(new Event('volumechange'));
+  check(
+    'sourceStale volumechange hard-zeros: gain exactly 0 while unmuted',
+    jStaleGain.value === 0 && jStale.muted === false,
+    'gain=' + jStaleGain.value + ' muted=' + jStale.muted
+  );
+  check(
+    'sourceStale volumechange: no setTarget ramp, hardZero scheduled',
+    hasHardZero(opsSince(jMark)) && !hasRampToZero(opsSince(jMark)) && env.stats.cancelCalls > jStaleCancelBefore,
+    'ops=' + JSON.stringify(opsSince(jMark))
+  );
+  for (let i = 0; i < 40 && jStale.muted !== true; i++) {
+    await env.settle(2);
+    env.runTimers(50);
+  }
+
+  // J4 mute-budget refusal: element stays unmuted, graph hard-zeros.
+  const jRefuse = await attachZeroProbe();
+  check('setup: zero-overlap refusal probe attached muted', jRefuse.muted === true);
+  env.fireDoc('play', jRefuse);
+  await env.settle(2);
+  env.runTimers(50);
+  for (let i = 0; i < 8; i++) {
+    jRefuse.muted = false;
+    jRefuse.dispatchEvent(new Event('volumechange'));
+    await Promise.resolve();
+  }
+  check('setup: refusal probe budget spent (still corrects)', jRefuse.muted === true);
+  const jRefuseGain = lastMaster();
+  jRefuseGain.value = 1;
+  jMark = env.stats.audioOps.length;
+  const jRefuseCancelBefore = env.stats.cancelCalls;
+  jRefuse.muted = false;
+  jRefuse.dispatchEvent(new Event('volumechange'));
+  await Promise.resolve();
+  check(
+    'refusal hard-zeros: gain exactly 0 while unmuted',
+    jRefuseGain.value === 0 && jRefuse.muted === false,
+    'gain=' + jRefuseGain.value + ' muted=' + jRefuse.muted
+  );
+  check(
+    'refusal: no setTarget ramp, hardZero scheduled',
+    hasHardZero(opsSince(jMark)) && !hasRampToZero(opsSince(jMark)) && env.stats.cancelCalls > jRefuseCancelBefore,
+    'ops=' + JSON.stringify(opsSince(jMark))
+  );
+  check(
+    'refusal leaves no 1e-7 park (exactly 0, not epsilon)',
+    jRefuseGain.value === 0 && !(jRefuseGain.value > 0 && jRefuseGain.value < 0.001),
+    'gain=' + jRefuseGain.value
+  );
+
+  // J5 swap: a disconnected element pauses before its state restores.
+  const jSwap = await attachZeroProbe();
+  check('setup: zero-overlap swap probe attached muted', jSwap.muted === true);
+  jSwap.isConnected = false;
+  env.sendRuntime({ type: 'SLRA_PAGE_REVIVE', reason: 'test' });
+  for (let i = 0; i < 40; i++) {
+    await env.settle(2);
+    env.runTimers(50);
+  }
+  check(
+    'swap pauses a disconnected element before restoring state',
+    jSwap.pauseCalled === true && jSwap.paused === true,
+    'pauseCalled=' + jSwap.pauseCalled + ' paused=' + jSwap.paused
+  );
+
+  // --- K. track-switch doubling: mute-first rebuild, zeroed no-audio unmute,
+  // generation-guarded async attach. Each fails on the pre-fix bytes.
+  // Invariant under test: audible(controller) === (attached && !sourceStale).
+
+  // K1 rebuild path: at the instant the gain first rises above 0,
+  // media.muted must already be true (the pre-mute ramp overlapped).
+  const kRe = await attachZeroProbe();
+  check('setup: rebuild-order probe attached muted', kRe.muted === true);
+  kRe.dispatchEvent(new Event('emptied'));
+  check('setup: rebuild-order probe unmuted into the stale window', kRe.muted === false);
+  const kReMark = env.stats.audioOps.length;
+  let kReMuted = kRe.muted;
+  Object.defineProperty(kRe, 'muted', {
+    configurable: true,
+    get: () => kReMuted,
+    set: (next) => {
+      const b = Boolean(next);
+      if (b === kReMuted) return;
+      kReMuted = b;
+      env.stats.audioOps.push({ op: 'muted', value: b });
+    },
+  });
+  for (let i = 0; i < 40 && kReMuted !== true; i++) {
+    await env.settle(2);
+    env.runTimers(50);
+  }
+  check('setup: rebuild-order probe re-muted', kReMuted === true);
+  const kReOps = env.stats.audioOps.slice(kReMark);
+  const kReRise = kReOps.findIndex((o) => o.op !== 'muted' && o.value > 0);
+  const kReMuteIdx = kReOps.findIndex((o) => o.op === 'muted' && o.value === true);
+  check(
+    'rebuild mutes before the gain first rises above 0',
+    kReRise !== -1 && kReMuteIdx !== -1 && kReMuteIdx < kReRise,
+    'ops=' + JSON.stringify(kReOps)
+  );
+
+  // K2 no-audio-track path: at the instant media.muted becomes false,
+  // masterGain.gain.value must be exactly 0 (old tap still connected).
+  const kNo = await attachZeroProbe();
+  check('setup: no-audio probe attached muted', kNo.muted === true);
+  const kNoGain = lastMaster();
+  kNo.captureStream = () => {
+    const t = { kind: 'video', stopped: false, stop() { this.stopped = true; } };
+    return { getAudioTracks: () => [], getTracks: () => [t], addEventListener() {} };
+  };
+  const kNoUnmutes = [];
+  let kNoMuted = kNo.muted;
+  Object.defineProperty(kNo, 'muted', {
+    configurable: true,
+    get: () => kNoMuted,
+    set: (next) => {
+      const b = Boolean(next);
+      if (b === kNoMuted) return;
+      kNoMuted = b;
+      if (b === false) kNoUnmutes.push(kNoGain.value);
+    },
+  });
+  kNo.dispatchEvent(new Event('emptied'));
+  check('setup: no-audio probe unmuted into the stale window', kNoMuted === false);
+  kNo.muted = true;
+  kNoGain.value = 1;
+  for (let i = 0; i < 40; i++) {
+    await env.settle(2);
+    env.runTimers(50);
+  }
+  check('setup: no-audio rebuild ran and left the element unmuted', kNoMuted === false);
+  check(
+    'no-audio rebuild unmutes with masterGain exactly 0',
+    kNoUnmutes.length > 0 && kNoUnmutes[kNoUnmutes.length - 1] === 0,
+    'gains at unmute=' + JSON.stringify(kNoUnmutes)
+  );
+
+  // K3 stale generation: an async continuation that resolves after its
+  // generation was bumped must not write muted or gain. The parked retry
+  // captures the generation; a second stale transition bumps it (teardown
+  // would cancel the timer outright, so the bump path is the live race).
+  const kGen = await attachZeroProbe();
+  check('setup: stale-generation probe attached muted', kGen.muted === true);
+  kGen.paused = true;
+  kGen.dispatchEvent(new Event('emptied'));
+  await env.settle(2);
+  check('setup: stale retry parked while not ready', env.pendingTimers() > 0);
+  // Second stale transition bumps the generation without cancelling the
+  // parked timer; the sync it queues finds the element still not ready and
+  // leaves the old timer in place (`pendingRetry` guard).
+  kGen.dispatchEvent(new Event('loadedmetadata'));
+  await env.settle(2);
+  // Ready again, with no sync in between: only the stale timer remains.
+  kGen.paused = false;
+  const kGenOpsMark = env.stats.audioOps.length;
+  const kGenMutedBefore = kGen.muted;
+  check('setup: probe still unmuted before the stale timer fires', kGenMutedBefore === false);
+  await env.drainTimers(500);
+  await env.settle(2);
+  check(
+    'stale generation leaves muted alone',
+    kGen.muted === kGenMutedBefore && kGen.muted === false,
+    'muted=' + kGen.muted
+  );
+  check(
+    'stale generation writes no audible gain',
+    env.stats.audioOps.slice(kGenOpsMark).every((o) => !(o.value > 0)),
+    'ops=' + JSON.stringify(env.stats.audioOps.slice(kGenOpsMark))
+  );
+
+  // --- S. swap fast path: media-filtered observer, no 50 ms debounce -------
+  // Each fails on the pre-fix bytes (debounced 50 ms scan on every mutation).
+  await env.drainTimers(2000);
+  check(
+    'observer watches documentElement with childList+subtree',
+    env.stubObservers.length > 0 &&
+      env.stubObservers[0].targets.length > 0 &&
+      env.stubObservers[0].targets[0].options.childList === true &&
+      env.stubObservers[0].targets[0].options.subtree === true,
+    'targets=' + JSON.stringify(env.stubObservers.length > 0 ? env.stubObservers[0].targets : [])
+  );
+  const fireObserver = (records) => {
+    for (const obs of env.stubObservers) obs.callback(records);
+  };
+  const mediaRecord = (tag) => [{ addedNodes: [{ tagName: tag }], removedNodes: [] }];
+
+  // S1: a media add scans within one frame, with no 50 ms timer.
+  const sFast = env.addMedia();
+  sFast.muted = false;
+  const qBeforeFast = env.queryCalls();
+  const debounceBeforeFast = env.timerDelays().filter((ms) => ms === 50).length;
+  fireObserver(mediaRecord('VIDEO'));
+  await env.settle(2);
+  check(
+    'swap scan runs within one frame (no 50 ms wait)',
+    env.queryCalls() > qBeforeFast,
+    'no scan after one frame'
+  );
+  check(
+    'swap fast path schedules no 50 ms timer',
+    env.timerDelays().filter((ms) => ms === 50).length === debounceBeforeFast,
+    'pending50=' + env.timerDelays().filter((ms) => ms === 50).length
+  );
+  for (let i = 0; i < 40 && sFast.muted !== true; i++) {
+    await env.settle(2);
+    env.runTimers(50);
+  }
+  check('setup: fast-path probe attached muted', sFast.muted === true);
+
+  // S2: a storm of 50 media records coalesces to exactly one scan.
+  await env.drainTimers(2000);
+  const qBeforeStorm = env.queryCalls();
+  for (let i = 0; i < 50; i++) fireObserver(mediaRecord('VIDEO'));
+  await env.settle(2);
+  check(
+    'DOM storm of 50 mutations produces exactly one scan',
+    env.queryCalls() - qBeforeStorm === 1,
+    'scans=' + (env.queryCalls() - qBeforeStorm)
+  );
+  await env.drainTimers(2000);
+  // S2b: 50 unrelated (DIV) mutations schedule no scan and no timer.
+  const qBeforeDiv = env.queryCalls();
+  const debounceBeforeDiv = env.timerDelays().filter((ms) => ms === 50).length;
+  for (let i = 0; i < 50; i++) {
+    fireObserver([{ addedNodes: [{ tagName: 'DIV' }], removedNodes: [] }]);
+  }
+  await env.settle(2);
+  check(
+    'unrelated mutations schedule no scan',
+    env.queryCalls() === qBeforeDiv &&
+      env.timerDelays().filter((ms) => ms === 50).length === debounceBeforeDiv,
+    'scans=' + (env.queryCalls() - qBeforeDiv) +
+      ' pending50=' + env.timerDelays().filter((ms) => ms === 50).length
+  );
+
+  // S3: swap pauses/mutes the old element before the new one attaches.
+  const sOld = env.addMedia();
+  env.fireDoc('play', sOld);
+  for (let i = 0; i < 40 && sOld.muted !== true; i++) {
+    await env.settle(2);
+    env.runTimers(50);
+  }
+  check('setup: swap-old attached muted', sOld.muted === true);
+  sOld.paused = false;
+  sOld.pauseCalled = false;
+  const swapOrder = [];
+  const origPause = sOld.pause.bind(sOld);
+  sOld.pause = () => {
+    swapOrder.push('old-pause');
+    origPause();
+  };
+  const sNew = env.addMedia();
+  let sNewMuted = false;
+  sNew.muted = false;
+  Object.defineProperty(sNew, 'muted', {
+    configurable: true,
+    get: () => sNewMuted,
+    set: (next) => {
+      const boolean = Boolean(next);
+      if (boolean === sNewMuted) return;
+      sNewMuted = boolean;
+      if (boolean === true) swapOrder.push('new-mute');
+    },
+  });
+  sOld.isConnected = false;
+  fireObserver([{ addedNodes: [{ tagName: 'VIDEO' }], removedNodes: [{ tagName: 'VIDEO' }] }]);
+  for (let i = 0; i < 40 && !(sNewMuted === true && sOld.pauseCalled === true); i++) {
+    await env.settle(2);
+    env.runTimers(50);
+  }
+  check(
+    'swap pauses a disconnected element before restoring state',
+    sOld.pauseCalled === true && sOld.paused === true,
+    'pauseCalled=' + sOld.pauseCalled + ' paused=' + sOld.paused
+  );
+  check(
+    'swap mutes/pauses old before new attaches',
+    swapOrder.indexOf('old-pause') !== -1 &&
+      swapOrder.indexOf('new-mute') !== -1 &&
+      swapOrder.indexOf('old-pause') < swapOrder.indexOf('new-mute'),
+    'order=' + JSON.stringify(swapOrder)
+  );
+
+  // S static guards (each fails on the pre-fix bytes).
+  const observerBlock = (src.match(/function ensureObserver\(\) \{[\s\S]*?\n  \}/) || [])[0] || '';
+  check(
+    'observer filters to media adds/removes (static)',
+    src.indexOf('isMediaMutation') !== -1 &&
+      src.indexOf("'VIDEO'") !== -1 &&
+      src.indexOf("'AUDIO'") !== -1,
+    'no VIDEO/AUDIO media filter'
+  );
+  check(
+    'observer fast path uses a microtask, not a 50 ms debounce (static)',
+    observerBlock.indexOf('queueScan()') !== -1 && observerBlock.indexOf('setTimeout') === -1,
+    'observer still debounces with setTimeout'
+  );
+  check(
+    'slow safety poll retained (static)',
+    /setInterval\([\s\S]{0,120}, 5000\)/.test(src) || /setInterval\([\s\S]{0,120}, 2000\)/.test(src),
+    'no 2 s+ safety poll'
+  );
+  const scanBlock = (src.match(/function scanMediaElements\(\) \{[\s\S]*?\n  \}/) || [])[0] || '';
+  check(
+    'swap tears down disconnected controllers before tracking new media (static)',
+    scanBlock.indexOf('teardownController') !== -1 &&
+      scanBlock.indexOf('querySelectorAll') !== -1 &&
+      scanBlock.indexOf('teardownController') < scanBlock.indexOf('querySelectorAll'),
+    'scan still tracks before teardown'
   );
 
   env.restoreTimers();

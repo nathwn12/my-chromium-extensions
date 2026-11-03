@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 /**
- * Dependency-free icon generator: orange rounded square, white play triangle,
- * transparent outside. Writes 16/32/48/128 PNGs next to this folder.
+ * Dependency-free icon generator: near-black rounded tile (#0d0f13),
+ * Crunchyroll-orange play triangle, green status dot, transparent outside.
+ * Glyph occupies 84% of the canvas centred (8% transparent
+ * rim on every side). Writes 16/24/32/48/128 PNGs next to this folder.
  *
  *   node tools/make-icons.mjs          # write + verify
  *   node tools/make-icons.mjs --check  # verify only (no writes)
@@ -13,10 +15,16 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
-const SIZES = [16, 32, 48, 128];
+const SIZES = [16, 24, 32, 48, 128];
+const INSET = 0.08; // transparent rim on every side
+const GLYPH = 0.84; // 1 - 2 * INSET; glyph extent in canvas fractions
 const SUPERSAMPLE = 4;
-const ORANGE = [0xf4, 0x75, 0x21];
-const WHITE = [0xff, 0xff, 0xff];
+const TILE = [0x0d, 0x0f, 0x13]; // near-black tile, same language as sibling packages
+const ORANGE = [0xf4, 0x75, 0x21]; // play triangle, Crunchyroll orange
+const GREEN = [0x4a, 0xde, 0x80]; // status dot, no dark ring (reads directly on the tile)
+const DOT_CX = 0.707; // dot centre, canvas fractions (matches prior silhouette)
+const DOT_CY = 0.707;
+const DOT_R = 0.074; // dot radius, canvas fractions
 const CORNER_RADIUS = 0.22; // fraction of the side
 const TRIANGLE = [
   [0.37, 0.27],
@@ -59,22 +67,35 @@ function raster(size) {
     for (let px = 0; px < size; px += 1) {
       let squareHits = 0;
       let triangleHits = 0;
+      let dotHits = 0;
       for (let sy = 0; sy < SUPERSAMPLE; sy += 1) {
         for (let sx = 0; sx < SUPERSAMPLE; sx += 1) {
           const x = px + (sx + 0.5) * step;
           const y = py + (sy + 0.5) * step;
-          if (!insideRoundedSquare(x, y, size)) continue;
+          // Map canvas point into glyph-local coords: glyph occupies
+          // [INSET*size, (1-INSET)*size]; outside maps out of 0..size.
+          const gx = (x - INSET * size) / GLYPH;
+          const gy = (y - INSET * size) / GLYPH;
+          if (!insideRoundedSquare(gx, gy, size)) continue;
           squareHits += 1;
-          if (insideTriangle(x, y, size)) triangleHits += 1;
+          if (insideTriangle(gx, gy, size)) triangleHits += 1;
+          // Status dot lives in canvas fractions so the silhouette is
+          // size-independent; it sits clear of the triangle (no overlap).
+          const dx = x / size - DOT_CX;
+          const dy = y / size - DOT_CY;
+          if (dx * dx + dy * dy <= DOT_R * DOT_R) dotHits += 1;
         }
       }
       const offset = (py * size + px) * 4;
       if (squareHits === 0) continue;
       const total = SUPERSAMPLE * SUPERSAMPLE;
-      const white = triangleHits / total;
+      const tri = triangleHits / total;
+      const dot = dotHits / total;
       const alpha = Math.round((squareHits / total) * 255);
       for (let channel = 0; channel < 3; channel += 1) {
-        pixels[offset + channel] = Math.round(ORANGE[channel] * (1 - white) + WHITE[channel] * white);
+        pixels[offset + channel] = Math.round(
+          TILE[channel] * (1 - tri - dot) + ORANGE[channel] * tri + GREEN[channel] * dot
+        );
       }
       pixels[offset + 3] = alpha;
     }
