@@ -157,7 +157,7 @@ test('host manifest and launcher are built from absolute paths', () => {
   const cmd = buildHostCmd({ nodePath: paths.node, hostScript: paths.hostScript });
   assert.match(cmd, /^@echo off\r\n/);
   assert.ok(cmd.includes(`"${process.execPath}"`));
-  assert.ok(cmd.includes('native\\host.mjs'));
+  assert.match(cmd, /native[\\/]host\.mjs/);
   assert.ok(cmd.trimEnd().endsWith('%*'));
 });
 

@@ -1,0 +1,29 @@
+name: release
+on:
+  push:
+    tags:
+      - "v*"
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+      - name: Zip loadable extensions
+        run: |
+          set -euo pipefail
+          rm -rf dist && mkdir -p dist
+          (cd packages/audio-normalizer && zip -r ../../dist/audio-normalizer.zip manifest.json background.js shared.js content-script.js page-hook.js audio/normalizer-worklet.js popup.html popup.css popup.js icons/icon16.png icons/icon24.png icons/icon32.png icons/icon48.png icons/icon128.png)
+          (cd packages/slowed-reverb && zip -r ../../dist/slowed-reverb.zip manifest.json background.js shared.js content-script.js page-hook.js dattorro-worklet.js popup.html popup.css popup.js icons/icon16.png icons/icon24.png icons/icon32.png icons/icon48.png icons/icon128.png)
+          (cd packages/crunchy-presence && zip -r ../../dist/crunchy-presence.zip manifest.json background.js config.js extract.js content.js popup.html popup.css popup.js options.html options.css options.js icons/icon16.png icons/icon24.png icons/icon32.png icons/icon48.png icons/icon128.png)
+          ls -la dist
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release create "${{ github.ref_name }}" --title "${{ github.ref_name }}" --generate-notes dist/audio-normalizer.zip dist/slowed-reverb.zip dist/crunchy-presence.zip

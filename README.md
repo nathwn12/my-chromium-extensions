@@ -41,6 +41,17 @@ cd packages/audio-normalizer && node --test tests/
 cd packages/slowed-reverb && node test/mute-enforce.test.js
 ```
 
+## Release
+
+```
+node scripts/release.mjs <package> <major|minor|patch|x.y.z> [--dry-run]
+git commit -m "<package>: release <version>"
+git tag v<version>
+git push origin HEAD v<version>
+```
+
+The script bumps `manifest.json`, `package.json` and the `CHANGELOG`, and prints these exact commands without running them. Pushing the `v*` tag makes CI attach the three extension zips to a GitHub release.
+
 ## Layout
 
 ```
