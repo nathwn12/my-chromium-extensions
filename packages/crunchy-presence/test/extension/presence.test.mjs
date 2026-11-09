@@ -18,14 +18,20 @@ const {
   pickBestTab,
   pickButtonUrl,
   isEligible,
+  isAdBreak,
   clampText,
   clock,
   createCoalescingLimiter,
+  bridgeStatusOf,
   mergeFrame,
   resolveTab,
   smartTruncate,
   METADATA_FIELDS
 } = worker;
+
+const { classifyBridgeFailure, presentStatus, REASON } = await import(
+  pathToFileURL(join(here, "..", "..", "bridge-status.js")).href
+);
 
 const NOW = 1_700_000_000_000;
 const TAB_URL = "https://www.crunchyroll.com/watch/G6VU774M5/the-beginning";
@@ -322,9 +328,9 @@ test("direct links must be https Crunchyroll URLs and never exceed two buttons",
   assert.equal(both.buttons.length, 2);
 });
 
-test("a synopsis replaces the timer line and adds season/episode to details", () => {
+test("a synopsis replaces the timer line and adds season/episode to details when opted in", () => {
   const synopsis = "Frieren and Fern continue their journey toward the northern lands.";
-  const activity = buildActivity(playing({ synopsis }), NOW);
+  const activity = buildActivity(playing({ synopsis }), NOW, { synopsis: true });
   assert.equal(activity.details, "Frieren: Beyond Journey's End · S1 E5");
   assert.equal(activity.state, synopsis);
   assert.deepEqual(activity.timestamps, {
@@ -332,7 +338,9 @@ test("a synopsis replaces the timer line and adds season/episode to details", ()
     end: NOW + (1440 - 754) * 1000
   });
 
-  const sparse = buildActivity(playing({ synopsis, seasonNumber: null, episodeNumber: null }), NOW);
+  const sparse = buildActivity(playing({ synopsis, seasonNumber: null, episodeNumber: null }), NOW, {
+    synopsis: true
+  });
   assert.equal(sparse.details, "Frieren: Beyond Journey's End");
   assert.equal(sparse.state, synopsis);
 });
@@ -399,4 +407,180 @@ test("mergeFrame and resolveTab carry direct links and synopsis", () => {
 test("a JSON-LD duration keeps the phase-1 state line when no video reports one", () => {
   const state = formatStateLine({ seasonNumber: 1, episodeNumber: 1, duration: 1440.024, position: 0 });
   assert.equal(state, "S1 E1 · 0:00 / 24:00");
+});
+
+/* ------------------------------------------------- availability vs bridge */
+
+test("missing Discord is neutral waiting, never an error", () => {
+  const verdict = classifyBridgeFailure("no discord ipc pipe found");
+  assert.equal(verdict.state, undefined);
+  assert.equal(verdict.bridgeState, "waiting");
+  assert.equal(verdict.availability, "unavailable");
+  assert.equal(verdict.kind, REASON.DISCORD_CLOSED);
+  assert.equal(verdict.error, null, "absence is never surfaced as an error");
+  assert.equal(verdict.fatal, false);
+  assert.match(verdict.reason, /Discord is not running/);
+  assert.match(verdict.reason, /resumes automatically/);
+  assert.doesNotMatch(verdict.reason, /pipe|ProtocolError|stack|error/i);
+});
+
+test("host-missing is waiting with installer guidance", () => {
+  const verdict = classifyBridgeFailure("Specified native messaging host not found.");
+  assert.equal(verdict.bridgeState, "waiting");
+  assert.equal(verdict.kind, REASON.HOST_MISSING);
+  assert.equal(verdict.error, null);
+  assert.match(verdict.reason, /Native host not installed/);
+  assert.match(verdict.reason, /run the installer/);
+});
+
+test("only a rejected application ID is a true error needing user action", () => {
+  const rejected = classifyBridgeFailure("Invalid Client ID");
+  assert.equal(rejected.bridgeState, "error");
+  assert.equal(rejected.kind, REASON.REJECTED);
+  assert.equal(rejected.fatal, true);
+  assert.equal(rejected.retryable, false);
+  assert.match(rejected.reason, /rejected this application ID/i);
+  assert.doesNotMatch(rejected.reason, /Invalid Client ID/);
+
+  for (const detail of [
+    "connect timeout on \\\\.\\pipe\\discord-ipc-0",
+    "discord ipc handshake timed out",
+    "native host pong timeout"
+  ]) {
+    const verdict = classifyBridgeFailure(detail);
+    assert.equal(verdict.bridgeState, "waiting", `${detail} is transient`);
+    assert.equal(verdict.error, null);
+  }
+});
+
+test("a hung host becomes an error only after bounded retries", () => {
+  const first = classifyBridgeFailure("native host pong timeout", { retries: 1 });
+  assert.equal(first.bridgeState, "waiting");
+  assert.equal(first.error, null);
+  const exhausted = classifyBridgeFailure("native host pong timeout", { retries: 3 });
+  assert.equal(exhausted.bridgeState, "error");
+  assert.match(exhausted.reason, /stopped responding/);
+});
+
+test("presentStatus maps absence to Waiting and keeps pipe names out of the UI", () => {
+  const waiting = presentStatus({
+    bridgeState: "waiting",
+    availability: "unavailable",
+    reason: "Discord is not running — presence paused, resumes automatically.",
+    lastError: "no discord ipc pipe found"
+  });
+  assert.equal(waiting.label, "Waiting");
+  assert.equal(waiting.isError, false);
+  assert.match(waiting.reason, /Discord is not running/);
+  assert.doesNotMatch(waiting.reason, /pipe/i);
+
+  const connected = presentStatus({ bridgeState: "connected", availability: "available" });
+  assert.equal(connected.label, "Connected");
+  assert.equal(connected.reason, null);
+
+  const off = presentStatus({ bridgeState: "connected", enabled: false });
+  assert.equal(off.label, "Off");
+  assert.equal(off.isError, false);
+
+  const error = presentStatus({
+    bridgeState: "error",
+    reason: "Discord rejected this application ID. Check the application ID in Settings."
+  });
+  assert.equal(error.label, "Error");
+  assert.equal(error.isError, true);
+});
+
+test("worker boot with no Discord is waiting; Discord appearing connects and clears the reason", () => {
+  const boot = bridgeStatusOf(
+    {},
+    { t: "status", state: "waiting", reason: "discord-closed", detail: "no discord ipc pipe found" }
+  );
+  assert.equal(boot.bridgeState, "waiting");
+  assert.equal(boot.availability, "unavailable");
+  assert.equal(boot.reasonKind, REASON.DISCORD_CLOSED);
+  assert.equal(boot.lastError, "no discord ipc pipe found", "raw detail stays for diagnostics");
+
+  const connected = bridgeStatusOf(boot, { t: "status", state: "connected", appName: "Discord" });
+  assert.equal(connected.bridgeState, "connected");
+  assert.equal(connected.availability, "available");
+  assert.equal(connected.reason, null);
+  assert.equal(connected.lastError, null);
+});
+
+test("worker maps a non-fatal error frame to waiting, and a fatal one to error", () => {
+  const transient = bridgeStatusOf(
+    {},
+    { t: "status", state: "error", detail: "Invalid Client ID", fatal: false }
+  );
+  assert.equal(transient.bridgeState, "waiting", "fatal:false never latches an error");
+
+  const fatal = bridgeStatusOf(
+    {},
+    { t: "status", state: "error", detail: "Invalid Client ID", fatal: true }
+  );
+  assert.equal(fatal.bridgeState, "error");
+  assert.equal(fatal.reasonKind, REASON.REJECTED);
+});
+
+/* ---------------------------------------------------- payload correctness */
+
+test("an ad break is a playing video far shorter than the known episode", () => {
+  assert.equal(isAdBreak({ paused: false, duration: 15 }, 1440), true);
+  assert.equal(isAdBreak({ paused: false, duration: 15 }, 30), false, "no known episode length");
+  assert.equal(isAdBreak({ paused: false, duration: 90 }, 1440), false, "long clip is ambiguous");
+  assert.equal(isAdBreak({ paused: true, duration: 15 }, 1440), false, "paused is not an ad");
+  assert.equal(isAdBreak(null, 1440), false);
+
+  const entry = { tabId: 1, top: null, frames: {}, pageUrl: TAB_URL, updatedAt: 0 };
+  mergeFrame(entry, { frameId: 0, series: "Frieren", hasVideo: false, visible: true }, 1000);
+  mergeFrame(entry, { frameId: 2, hasVideo: true, paused: false, duration: 1440, position: 300 }, 1000);
+  assert.equal(resolveTab(entry, 1100).adBreak, false);
+  mergeFrame(entry, { frameId: 2, hasVideo: true, paused: false, duration: 15, position: 1 }, 2000);
+  assert.equal(resolveTab(entry, 2100).adBreak, true);
+});
+
+test("a broken artwork key drops assets but keeps a complete card", () => {
+  for (const artworkUrl of [
+    "http://img.crunchyroll.com/ep.jpg",
+    "https://evil.example/ep.jpg",
+    "not a url",
+    null
+  ]) {
+    const activity = buildActivity(playing({ artworkUrl }), NOW);
+    assert.ok(activity, `card survives ${artworkUrl}`);
+    assert.equal(activity.details, "Frieren: Beyond Journey's End");
+    assert.equal(activity.assets, undefined, "Discord falls back to the application icon");
+    assert.ok(activity.state);
+  }
+});
+
+test("no account, email or token field can ride along in the payload", () => {
+  const activity = buildActivity(
+    playing({
+      email: "viewer@example.com",
+      accountId: "acct_123",
+      username: "viewer",
+      token: "secret"
+    }),
+    NOW
+  );
+  const serialized = JSON.stringify(activity);
+  assert.doesNotMatch(serialized, /@|email|account|token|username/i);
+  assert.deepEqual(Object.keys(activity).sort(), [
+    "assets",
+    "buttons",
+    "details",
+    "state",
+    "timestamps",
+    "type"
+  ]);
+});
+
+test("the synopsis is off by default and only appears when opted in", () => {
+  const synopsis = "Frieren and Fern continue their journey toward the northern lands.";
+  const off = buildActivity(playing({ synopsis }), NOW);
+  assert.equal(off.state, "S1 E5 · 12:34 / 24:00");
+  assert.doesNotMatch(off.state, /Frieren and Fern/);
+  const on = buildActivity(playing({ synopsis }), NOW, { synopsis: true });
+  assert.equal(on.state, synopsis);
 });

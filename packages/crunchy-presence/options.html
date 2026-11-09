@@ -59,11 +59,12 @@
       <section class="card" aria-labelledby="presence-title">
         <h2 id="presence-title">2. Presence</h2>
         <label class="toggle" for="synopsis">
-          <input id="synopsis" type="checkbox" checked />
+          <input id="synopsis" type="checkbox" />
           <span>Show episode synopsis in presence</span>
         </label>
         <p class="hint">
-          When an episode has a synopsis, Discord shows it instead of the episode timer.
+          Off by default so a synopsis never appears unexpectedly. When enabled and an
+          episode has one, Discord shows it instead of the episode timer.
         </p>
       </section>
 
@@ -83,7 +84,7 @@
             <dd id="currentActivity">—</dd>
           </div>
           <div>
-            <dt>Last error</dt>
+            <dt>Status detail</dt>
             <dd id="lastError">—</dd>
           </div>
         </dl>

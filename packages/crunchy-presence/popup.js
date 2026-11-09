@@ -3,6 +3,7 @@
  */
 
 import { DEFAULT_CLIENT_ID, resolveClientId } from "./config.js";
+import { presentStatus } from "./bridge-status.js";
 
 const el = (id) => document.getElementById(id);
 const bridge = el("bridge");
@@ -10,6 +11,7 @@ const appEl = el("app");
 const appOverrideEl = el("app-override");
 const nowEl = el("now");
 const detailEl = el("detail");
+const reasonEl = el("reason");
 const buttonsEl = el("buttons");
 const enabledEl = el("enabled");
 // Single vocabulary across popups: the toggle reads "Active".
@@ -39,30 +41,34 @@ async function render() {
   const effective = resolveClientId(stored.clientId);
   const override = effective !== DEFAULT_CLIENT_ID;
 
+  const enabled = stored.enabled !== false;
   const live = await ask({ kind: "crp-get-status" });
   const status = live || stored.crpStatus || {};
   const state = status.bridgeState || "unknown";
+  const view = presentStatus({ ...status, enabled });
 
-  const bridgeLabels = {
-    unknown: "Not connected",
-    connected: "Connected",
-    connecting: "Connecting",
-    disconnected: "Disconnected",
-    error: "Error",
-    idle: "Idle",
-  };
-  bridge.textContent = bridgeLabels[state] ?? (state.charAt(0).toUpperCase() + state.slice(1));
+  bridge.textContent = view.label;
   bridge.dataset.state = state;
+  bridge.dataset.tone =
+    view.isError ? "error" : state === "connected" ? "connected" : view.state === "off" ? "off" : "waiting";
   appEl.textContent = override ? `App: custom ${effective}` : "App: Crunchyroll";
   appOverrideEl.hidden = !override;
-  enabledEl.checked = stored.enabled !== false;
+  enabledEl.checked = enabled;
+  // The toggle stays operable in every state: turning presence OFF must never
+  // be blocked by Discord being absent.
+  enabledEl.disabled = false;
+
+  reasonEl.hidden = !view.reason;
+  reasonEl.textContent = view.reason || "";
+  reasonEl.setAttribute("role", view.isError ? "alert" : "status");
+  reasonEl.setAttribute("aria-live", view.isError ? "assertive" : "polite");
 
   buttonsEl.textContent = "";
   buttonsEl.hidden = true;
 
-  if (!status.enabled) {
-    nowEl.textContent = "Presence disabled";
-    detailEl.textContent = "Turn it back on with the toggle.";
+  if (!enabled) {
+    nowEl.textContent = "Presence off";
+    detailEl.textContent = "Turn it on with the toggle above.";
     return;
   }
 
@@ -79,11 +85,24 @@ async function render() {
     buttonsEl.hidden = buttons.length === 0;
   } else {
     nowEl.textContent = "Nothing playing";
-    detailEl.textContent = status.lastError || "Open a Crunchyroll episode to start.";
+    // The reason lives in its own live region so a playing activity never
+    // hides why presence is paused. Raw diagnostics never reach this text.
+    detailEl.textContent = "Open a Crunchyroll episode to start.";
   }
 }
 
 enabledEl.addEventListener("change", async () => {
+  // Optimistic: the pill never claims the pre-toggle state while the worker
+  // persists. Turning off always sends the clear; turning on waits.
+  if (enabledEl.checked) {
+    bridge.textContent = "Waiting";
+    bridge.dataset.state = "connecting";
+    bridge.dataset.tone = "waiting";
+  } else {
+    bridge.textContent = "Off";
+    bridge.dataset.state = "idle";
+    bridge.dataset.tone = "off";
+  }
   await chrome.storage.local.set({ enabled: enabledEl.checked });
   await ask({ kind: "crp-refresh" });
   render();

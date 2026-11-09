@@ -12,6 +12,7 @@
  */
 
 import { HOST_NAME, resolveClientId } from "./config.js";
+import { classifyBridgeFailure } from "./bridge-status.js";
 
 const ALARM_NAME = "crp-watchdog";
 const ALARM_PERIOD_MINUTES = 0.5; // 30s watchdog
@@ -151,7 +152,9 @@ export function buildActivity(state, now = Date.now(), options = {}) {
       ? Number(state.episodeNumber)
       : null;
 
-  const synopsis = options.synopsis === false ? null : smartTruncate(state.synopsis);
+  // The synopsis is opt-in: an absent option means off, so a spoiler never
+  // appears without the user asking for it.
+  const synopsis = options.synopsis === true ? smartTruncate(state.synopsis) : null;
   let details;
   let stateLine;
   if (synopsis) {
@@ -214,6 +217,19 @@ export function buildActivity(state, now = Date.now(), options = {}) {
   return activity;
 }
 
+/**
+ * True when a playing video looks like an ad break: it is under a minute long
+ * and less than half the episode length this tab has already reported. A short
+ * episode or a missing prior duration never triggers it (safe false negative).
+ */
+export function isAdBreak(video, knownDuration) {
+  if (!video || video.paused !== false) return false;
+  const duration = Number(video.duration);
+  const known = Number(knownDuration);
+  if (!Number.isFinite(duration) || duration <= 0 || duration >= 60) return false;
+  return Number.isFinite(known) && known >= 120 && duration * 2 < known;
+}
+
 /** A tab counts only while it has a video and is either playing or on screen. */
 export function isEligible(tab) {
   if (!tab || tab.hasVideo === false) return false;
@@ -251,6 +267,11 @@ export function pruneFrames(entry, now = Date.now()) {
 export function mergeFrame(entry, frame, now = Date.now()) {
   if (!entry) return entry;
   if (!entry.frames) entry.frames = {};
+  const reportedDuration = Number(frame.duration);
+  if (Number.isFinite(reportedDuration) && reportedDuration >= 60) {
+    // Remember the episode length; a later short-duration video is an ad.
+    entry.knownDuration = reportedDuration;
+  }
   const stored = {
     frameId: Number.isFinite(frame.frameId) ? frame.frameId : 0,
     series: frame.series ?? null,
@@ -316,6 +337,10 @@ export function resolveTab(entry, now = Date.now()) {
     tabId: entry.tabId ?? null,
     pageUrl: entry.pageUrl ?? null,
     hasVideo: Boolean(videoFrame),
+    // Smallest reliable ad signal: a playing video much shorter than the
+    // episode length this tab already reported. The card is frozen (no
+    // advancing timer) for the break instead of showing the ad as playback.
+    adBreak: isAdBreak(videoFrame, entry.knownDuration),
     visible: top ? top.visible !== false : byRecency[0].visible !== false,
     signals: [...new Set(frames.flatMap((frame) => frame.signals))],
     updatedAt: entry.updatedAt || 0,
@@ -443,6 +468,91 @@ export function createCoalescingLimiter({
 }
 
 /**
+ * Pure status classifier used by the worker and its tests.
+ *
+ * Returns the next `{ bridgeState, lastError, availability, reason, reasonKind }`
+ * from one native `status` frame. Absence is neutral: `no discord ipc pipe
+ * found` becomes `waiting` with friendly copy, while the raw diagnostic stays
+ * in `lastError` for the options diagnostics. Only a fatal host rejection is
+ * allowed to become `error`.
+ */
+export const STATUS_DEFAULT = Object.freeze({
+  bridgeState: "idle",
+  lastError: null,
+  availability: "unknown",
+  reason: null,
+  reasonKind: null
+});
+
+export function bridgeStatusOf(current, message, retries = 0) {
+  const base = { ...STATUS_DEFAULT, ...(current || {}) };
+  if (!message || message.t !== "status") return base;
+
+  if (message.state === "connected") {
+    return {
+      ...base,
+      bridgeState: "connected",
+      lastError: null,
+      availability: "available",
+      reason: null,
+      reasonKind: null
+    };
+  }
+
+  if (message.state === "waiting" || message.state === "disconnected") {
+    const verdict = classifyBridgeFailure(message.detail, { reason: message.reason });
+    return {
+      ...base,
+      bridgeState: verdict.bridgeState,
+      lastError: message.detail || verdict.detail || null,
+      availability: verdict.availability,
+      reason: verdict.reason,
+      reasonKind: verdict.kind
+    };
+  }
+
+  if (message.state === "error") {
+    // The host marks every non-permanent failure `fatal: false`; never promote
+    // one to an error just because its diagnostic text matched a pattern.
+    const verdict =
+      message.fatal === false
+        ? {
+            ...classifyBridgeFailure(message.detail, {
+              reason: message.reason ?? "hung"
+            }),
+            bridgeState: "waiting",
+            error: null,
+            fatal: false,
+            retryable: true
+          }
+        : classifyBridgeFailure(message.detail, {
+            retries,
+            fatal: message.fatal === true
+          });
+    return {
+      ...base,
+      bridgeState: verdict.bridgeState,
+      lastError: message.detail || verdict.detail || null,
+      availability: verdict.availability,
+      reason: verdict.reason,
+      reasonKind: verdict.kind
+    };
+  }
+
+  if (message.state === "connecting") {
+    return {
+      ...base,
+      bridgeState: "connecting",
+      availability: "unknown",
+      reason: null,
+      reasonKind: null
+    };
+  }
+
+  return { ...base, bridgeState: String(message.state || "unknown") };
+}
+
+/**
  * Pure ack classifier: ok:true connects, ok:false only records lastError and
  * never latches the bridge to "error" — a slow connect acks "not connected"
  * while the handshake is still in flight, which must not look like a rejection.
@@ -557,8 +667,14 @@ if (hasChrome) {
   let reconnectTimer = null;
   let clientId = null;
   let enabled = true;
-  let synopsisEnabled = true;
+  let synopsisEnabled = false; // the existing option is opt-in: default off
   let bridgeState = "idle";
+  // Availability is a second axis: presence may be enabled while Discord is
+  // simply not running. `reason` is friendly copy; `lastError` stays raw.
+  let availability = "unknown";
+  let reason = null;
+  let reasonKind = null;
+  let hungCount = 0;
   let appName = null;
   let lastError = null;
   let lastActivity = null;
@@ -601,7 +717,12 @@ if (hasChrome) {
   function statusPayload() {
     return {
       bridgeState,
+      availability,
+      reason,
+      reasonKind,
       appName,
+      // Raw diagnostic for logs and the options diagnostics text; the UI never
+      // renders this string directly.
       lastError,
       lastActivity,
       lastSent,
@@ -635,10 +756,26 @@ if (hasChrome) {
     }
   }
 
-  function setBridge(state, error = null) {
+  function setBridge(state, error = null, extra = {}) {
     bridgeState = state;
     lastError = error;
+    if (extra.availability !== undefined) availability = extra.availability;
+    if (extra.reason !== undefined) reason = extra.reason;
+    if (extra.reasonKind !== undefined) reasonKind = extra.reasonKind;
     persist();
+  }
+
+  /** Record one non-fatal failure without ever latching an error. */
+  function applyFailure(detail, options = {}) {
+    const verdict = classifyBridgeFailure(detail, options);
+    setBridge(verdict.bridgeState, verdict.detail || detail || null, {
+      availability: verdict.availability,
+      reason: verdict.reason,
+      reasonKind: verdict.kind
+    });
+    if (verdict.kind === "hung") hungCount += 1;
+    else hungCount = 0;
+    return verdict;
   }
 
   /* -------------------------------------------------------------- port -- */
@@ -685,30 +822,46 @@ if (hasChrome) {
   function onNativeMessage(message) {
     if (!message || typeof message !== "object") return;
     if (message.t === "status") {
-      if (message.state === "connected") {
+      const next = bridgeStatusOf(
+        { bridgeState, lastError, availability, reason, reasonKind },
+        message,
+        hungCount
+      );
+      if (next.bridgeState === "connected") {
         backoffMs = BACKOFF_MIN_MS;
+        hungCount = 0;
         appName = message.appName || appName;
-        setBridge("connected");
+      }
+      setBridge(next.bridgeState, next.lastError, {
+        availability: next.availability,
+        reason: next.reason,
+        reasonKind: next.reasonKind
+      });
+      if (next.bridgeState === "connected") {
+        // Discord appeared (or returned): replay the latest payload with no
+        // user action, resetting the coalescing window first.
         flushStashed();
         pushActivity(true);
-      } else if (message.state === "error") {
-        setBridge("error", message.detail || "Discord rejected the connection");
-      } else {
-        setBridge(String(message.state || "unknown"));
       }
       return;
     }
     if (message.t === "ack") {
       if (message.ok) {
         backoffMs = BACKOFF_MIN_MS;
+        hungCount = 0;
         ackRetryCount = 0;
         if (ackRetryTimer) {
           clearTimeout(ackRetryTimer);
           ackRetryTimer = null;
         }
         if (message.appName) appName = message.appName;
-        if (bridgeState !== "connected") setBridge("connected");
-        else persist();
+        if (bridgeState !== "connected") {
+          setBridge("connected", null, {
+            availability: "available",
+            reason: null,
+            reasonKind: null
+          });
+        } else persist();
         flushStashed();
       } else {
         // Record the rejection without latching the bridge to "error": a
@@ -737,6 +890,7 @@ if (hasChrome) {
     }
     if (message.t === "pong") {
       backoffMs = BACKOFF_MIN_MS;
+      hungCount = 0;
       lastPongAt = Date.now();
       return;
     }
@@ -745,7 +899,7 @@ if (hasChrome) {
   function onPortDisconnect() {
     const message = chromeApi.runtime.lastError && chromeApi.runtime.lastError.message;
     dropPort();
-    setBridge("disconnected", message || "native host disconnected");
+    applyFailure(message || "native host disconnected");
     scheduleReconnect();
   }
 
@@ -760,14 +914,20 @@ if (hasChrome) {
     try {
       fresh = chromeApi.runtime.connectNative(HOST_NAME);
     } catch (error) {
-      setBridge("error", String((error && error.message) || error));
+      // A sync throw is the host-missing/forbidden path on some Chrome builds:
+      // neutral waiting with installer guidance, never a red error.
+      applyFailure(String((error && error.message) || error));
       scheduleReconnect();
       return;
     }
     port = fresh;
     port.onMessage.addListener(onNativeMessage);
     port.onDisconnect.addListener(onPortDisconnect);
-    setBridge("connecting");
+    setBridge("connecting", null, {
+      availability: "unknown",
+      reason: null,
+      reasonKind: null
+    });
     post({ t: "hello", clientId });
   }
 
@@ -778,13 +938,20 @@ if (hasChrome) {
     // off actually clears Discord; ordinary payloads stay gated.
     if (!enabled && activity !== null) return;
     if (!port) ensurePort();
-    if (!port || bridgeState !== "connected") {
+    if (!port) {
       // Keep the last payload (null included) and replay it on the next
       // status/ack instead of dropping it while offline.
       stashedActivity = activity;
       hasStashed = true;
       return;
     }
+    if (activity !== null && bridgeState !== "connected") {
+      stashedActivity = activity;
+      hasStashed = true;
+      return;
+    }
+    // A clear is authoritative even while Discord is absent: the host keeps
+    // it and will not republish the previous episode when Discord appears.
     const json = JSON.stringify(activity);
     if (json === lastSentJson) return;
     if (post({ t: "activity", activity })) {
@@ -808,7 +975,24 @@ if (hasChrome) {
 
   function recompute() {
     const best = pickBestTab(resolvedTabs());
-    desiredActivity = best ? buildActivity(best, Date.now(), { synopsis: synopsisEnabled }) : null;
+    if (best && best.adBreak) {
+      // Freeze the last episode card: keep the title, drop the timer so the
+      // ad's short duration never renders as an advancing episode bar.
+      if (lastActivity) {
+        desiredActivity = { ...lastActivity };
+        delete desiredActivity.timestamps;
+      } else {
+        desiredActivity = buildActivity(
+          { ...best, paused: true, duration: null, position: null },
+          Date.now(),
+          { synopsis: synopsisEnabled }
+        );
+      }
+    } else {
+      desiredActivity = best
+        ? buildActivity(best, Date.now(), { synopsis: synopsisEnabled })
+        : null;
+    }
     lastActivity = desiredActivity;
     persist();
     pushActivity(false);
@@ -817,11 +1001,17 @@ if (hasChrome) {
   function pushActivity(force) {
     if (!enabled) {
       // Send the clear once on the enabled->disabled transition, then stay
-      // silent: every recompute while disabled must not push another null
-      // through the bypass buckets.
-      if (port && bridgeState === "connected" && lastSentJson !== "null") {
-        limiter.push(null);
-        lastSentJson = "null";
+      // silent. The clear goes out even while the bridge is waiting: the host
+      // remembers it and will not republish a stale episode when Discord
+      // returns. Turning presence off is never blocked by Discord's absence.
+      if (lastSentJson !== "null") {
+        if (port) {
+          limiter.push(null);
+          lastSentJson = "null";
+        } else {
+          stashedActivity = null;
+          hasStashed = true;
+        }
       }
       return;
     }
@@ -993,11 +1183,12 @@ if (hasChrome) {
       const stored = await chromeApi.storage.local.get(["clientId", "enabled", "synopsis"]);
       clientId = resolveClientId(stored.clientId);
       enabled = stored.enabled !== false;
-      synopsisEnabled = stored.synopsis !== false;
+      // Opt-in: only an explicit `true` shows the synopsis.
+      synopsisEnabled = stored.synopsis === true;
     } catch {
       clientId = resolveClientId(null);
       enabled = true;
-      synopsisEnabled = true;
+      synopsisEnabled = false;
     }
   }
 
@@ -1054,7 +1245,14 @@ if (hasChrome) {
           limiter.push(activity);
           lastSentJson = JSON.stringify(activity);
         }
-        sendResponse({ queued: bridgeState === "connected", bridgeState, activity });
+        sendResponse({
+          queued: bridgeState === "connected",
+          bridgeState,
+          availability,
+          reason,
+          reasonKind,
+          activity
+        });
         return false;
       }
       default:
@@ -1072,7 +1270,9 @@ if (hasChrome) {
         // runs the normal reconnect instead of staying "connected" forever.
         if (isPongOverdue(lastPingAt, lastPongAt, Date.now())) {
           dropPort();
-          setBridge("disconnected", "native host pong timeout");
+          // A hung host is transient; only an exhausted run is worth the
+          // user's attention. Every clean pong/ack resets the counter.
+          applyFailure("native host pong timeout", { retries: hungCount + 1 });
           scheduleReconnect();
         } else if (post({ t: "ping" })) {
           if (lastPingAt === 0 || (lastPongAt >= lastPingAt && lastPongAt !== 0)) {
@@ -1128,7 +1328,7 @@ if (hasChrome) {
         }
       }
       if (changes.synopsis) {
-        synopsisEnabled = changes.synopsis.newValue !== false;
+        synopsisEnabled = changes.synopsis.newValue === true;
         recompute();
       }
     });

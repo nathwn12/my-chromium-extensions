@@ -75,6 +75,26 @@ h1 {
   border-color: #4d2323;
 }
 
+/* Display tone: waiting is neutral amber, never red. */
+.pill[data-tone="connected"] {
+  color: var(--ok);
+  border-color: #1f4d33;
+}
+
+.pill[data-tone="waiting"] {
+  color: var(--warn);
+  border-color: #4d3f1f;
+}
+
+.pill[data-tone="error"] {
+  color: var(--bad);
+  border-color: #4d2323;
+}
+
+.pill[data-tone="off"] {
+  color: var(--muted);
+}
+
 .notice {
   border: 1px solid #4d3f1f;
   background: #1c1710;

@@ -287,6 +287,25 @@ button.primary:hover {
   border-color: #4d2323;
 }
 
+.pill[data-tone="connected"] {
+  color: var(--ok);
+  border-color: #1f4d33;
+}
+
+.pill[data-tone="waiting"] {
+  color: var(--warn);
+  border-color: #4d3f1f;
+}
+
+.pill[data-tone="error"] {
+  color: var(--bad);
+  border-color: #4d2323;
+}
+
+.pill[data-tone="off"] {
+  color: var(--muted);
+}
+
 .error {
   color: var(--bad);
   font-size: 13px;

@@ -167,7 +167,21 @@ export function validateMessage(message) {
   return pass(message);
 }
 
-/** Status payload shape, kept next to the validators so both sides agree. */
+export const WAITING_REASONS = Object.freeze([
+  'discord-closed',
+  'host-missing',
+  'rejected',
+  'hung',
+]);
+
+/**
+ * Status payload shape, kept next to the validators so both sides agree.
+ *
+ * `waiting` is the neutral absence state (Discord closed, host not installed,
+ * a transient timeout). `error` is reserved for a permanent rejection; `fatal`
+ * is explicit so a transient diagnostic can never be promoted to an error by a
+ * raw string match on the extension side.
+ */
 export function statusMessage(state, extra = {}) {
   if (state === 'error') {
     return {
@@ -175,6 +189,15 @@ export function statusMessage(state, extra = {}) {
       state: 'error',
       detail: typeof extra.detail === 'string' ? extra.detail : 'unknown error',
       code: Number.isInteger(extra.code) ? extra.code : null,
+      fatal: extra.fatal !== false,
+    };
+  }
+  if (state === 'waiting' || state === 'unavailable' || state === 'disconnected') {
+    return {
+      t: 'status',
+      state: 'waiting',
+      reason: WAITING_REASONS.includes(extra.reason) ? extra.reason : 'discord-closed',
+      detail: typeof extra.detail === 'string' ? extra.detail : '',
     };
   }
   return {
