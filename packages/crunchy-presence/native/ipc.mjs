@@ -317,6 +317,14 @@ export class DiscordPipeClient {
     this._queued = undefined;
     if (this.closed) return;
     if (!wasReady) return;
+    // Tell the extension immediately: the bridge is no longer connected. The
+    // client keeps reconnecting in the background, and the next successful
+    // handshake republishes `lastActivity`.
+    this.logger.status({
+      state: 'disconnected',
+      reason: 'discord-closed',
+      detail: 'discord ipc connection closed',
+    });
     this.logger.warn('discord ipc dropped; reconnecting');
     if (this._flushTimer) {
       this.timers.clearTimeout(this._flushTimer);

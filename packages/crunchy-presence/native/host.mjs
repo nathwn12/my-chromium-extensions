@@ -20,6 +20,7 @@ import {
   encodeNativeMessage,
 } from './ipc.mjs';
 import { statusMessage, validateActivity, validateMessage } from './protocol.mjs';
+import { classifyBridgeFailure } from '../bridge-status.js';
 
 const CONNECT_RETRY_START = 1_000;
 const CONNECT_RETRY_MAX = 30_000;
@@ -60,10 +61,53 @@ export class Host {
 
   emitStatus(status) {
     if (status?.state === 'error') {
-      this.write(statusMessage('error', { detail: status.detail, code: status.code }));
+      this.write(
+        statusMessage('error', {
+          detail: status.detail,
+          code: status.code,
+          // A transient diagnostic never becomes a permanent error.
+          fatal: status.fatal !== false,
+        }),
+      );
+      return;
+    }
+    if (
+      status?.state === 'waiting' ||
+      status?.state === 'unavailable' ||
+      status?.state === 'disconnected'
+    ) {
+      this.write(
+        statusMessage('waiting', {
+          detail: status.detail,
+          reason: status.reason ?? classifyBridgeFailure(status?.detail).kind,
+        }),
+      );
       return;
     }
     this.write(statusMessage('connected', { appName: status?.appName, user: status?.user }));
+  }
+
+  /** Write the neutral waiting frame for a non-fatal connect failure. */
+  emitFailure(error) {
+    if (error && error.fatal) {
+      this.write(
+        statusMessage('error', {
+          detail: error.message,
+          code: error.code ?? null,
+          fatal: true,
+        }),
+      );
+      return;
+    }
+    const verdict = classifyBridgeFailure(error?.message);
+    const detail = error?.message ?? verdict.detail;
+    this.log(`bridge waiting: ${detail}`);
+    this.write(
+      statusMessage('waiting', {
+        detail,
+        reason: verdict.kind,
+      }),
+    );
   }
 
   nextId() {
@@ -94,7 +138,9 @@ export class Host {
           error: valid.error,
         });
       } else {
-        this.write(statusMessage('error', { detail: valid.error, code: null }));
+        // A malformed envelope is a local defect, not a Discord absence:
+        // keep the wording neutral on the wire and non-fatal.
+        this.write(statusMessage('error', { detail: valid.error, code: null, fatal: false }));
       }
       return Promise.resolve();
     }
@@ -133,7 +179,7 @@ export class Host {
     try {
       await this.client.connect();
     } catch (error) {
-      this.write(statusMessage('error', { detail: error.message, code: error.code ?? null }));
+      this.emitFailure(error);
       // A permanent handshake rejection (invalid client id) never recovers
       // on retry: hold the error until a new hello carries a new id.
       if (!error || !error.fatal) this.scheduleConnectRetry();
@@ -194,6 +240,7 @@ export class Host {
         try {
           await this.client.connect();
         } catch (error) {
+          this.emitFailure(error);
           if (error && error.fatal) {
             this.log(`discord ipc permanent failure, waiting for a new client id: ${error.message}`);
             return;
@@ -289,7 +336,7 @@ class LoopSocket extends EventEmitter {
   }
 }
 
-function fakeDiscordPipe() {
+export function fakeDiscordPipe() {
   const clientSide = new LoopSocket();
   const serverSide = new LoopSocket();
   clientSide.peer = serverSide;
@@ -328,7 +375,15 @@ function fakeDiscordPipe() {
     return socket;
   };
 
-  return { connect, state };
+  return {
+    connect,
+    state,
+    /** Emulate Discord quitting: drop the connected pipe. */
+    drop() {
+      clientSide.destroy();
+      serverSide.destroy();
+    },
+  };
 }
 
 class Capture extends Writable {

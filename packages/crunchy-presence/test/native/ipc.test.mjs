@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import net from 'node:net';
+import { EventEmitter } from 'node:events';
+import { Writable } from 'node:stream';
 import { test } from 'node:test';
 
 import {
@@ -9,6 +11,7 @@ import {
   encodeDiscordFrame,
   encodeNativeMessage,
 } from '../../native/ipc.mjs';
+import { Host, fakeDiscordPipe } from '../../native/host.mjs';
 
 /* ---------------------------------------------------------------- helpers */
 
@@ -144,6 +147,39 @@ async function startMockPipe(options = {}) {
       await new Promise((resolve) => server.close(resolve));
     },
   };
+}
+
+class Capture extends Writable {
+  constructor() {
+    super();
+    this.chunks = [];
+  }
+
+  _write(chunk, _encoding, callback) {
+    this.chunks.push(Buffer.from(chunk));
+    callback();
+  }
+
+  decode() {
+    const decoder = new NativeMessageDecoder();
+    return this.chunks.flatMap((chunk) => decoder.push(chunk));
+  }
+}
+
+/** A socket that fails to connect, as a missing Discord pipe does. */
+function missingPipeSocket() {
+  const socket = new EventEmitter();
+  socket.destroyed = false;
+  socket.destroy = () => {
+    socket.destroyed = true;
+    socket.emit('close');
+  };
+  setImmediate(() => {
+    if (!socket.destroyed) {
+      socket.emit('error', Object.assign(new Error('connect ENOENT \\\\.\\pipe\\discord-ipc-0'), { code: 'ENOENT' }));
+    }
+  });
+  return socket;
 }
 
 function makeClient(pipePath, extra = {}) {
@@ -321,6 +357,113 @@ test('rate guard holds 2 frames per window and coalesces to the newest', async (
   await waitFor(() => mock.state.frames.length === 3, 'coalesced frame');
   const sent = mock.state.frames.map((frame) => frame.args?.activity?.details);
   assert.deepEqual(sent, ['one', 'two', 'four']);
+});
+
+test('no Discord pipe is a transient failure, never fatal', async () => {
+  const client = new DiscordPipeClient({
+    clientId: '123456789012345678',
+    pipes: ['\\\\.\\pipe\\crp-definitely-missing'],
+    connectTimeoutMs: 200,
+    logger: { info() {}, warn() {}, error() {}, status() {} },
+  });
+  await assert.rejects(
+    client.connect(),
+    (error) => {
+      assert.equal(error.fatal, undefined, 'absence must not be fatal');
+      assert.match(error.message, /ENOENT|no discord ipc pipe found/i);
+      return true;
+    },
+  );
+  client.close();
+});
+
+test('host reports no-pipe as waiting, then connects later and republishes', async (t) => {
+  const capture = new Capture();
+  const fake = fakeDiscordPipe();
+  let present = false;
+  const host = new Host({
+    stdout: capture,
+    stderr: { write: () => {} },
+    onExit: () => {},
+  });
+  host.retryDelay = 5;
+  host.makeClient = (clientId) =>
+    new DiscordPipeClient({
+      clientId,
+      logger: host.logger,
+      pipes: ['crp-later'],
+      connectImpl: () => (present ? fake.connect() : missingPipeSocket()),
+      connectTimeoutMs: 200,
+      replyTimeoutMs: 200,
+      backoffStart: 5,
+    });
+  t.after(() => host.shutdown(0));
+
+  await host.handle({ t: 'hello', clientId: '123456789012345678' });
+  let messages = capture.decode();
+  const waiting = messages.find((message) => message.t === 'status');
+  assert.equal(waiting.state, 'waiting', 'expected absence is not an error frame');
+  assert.equal(waiting.reason, 'discord-closed');
+  assert.match(waiting.detail, /ENOENT|no discord ipc pipe found/i);
+  assert.equal(messages.some((message) => message.state === 'error'), false);
+
+  await host.handle({
+    t: 'activity',
+    id: 'offline',
+    activity: { type: 3, details: 'Episode 1' },
+  });
+  messages = capture.decode();
+  const offline = messages.find((message) => message.t === 'ack' && message.id === 'offline');
+  assert.equal(offline.ok, false, 'the host keeps the payload while offline');
+
+  present = true;
+  await waitFor(() => fake.state.handshakes === 1, 'Discord to appear');
+  await waitFor(
+    () => fake.state.frames.some((frame) => frame.args?.activity?.details === 'Episode 1'),
+    'republished activity',
+  );
+
+  messages = capture.decode();
+  const connected = messages.filter((message) => message.t === 'status' && message.state === 'connected');
+  assert.ok(connected.length >= 1, 'a later connect reports connected');
+});
+
+test('Discord quitting while connected reports waiting, not connected', async (t) => {
+  const capture = new Capture();
+  const fake = fakeDiscordPipe();
+  const host = new Host({
+    stdout: capture,
+    stderr: { write: () => {} },
+    onExit: () => {},
+    makeClient: (clientId) =>
+      new DiscordPipeClient({
+        clientId,
+        logger: host.logger,
+        pipes: ['fake'],
+        connectImpl: () => fake.connect(),
+        connectTimeoutMs: 200,
+        replyTimeoutMs: 200,
+        backoffStart: 5,
+      }),
+  });
+  t.after(() => host.shutdown(0));
+
+  await host.handle({ t: 'hello', clientId: '123456789012345678' });
+  assert.equal(
+    capture.decode().find((message) => message.t === 'status').state,
+    'connected',
+  );
+
+  fake.drop();
+  await waitFor(
+    () => capture.decode().some((message) => message.t === 'status' && message.state === 'waiting'),
+    'waiting status after the pipe closes',
+  );
+  const statuses = capture.decode().filter((message) => message.t === 'status');
+  const last = statuses.at(-1);
+  assert.equal(last.state, 'waiting');
+  assert.equal(last.reason, 'discord-closed');
+  assert.equal(statuses.some((message) => message.state === 'error'), false);
 });
 
 test('every SET_ACTIVITY carries a distinct nonce', async (t) => {

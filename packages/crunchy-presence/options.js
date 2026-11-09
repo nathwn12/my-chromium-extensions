@@ -3,6 +3,7 @@
  */
 
 import { clientIdToPersist, resolveClientId } from "./config.js";
+import { presentStatus } from "./bridge-status.js";
 
 const el = (id) => document.getElementById(id);
 
@@ -23,6 +24,9 @@ const copyResult = el("copy-result");
 
 let status = {
   bridgeState: "unknown",
+  availability: "unknown",
+  reason: null,
+  reasonKind: null,
   appName: null,
   lastError: null,
   lastActivity: null,
@@ -52,16 +56,25 @@ function describeActivity(activity) {
 
 function render() {
   const state = status.bridgeState || "unknown";
-  bridgeState.textContent = state;
+  const view = presentStatus(status);
+  bridgeState.textContent = view.label;
   bridgeState.dataset.state = state;
+  bridgeState.dataset.tone =
+    view.isError ? "error" : state === "connected" ? "connected" : view.state === "off" ? "off" : "waiting";
   appNameEl.textContent = status.appName || "—";
   currentActivity.textContent = describeActivity(status.lastActivity);
-  lastErrorEl.textContent = status.lastError || "—";
+  // Same friendly vocabulary as the popup. The raw diagnostic stays in the
+  // copyable diagnostics block below.
+  lastErrorEl.textContent = view.reason || "—";
   diagnostics.value = JSON.stringify(
     {
       status: {
         bridgeState: status.bridgeState,
+        availability: status.availability,
+        reason: status.reason,
+        reasonKind: status.reasonKind,
         appName: status.appName,
+        // Raw detail is diagnostics only, never the status card.
         lastError: status.lastError,
         enabled: status.enabled,
         clientId: status.clientIdPresent ? "set" : "missing"
@@ -90,7 +103,7 @@ async function load() {
   const stored = await chrome.storage.local.get(["clientId", "enabled", "synopsis"]);
   clientInput.value = resolveClientId(stored.clientId);
   status.enabled = stored.enabled !== false;
-  synopsisEl.checked = stored.synopsis !== false;
+  synopsisEl.checked = stored.synopsis === true;
   status.clientIdPresent = true;
 
   const session = await chrome.storage.session.get(["crpStatus", "crpLastExtract"]);
@@ -141,7 +154,11 @@ testButton.addEventListener("click", async () => {
     } else if (response.queued) {
       testResult.textContent = "Test activity queued for delivery to Discord.";
     } else {
-      testResult.textContent = `Test activity built, but the bridge is "${response.bridgeState}". Start the native host, then retry.`;
+      const view = presentStatus(response);
+      const state = view.isError ? "blocked" : "waiting";
+      testResult.textContent = `Test activity built, but presence is ${state}. ${
+        view.reason || "It will send when Discord is reachable."
+      }`;
     }
   } finally {
     testButton.disabled = false;

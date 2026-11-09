@@ -11,7 +11,9 @@
       <header>
         <img src="icons/icon24.png" alt="" width="24" height="24" />
         <h1>Crunchy Presence</h1>
-        <span id="bridge" class="pill" data-state="unknown">Not connected</span>
+        <span id="bridge" class="pill" data-state="unknown" role="status" aria-live="polite"
+          >Not connected</span
+        >
       </header>
 
       <p id="app" class="detail" aria-live="polite">App: Crunchyroll</p>
@@ -25,8 +27,10 @@
         <ul id="buttons" class="buttons" hidden></ul>
       </section>
 
+      <p id="reason" class="detail" role="status" aria-live="polite" hidden></p>
+
       <label class="toggle" for="enabled">
-        <input id="enabled" type="checkbox" role="switch" />
+        <input id="enabled" type="checkbox" role="switch" aria-describedby="reason" />
         <span>Active</span>
       </label>
 

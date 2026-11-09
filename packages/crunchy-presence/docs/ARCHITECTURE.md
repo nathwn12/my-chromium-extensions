@@ -35,7 +35,7 @@ Extension → host:
 
 | `t` | Fields | Meaning |
 | --- | --- | --- |
-| `hello` | `clientId` (17–19 digit string) | open the Discord handshake for this application |
+| `hello` | `clientId` (17–20 digit string) | open the Discord handshake for this application |
 | `activity` | `activity` (object or `null`), optional `id` | set or clear presence; `null` clears |
 | `ping` | — | liveness; the host answers `pong` |
 
@@ -44,10 +44,37 @@ Host → extension:
 | `t` | Fields | Meaning |
 | --- | --- | --- |
 | `status` | `state: "connected"`, `appName`, `user` | handshake succeeded, or an activity was accepted |
-| `status` | `state: "error"`, `detail`, `code` | handshake or validation failed |
+| `status` | `state: "waiting"`, `reason`, `detail` | expected absence: Discord closed, host missing, or a transient timeout; `detail` is diagnostic only |
+| `status` | `state: "error"`, `detail`, `code`, `fatal` | a failure; `fatal: true` is only a permanent handshake rejection (bad application ID) |
 | `ack` | `id`, `ok: true`, `appName` | one activity frame was accepted |
 | `ack` | `id`, `ok: false`, `error` | one activity frame was rejected |
 | `pong` | — | reply to `ping` |
+
+`reason` is one of `discord-closed`, `host-missing`, `rejected`, `hung`.
+`detail` keeps the raw diagnostic (a pipe name, `ENOENT`, a handshake code) for
+the options diagnostics; the popup and options status card render a separate
+friendly sentence and never show `detail`.
+
+## Availability and bridge state
+
+Two axes, deliberately separate:
+
+| Axis | Values | Meaning |
+| --- | --- | --- |
+| Availability | `unknown`, `available`, `unavailable` | whether presence can reach Discord at all |
+| Bridge | `idle`, `connecting`, `connected`, `disconnected`, `waiting`, `error` | what the native port is doing |
+
+`bridge-status.js` is the single classifier and label table for both the worker
+and the two surfaces. Only `rejected` (bad application ID) and a host still
+hung after three consecutive pong timeouts map to `error`. `discord-closed`,
+`host-missing`, a connect/handshake timeout and a dropped pipe all map to
+`waiting` with no error. A sync `connectNative` throw and an async host-missing
+disconnect collapse to the same `host-missing` waiting state. The raw string is
+never deleted: `lastError` keeps it for logs and the copyable diagnostics.
+
+The enable toggle is always operable. Turning presence off is never blocked by
+Discord's absence, and the null clear is posted to the host even while the
+bridge is waiting so a stale episode is not republished when Discord returns.
 
 ## Activity shape
 
@@ -64,7 +91,7 @@ The host sends this as `SET_ACTIVITY` with `args: { pid, activity }`. Everything
 | `assets.large_text` | episode title, else series | ≤ 128 characters |
 | `buttons` | `Watch Episode` → episode URL, `View Series` → series URL; a lone episode link is labelled `Watch on Crunchyroll` | ≤ 2, label ≤ 32, url https Crunchyroll |
 
-Timestamps are only attached while `paused` is explicitly `false` and a duration is known. Discord renders elapsed and remaining from that pair; a paused activity carries no timer. When the synopsis option is on and a synopsis exists, it replaces the timer line but the timestamps stay attached. Without a synopsis the phase-1 layout is unchanged. Buttons are only attached for `https` `crunchyroll.com` URLs; when neither direct link exists, the phase-1 `pageUrl` button is used. Smart truncation fits 128 characters by cutting at the last sentence end (`. `/`! `/`? `), else the last space, strips a dangling `·`/`,`/space and appends `…` only when text was cut.
+Timestamps are only attached while `paused` is explicitly `false` and a duration is known. Discord renders elapsed and remaining from that pair; a paused activity carries no timer. The synopsis option is opt-in and off by default; when it is on and a synopsis exists, it replaces the timer line but the timestamps stay attached. Without the option the phase-1 layout is unchanged, so a spoiler never appears unexpectedly. Buttons are only attached for `https` `crunchyroll.com` URLs; when neither direct link exists, the phase-1 `pageUrl` button is used. Smart truncation fits 128 characters by cutting at the last sentence end (`. `/`! `/`? `), else the last space, strips a dangling `·`/`,`/space and appends `…` only when text was cut.
 
 ## Framing
 
@@ -139,9 +166,11 @@ The content script runs with `all_frames: true`, so the top page and the player 
 
 | Failure | Behaviour |
 | --- | --- |
-| Native port dies | worker reconnects with backoff from 500 ms to 8 s, resets the coalescing window and replays the stashed payload |
-| Discord IPC pipe drops | host client reconnects from 250 ms to 5 s and republishes the last activity |
-| Discord is not running yet | host retries the handshake from 1 s to 30 s, emits `connected` on the first success, then keeps the last activity for replay |
+| Native port dies | worker reconnects with backoff from 500 ms to 8 s, resets the coalescing window and replays the stashed payload; the bridge shows `waiting`, never a latched error |
+| Discord IPC pipe drops | host client reconnects from 250 ms to 5 s, emits `waiting` immediately, and republishes the last activity on the next handshake |
+| Discord is not running yet | host retries the handshake from 1 s to 30 s and emits `waiting`; it emits `connected` on the first success and replays the last activity with no user action |
+| Native host missing | both the sync throw and the async disconnect classify to `waiting` / `host-missing` with installer guidance; the worker keeps retrying |
+| Host stops ponging | a ping with no pong for 10 s drops the port and reconnects; only three consecutive timeouts become an error |
 | Service worker sleeps | a 30 s `alarms` watchdog wakes it, reopens the port and pings; the alarm is only created when absent so a reboot never resets the countdown. A restart suppresses the boot-time null publish until the first `crp-state` or 60 s after boot, so a restart never blanks a live presence while a closed site still clears. |
 | Page is a SPA navigation | the content script sends `crp-gone`, waits 300 ms for the new page, then reports again; a same-tab navigation away from Crunchyroll deletes the tab entry at once; a bfcache restore reports again on `pageshow` |
 
@@ -150,9 +179,9 @@ The content script runs with `all_frames: true`, so the top page and the player 
 | Limit | Effect |
 | --- | --- |
 | DRM | The encrypted stream is never inspected; only element state is read. Presence is metadata plus a timer, not a capture. |
-| Ads | An ad break has a video but no episode metadata, so presence can drop to the generic line or clear until the episode resumes. |
+| Ads | Smallest reliable ad signal: a playing video under 60 s whose duration is less than half the episode length this tab already reported. During that break the last episode card is frozen with no timer, so the ad never renders as advancing episode progress. A short episode or a missing prior duration never triggers it (safe false negative). |
 | Redesigns | Selectors are layered with generic fallbacks, but a Crunchyroll markup change can still blank fields until `RULES` in `extract.js` is updated. |
 | Local only | No account, no sync, no history. Presence exists only while this machine runs Chrome, the host and Discord. |
-| Chrome only | The manifest targets Chrome 156+ on Windows. Edge and Brave registry keys are written by the shared installer but are not part of the documented setup. |
+| Chrome only | The manifest targets Chrome 120+ on Windows. Edge and Brave registry keys are written by the shared installer but are not part of the documented setup. |
 | Sleep | A sleeping tab stops producing events; a paused tab re-reports every 30 s so it survives the 120 s frame TTL, and the watchdog reconnects but cannot invent playback state. |
 | Unknown pages | A Crunchyroll page with no video and no metadata reports nothing, so the activity clears rather than guessing. |

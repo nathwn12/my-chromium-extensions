@@ -39,9 +39,9 @@ The manifest carries a fixed `key`, so the extension keeps the same ID across re
 
 - Activity type **WATCHING**.
 - Line 1: the series name (the episode title when the series is unknown); with a synopsis, `Frieren · S1 E5` when both numbers are known.
-- Line 2: the episode synopsis when it exists and the setting is on, otherwise `S1 E5 · 12:34 / 24:00` - season, episode, position and duration.
+- Line 2: the episode synopsis when it exists and the setting is on (off by default), otherwise `S1 E5 · 12:34 / 24:00` - season, episode, position and duration.
 - A timer: elapsed on the left, remaining on the right, driven by start/end timestamps. Omitted while paused.
-- Artwork: the episode image from Crunchyroll, handed to Discord as an external `https` URL.
+- Artwork: the episode image from Crunchyroll, handed to Discord as an external `https` URL. A missing or invalid image simply falls back to the Discord application icon; the card is never broken.
 - Up to two buttons: **Watch Episode** and **View Series**, pointing at the episode and series pages. A lone episode link is labelled **Watch on Crunchyroll**, and the phase-1 button remains when no direct link is found.
 
 The card's title is the name of the Discord application behind the presence: `Crunchyroll` by default, and whatever application the options page points at.
@@ -71,7 +71,8 @@ The options page carries one **Application ID** field, pre-filled with the built
 | Presence never appears | Discord is not running, activity sharing is off, or the host is not registered | Discord → Settings → Activity Privacy → turn on **Share your detected activities**; confirm the desktop app (not the browser) is running and signed in; run `node packages/crunchy-presence/scripts/install-host.mjs --check` and expect PASS on every line |
 | Host not found | The folder moved after install, or Chrome still holds the old host registration | Re-run `node packages/crunchy-presence/scripts/install-host.mjs`, then reload the extension on `chrome://extensions` |
 | Stops after the tab sleeps | Chrome suspends background tabs and the service worker, so no new state arrives | The 30 s watchdog alarm reconnects the worker, and the host republishes the last activity on reconnect; wake the tab and the next media event restores live state |
-| Ads or no video | No ad signal is detected; an ad break keeps the episode card up until playback state changes | Wait for the episode to resume; the card already shows the episode |
+| Ads or no video | An ad break is recognised by a playing video much shorter than the episode length already seen for that tab; the episode card is frozen with no timer until the episode resumes | Wait for the episode to resume; the ad never renders as episode progress |
+| Popup says Waiting | Discord is not running, or the native host is not installed. This is not an error: presence resumes by itself when Discord starts | Start the Discord desktop app. If the message mentions the installer, run `node packages/crunchy-presence/scripts/install-host.mjs` and reload the extension. Turning the toggle off always works |
 
 ## Checks
 

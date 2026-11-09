@@ -199,8 +199,9 @@ test("11: hashchange + observer replace the always-on poll", () => {
   assert.match(contentSource, /if \(!video\)/, "interval stops without a video");
 });
 
-// 12. README no longer claims clears during ads.
-test("12: README states ad breaks keep the card", () => {
+// 12. README states the ad break freezes the card instead of showing ad progress.
+test("12: README states ad breaks freeze the episode card", () => {
   assert.doesNotMatch(readme, /Presence clears while the ad runs/);
-  assert.match(readme, /keep.*episode card|ad break keeps/i);
+  assert.match(readme, /ad break/i);
+  assert.match(readme, /episode card is frozen|never renders as episode progress/i);
 });
