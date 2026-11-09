@@ -2079,12 +2079,15 @@ async function main() {
 
   // M3 prod copy: internal errors never reach the popup, neutral is Active.
   const StatusShared = globalThis.SlowedReverbShared;
+  const friendlyStatus = StatusShared && typeof StatusShared.friendlyStatus === 'function'
+    ? StatusShared.friendlyStatus
+    : () => 'MISSING';
   const statuses = [
-    ['Active', StatusShared.friendlyStatus({ eligible: true, attachedCount: 1, error: 'Runtime unavailable.' })],
-    ['Active', StatusShared.friendlyStatus({ eligible: true, attachedCount: 1, error: 'Worklet: addModule failed' })],
-    ['Waiting for media', StatusShared.friendlyStatus({ eligible: true, attachedCount: 0, error: 'Could not attach audio effect.' })],
-    ['Waiting for tab', StatusShared.friendlyStatus({ eligible: false, attachedCount: 0 })],
-    ['Off', StatusShared.friendlyStatus({ eligible: true, bypass: true, attachedCount: 0, error: 'Worklet: x' })],
+    ['Active', friendlyStatus({ eligible: true, attachedCount: 1, error: 'Runtime unavailable.' })],
+    ['Active', friendlyStatus({ eligible: true, attachedCount: 1, error: 'Worklet: addModule failed' })],
+    ['Waiting for media', friendlyStatus({ eligible: true, attachedCount: 0, error: 'Could not attach audio effect.' })],
+    ['Waiting for tab', friendlyStatus({ eligible: false, attachedCount: 0 })],
+    ['Off', friendlyStatus({ eligible: true, bypass: true, attachedCount: 0, error: 'Worklet: x' })],
   ];
   check(
     'M3 internal errors map to friendly status copy',
@@ -2094,7 +2097,7 @@ async function main() {
   );
   check(
     'M3 neutral settings with a live graph are Active, not an error',
-    StatusShared.friendlyStatus({ eligible: true, attachedCount: 1, neutral: true, error: 'Worklet: x' }) === 'Active',
+    friendlyStatus({ eligible: true, attachedCount: 1, neutral: true, error: 'Worklet: x' }) === 'Active',
     'neutral status was not Active'
   );
   check(
