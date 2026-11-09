@@ -14,6 +14,7 @@ function makeChrome() {
   const storage = { enabled: true };
   let onMessage = null;
   let onChanged = null;
+  let onAlarm = null;
   let port = null;
 
   const makePort = () => ({
@@ -83,7 +84,11 @@ function makeChrome() {
         if (typeof cb === "function") cb(undefined);
         return undefined;
       },
-      onAlarm: { addListener() {} },
+      onAlarm: {
+        addListener(fn) {
+          onAlarm = fn;
+        },
+      },
     },
     tabs: {
       onRemoved: { addListener() {} },
@@ -112,6 +117,9 @@ function makeChrome() {
     },
     get onMessage() {
       return onMessage;
+    },
+    get onAlarm() {
+      return onAlarm;
     },
   };
 }
@@ -191,6 +199,25 @@ test("worker boots into Waiting without Discord, connects later, and clears on q
   assert.equal(status.bridgeState, "waiting");
   assert.notEqual(status.bridgeState, "connected");
   assert.match(status.reason, /Discord is not running/);
+
+  // A dead port is waiting (not a latched error), and the 30 s watchdog is a
+  // reachable wake path that re-creates the native port without user action.
+  const deadPort = harness.port;
+  harness.chrome.runtime.lastError = { message: "native host disconnected" };
+  deadPort.disconnectListener();
+  await tick(5);
+  status = harness.query();
+  assert.equal(status.bridgeState, "waiting");
+  assert.equal(status.availability, "unavailable");
+  harness.chrome.runtime.lastError = null;
+
+  const hellosBefore = harness.posts.filter((message) => message.t === "hello").length;
+  assert.ok(harness.onAlarm, "worker subscribes to the watchdog alarm");
+  harness.onAlarm({ name: "crp-watchdog" });
+  await tick(5);
+  const hellosAfter = harness.posts.filter((message) => message.t === "hello").length;
+  assert.ok(hellosAfter > hellosBefore, "watchdog re-creates the port after wake");
+  assert.notEqual(harness.port, deadPort);
 
   // Turning presence off while unavailable still sends the authoritative clear.
   const before = harness.posts.length;
