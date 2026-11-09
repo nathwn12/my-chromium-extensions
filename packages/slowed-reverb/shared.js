@@ -67,6 +67,17 @@
     return normalized.slow === 1 && normalized.reverbIntensity === 0;
   }
 
+  // Prod-facing status copy. Internal error text (runtime unavailable, worklet
+  // failure, attach failure) belongs in lastError + the console, never in the
+  // popup. Neutral settings with a live graph are Active, not an error.
+  function friendlyStatus(live) {
+    if (!live || typeof live !== 'object') return 'Waiting for tab';
+    if (!live.eligible) return 'Waiting for tab';
+    if (live.bypass) return 'Off';
+    if (live.attachedCount > 0) return 'Active';
+    return 'Waiting for media';
+  }
+
   function storageGet(keys) {
     return chrome.storage.local.get(keys);
   }
@@ -92,6 +103,7 @@
     extractHostname,
     formatPercent,
     formatRate,
+    friendlyStatus,
     getDefaultSettings,
     isNeutral,
     isSupportedHost,
