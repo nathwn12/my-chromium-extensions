@@ -11,6 +11,7 @@ const intensityReadoutEl = document.getElementById('intensity-readout');
 const {
   formatPercent,
   formatRate,
+  friendlyStatus,
   getDefaultSettings,
   normalizeSettings,
   loadSiteState,
@@ -112,7 +113,7 @@ async function init() {
     }
   } catch {
     setSupportedUi(false);
-    renderStatus('red', 'Could not load popup state.');
+    renderStatus('gray', 'Waiting for tab');
   }
 }
 
@@ -193,38 +194,35 @@ async function updateTabBypass(bypass) {
     await refreshLiveStatus();
   } catch {
     powerToggleEl.checked = !popupState.bypass;
-    renderStatus('red', 'Could not update tab power state.');
+    renderStatus('gray', 'Waiting for tab');
   }
 }
 
 async function refreshLiveStatus() {
   if (!popupState.eligible || !activeTabId) {
-    renderStatus('gray', 'Only works on YouTube Music.');
+    renderStatus('gray', 'Waiting for tab');
     return;
   }
 
   try {
     const live = await chrome.tabs.sendMessage(activeTabId, { type: 'GET_LIVE_STATUS' });
     if (!live?.ok) {
-      renderStatus('gray', 'Status unavailable.');
+      renderStatus('gray', 'Waiting for tab');
       return;
     }
 
-    const error = live.error || (live.failedCount ? live.text : '');
-    const dotColor = error ? 'red' : live.bypass ? 'gray' : live.attachedCount ? 'green' : 'gray';
+    // Details stay in the console; the popup shows only the four friendly
+    // states. A neutral graph is Active, never an error.
+    if (live.error) console.debug('[Slowed Reverb]', live.error);
+    const dotColor = live.bypass ? 'gray' : live.attachedCount ? 'green' : 'gray';
     renderStatus(dotColor, buildStatusText(live));
   } catch {
-    renderStatus('gray', 'Waiting for tab content script.');
+    renderStatus('gray', 'Waiting for tab');
   }
 }
 
 function buildStatusText(live) {
-  if (live.bypass) return 'Power off for this site.';
-  if (!live.totalCount) return 'Waiting for media element.';
-  if (live.failedCount && !live.attachedCount) return 'Could not attach to page audio.';
-  if (live.neutral) return 'Active with neutral settings.';
-  if (live.failedCount) return 'Active with some attach failures.';
-  return 'Active on ' + live.attachedCount + ' media element' + (live.attachedCount === 1 ? '.' : 's.');
+  return friendlyStatus(live);
 }
 
 function renderStatus(indicator, text) {

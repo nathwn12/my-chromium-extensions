@@ -1,8 +1,27 @@
 (() => {
   const existing = globalThis.__slowedReverbAudioContent;
-  if (existing?.refresh) {
+
+  // A reloaded/updated extension leaves the previous instance in this isolated
+  // world with a dead chrome.runtime. Adopting it via refresh() keeps a zombie
+  // that can never message the new worker; only adopt a live instance.
+  function runtimeAlive() {
+    try {
+      return Boolean(chrome.runtime && chrome.runtime.id);
+    } catch {
+      return false;
+    }
+  }
+
+  if (existing && typeof existing.refresh === 'function' && runtimeAlive()) {
     existing.refresh();
     return;
+  }
+  if (existing && typeof existing.retire === 'function') {
+    try {
+      existing.retire();
+    } catch {
+      // A dead instance may fail to hand back the element; install anyway.
+    }
   }
 
   const {
@@ -30,6 +49,7 @@
     workletRetryCount: 0,
     workletLastRetry: 0,
     lastNonzeroIntensity: 0,
+    retired: false,
   };
 
   globalThis.__slowedReverbAudioContent = {
@@ -45,6 +65,44 @@
     },
     __testSetHookReady(value) {
       state.pageHookReady = Boolean(value);
+    },
+    __testIsRetired() {
+      return state.retired;
+    },
+    retire() {
+      if (state.retired) return;
+      state.retired = true;
+      clearSafetyPoll();
+      stopRateWatchdog();
+      if (recoveryTimer) {
+        clearTimeout(recoveryTimer);
+        recoveryTimer = null;
+      }
+      if (state.observer) {
+        try {
+          state.observer.disconnect();
+        } catch {
+          // Already disconnected.
+        }
+        state.observer = null;
+      }
+      for (const controller of [...state.media.values()]) {
+        try {
+          teardownController(controller, true, state.context);
+        } catch {
+          // Best effort: a dead instance may not own the element any more.
+        }
+      }
+      state.media.clear();
+      if (state.context) {
+        try {
+          void state.context.close();
+        } catch {
+          // Already closed.
+        }
+        state.context = null;
+        state.workletLoaded = false;
+      }
     },
   };
 
@@ -118,6 +176,8 @@
       // A fresh playback start gets a fresh mute-correction budget; a page that
       // fought the last track must not leave the next one permanently unmuted.
       resetMuteDampener(controller);
+      // The addModule ladder is per playback, not per page lifetime.
+      state.workletRetryCount = 0;
       syncMediaController(controller);
       const generation = controller.generation;
       void resumeContext().then(() => {
@@ -277,6 +337,17 @@
     }
   }
 
+  // chrome.runtime.getURL throws once the extension is reloaded and this content
+  // script is an orphan. Resolve it through one guarded read so no timer tick can
+  // throw and abandon the rest of its work.
+  function workletUrl() {
+    try {
+      return chrome.runtime.getURL('dattorro-worklet.js');
+    } catch {
+      return '';
+    }
+  }
+
   function mintPageHookToken() {
     let token = '';
     try {
@@ -306,7 +377,10 @@
     if (!state.context || state.context.state !== 'running') return;
     if (typeof state.context.suspend !== 'function') return;
     for (const controller of state.media.values()) {
-      if (controller.attached && controller.media && !controller.media.paused && !controller.media.ended) {
+      // "Idle" means nothing is playing. A detached-but-playing element (retry,
+      // cool-down, source swap) is real playback: suspending there turns a
+      // recoverable stall into seconds of silence.
+      if (controller.media && !controller.media.paused && !controller.media.ended) {
         return;
       }
     }
@@ -333,15 +407,14 @@ function applyRuntimeState(runtime) {
     syncAllMedia();
   }
 
-  // Audibility invariant: audible(controller) === (attached && !sourceStale).
-  // While the pipeline is live the element stays muted and masterGain carries
-  // media.volume; in every other state the element is unmuted and masterGain
-  // is hard-zeroed. Every media.muted / masterGain.gain write touched on this
-  // pass derives from that predicate: mute-first rebuild, hard-zeroed
-  // no-audio unmute, generation-guarded async resumes. (Deliberately not
-  // consolidated into a single setter on this pass.)
+  // Mute invariant: media.muted === attached. The element's own output is
+  // suppressed for as long as this controller owns a graph; the graph renders
+  // the captured stream. Gain invariant: masterGain carries media.volume only
+  // while attached && !sourceStale; a stale or budget-parked graph is
+  // hard-zeroed, so the page's own output is never doubled. A source swap is
+  // therefore muted end to end: hardZero -> confirm muted -> connect -> ramp.
   function isAudible(controller) {
-    return Boolean(controller && controller.attached && !controller.sourceStale);
+    return Boolean(controller && controller.attached);
   }
 
   // Stale-attach guard: bumped on every teardown/stale transition; async
@@ -353,7 +426,7 @@ function applyRuntimeState(runtime) {
   }
 
   function queueScan() {
-    if (state.scanQueued) return;
+    if (state.retired || state.scanQueued) return;
     state.scanQueued = true;
     queueMicrotask(() => {
       state.scanQueued = false;
@@ -401,7 +474,13 @@ function applyRuntimeState(runtime) {
           state.workletRetryCount += 1;
           state.workletLastRetry = now;
           const workletContext = state.context;
-          void workletContext.audioWorklet.addModule(chrome.runtime.getURL('dattorro-worklet.js')).then(() => {
+          const url = workletUrl();
+          if (!url) {
+            state.lastError = 'Worklet: extension context invalidated.';
+            state.workletRetryCount = 3;
+            return;
+          }
+          void workletContext.audioWorklet.addModule(url).then(() => {
             state.workletLoaded = true;
             state.workletRetryCount = 0;
             state.lastError = '';
@@ -558,32 +637,18 @@ function applyRuntimeState(runtime) {
 
     controller.resetHandler = () => {
       resetMuteDampener(controller);
-      if (controller.attached) {
-        controller.sourceStale = true;
-        bumpGeneration(controller);
-        if (controller.masterGain) {
-          hardZero(controller.masterGain.gain);
-        }
-        controller.media.muted = false;
-      }
+      markTapStale(controller);
       queueCriticalRecovery('emptied');
     };
 
     controller.loadHandler = () => {
-      if (controller.attached) {
-        controller.sourceStale = true;
-        bumpGeneration(controller);
-        if (controller.masterGain) {
-          hardZero(controller.masterGain.gain);
-        }
-        controller.media.muted = false;
-      }
+      markTapStale(controller);
       queueCriticalRecovery('loadedmetadata');
     };
 
     controller.volumeHandler = () => {
       if (controller.attached && controller.masterGain) {
-        if (controller.sourceStale) {
+        if (controller.sourceStale || controller.budgetBypassed) {
           hardZero(controller.masterGain.gain);
         } else {
           rampGain(controller.masterGain.gain, controller.media.volume);
@@ -600,11 +665,31 @@ function applyRuntimeState(runtime) {
     return controller;
   }
 
+  // A genuine source change (emptied/loadedmetadata) invalidates the tap but not
+  // the graph: hardZero first, confirm the element is muted, and let the next
+  // sync connect the fresh capture. The element never goes audible here, so a
+  // track switch has no dry gap and no doubled audio.
+  function markTapStale(controller) {
+    if (!controller.attached) {
+      resetMuteDampener(controller);
+      return;
+    }
+    if (controller.masterGain) hardZero(controller.masterGain.gain);
+    bumpGeneration(controller);
+    controller.sourceStale = true;
+    controller.internalMuteWrite = true;
+    controller.media.muted = true;
+    queueMicrotask(() => {
+      controller.internalMuteWrite = false;
+    });
+  }
+
   function shouldBeActiveForController(controller) {
     return state.eligible && !state.bypass && controller && controller.attached && !controller.failed;
   }
 
   function syncAllMedia(retryCount = 0) {
+    if (state.retired) return;
     for (const controller of state.media.values()) {
       syncMediaController(controller, retryCount);
     }
@@ -622,7 +707,7 @@ function applyRuntimeState(runtime) {
   }
 
   function syncMediaController(controller, retryCount = 0) {
-    if (!controller || !controller.media.isConnected) return;
+    if (state.retired || !controller || !controller.media.isConnected) return;
 
     if (!state.eligible || state.bypass) {
       applyBypassState(controller);
@@ -631,6 +716,8 @@ function applyRuntimeState(runtime) {
 
     if (controller.budgetBypassed) {
       if (Date.now() < controller.budgetBypassedUntil) {
+        // Keep trying through the cool-down; the graph stays attached at 0.
+        enforceElementMute(controller);
         return;
       }
       controller.budgetBypassed = false;
@@ -639,7 +726,35 @@ function applyRuntimeState(runtime) {
 
     void resumeContext();
     if (!ensureAttached(controller)) {
-      scheduleAttachRetry(controller, retryCount);
+      if (controller.attached) {
+        // The graph stays owned and muted while the new source loads; retry at
+        // the ceiling instead of tearing a live graph down mid-song.
+        scheduleAttachRetry(controller, retryCount);
+        return;
+      }
+      if (state.context && state.context.state === 'running') {
+        scheduleAttachRetry(controller, retryCount);
+        return;
+      }
+      if (!state.context) {
+        // Nothing to resume and no graph to own: retry later (play/seek/poll).
+        scheduleAttachRetry(controller, retryCount);
+        return;
+      }
+      // Autoplay-policy / external suspend: wait for the resume already in
+      // flight instead of burning an attach-retry slot against a context that
+      // is about to be running.
+      const resumeGeneration = controller.generation;
+      void resumeContext().then(() => {
+        if (state.retired || resumeGeneration !== controller.generation) return;
+        if (!controller.media.isConnected) return;
+        if (!state.eligible || state.bypass) return;
+        // Only continue when the resume actually produced a runnable context;
+        // a failed resume is retried by the watchdog/poll, never by a microtask
+        // spin.
+        if (!state.context || state.context.state !== 'running') return;
+        syncMediaController(controller, retryCount);
+      });
       return;
     }
     cancelAttachRetry(controller);
@@ -661,8 +776,13 @@ function applyRuntimeState(runtime) {
     const attempt = controller.attachAttempts || 0;
     if (attempt >= ATTACH_RETRY_MAX_ATTEMPTS) {
       controller.attachAttempts = 0;
-      teardownController(controller, false, state.context);
-      return;
+      if (!controller.attached) {
+        teardownController(controller, false, state.context);
+        return;
+      }
+      // Attached: never tear a live graph down mid-song. Keep it muted and
+      // retry at the ceiling until the new source arrives.
+      controller.lastAttachReset = now;
     }
     const delay = Math.min(200 * (attempt + 1), ATTACH_RETRY_MAX_DELAY_MS);
     controller.attachAttempts = attempt + 1;
@@ -687,22 +807,31 @@ function applyRuntimeState(runtime) {
     teardownController(controller, false, state.context);
   }
 
-  function ensureAttached(controller) {
-    if (controller.attached) {
-      if (controller.sourceStale) {
-        // Source-only swap: keep the tank circulating, wait for a usable new src.
-        if (!controller.media.currentSrc || !isMediaReadyForAttach(controller.media)) {
-          return false;
-        }
-        return rebuildStreamSource(controller);
+  // One tap per element. The public name is the seam the tests drive: a second
+  // sync, a revive double-fire, or a volumechange re-entry must never capture
+  // or connect a second MediaStreamSource for the same live controller.
+  function ensureSingleTap(controller) {
+    if (!controller.attached) return false;
+    if (controller.sourceStale) {
+      if (controller.tapInFlight) return false;
+      if (!controller.media.currentSrc || !isMediaReadyForAttach(controller.media)) {
+        return false;
       }
-
-      const currentSrc = controller.media.currentSrc;
-      if (!currentSrc || currentSrc === controller.attachedSrc) {
-        return true;
-      }
-      teardownController(controller, false, state.context);
+      return rebuildStreamSource(controller);
     }
+
+    const currentSrc = controller.media.currentSrc;
+    if (currentSrc && currentSrc !== controller.attachedSrc) {
+      // Track-change hint only. music.youtube.com rotates googlevideo URLs
+      // (next/prev, radio, quality, ads) on the SAME element; captureStream is
+      // per element, so the existing tap is still live. Never recapture here.
+      controller.attachedSrc = currentSrc;
+    }
+    return true;
+  }
+
+  function ensureAttached(controller) {
+    if (controller.attached) return ensureSingleTap(controller);
     if (!isMediaReadyForAttach(controller.media)) return false;
 
     if (state.context && state.context.state === 'closed') {
@@ -817,8 +946,19 @@ function applyRuntimeState(runtime) {
   }
 
   function rebuildStreamSource(controller) {
+    controller.tapInFlight = true;
     let capturedStream = null;
     try {
+      // Mute-first ordering: markTapStale already hard-zeroed the graph and
+      // confirmed the element muted, so the source swap is inaudible. Re-assert
+      // both before the new capture becomes reachable.
+      if (controller.masterGain) hardZero(controller.masterGain.gain);
+      controller.internalMuteWrite = true;
+      controller.media.muted = true;
+      queueMicrotask(() => {
+        controller.internalMuteWrite = false;
+      });
+
       const stream = captureMediaStream(controller.media);
       if (!stream) {
         throw new Error('captureStream unavailable for this media element.');
@@ -826,9 +966,8 @@ function applyRuntimeState(runtime) {
       capturedStream = stream;
 
       if (!stream.getAudioTracks().length) {
-        // No audio track yet: the old tap is still connected, so hard-zero the
-        // graph BEFORE unmuting. audible(controller) === (attached && !stale):
-        // an unmuted element implies gain === 0.
+        // No audio track yet: the old tap is still connected, so keep the
+        // element muted. The graph owns the output, not the element.
         stream.getTracks().forEach((track) => {
           try {
             track.stop();
@@ -836,18 +975,22 @@ function applyRuntimeState(runtime) {
             // Track already stopped.
           }
         });
-        if (controller.masterGain) {
-          hardZero(controller.masterGain.gain);
-        }
         controller.sourceStale = true;
-        bumpGeneration(controller);
-        controller.media.muted = false;
         return false;
       }
 
       const source = state.context.createMediaStreamSource(stream);
       source.connect(controller.dryGain);
       source.connect(controller.dattorroNode);
+
+      // A new track must not inherit the previous track's tank: clear it before
+      // the fresh tap becomes audible.
+      if (controller.dattorroNode) {
+        controller.dattorroNode.port.postMessage({ type: 'reset' });
+        const params = computePostParams(state.settings.reverbIntensity);
+        controller.dattorroNode.port.postMessage({ type: 'setParams', params });
+        controller.lastPostedParams = JSON.stringify(params);
+      }
 
       const previousSource = controller.source;
       const previousStream = controller.stream;
@@ -861,15 +1004,6 @@ function applyRuntimeState(runtime) {
 
       void resumeContext();
 
-      // Mute-first rebuild: the stale window unmuted the element on purpose,
-      // so confirm the mute BEFORE any gain rises. The pre-mute rampGain that
-      // sat here put a full-level overlap on the track-switch path and is
-      // deleted: enforceElementMute below mutes first and only then ramps to
-      // media.volume, so audible(controller) === (attached && !sourceStale).
-      // A spent 8/s budget must not leave the element unmuted on a live graph.
-      resetMuteDampener(controller);
-      enforceElementMute(controller);
-
       disconnectNode(previousSource);
       if (previousStream) {
         previousStream.getTracks().forEach((track) => {
@@ -879,6 +1013,15 @@ function applyRuntimeState(runtime) {
             // Track already stopped.
           }
         });
+      }
+
+      resetMuteDampener(controller);
+      if (controller.dryGain) {
+        const params = computePostParams(state.settings.reverbIntensity);
+        rampGain(controller.dryGain.gain, Math.sqrt(Math.max(0, 1 - params.wetGain * params.wetGain)));
+      }
+      if (controller.masterGain) {
+        rampGain(controller.masterGain.gain, controller.media.volume);
       }
       return true;
     } catch (error) {
@@ -912,6 +1055,8 @@ function applyRuntimeState(runtime) {
       controller.attachError = 'Could not attach audio effect.';
       state.lastError = String(error && error.message ? error.message : error);
       return false;
+    } finally {
+      controller.tapInFlight = false;
     }
   }
 
@@ -919,9 +1064,39 @@ function applyRuntimeState(runtime) {
     if (!state.context) {
       // Chromium-only: AudioContext is unprefixed since Chrome 35 (2014).
       state.context = new AudioContext();
+      state.context.onstatechange = handleContextStateChange;
       void loadWorklet(state.context);
     }
     return state.context;
+  }
+
+  // The one place a context lifecycle fact becomes an event: recover without
+  // waiting for the 2 s watchdog, and never leave an element muted onto a dead
+  // or frozen graph.
+  function handleContextStateChange() {
+    const context = state.context;
+    if (!context || state.retired) return;
+    if (context.state === 'running') {
+      syncAllMedia();
+      return;
+    }
+    if (context.state === 'closed') {
+      for (const controller of [...state.media.values()]) {
+        if (controller.attached) teardownController(controller, false, null);
+      }
+      state.context = null;
+      state.workletLoaded = false;
+      state.workletRetryCount = 0;
+      syncAllMedia();
+      return;
+    }
+    // suspended/interrupted while we own a playing element: resume now.
+    for (const controller of state.media.values()) {
+      if (controller.media && !controller.media.paused && !controller.media.ended) {
+        void resumeContext();
+        return;
+      }
+    }
   }
 
   async function resumeContext() {
@@ -953,7 +1128,11 @@ function applyRuntimeState(runtime) {
 
   async function loadWorklet(context) {
     try {
-      const url = chrome.runtime.getURL('dattorro-worklet.js');
+      const url = workletUrl();
+      if (!url) {
+        state.lastError = 'Worklet: extension context invalidated.';
+        return;
+      }
       await context.audioWorklet.addModule(url);
       state.workletLoaded = true;
       state.workletRetryCount = 0;
@@ -962,7 +1141,8 @@ function applyRuntimeState(runtime) {
       state.lastError = 'Worklet: ' + (e.message || e);
       if (!state.workletLoaded && context.state === 'running') {
         try {
-          const url = chrome.runtime.getURL('dattorro-worklet.js');
+          const url = workletUrl();
+          if (!url) return;
           await context.audioWorklet.addModule(url);
           state.workletLoaded = true;
           state.workletRetryCount = 0;
@@ -977,7 +1157,8 @@ function applyRuntimeState(runtime) {
   }
 
   function computeDattorroParams(intensity) {
-    const i = Math.max(0, Math.min(1, intensity));
+    const numeric = Number(intensity);
+    const i = Number.isFinite(numeric) ? Math.max(0, Math.min(1, numeric)) : 0;
     if (i <= 0) {
       return { wetGain: 0, decay: 0, damping: 1, preDelay: 0 };
     }
@@ -1083,13 +1264,20 @@ function applyRuntimeState(runtime) {
     if (controller.internalMuteWrite) return;
     if (!claimMuteCorrection(controller)) {
       const pausedUntil = controller.mutePausedUntil;
-      teardownController(controller, false, state.context);
       controller.budgetBypassed = true;
       controller.budgetBypassedUntil = pausedUntil;
-      maybeSuspendContext();
+      // Never tear down the live graph: park it at 0 so only the page's own
+      // (still slowed) output is audible, and retry the mute when the cool-down
+      // expires. Keep the graph so the next correction is a single mute write,
+      // not a full re-attach.
+      if (controller.masterGain) hardZero(controller.masterGain.gain);
       return;
     }
 
+    if (controller.budgetBypassed) {
+      controller.budgetBypassed = false;
+      controller.budgetBypassedUntil = 0;
+    }
     controller.internalMuteWrite = true;
 
     try {
@@ -1182,25 +1370,6 @@ function applyRuntimeState(runtime) {
     controller.dryGain = null;
     controller.masterGain = null;
     controller.dattorroNode = null;
-
-    if ((state.bypass || !state.eligible || removeCompletely) && context && typeof context.suspend === 'function') {
-      let anyAttached = false;
-      for (const remaining of state.media.values()) {
-        if (remaining.attached) {
-          anyAttached = true;
-          break;
-        }
-      }
-      if (!anyAttached && context.state === 'running') {
-        try {
-          void Promise.resolve(context.suspend()).catch(() => {
-            // Best effort only.
-          });
-        } catch {
-          // Best effort only.
-        }
-      }
-    }
 
     if (removeCompletely && state.media.size <= 1) {
       clearSafetyPoll();
@@ -1316,26 +1485,15 @@ function applyRuntimeState(runtime) {
 
     const totalCount = state.media.size;
     const active = state.eligible && !state.bypass;
+    // Friendly copy only: internal errors live in state.lastError and the
+    // console, never in the status the popup shows.
     let text = 'Waiting for media.';
-
     if (!state.eligible) {
-      text = 'Unsupported page.';
+      text = 'Waiting for tab.';
     } else if (state.bypass) {
-      text = 'Power off for this site.';
-    } else if (failedCount && !attachedCount) {
-      text = 'Could not attach to page audio.';
-    } else if (budgetBypassedCount > 0 && attachedCount === 0) {
-      text = 'Bypassed (mute fight).';
-    } else if (!totalCount) {
-      text = 'Waiting for media.';
-    } else if (attachedCount > 0 && isNeutral(state.settings)) {
-      text = 'Active, neutral.';
-    } else if (failedCount) {
-      text = 'Active with some attach failures.';
+      text = 'Off.';
     } else if (attachedCount > 0) {
       text = 'Active.';
-    } else {
-      text = 'Waiting for media.';
     }
 
     return {
@@ -1347,6 +1505,7 @@ function applyRuntimeState(runtime) {
       attachedCount,
       failedCount,
       totalCount,
+      budgetBypassedCount,
       contextState: state.context ? state.context.state : 'idle',
       text,
       error: state.lastError || '',

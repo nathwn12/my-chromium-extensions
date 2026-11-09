@@ -1,7 +1,7 @@
 class DelayLine {
   constructor(maxDelay) {
     let size = 1;
-    while (size < maxDelay) size <<= 1;
+    while (size <= maxDelay) size <<= 1;
     this.buf = new Float32Array(size);
     this.mask = size - 1;
     this.offset = size - maxDelay;
@@ -72,18 +72,22 @@ class DattorroReverbProcessor extends AudioWorkletProcessor {
       return;
     }
     if (data.type === 'setParams') {
-      const p = data.params;
-      if (p.preDelay !== undefined) this.predelay = p.preDelay;
-      if (p.preFilter !== undefined) this.preFilterAmt = p.preFilter;
-      if (p.inputDiff1 !== undefined) this.inputDiff1Amt = p.inputDiff1;
-      if (p.inputDiff2 !== undefined) this.inputDiff2Amt = p.inputDiff2;
-      if (p.decayDiff1 !== undefined) this.decayDiff1Amt = p.decayDiff1;
-      if (p.decay !== undefined) {
-        this.decayAmt = p.decay;
-        this.decayDiff2Amt = Math.min(Math.max(p.decay + 0.15, 0.25), 0.50);
+      const p = data.params || {};
+      // Validate and clamp at the message boundary: one NaN or out-of-range
+      // value must not latch non-finite state into the tank for the page
+      // lifetime. Every field is finite-gated and range-limited.
+      if (Number.isFinite(p.preDelay)) this.predelay = this.clamp(p.preDelay, 0, 0.99);
+      if (Number.isFinite(p.preFilter)) this.preFilterAmt = this.clamp(p.preFilter, 0, 0.99);
+      if (Number.isFinite(p.inputDiff1)) this.inputDiff1Amt = this.clamp(p.inputDiff1, 0, 0.99);
+      if (Number.isFinite(p.inputDiff2)) this.inputDiff2Amt = this.clamp(p.inputDiff2, 0, 0.99);
+      if (Number.isFinite(p.decayDiff1)) this.decayDiff1Amt = this.clamp(p.decayDiff1, 0, 0.99);
+      if (Number.isFinite(p.decay)) {
+        // Loop gain is decay-squared, so >0.95 runs away and eventually NaNs.
+        this.decayAmt = Math.min(0.95, Math.max(0, p.decay));
+        this.decayDiff2Amt = Math.min(Math.max(this.decayAmt + 0.15, 0.25), 0.50);
       }
-      if (p.damping !== undefined) this.dampingAmt = p.damping;
-      if (p.wetGain !== undefined) this.wetTarget = p.wetGain;
+      if (Number.isFinite(p.damping)) this.dampingAmt = this.clamp(p.damping, 0, 0.99);
+      if (Number.isFinite(p.wetGain)) this.wetTarget = this.clamp(p.wetGain, 0, 4);
     }
   }
 
@@ -91,6 +95,10 @@ class DattorroReverbProcessor extends AudioWorkletProcessor {
     let s = 1;
     while (s < x) s <<= 1;
     return s;
+  }
+
+  clamp(x, lo, hi) {
+    return Math.min(hi, Math.max(lo, x));
   }
 
   // Convert a Dattorro millisecond delay length to samples at the live rate.
@@ -133,6 +141,7 @@ class DattorroReverbProcessor extends AudioWorkletProcessor {
     this.wetLpf = [0, 0];
     this.preBuf = new Float32Array(Math.ceil(sampleRate * 0.1));
     this.preIdx = 0;
+    this.flushCount = 0;
 
     this.inDiff = INPUT_DIFF_MS.map((ms) => this.allpassLine(ms));
 
@@ -220,31 +229,32 @@ class DattorroReverbProcessor extends AudioWorkletProcessor {
   process(inputs, outputs) {
     const inp = inputs[0];
     const out = outputs[0];
-    if (!inp || !inp.length || !out || !out.length) return true;
+    if (!out || !out.length || !out[0]) return true;
 
-    const L = inp[0];
-    const R = inp.length > 1 ? inp[1] : inp[0];
-    const n = L.length;
+    // A disconnected source must decay through the tank, never freeze it: an
+    // early return leaves `t` advancing without writes, so the next real source
+    // replays scrambled stale audio. Run the tank with silence instead.
+    const hasInput = Boolean(inp && inp.length && inp[0] && inp[0].length);
+    const L = hasInput ? inp[0] : null;
+    const R = hasInput ? (inp.length > 1 ? inp[1] : inp[0]) : null;
     const outL = out[0];
+    const n = outL.length;
     const outR = out.length > 1 ? out[1] : out[0];
     const sr = this.sr;
     const wetAlpha = 1 - Math.exp(-1 / (0.005 * sr));
-    const pdFloat = this.predelay * sr * 0.1;
+    const pdFloat = Math.min(this.preBuf.length - 1, Math.max(0, this.predelay * sr * 0.1));
     const lpfCoeff = this.lpfCoeff;
     const hpfCoeff = this.hpfCoeff;
-    this.flushDenormals();
+    const dry = this.wetGain === 0 && this.wetTarget === 0;
 
-    if (this.wetGain === 0 && this.wetTarget === 0) {
-      for (let i = 0; i < n; i++) {
-        outL[i] = 0;
-        outR[i] = 0;
-      }
-      this.t += n;
-      return true;
-    }
+    // The denormal sweep touches 56k buffer words. Sweeping it every 128-frame
+    // block made the dry path 12x more expensive than the tank it skips, so it
+    // is throttled instead.
+    this.flushCount += 1;
+    if (this.flushCount % 64 === 0) this.flushDenormals();
 
     for (let i = 0; i < n; i++) {
-      let x = (L[i] + R[i]) * 0.5;
+      let x = hasInput ? (L[i] + R[i]) * 0.5 : 0;
 
       this.preBuf[this.preIdx] = x;
       this.preIdx = (this.preIdx + 1) % this.preBuf.length;
@@ -306,7 +316,7 @@ class DattorroReverbProcessor extends AudioWorkletProcessor {
       this.wetGain += (this.wetTarget - this.wetGain) * wetAlpha;
       if (Math.abs(this.wetGain) < 1e-6) this.wetGain = 0;
 
-      if (this.wetGain === 0) {
+      if (dry) {
         outL[i] = 0;
         outR[i] = 0;
       } else {
@@ -328,8 +338,11 @@ class DattorroReverbProcessor extends AudioWorkletProcessor {
         this.wetLpf[0] += lpfCoeff * (wL - this.wetLpf[0]);
         this.wetLpf[1] += lpfCoeff * (wR - this.wetLpf[1]);
 
-        outL[i] = Math.max(-1, Math.min(1, this.wetGain * this.wetLpf[0]));
-        outR[i] = Math.max(-1, Math.min(1, this.wetGain * this.wetLpf[1]));
+        // The raw tank runs ~1.85x the input peak, so a hard clamp fired on
+        // ordinary material. A fixed -5.2 dB bus gain keeps the voice and leaves
+        // the clamp as a final safety net only.
+        outL[i] = Math.max(-1, Math.min(1, 0.55 * this.wetGain * this.wetLpf[0]));
+        outR[i] = Math.max(-1, Math.min(1, 0.55 * this.wetGain * this.wetLpf[1]));
       }
 
       this.t++;

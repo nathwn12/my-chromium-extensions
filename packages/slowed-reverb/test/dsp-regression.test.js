@@ -94,6 +94,121 @@ function rmsWindow(buf, from, to) {
   return Math.sqrt(s / Math.max(1, to - from));
 }
 
+function countNonFinite(buf) {
+  let n = 0;
+  for (let i = 0; i < buf.length; i++) if (!Number.isFinite(buf[i])) n++;
+  return n;
+}
+
+function countClipped(l, r) {
+  let n = 0;
+  for (let i = 0; i < l.length; i++) {
+    if (Math.abs(l[i]) >= 1 || Math.abs(r[i]) >= 1) n++;
+  }
+  return n;
+}
+
+function peakOf(l, r) {
+  let m = 0;
+  for (let i = 0; i < l.length; i++) {
+    if (Math.abs(l[i]) > m) m = Math.abs(l[i]);
+    if (Math.abs(r[i]) > m) m = Math.abs(r[i]);
+  }
+  return m;
+}
+
+// 128-frame blocks. `input` may be null to model a disconnected source; the
+// output arrays are reused when `holder` is passed, exactly like a live render
+// quantum, so a worklet that writes nothing replays stale samples.
+function pumpBlocks(p, sr, seconds, input, holder) {
+  const total = Math.floor(sr * seconds);
+  const out = new Float32Array(total);
+  let done = 0;
+  while (done < total) {
+    const n = Math.min(128, total - done);
+    let block = [];
+    if (input) {
+      const L = new Float32Array(n);
+      const R = new Float32Array(n);
+      input(L, R, done, sr);
+      block = [L, R];
+    }
+    const oL = holder ? holder[0] : new Float32Array(n);
+    const oR = holder ? holder[1] : new Float32Array(n);
+    p.process([block], [[oL, oR]]);
+    out.set(oL.subarray(0, n), done);
+    done += n;
+  }
+  return out;
+}
+
+function paramsFor(intensity) {
+  const i = Math.max(0, Math.min(1, intensity));
+  if (i <= 0) return { wetGain: 0, decay: 0, damping: 1, preDelay: 0 };
+  return {
+    preDelay: 0.44 + i * 0.1,
+    preFilter: 0.7 + i * 0.1,
+    inputDiff1: 0.75,
+    inputDiff2: 0.625,
+    decayDiff1: 0.65 + i * 0.05,
+    decay: Math.pow(i, 0.75) * 0.58,
+    damping: Math.min(0.5 + Math.pow(i, 0.6) * 0.4, 0.78),
+    wetGain: Math.pow(i, 0.75),
+  };
+}
+
+function makeTone(freq, amp) {
+  return (L, R, start, sr) => {
+    for (let n = 0; n < L.length; n++) {
+      const v = amp * Math.sin((2 * Math.PI * freq * (start + n)) / sr);
+      L[n] = v;
+      R[n] = v;
+    }
+  };
+}
+
+function makeDc(amp) {
+  return (L, R) => {
+    L.fill(amp);
+    R.fill(amp);
+  };
+}
+
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// Music-like: low-passed noise plus a 110 Hz tone, normalised to `peak`.
+function makeMusic(sr, seconds, peak) {
+  const total = Math.floor(sr * seconds);
+  const src = new Float32Array(total);
+  const rand = mulberry32(0x5eed);
+  let y1 = 0;
+  let y2 = 0;
+  let max = 0;
+  for (let n = 0; n < total; n++) {
+    const w = rand() * 2 - 1;
+    y1 += 0.05 * (w - y1);
+    y2 += 0.05 * (y1 - y2);
+    const v = y2 * 4 + 0.35 * Math.sin((2 * Math.PI * 110 * n) / sr);
+    src[n] = v;
+    if (Math.abs(v) > max) max = Math.abs(v);
+  }
+  const scale = max > 0 ? peak / max : 0;
+  for (let n = 0; n < total; n++) src[n] *= scale;
+  return (L, R, start) => {
+    L.set(src.subarray(start, start + L.length));
+    R.set(src.subarray(start, start + R.length));
+  };
+}
+
 function main() {
   const wsrc = fs.readFileSync(WORKLET_PATH, 'utf8');
   const csrc = fs.readFileSync(CONTENT_PATH, 'utf8');
@@ -108,12 +223,19 @@ function main() {
     'return (' + outExpr.replace(/this\.wetGain/g, 'W').replace(/this\.wetLpf\[0\]/g, 'V') + ');'
   );
   const amps = [0.1, 0.3, 0.5, 0.9];
-  const trans = amps.map((a) => db(outFn(1, a) / a));
-  console.log('     transfer dB @0.1/0.3/0.5/0.9: ' + trans.map((t) => t.toFixed(3)).join(' / '));
+  const gains = amps.map((a) => outFn(1, a) / a);
+  const trans = gains.map((g) => db(g));
+  console.log('     wet-bus transfer dB @0.1/0.3/0.5/0.9: ' + trans.map((t) => t.toFixed(3)).join(' / '));
+  const gainSpread = Math.max.apply(null, gains) - Math.min.apply(null, gains);
   check(
-    '1. transfer is 0.0 dB below 1.0',
-    trans.every((t) => Math.abs(t) < 1e-9),
-    'got ' + trans.map((t) => t.toFixed(2)).join(',') + ' dB'
+    '1. wet bus is linear below the clamp (single headroom gain)',
+    gainSpread < 1e-9 && gains[0] > 0 && gains[0] <= 1,
+    'spread ' + gainSpread.toExponential(2) + ' gain ' + gains[0].toFixed(3)
+  );
+  check(
+    '1. the wet bus keeps headroom instead of clipping ordinary material',
+    outFn(1, 1.9) <= 1 && outFn(1, 1.9) >= 0.5,
+    'out(1.9)=' + outFn(1, 1.9).toFixed(3)
   );
 
   // --- 2. MIX: fully wet at i=1, equal-power, dip < 1 dB ---
@@ -303,6 +425,117 @@ function main() {
       near(rows[1][0], 11.861161) && near(rows[1][1], 121.870905),
     JSON.stringify(rows)
   );
+
+  // --- 7. no stale replay when the source goes away (tank keeps decaying) ---
+  const srProbe = 48000;
+  const { cls: ClsProbe } = loadWorkletClass(srProbe);
+  const p7 = new ClsProbe();
+  p7.handleMessage({ type: 'setParams', params: paramsFor(0.8) });
+  const loud7 = pumpBlocks(p7, srProbe, 1, makeTone(440, 0.5), null);
+  const loudRms = rmsWindow(loud7, Math.floor(srProbe * 0.8), srProbe);
+  const holder7 = [new Float32Array(128), new Float32Array(128)];
+  pumpBlocks(p7, srProbe, 2, null, holder7);
+  const burst7 = pumpBlocks(p7, srProbe, 0.05, makeTone(440, 0.5), null);
+  const ratio7 = rmsWindow(burst7, 0, burst7.length) / Math.max(1e-12, loudRms);
+  console.log('     empty-input replay ratio: ' + ratio7.toFixed(3));
+  check('7. tank decays while the input is empty (no stale replay)', ratio7 < 0.01, 'ratio ' + ratio7.toFixed(3));
+
+  // --- 8. one out-of-range/NaN param must never latch non-finite output -----
+  const p8 = new ClsProbe();
+  p8.handleMessage({ type: 'setParams', params: { wetGain: 1, preDelay: 5 } });
+  const o8 = pumpBlocks(p8, srProbe, 0.5, makeDc(0.1), null);
+  check('8. out-of-range preDelay stays finite', countNonFinite(o8) === 0, countNonFinite(o8) + ' non-finite');
+  p8.handleMessage({ type: 'setParams', params: paramsFor(1) });
+  const o8b = pumpBlocks(p8, srProbe, 0.8, makeDc(0.1), null);
+  check('8. NaN cannot latch after valid params are restored', countNonFinite(o8b) === 0, countNonFinite(o8b) + ' non-finite');
+  const p8c = new ClsProbe();
+  p8c.handleMessage({
+    type: 'setParams',
+    params: { wetGain: NaN, preDelay: NaN, decay: NaN, damping: NaN, preFilter: NaN },
+  });
+  p8c.handleMessage({ type: 'setParams', params: paramsFor(1) });
+  const o8c = pumpBlocks(p8c, srProbe, 0.5, makeDc(0.2), null);
+  check('8. NaN setParams are rejected at the worklet boundary', countNonFinite(o8c) === 0, countNonFinite(o8c) + ' non-finite');
+  check(
+    '8. every setParams field is finite-gated (static)',
+    /Number\.isFinite\(p\.preDelay\)/.test(wsrc) &&
+      /Number\.isFinite\(p\.decay\)/.test(wsrc) &&
+      /Number\.isFinite\(p\.damping\)/.test(wsrc) &&
+      /Number\.isFinite\(p\.wetGain\)/.test(wsrc),
+    'a setParams field is written without a finite gate'
+  );
+
+  // --- 9. unbounded decay is clamped -------------------------------
+  const p9 = new ClsProbe();
+  p9.handleMessage({ type: 'setParams', params: { wetGain: 1, decay: 2 } });
+  const impulse9 = (L, R, start) => {
+    L.fill(0);
+    R.fill(0);
+    if (start === 0) {
+      L[0] = 1;
+      R[0] = 1;
+    }
+  };
+  const o9 = pumpBlocks(p9, srProbe, 8, impulse9, null);
+  check(
+    '9. decay is clamped in the worklet (finite, no runaway)',
+    countNonFinite(o9) === 0 && peakOf(o9, o9) < 1 && countClipped(o9, o9) === 0,
+    'peak=' + peakOf(o9, o9).toFixed(3) + ' nonfinite=' + countNonFinite(o9)
+  );
+  check('9. decay is clamped below unity (static)', /Math\.min\(0\.95/.test(wsrc), 'no decay clamp');
+
+  // --- 10. DelayLine has no zero-delay degenerate --------------------------
+  const symFactory = new Function(
+    'sampleRate',
+    'AudioWorkletProcessor',
+    'registerProcessor',
+    wsrc + '\nreturn { DelayLine };'
+  );
+  const syms = symFactory(srProbe, class { constructor() { this.port = { postMessage() {} }; } }, () => {});
+  const dl = new syms.DelayLine(64);
+  dl.write(0, 5);
+  check(
+    '10. DelayLine(64) keeps 64 samples of history',
+    dl.read(0) === 0 && dl.read(64) === 5,
+    'read(0)=' + dl.read(0) + ' read(64)=' + dl.read(64)
+  );
+
+  // --- 11. wet bus headroom on music-like material -------------------------
+  const p11 = new ClsProbe();
+  p11.handleMessage({ type: 'setParams', params: paramsFor(1) });
+  const music11 = makeMusic(srProbe, 4, 0.7);
+  const o11 = pumpBlocks(p11, srProbe, 4, music11, null);
+  const clipped11 = countClipped(o11, o11);
+  console.log('     clipped samples at input peak 0.7: ' + clipped11);
+  check('11. no hard clipping at input peak 0.7', clipped11 === 0, clipped11 + ' clipped');
+
+  // --- 12. dry fast path does not pay the denormal sweep every block ------
+  const p12 = new ClsProbe();
+  p12.handleMessage({ type: 'setParams', params: paramsFor(0) });
+  let flushes12 = 0;
+  const originalFlush = p12.flushDenormals.bind(p12);
+  p12.flushDenormals = () => {
+    flushes12 += 1;
+    originalFlush();
+  };
+  pumpBlocks(p12, srProbe, 5, makeTone(440, 0.5), null);
+  const blocks12 = Math.floor(srProbe * 5 / 128);
+  console.log('     flush calls during 5 s dry: ' + flushes12 + ' / ' + blocks12 + ' blocks');
+  check(
+    '12. denormal flush is throttled off the dry fast path',
+    flushes12 > 0 && flushes12 <= Math.ceil(blocks12 / 8),
+    flushes12 + ' flushes in ' + blocks12 + ' blocks'
+  );
+
+  // --- 13. the content-side intensity map never emits non-finite values ---
+  const mapSrc = (csrc.match(/function computeDattorroParams\(intensity\) \{[\s\S]*?\n  \}/) || [])[0] || '';
+  const mapFn = new Function(mapSrc + '\nreturn computeDattorroParams;');
+  const map = mapFn();
+  const finiteMap = [0, 0.25, 0.5, 1, NaN, Infinity, -1, 4].every((i) => {
+    const params = map(i);
+    return Object.keys(params).every((k) => Number.isFinite(params[k]));
+  });
+  check('13. computeDattorroParams is finite for NaN/out-of-range intensity', finiteMap, 'non-finite param latched');
 
   if (failures.length > 0) {
     console.error('FAILURES: ' + failures.length);

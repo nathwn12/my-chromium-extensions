@@ -174,10 +174,30 @@ async function pushTabState(tabId) {
     });
     return { ok: true };
   } catch {
-    // Best effort only: the MAIN-world hook cannot receive runtime messages,
-    // so a retry through it would fail identically. Report unreachable.
-    await injectMainWorldHook(tabId);
-    return { ok: false, error: 'unreachable' };
+    // No receiver: after an extension reload/update the old content script is an
+    // orphan and a new service worker cannot message it. Re-install the ISOLATED
+    // content script (content-script.js re-enters through its adoption guard),
+    // then retry once. A dead MAIN-world hook cannot receive runtime messages.
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        files: ['shared.js', 'content-script.js'],
+      });
+    } catch {
+      await injectMainWorldHook(tabId);
+      return { ok: false, error: 'unreachable' };
+    }
+    try {
+      await chrome.tabs.sendMessage(tabId, {
+        type: 'APPLY_TAB_STATE',
+        bypass: payload.bypass,
+        settings: payload.settings,
+      });
+      return { ok: true };
+    } catch {
+      await injectMainWorldHook(tabId);
+      return { ok: false, error: 'unreachable' };
+    }
   }
 }
 

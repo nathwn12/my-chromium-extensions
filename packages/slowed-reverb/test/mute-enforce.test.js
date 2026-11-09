@@ -406,18 +406,23 @@ async function main() {
     'expected ' + rateAtAttach + ', got ' + media.playbackRate
   );
 
-  // --- sourceStale: the deliberate unmute window must survive volumechange ---
+  // --- sourceStale: mute-first source swap keeps the element muted -------
+  const mediaCaptureBefore = env.stats.captureCalls;
   media.dispatchEvent(new Event('emptied'));
-  check('setup: emptied marks the source stale and unmutes the element', media.muted === false);
+  check('setup: emptied hard-zeroes the graph and keeps the element muted', media.muted === true);
   media.dispatchEvent(new Event('volumechange'));
   check(
-    'sourceStale + volumechange leaves the element unmuted',
-    media.muted === false,
-    'expected false (stale source has no audio path), got ' + media.muted
+    'sourceStale + volumechange keeps the element muted (no dry gap)',
+    media.muted === true,
+    'expected true during the source swap, got ' + media.muted
   );
 
-  for (let i = 0; i < 20 && media.muted !== true; i++) await env.settle(2);
-  check('rebuild re-mutes once a fresh source is connected', media.muted === true);
+  for (let i = 0; i < 40 && env.stats.captureCalls === mediaCaptureBefore; i++) await env.settle(2);
+  check(
+    'rebuild swaps the source and keeps the element muted',
+    env.stats.captureCalls === mediaCaptureBefore + 1 && media.muted === true,
+    'captures +' + (env.stats.captureCalls - mediaCaptureBefore) + ' muted=' + media.muted
+  );
 
   // --- bypass: detached means the page owns muted again ---
   env.sendRuntime({
@@ -770,7 +775,7 @@ async function main() {
   const storeText = fs.readFileSync(path.join(__dirname, '..', 'STORE_SUBMISSION.md'), 'utf8');
   const manifest = JSON.parse(manifestText);
 
-  // A. sourceStale volumechange keeps the graph silent (no doubled track).
+  // A. sourceStale volumechange keeps the graph silent and the mute held.
   const staleM = env.addMedia();
   env.fireDoc('play', staleM);
   for (let i = 0; i < 40 && staleM.muted !== true; i++) {
@@ -778,8 +783,9 @@ async function main() {
     env.runTimers(50);
   }
   check('setup: stale-track element attached and muted', staleM.muted === true);
+  let staleCaps = env.stats.captureCalls;
   staleM.dispatchEvent(new Event('emptied'));
-  check('setup: emptied unmutes into the stale window', staleM.muted === false);
+  check('setup: emptied keeps the stale-track element muted', staleM.muted === true);
   let mark = env.stats.rampedValues.length;
   staleM.dispatchEvent(new Event('volumechange'));
   check(
@@ -788,15 +794,19 @@ async function main() {
     'last ramped gain=' + env.stats.rampedValues[env.stats.rampedValues.length - 1]
   );
   check(
-    'sourceStale + volumechange leaves the element unmuted (stale window holds)',
-    staleM.muted === false,
-    'expected false, got ' + staleM.muted
+    'sourceStale + volumechange leaves the element muted (mute-first swap)',
+    staleM.muted === true,
+    'expected true, got ' + staleM.muted
   );
-  for (let i = 0; i < 40 && staleM.muted !== true; i++) {
+  for (let i = 0; i < 40 && env.stats.captureCalls === staleCaps; i++) {
     await env.settle(2);
     env.runTimers(50);
   }
-  check('setup: rebuild re-mutes the stale-track element', staleM.muted === true);
+  check(
+    'setup: source-only rebuild completed and stayed muted',
+    env.stats.captureCalls === staleCaps + 1 && staleM.muted === true,
+    'captures +' + (env.stats.captureCalls - staleCaps) + ' muted=' + staleM.muted
+  );
 
   // B. the contract mute must NOT silence the graph: while attached the
   // element stays muted and the graph plays at media.volume.
@@ -837,7 +847,7 @@ async function main() {
     'expected true, got ' + contractM.muted
   );
   contractM.dispatchEvent(new Event('emptied'));
-  check('setup: emptied marks the contract element stale and unmutes', contractM.muted === false);
+  check('setup: emptied keeps the contract element muted across the swap', contractM.muted === true);
   mark = env.stats.rampedValues.length;
   contractM.dispatchEvent(new Event('volumechange'));
   check(
@@ -845,11 +855,16 @@ async function main() {
     env.stats.rampedValues.length > mark && env.stats.rampedValues[env.stats.rampedValues.length - 1] === 0,
     'last ramped gain=' + env.stats.rampedValues[env.stats.rampedValues.length - 1]
   );
-  for (let i = 0; i < 40 && contractM.muted !== true; i++) {
+  staleCaps = env.stats.captureCalls;
+  for (let i = 0; i < 40 && env.stats.captureCalls === staleCaps; i++) {
     await env.settle(2);
     env.runTimers(50);
   }
-  check('setup: contract element rebuilt and re-muted', contractM.muted === true);
+  check(
+    'setup: contract element rebuilt and still muted',
+    env.stats.captureCalls === staleCaps + 1 && contractM.muted === true,
+    'captures +' + (env.stats.captureCalls - staleCaps) + ' muted=' + contractM.muted
+  );
   mark = env.stats.rampedValues.length;
   contractM.dispatchEvent(new Event('volumechange'));
   check(
@@ -995,10 +1010,10 @@ async function main() {
     'SUPPORTED_HOSTS still names another host'
   );
   check(
-    'popup is YouTube Music only',
-    popupText.indexOf('Only works on YouTube Music.') !== -1 &&
+    'popup is YouTube Music only and shows friendly copy',
+    popupText.indexOf('Waiting for tab') !== -1 &&
       popupText.replace(/music\.youtube\.com/g, '').indexOf('youtube.com') === -1,
-    'popup still names YouTube'
+    'popup names YouTube or lost the friendly status'
   );
 
   // H. static guards for the remaining fixes (each fails on the pre-fix bytes).
@@ -1009,9 +1024,10 @@ async function main() {
     'volumeHandler still maps media.muted to masterGain 0'
   );
   check(
-    'rebuild resets the mute budget (static)',
-    /resetMuteDampener\(controller\);\s+enforceElementMute\(controller\);/.test(src),
-    'no resetMuteDampener before the rebuild re-mute'
+    'rebuild resets the mute budget and ramps only after the mute (static)',
+    /resetMuteDampener\(controller\);\s+if \(controller\.dryGain\)/.test(src) &&
+      /controller\.media\.muted = true;/.test(src),
+    'no resetMuteDampener + mute-before-ramp in rebuild'
   );
   check(
     'failed rebuild disconnects the stale tap (static)',
@@ -1020,7 +1036,8 @@ async function main() {
   );
   check(
     'attachAttempts resets at the cap (static)',
-    /controller\.attachAttempts = 0;\s+teardownController\(controller, false/.test(src),
+    /controller\.attachAttempts = 0;\s+if \(!controller\.attached\) \{\s+teardownController\(controller, false/.test(src) ||
+      /controller\.attachAttempts = 0;\s+teardownController\(controller, false/.test(src),
     'no attachAttempts reset before the cap teardown'
   );
   check(
@@ -1051,7 +1068,7 @@ async function main() {
   );
 
   // I. adversarial repair lane (each fails on the pre-fix bytes).
-  // --- I1 mute-budget doubling: refusal must bypass to dry path (fail OPEN) ---
+  // --- I1 mute-budget doubling: refusal keeps the live graph at 0 ---------
   const dbl = env.addMedia();
   env.fireDoc('play', dbl);
   for (let i = 0; i < 40 && dbl.muted !== true; i++) {
@@ -1063,6 +1080,8 @@ async function main() {
   await env.settle(2);
   env.runTimers(50);
   const dblDisconnectsBefore = env.stats.disconnects;
+  const dblAttachedBefore = env.queryLive().attachedCount;
+  const dblCapsBefore = env.stats.captureCalls;
   for (let i = 0; i < 8; i++) {
     dbl.muted = false;
     dbl.dispatchEvent(new Event('volumechange'));
@@ -1073,23 +1092,35 @@ async function main() {
   dbl.dispatchEvent(new Event('volumechange'));
   await Promise.resolve();
   check('setup: doubling budget spent (9th unmute refused)', dbl.muted === false);
+  const dblLive = env.queryLive();
+  const dblMaster = env.stats.gains[env.stats.gains.length - 1];
   check(
-    'mute-budget refusal bypasses to dry path (audible, graph out of the way)',
-    dbl.muted === false && env.stats.disconnects > dblDisconnectsBefore,
-    'muted=' + dbl.muted + ' disconnects=' + env.stats.disconnects + ' before=' + dblDisconnectsBefore
+    'mute-budget refusal keeps the live graph attached (no teardown to dry)',
+    dblLive.attachedCount === dblAttachedBefore &&
+      env.stats.disconnects === dblDisconnectsBefore &&
+      env.stats.captureCalls === dblCapsBefore,
+    'attached=' + dblLive.attachedCount + ' disconnects +' + (env.stats.disconnects - dblDisconnectsBefore) +
+      ' captures +' + (env.stats.captureCalls - dblCapsBefore)
+  );
+  check(
+    'mute-budget refusal parks the live graph at 0 (no doubled audio)',
+    dblMaster.value === 0,
+    'gain=' + dblMaster.value
   );
   env.advance(1001);
-  env.fireDoc('play', dbl);
-  for (let i = 0; i < 40 && dbl.muted !== true; i++) {
-    await env.settle(2);
-    env.runTimers(50);
-  }
-  check('mute-budget recovery re-attaches after cool-down', dbl.muted === true);
   dbl.muted = false;
   dbl.dispatchEvent(new Event('volumechange'));
   await Promise.resolve();
   check(
-    'mute-budget recovery corrects again after re-attach',
+    'mute-budget recovery re-mutes the same graph after cool-down',
+    dbl.muted === true && env.stats.captureCalls === dblCapsBefore,
+    'muted=' + dbl.muted + ' captures +' + (env.stats.captureCalls - dblCapsBefore)
+  );
+  dbl.muted = false;
+  dbl.dispatchEvent(new Event('volumechange'));
+  await Promise.resolve();
+  check(
+    'mute-budget recovery corrects again after the cool-down',
     dbl.muted === true,
     'muted=' + dbl.muted
   );
@@ -1165,11 +1196,13 @@ async function main() {
       /state\.context = null;\s+state\.workletLoaded = false;/.test(src),
     'no closed-context recreate'
   );
+  const enforceBlock = (src.match(/function enforceElementMute\(controller\) \{[\s\S]*?\n  \}/) || [])[0] || '';
   check(
-    'mute-budget refusal bypasses to dry path (static)',
-    /if \(!claimMuteCorrection\(controller\)\) [\s\S]{0,400}budgetBypassed = true[\s\S]{0,400}teardownController\(controller, false/.test(src) ||
-      /if \(!claimMuteCorrection\(controller\)\) [\s\S]{0,400}teardownController\(controller, false[\s\S]{0,200}budgetBypassed = true/.test(src),
-    'no budget bypass teardown on refusal'
+    'mute-budget refusal keeps the graph and parks it at 0 (static)',
+    enforceBlock.indexOf('budgetBypassed = true') !== -1 &&
+      enforceBlock.indexOf('hardZero(controller.masterGain.gain)') !== -1 &&
+      enforceBlock.indexOf('teardownController') === -1,
+    'budget refusal still tears the graph down'
   );
   check(
     'mute-budget recovery restores the graph (static)',
@@ -1347,13 +1380,11 @@ async function main() {
     return ops.some((o) => o.op === 'setValue' && o.value === 0);
   }
 
-  // J1 emptied: hard-zero then unmute, in that order.
+  // J1 emptied: hard-zero, mute held, no unmute write at all.
   const jEmptied = await attachZeroProbe();
   check('setup: zero-overlap emptied probe attached muted', jEmptied.muted === true);
   const jEmptiedGain = lastMaster();
   jEmptiedGain.value = 1;
-  let jEmptiedAtUnmute = null;
-  let jEmptiedOpAtUnmute = null;
   let jEmptiedMuted = jEmptied.muted;
   Object.defineProperty(jEmptied, 'muted', {
     configurable: true,
@@ -1361,43 +1392,32 @@ async function main() {
     set: (next) => {
       const b = Boolean(next);
       if (b === jEmptiedMuted) return;
-      if (b === false) {
-        jEmptiedAtUnmute = jEmptiedGain.value;
-        jEmptiedOpAtUnmute = env.stats.audioOps[env.stats.audioOps.length - 1] || null;
-      }
       jEmptiedMuted = b;
+      env.stats.audioOps.push({ op: 'muted', value: b });
     },
   });
   let jMark = env.stats.audioOps.length;
   const jCancelBefore = env.stats.cancelCalls;
+  const jEmptiedCaps = env.stats.captureCalls;
   jEmptied.dispatchEvent(new Event('emptied'));
+  check('emptied keeps the element muted (no dry gap)', jEmptiedMuted === true, 'muted=' + jEmptiedMuted);
+  check('emptied hard-zeroes the graph immediately', jEmptiedGain.value === 0, 'gain=' + jEmptiedGain.value);
   check(
-    'emptied hard-zeros: gain exactly 0 at unmute instant',
-    jEmptiedAtUnmute === 0,
-    'got ' + jEmptiedAtUnmute
-  );
-  check(
-    'emptied hard-zeros: no setTarget ramp immediately before unmute',
-    Boolean(jEmptiedOpAtUnmute) && jEmptiedOpAtUnmute.op === 'setValue' && jEmptiedOpAtUnmute.value === 0,
-    'op before unmute=' + JSON.stringify(jEmptiedOpAtUnmute)
-  );
-  check(
-    'emptied hard-zeros: cancel + setValue(0) scheduled',
+    'emptied schedules cancel + setValue(0) and no setTarget(0)',
     hasHardZero(opsSince(jMark)) && env.stats.cancelCalls > jCancelBefore && !hasRampToZero(opsSince(jMark)),
     'ops=' + JSON.stringify(opsSince(jMark))
   );
-  for (let i = 0; i < 40 && jEmptiedMuted !== true; i++) {
+  for (let i = 0; i < 40 && env.stats.captureCalls === jEmptiedCaps; i++) {
     await env.settle(2);
     env.runTimers(50);
   }
+  check('emptied source swap completed', env.stats.captureCalls === jEmptiedCaps + 1);
 
-  // J2 loadedmetadata: same ordering.
+  // J2 loadedmetadata: same ordering (mute held, hardZero, no ramp).
   const jLoad = await attachZeroProbe();
   check('setup: zero-overlap load probe attached muted', jLoad.muted === true);
   const jLoadGain = lastMaster();
   jLoadGain.value = 1;
-  let jLoadAtUnmute = null;
-  let jLoadOpAtUnmute = null;
   let jLoadMuted = jLoad.muted;
   Object.defineProperty(jLoad, 'muted', {
     configurable: true,
@@ -1405,50 +1425,42 @@ async function main() {
     set: (next) => {
       const b = Boolean(next);
       if (b === jLoadMuted) return;
-      if (b === false) {
-        jLoadAtUnmute = jLoadGain.value;
-        jLoadOpAtUnmute = env.stats.audioOps[env.stats.audioOps.length - 1] || null;
-      }
       jLoadMuted = b;
+      env.stats.audioOps.push({ op: 'muted', value: b });
     },
   });
   jMark = env.stats.audioOps.length;
   const jLoadCancelBefore = env.stats.cancelCalls;
+  const jLoadCaps = env.stats.captureCalls;
   jLoad.dispatchEvent(new Event('loadedmetadata'));
+  check('loadedmetadata keeps the element muted (no dry gap)', jLoadMuted === true, 'muted=' + jLoadMuted);
+  check('loadedmetadata hard-zeroes the graph immediately', jLoadGain.value === 0, 'gain=' + jLoadGain.value);
   check(
-    'loadedmetadata hard-zeros: gain exactly 0 at unmute instant',
-    jLoadAtUnmute === 0,
-    'got ' + jLoadAtUnmute
-  );
-  check(
-    'loadedmetadata hard-zeros: no setTarget ramp immediately before unmute',
-    Boolean(jLoadOpAtUnmute) && jLoadOpAtUnmute.op === 'setValue' && jLoadOpAtUnmute.value === 0,
-    'op before unmute=' + JSON.stringify(jLoadOpAtUnmute)
-  );
-  check(
-    'loadedmetadata hard-zeros: cancel + setValue(0) scheduled',
+    'loadedmetadata schedules cancel + setValue(0) and no setTarget(0)',
     hasHardZero(opsSince(jMark)) && env.stats.cancelCalls > jLoadCancelBefore && !hasRampToZero(opsSince(jMark)),
     'ops=' + JSON.stringify(opsSince(jMark))
   );
-  for (let i = 0; i < 40 && jLoadMuted !== true; i++) {
+  for (let i = 0; i < 40 && env.stats.captureCalls === jLoadCaps; i++) {
     await env.settle(2);
     env.runTimers(50);
   }
+  check('loadedmetadata source swap completed', env.stats.captureCalls === jLoadCaps + 1);
 
-  // J3 sourceStale volumechange: graph stays at exactly 0 while unmuted.
+  // J3 sourceStale volumechange: graph stays at exactly 0, mute held.
   const jStale = await attachZeroProbe();
   check('setup: zero-overlap stale probe attached muted', jStale.muted === true);
   const jStaleGain = lastMaster();
   jStaleGain.value = 1;
+  const jStaleCaps = env.stats.captureCalls;
   jStale.dispatchEvent(new Event('emptied'));
-  check('setup: stale probe unmuted into the stale window', jStale.muted === false);
+  check('setup: stale probe stays muted', jStale.muted === true);
   jStaleGain.value = 1;
   jMark = env.stats.audioOps.length;
   const jStaleCancelBefore = env.stats.cancelCalls;
   jStale.dispatchEvent(new Event('volumechange'));
   check(
-    'sourceStale volumechange hard-zeros: gain exactly 0 while unmuted',
-    jStaleGain.value === 0 && jStale.muted === false,
+    'sourceStale volumechange hard-zeros: gain exactly 0 while muted',
+    jStaleGain.value === 0 && jStale.muted === true,
     'gain=' + jStaleGain.value + ' muted=' + jStale.muted
   );
   check(
@@ -1456,12 +1468,12 @@ async function main() {
     hasHardZero(opsSince(jMark)) && !hasRampToZero(opsSince(jMark)) && env.stats.cancelCalls > jStaleCancelBefore,
     'ops=' + JSON.stringify(opsSince(jMark))
   );
-  for (let i = 0; i < 40 && jStale.muted !== true; i++) {
+  for (let i = 0; i < 40 && env.stats.captureCalls === jStaleCaps; i++) {
     await env.settle(2);
     env.runTimers(50);
   }
 
-  // J4 mute-budget refusal: fail OPEN to dry bypass (audible, graph out of the way).
+  // J4 mute-budget refusal: keep the graph, park it at 0, retry later.
   const jRefuse = await attachZeroProbe();
   check('setup: zero-overlap refusal probe attached muted', jRefuse.muted === true);
   env.fireDoc('play', jRefuse);
@@ -1474,24 +1486,23 @@ async function main() {
   }
   check('setup: refusal probe budget spent (still corrects)', jRefuse.muted === true);
   const jRefuseDisconnectsBefore = env.stats.disconnects;
+  const jRefuseCapsBefore = env.stats.captureCalls;
+  const jRefuseAttachedBefore = env.queryLive().attachedCount;
   jMark = env.stats.audioOps.length;
   jRefuse.muted = false;
   jRefuse.dispatchEvent(new Event('volumechange'));
   await Promise.resolve();
   check(
-    'refusal bypasses to dry path (audible, graph out of the way)',
-    jRefuse.muted === false && env.stats.disconnects > jRefuseDisconnectsBefore,
-    'muted=' + jRefuse.muted + ' disconnects=' + env.stats.disconnects
+    'refusal keeps the live graph (no teardown)',
+    env.stats.disconnects === jRefuseDisconnectsBefore &&
+      env.stats.captureCalls === jRefuseCapsBefore &&
+      env.queryLive().attachedCount === jRefuseAttachedBefore,
+    'disconnects +' + (env.stats.disconnects - jRefuseDisconnectsBefore) + ' captures +' + (env.stats.captureCalls - jRefuseCapsBefore)
   );
   check(
-    'refusal takes the graph out of the way (no silent-graph park)',
-    jRefuse.muted === false,
-    'muted=' + jRefuse.muted + ' ops=' + JSON.stringify(opsSince(jMark))
-  );
-  check(
-    'refusal stays audible dry (never muted-with-silent-graph)',
-    jRefuse.muted === false,
-    'muted=' + jRefuse.muted
+    'refusal parks the graph at exactly 0',
+    lastMaster().value === 0 && jRefuse.muted === false,
+    'gain=' + lastMaster().value + ' muted=' + jRefuse.muted
   );
 
   // J5 swap: a disconnected element pauses before its state restores.
@@ -1513,13 +1524,26 @@ async function main() {
   // generation-guarded async attach. Each fails on the pre-fix bytes.
   // Invariant under test: audible(controller) === (attached && !sourceStale).
 
-  // K1 rebuild path: at the instant the gain first rises above 0,
-  // media.muted must already be true (the pre-mute ramp overlapped).
+  // K1 rebuild path: the element stays muted end to end and the gain only
+  // rises after the new tap is connected.
   const kRe = await attachZeroProbe();
   check('setup: rebuild-order probe attached muted', kRe.muted === true);
-  kRe.dispatchEvent(new Event('emptied'));
-  check('setup: rebuild-order probe unmuted into the stale window', kRe.muted === false);
+  const kReCaps = env.stats.captureCalls;
+  const kReGain = lastMaster();
   const kReMark = env.stats.audioOps.length;
+  const kReRampedMark = env.stats.rampedValues.length;
+  let kReOwnCaps = 0;
+  const kReOriginalCapture = kRe.captureStream.bind(kRe);
+  kRe.captureStream = () => {
+    kReOwnCaps += 1;
+    return kReOriginalCapture();
+  };
+  kRe.dispatchEvent(new Event('emptied'));
+  check(
+    'setup: rebuild-order probe stays muted through the swap',
+    kRe.muted === true && kReGain.value === 0,
+    'muted=' + kRe.muted + ' gain=' + kReGain.value
+  );
   let kReMuted = kRe.muted;
   Object.defineProperty(kRe, 'muted', {
     configurable: true,
@@ -1531,22 +1555,28 @@ async function main() {
       env.stats.audioOps.push({ op: 'muted', value: b });
     },
   });
-  for (let i = 0; i < 40 && kReMuted !== true; i++) {
+  for (let i = 0; i < 40 && kReOwnCaps === 0; i++) {
     await env.settle(2);
     env.runTimers(50);
   }
-  check('setup: rebuild-order probe re-muted', kReMuted === true);
-  const kReOps = env.stats.audioOps.slice(kReMark);
-  const kReRise = kReOps.findIndex((o) => o.op !== 'muted' && o.value > 0);
-  const kReMuteIdx = kReOps.findIndex((o) => o.op === 'muted' && o.value === true);
   check(
-    'rebuild mutes before the gain first rises above 0',
-    kReRise !== -1 && kReMuteIdx !== -1 && kReMuteIdx < kReRise,
+    'setup: rebuild-order probe rebuilt',
+    kReOwnCaps === 1 && env.stats.captureCalls === kReCaps + 1,
+    'own captures=' + kReOwnCaps + ' total +' + (env.stats.captureCalls - kReCaps)
+  );
+  const kReOps = env.stats.audioOps.slice(kReMark);
+  check(
+    'rebuild never unmutes during the swap',
+    kReMuted === true && !kReOps.some((o) => o.op === 'muted' && o.value === false),
     'ops=' + JSON.stringify(kReOps)
   );
+  check(
+    'rebuild returns the graph to media.volume after the mute',
+    env.stats.rampedValues.slice(kReRampedMark).indexOf(kRe.volume) !== -1,
+    'ramps after swap=' + JSON.stringify(env.stats.rampedValues.slice(kReRampedMark)) + ' volume=' + kRe.volume
+  );
 
-  // K2 no-audio-track path: at the instant media.muted becomes false,
-  // masterGain.gain.value must be exactly 0 (old tap still connected).
+  // K2 no-audio-track path: mute held, graph at 0, old tap retained.
   const kNo = await attachZeroProbe();
   check('setup: no-audio probe attached muted', kNo.muted === true);
   const kNoGain = lastMaster();
@@ -1554,58 +1584,42 @@ async function main() {
     const t = { kind: 'video', stopped: false, stop() { this.stopped = true; } };
     return { getAudioTracks: () => [], getTracks: () => [t], addEventListener() {} };
   };
-  const kNoUnmutes = [];
-  let kNoMuted = kNo.muted;
-  Object.defineProperty(kNo, 'muted', {
-    configurable: true,
-    get: () => kNoMuted,
-    set: (next) => {
-      const b = Boolean(next);
-      if (b === kNoMuted) return;
-      kNoMuted = b;
-      if (b === false) kNoUnmutes.push(kNoGain.value);
-    },
-  });
   kNo.dispatchEvent(new Event('emptied'));
-  check('setup: no-audio probe unmuted into the stale window', kNoMuted === false);
-  kNo.muted = true;
-  kNoGain.value = 1;
-  for (let i = 0; i < 40; i++) {
+  check('setup: no-audio probe stays muted into the swap', kNo.muted === true);
+  for (let i = 0; i < 20; i++) {
     await env.settle(2);
     env.runTimers(50);
   }
-  check('setup: no-audio rebuild ran and left the element unmuted', kNoMuted === false);
   check(
-    'no-audio rebuild unmutes with masterGain exactly 0',
-    kNoUnmutes.length > 0 && kNoUnmutes[kNoUnmutes.length - 1] === 0,
-    'gains at unmute=' + JSON.stringify(kNoUnmutes)
+    'no-audio rebuild keeps the element muted with the graph at 0',
+    kNo.muted === true && kNoGain.value === 0,
+    'muted=' + kNo.muted + ' gain=' + kNoGain.value
+  );
+  check(
+    'no-audio rebuild keeps the live graph (never muted without a graph)',
+    env.queryLive().attachedCount >= 1,
+    'attached=' + env.queryLive().attachedCount
   );
 
   // K3 stale generation: an async continuation that resolves after its
-  // generation was bumped must not write muted or gain. The parked retry
-  // captures the generation; a second stale transition bumps it (teardown
-  // would cancel the timer outright, so the bump path is the live race).
+  // generation was bumped must not write muted or gain.
   const kGen = await attachZeroProbe();
   check('setup: stale-generation probe attached muted', kGen.muted === true);
   kGen.paused = true;
   kGen.dispatchEvent(new Event('emptied'));
   await env.settle(2);
   check('setup: stale retry parked while not ready', env.pendingTimers() > 0);
-  // Second stale transition bumps the generation without cancelling the
-  // parked timer; the sync it queues finds the element still not ready and
-  // leaves the old timer in place (`pendingRetry` guard).
   kGen.dispatchEvent(new Event('loadedmetadata'));
   await env.settle(2);
-  // Ready again, with no sync in between: only the stale timer remains.
   kGen.paused = false;
   const kGenOpsMark = env.stats.audioOps.length;
   const kGenMutedBefore = kGen.muted;
-  check('setup: probe still unmuted before the stale timer fires', kGenMutedBefore === false);
+  check('setup: probe still muted before the stale timer fires', kGenMutedBefore === true);
   await env.drainTimers(500);
   await env.settle(2);
   check(
     'stale generation leaves muted alone',
-    kGen.muted === kGenMutedBefore && kGen.muted === false,
+    kGen.muted === kGenMutedBefore && kGen.muted === true,
     'muted=' + kGen.muted
   );
   check(
@@ -1869,7 +1883,7 @@ async function main() {
     'no token match in READY handler'
   );
 
-  // Z3: budget exhaustion fails OPEN to dry bypass + honest status.
+  // Z3: budget exhaustion keeps the live graph at 0 and recovers.
   const z3 = env.addMedia();
   z3.volume = 0.9;
   env.fireDoc('play', z3);
@@ -1879,35 +1893,37 @@ async function main() {
   }
   check('setup: Z3 element attached muted', z3.muted === true);
   const z3DiscBefore = env.stats.disconnects;
+  const z3CapsBefore = env.stats.captureCalls;
+  const z3AttachedBefore = env.queryLive().attachedCount;
   for (let i = 0; i < 9; i++) {
     z3.muted = false;
     z3.dispatchEvent(new Event('volumechange'));
     await Promise.resolve();
   }
   check(
-    'Z3 budget exhaustion stays AUDIBLE dry (unmuted, graph out of the way)',
-    z3.muted === false && env.stats.disconnects > z3DiscBefore,
-    'muted=' + z3.muted + ' disconnects=' + env.stats.disconnects
+    'Z3 budget exhaustion keeps the graph live (no teardown)',
+    z3.muted === false &&
+      env.stats.disconnects === z3DiscBefore &&
+      env.stats.captureCalls === z3CapsBefore &&
+      env.queryLive().attachedCount === z3AttachedBefore,
+    'muted=' + z3.muted + ' disconnects +' + (env.stats.disconnects - z3DiscBefore) +
+      ' captures +' + (env.stats.captureCalls - z3CapsBefore)
   );
   check(
-    'Z3 bypassed controller never reports silent-graph Active (static)',
-    src.indexOf('Bypassed (mute fight).') !== -1 &&
-      src.indexOf('budgetBypassedCount > 0 && attachedCount === 0') !== -1,
-    'no honest bypass status'
+    'Z3 refusal parks the live graph at 0',
+    lastMaster().value === 0,
+    'gain=' + lastMaster().value
   );
   check(
-    'Z3 refusal tears down to bypass (static)',
-    /budgetBypassed = true[\s\S]{0,200}teardownController\(controller, false/.test(src) ||
-      /teardownController\(controller, false[\s\S]{0,200}budgetBypassed = true/.test(src),
-    'no bypass teardown on refusal'
+    'Z3 status is friendly copy, never the old bypass error (static)',
+    src.indexOf('Bypassed (mute fight).') === -1 && src.indexOf("text = 'Active.'") !== -1,
+    'status still exposes an internal error string'
   );
   env.advance(1001);
-  env.fireDoc('play', z3);
-  for (let i = 0; i < 40 && z3.muted !== true; i++) {
-    await env.settle(2);
-    env.runTimers(50);
-  }
-  check('Z3 fresh play after cool-down re-attaches', z3.muted === true);
+  z3.muted = false;
+  z3.dispatchEvent(new Event('volumechange'));
+  await Promise.resolve();
+  check('Z3 fresh unmute after cool-down re-mutes the same graph', z3.muted === true, 'muted=' + z3.muted);
 
   // Z4: corrupt stored settings fall back to documented defaults.
   const Shared = globalThis.SlowedReverbShared;
@@ -1989,7 +2005,7 @@ async function main() {
   );
   check(
     'Z8 per-sample invariants hoisted above the loop (static)',
-    workletText.indexOf('const pdFloat = this.predelay * sr * 0.1;') !== -1 &&
+    /const pdFloat = Math\.min\(/.test(workletText) &&
       workletText.indexOf('const lpfCoeff = this.lpfCoeff;') !== -1 &&
       workletText.indexOf('const pdFloat') < workletText.indexOf('for (let i = 0; i < n; i++)'),
     'invariants still inside loop'
@@ -2017,6 +2033,77 @@ async function main() {
     src.indexOf("document.visibilityState === 'hidden'") !== -1 &&
       src.indexOf('anyPlaying') !== -1,
     'no visibility/playing gate in watchdog'
+  );
+
+  // --- M. remaster cluster proofs -----------------------------------------
+  // M1 attach establishes the contract mute itself (mutation: drop the direct
+  // write and rely on the later volumechange correction).
+  const attachBlock = (src.match(/function ensureAttached\(controller\) \{[\s\S]*?\n  \}/) || [])[0] || '';
+  const directMute = attachBlock.indexOf('controller.media.muted = true;');
+  const attachedFlag = attachBlock.indexOf('controller.attached = true;');
+  check(
+    'M1 attach writes the contract mute before attached=true (static)',
+    directMute !== -1 && attachedFlag !== -1 && directMute < attachedFlag,
+    'no direct mute write before attached=true'
+  );
+
+  // M2 media.volume is tracked continuously, with the mute held and no recapture.
+  const mv = env.addMedia();
+  mv.volume = 0.35;
+  env.fireDoc('play', mv);
+  for (let i = 0; i < 40 && mv.muted !== true; i++) {
+    await env.settle(2);
+    env.runTimers(50);
+  }
+  check('setup: volume-tracking probe attached muted', mv.muted === true);
+  const mvCaps = env.stats.captureCalls;
+  const mvDisc = env.stats.disconnects;
+  const volumeTrace = [];
+  for (const v of [0.35, 0.6, 0, 1]) {
+    mv.volume = v;
+    mark = env.stats.rampedValues.length;
+    mv.dispatchEvent(new Event('volumechange'));
+    await Promise.resolve();
+    volumeTrace.push(env.stats.rampedValues[env.stats.rampedValues.length - 1]);
+  }
+  check(
+    'M2 volume slider tracks media.volume continuously (no lag/double)',
+    JSON.stringify(volumeTrace) === JSON.stringify([0.35, 0.6, 0, 1]),
+    'trace=' + JSON.stringify(volumeTrace)
+  );
+  check(
+    'M2 volume tracking keeps the mute and the same tap',
+    mv.muted === true && env.stats.captureCalls === mvCaps && env.stats.disconnects === mvDisc,
+    'muted=' + mv.muted + ' captures +' + (env.stats.captureCalls - mvCaps)
+  );
+
+  // M3 prod copy: internal errors never reach the popup, neutral is Active.
+  const StatusShared = globalThis.SlowedReverbShared;
+  const statuses = [
+    ['Active', StatusShared.friendlyStatus({ eligible: true, attachedCount: 1, error: 'Runtime unavailable.' })],
+    ['Active', StatusShared.friendlyStatus({ eligible: true, attachedCount: 1, error: 'Worklet: addModule failed' })],
+    ['Waiting for media', StatusShared.friendlyStatus({ eligible: true, attachedCount: 0, error: 'Could not attach audio effect.' })],
+    ['Waiting for tab', StatusShared.friendlyStatus({ eligible: false, attachedCount: 0 })],
+    ['Off', StatusShared.friendlyStatus({ eligible: true, bypass: true, attachedCount: 0, error: 'Worklet: x' })],
+  ];
+  check(
+    'M3 internal errors map to friendly status copy',
+    statuses.every(([want, got]) => want === got) &&
+      statuses.every(([, got]) => got.indexOf(':') === -1 && got.indexOf('Error') === -1 && got.indexOf('Runtime') === -1),
+    'statuses=' + JSON.stringify(statuses)
+  );
+  check(
+    'M3 neutral settings with a live graph are Active, not an error',
+    StatusShared.friendlyStatus({ eligible: true, attachedCount: 1, neutral: true, error: 'Worklet: x' }) === 'Active',
+    'neutral status was not Active'
+  );
+  check(
+    'M3 popup renders only friendly status copy (static)',
+    popupText.indexOf('friendlyStatus') !== -1 &&
+      popupText.indexOf('Could not attach') === -1 &&
+      popupText.indexOf('Status unavailable') === -1 &&
+      popupText.indexOf('Runtime unavailable') === -1,
+    'popup still surfaces internal error text'
   );
 
   env.restoreTimers();

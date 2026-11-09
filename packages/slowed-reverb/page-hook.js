@@ -2,12 +2,24 @@
   const SENTINEL = '__slowedReverbAudioPageHook';
   const existing = window[SENTINEL];
 
-  function emit(type, reason) {
+  // The content script mints a token into the shared DOM and drops any READY
+  // that does not carry it. The hook must echo the live token, not post a
+  // tokenless READY that can never be verified.
+  function pageToken() {
+    try {
+      return (document.documentElement && document.documentElement.dataset.slraToken) || '';
+    } catch {
+      return '';
+    }
+  }
+
+  function emit(type, reason, extra) {
     window.postMessage({
       __slra: true,
       type,
       reason: String(reason || ''),
       href: location.href,
+      ...(extra || {}),
     }, '*');
   }
 
@@ -51,6 +63,6 @@
   };
 
   ensureListeners();
-  emit('SLRA_PAGE_HOOK_READY', 'install');
+  emit('SLRA_PAGE_HOOK_READY', 'install', { token: pageToken() });
   revive('install');
 })();
