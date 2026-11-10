@@ -142,3 +142,20 @@ Append-only. Newest at the bottom. The digest is derived from here.
 - 2026-11-10T22:50:11.523Z · LANDED · wdr-stuck-waiting
 - 2026-11-10T22:50:11.524Z · LANDED · wdr-stuck-waiting 396eaa3: desired handed over while connecting/waiting, hello announces connecting, discord-closed is a worker reason; 69 file-level + 536 repo tests, verifier 16/16, both selftests, e2e 8/8 + 7/7; ready GO
 - 2026-11-10T22:50:11.525Z · AUDIT · wdr-stuck-waiting@396eaa3 PASS - lead-reconciled (not independent): diff read (6 paths inside brief), red tests name each defect, all checks re-run green by the lead at this tree; one Unverified: no live-Chrome card observed
+- 2026-11-10T22:57:42.006Z · INTAKE · connected but still Nothing playing: the music tab URL is music.youtube.com with no v= id while a song plays from a shelf, and extract-youtube.js refuses any page without a media id in the URL; live probe proved Discord accepts the exact activity shape, so extraction is the only blocker
+- 2026-11-10T22:57:42.295Z · BRIEF · wrote wdr-music-any-page: YouTube Music playback from any page is detected
+- 2026-11-10T23:00:38.111Z · READY · wdr-music-any-page: GO
+- 2026-11-10T23:00:43.245Z · LANDED · wdr-music-any-page behind 2026-11-10T23:00:38.111Z
+- 2026-11-10T23:00:43.246Z · LANDED · wdr-music-any-page
+- 2026-11-10T23:00:43.248Z · LANDED · wdr-music-any-page 1193457: media id required for YouTube only; YouTube Music eligible on any host page once a title resolves (mediaId null); red first (actual null), then 226/226 web, 536 repo, verifier 16/16, host selftest 10/10, e2e-ipc 7/7; ready GO
+- 2026-11-10T23:00:43.486Z · BRIEF · wrote wdr-docs-truth: architecture doc matches the shipped eligibility and push rules
+- 2026-11-10T23:03:13.417Z · READY · wdr-docs-truth: GO
+- 2026-11-10T23:03:19.485Z · LANDED · wdr-docs-truth behind 2026-11-10T23:03:13.417Z
+- 2026-11-10T23:03:19.486Z · LANDED · wdr-docs-truth
+- 2026-11-10T23:03:19.488Z · LANDED · wdr-docs-truth 76838c7: eligibility split (media id required for YouTube only) and SENDABLE_BRIDGE_STATES push rule now match shipped code; docs.test 11 pass, verifier 16/16, ready GO; third stale line 167 found by the worker and deferred to a follow-up test-backed seam
+- 2026-11-10T23:03:19.730Z · BRIEF · wrote wdr-docs-guard: unknown-page doc claim is true and docs drift can go red
+- 2026-11-10T23:06:08.235Z · READY · wdr-docs-guard: GO
+- 2026-11-10T23:06:16.302Z · LANDED · wdr-docs-guard behind 2026-11-10T23:06:08.235Z
+- 2026-11-10T23:06:16.302Z · LANDED · wdr-docs-guard
+- 2026-11-10T23:06:16.304Z · LANDED · wdr-docs-guard 0b4e53b: unknown-pages row split for YouTube vs Music plus a doc-drift guard with four assertions; docs.test 12/12, verifier 16/16, full ready 7/7 green at that head; one seeded green-only failure text in the report copied the brief's stale prediction
+- 2026-11-10T23:06:16.305Z · AUDIT · wdr-docs-guard@0b4e53b PASS - lead-reconciled: diff read (2 paths inside brief), red-then-green evidenced, full ready re-ran green; the GO ledger text's mention of red was copy drift, not a finding

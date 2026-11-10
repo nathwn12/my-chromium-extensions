@@ -118,10 +118,10 @@ The YouTube Music player bar and `<video>` are present with a normal desktop use
 
 ```js
 { t: "wdr-state", source, state }         // state.at added by content (Date.now())
-{ t: "wdr-gone", source, scope: "tab" }    // pagehide / non-watch navigation
+{ t: "wdr-gone", source, scope: "tab" }    // pagehide / URL or page that loses the player
 ```
 
-Content reports on media events, SPA navigation (`yt-navigate-finish`, `yt-page-data-updated`), `popstate`, `visibilitychange`, and a 1 s URL/title/pause poll. It never reports `timeupdate`.
+Content reports on media events, SPA navigation (`yt-navigate-finish`, `yt-page-data-updated`), `popstate`, `visibilitychange`, and a 1 s URL/title/pause poll. It never reports `timeupdate`. On YouTube Music the player persists across pages, so a `wdr-gone` follows only when no title resolves; a YouTube page must still carry a watch media id.
 
 ## Activity
 
