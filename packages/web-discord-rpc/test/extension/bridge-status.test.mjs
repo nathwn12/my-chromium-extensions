@@ -3,12 +3,14 @@ import assert from "node:assert/strict";
 
 import {
   BRIDGE,
+  CHOSEN_TRANSPORT,
+  CHOSEN_TRANSPORTS,
   HUNG_RETRY_LIMIT,
   REASON,
   REASON_COPY,
   STATUS_KEY,
-  TRANSPORT,
   bridgeStatusOf,
+  chosenTransportOf,
   classifyBridgeFailure,
   copyForReason,
   presentStatus,
@@ -20,8 +22,51 @@ test("the reason vocabulary is the one the host puts on the wire", () => {
   assert.equal(REASON.HOST_MISSING, "host-missing");
   assert.equal(REASON.REJECTED, "rejected");
   assert.equal(REASON.HUNG, "hung");
-  assert.equal(TRANSPORT, "arrpc");
   assert.equal(STATUS_KEY, "wdrStatus");
+});
+
+test("the reported transport vocabulary is the host's, not the stored preference's", () => {
+  assert.equal(CHOSEN_TRANSPORT.IPC, "discord-ipc");
+  assert.equal(CHOSEN_TRANSPORT.ARRPC, "arrpc");
+  assert.equal(CHOSEN_TRANSPORT.MIXED, "mixed");
+  assert.deepEqual([...CHOSEN_TRANSPORTS], ["discord-ipc", "arrpc", "mixed"]);
+  assert.equal(chosenTransportOf("discord-ipc"), "discord-ipc");
+  assert.equal(chosenTransportOf("arrpc"), "arrpc");
+  assert.equal(chosenTransportOf("auto"), null, "a preference is not a chosen transport");
+  assert.equal(chosenTransportOf(undefined), null);
+  assert.equal(chosenTransportOf(null), null);
+});
+
+test("a status frame carries the transport the host chose", () => {
+  const connected = bridgeStatusOf(
+    {},
+    { t: "status", state: "connected", transport: "discord-ipc" },
+    0
+  );
+  assert.equal(connected.transport, "discord-ipc");
+
+  const waiting = bridgeStatusOf(
+    { transport: "discord-ipc" },
+    { t: "status", state: "waiting", transport: "arrpc", reason: "arrpc-closed" },
+    0
+  );
+  assert.equal(waiting.transport, "arrpc", "the newer frame wins");
+
+  const stale = bridgeStatusOf(
+    { transport: "arrpc" },
+    { t: "status", state: "connected" },
+    0
+  );
+  assert.equal(stale.transport, "arrpc", "a frame without one keeps the last known");
+
+  const junk = bridgeStatusOf(
+    { transport: "arrpc" },
+    { t: "status", state: "connected", transport: "carrier-pigeon" },
+    0
+  );
+  assert.equal(junk.transport, "arrpc", "an unknown transport never reaches a surface");
+
+  assert.equal(bridgeStatusOf({}, { t: "pong" }, 0).transport, null);
 });
 
 test("a connected status frame is available with no reason", () => {

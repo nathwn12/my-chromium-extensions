@@ -55,7 +55,7 @@ function makePort(name) {
   };
 }
 
-function fakeChrome({ clientId = null, session: initialSession = {} } = {}) {
+function fakeChrome({ clientId = null, transport, enabled, status, session: initialSession = {} } = {}) {
   const runtime = { id: "ext-test-id", onMessage: signal(), onInstalled: signal(), lastError: null };
   const ports = [];
   runtime.connectNative = (name) => {
@@ -64,6 +64,9 @@ function fakeChrome({ clientId = null, session: initialSession = {} } = {}) {
     return port;
   };
   const store = clientId ? { clientId } : {};
+  if (transport !== undefined) store.transport = transport;
+  if (enabled !== undefined) store.enabled = enabled;
+  if (status !== undefined) store[STATUS_KEY] = status;
   const writes = [];
   const sessionStore = { ...initialSession };
   const storage = {
@@ -116,8 +119,8 @@ function fakeClock(start = BASE) {
   };
 }
 
-async function boot({ clientId, session } = {}) {
-  const chrome = fakeChrome({ clientId, session });
+async function boot({ clientId, transport, enabled, status, session } = {}) {
+  const chrome = fakeChrome({ clientId, transport, enabled, status, session });
   const clock = fakeClock();
   const worker = createWorker({
     chrome,
@@ -195,7 +198,7 @@ function musicState(overrides = {}) {
 
 /* --------------------------------------------------------------- tests -- */
 
-test("boot opens one native port with the built-in application id and arRPC transport", async () => {
+test("boot opens one native port with the built-in application id and the auto transport preference", async () => {
   const { chrome, port } = await boot();
   assert.equal(chrome.ports.length, 1);
   assert.equal(port.name, "com.nathwn12.web_discord_rpc");
@@ -203,8 +206,28 @@ test("boot opens one native port with the built-in application id and arRPC tran
     t: "hello",
     clientId: DEFAULT_CLIENT_ID,
     version: 1,
+    transport: "auto",
+  });
+});
+
+test("a stored transport reaches hello and a change reconnects with the new preference", async () => {
+  const { chrome } = await boot({ transport: "ipc" });
+  assert.equal(chrome.ports[0].sent[0].transport, "ipc");
+
+  chrome.storage.onChanged.fire({ transport: { newValue: "arrpc" } }, "local");
+  assert.equal(chrome.ports.length, 2);
+  assert.equal(chrome.ports[0].disconnected, true, "the old preference's port is closed");
+  assert.deepEqual(chrome.ports[1].sent[0], {
+    t: "hello",
+    clientId: DEFAULT_CLIENT_ID,
+    version: 1,
     transport: "arrpc",
   });
+});
+
+test("an unknown stored transport falls back to auto in hello", async () => {
+  const { chrome } = await boot({ transport: "carrier-pigeon" });
+  assert.equal(chrome.ports[0].sent[0].transport, "auto");
 });
 
 test("one tab per source produces two simultaneous activities, WATCHING and LISTENING", async () => {
@@ -383,6 +406,118 @@ test("a stored application id replaces the built-in one and reconnects", async (
   chrome.storage.onChanged.fire({ clientId: { newValue: "1234567890123456789" } }, "local");
   assert.equal(chrome.ports.length, 2);
   assert.equal(chrome.ports[1].sent[0].clientId, "1234567890123456789");
+});
+
+test("the status payload names the stored preference and the transport the host chose", async () => {
+  const { worker, port } = await boot({ transport: "ipc" });
+  assert.equal(worker.status().transportPreference, "ipc");
+  assert.equal(worker.status().transport, null, "nothing is chosen before the host speaks");
+
+  port.onMessage.fire({ t: "status", state: "connected", transport: "discord-ipc" });
+  assert.equal(worker.status().transport, "discord-ipc");
+
+  // A host that names something unrecognised never leaks it to a surface.
+  port.onMessage.fire({ t: "status", state: "connected", transport: "carrier-pigeon" });
+  assert.equal(worker.status().transport, "discord-ipc");
+
+  port.onDisconnect.fire();
+  assert.equal(worker.status().transport, null, "a dead port has no chosen transport");
+});
+
+test("a start clears presence the last session published and has no tab for", async () => {
+  const status = { activities: { youtube: { details: "Old Video" }, "youtube-music": null } };
+  const { chrome, port } = await boot({ status });
+  connect(port);
+
+  const frames = activities(port);
+  assert.equal(frames.length, 1, "only the stale source is cleared");
+  assert.equal(frames[0].source, "youtube");
+  assert.equal(frames[0].activity, null);
+});
+
+test("a start with nothing published last time sends no clear", async () => {
+  const status = { activities: { youtube: null, "youtube-music": null } };
+  const { port } = await boot({ status });
+  connect(port);
+  assert.equal(activities(port).length, 0);
+});
+
+test("a corrupt persisted status is ignored, never thrown", async () => {
+  for (const status of [null, "junk", { activities: "nope" }, { activities: { youtube: "nope" } }]) {
+    const { port } = await boot({ status });
+    connect(port);
+    assert.equal(activities(port).length, 0, JSON.stringify(status));
+  }
+});
+
+test("a restored tab wins over a stale published activity for the same source", async () => {
+  const session = {
+    [SESSION_TABS_KEY]: {
+      youtube: { 41: { state: youtubeState({ title: "Live Now" }), at: BASE, rankAt: BASE } },
+      "youtube-music": {},
+    },
+  };
+  const status = { activities: { youtube: { details: "Old Video" }, "youtube-music": { details: "Old Song" } } };
+  const { port } = await boot({ session, status });
+  connect(port);
+
+  const frames = activities(port);
+  const youtube = frames.find((frame) => frame.source === "youtube");
+  const music = frames.find((frame) => frame.source === "youtube-music");
+  assert.equal(youtube.activity.details, "Live Now", "the live tab is republished, not cleared");
+  assert.equal(music.activity, null, "a stale source with no tab is cleared");
+});
+
+test("enabled:false opens no port, and a watchdog tick does not open one either", async () => {
+  const { chrome, clock, worker } = await boot({ enabled: false });
+  assert.equal(chrome.ports.length, 0);
+  assert.equal(worker.status().bridgeState, "idle");
+
+  clock.advance(TAB_TTL_MS + 1);
+  chrome.alarms.onAlarm.fire({ name: ALARM_NAME });
+  assert.equal(chrome.ports.length, 0);
+});
+
+test("turning presence off clears both sources, closes the port and stays closed", async () => {
+  const { chrome, clock, port } = await boot();
+  connect(port);
+  sendState(chrome, 1, "youtube", youtubeState());
+  const before = activities(port).length;
+
+  chrome.storage.onChanged.fire({ enabled: { newValue: false } }, "local");
+
+  const clears = activities(port).slice(before);
+  assert.equal(clears.length, 2, "one clear per source");
+  assert.ok(clears.every((frame) => frame.activity === null));
+  assert.equal(port.disconnected, true);
+
+  clock.advance(12000);
+  assert.equal(chrome.ports.length, 1, "no reconnect while presence is off");
+});
+
+test("turning presence back on reconnects and replays the desired state", async () => {
+  const session = {
+    [SESSION_TABS_KEY]: {
+      youtube: {
+        51: { state: youtubeState({ title: "Paused For Now", paused: true }), at: BASE, rankAt: BASE },
+      },
+      "youtube-music": {},
+    },
+  };
+  const { chrome } = await boot({ enabled: false, session });
+  assert.equal(chrome.ports.length, 0);
+
+  chrome.storage.onChanged.fire({ enabled: { newValue: true } }, "local");
+  assert.equal(chrome.ports.length, 1);
+  assert.equal(chrome.ports[0].sent[0].t, "hello");
+  connect(chrome.ports[0]);
+
+  const frames = activities(chrome.ports[0]);
+  assert.equal(frames.find((frame) => frame.source === "youtube").activity.details, "Paused For Now");
+  assert.equal(frames.find((frame) => frame.source === "youtube-music").activity, null);
+
+  chrome.storage.onChanged.fire({ enabled: { newValue: undefined } }, "local");
+  assert.equal(chrome.ports.length, 1, "a removed flag means enabled and is already connected");
 });
 
 test("a stale tab state is pruned by the watchdog and clears presence", async () => {

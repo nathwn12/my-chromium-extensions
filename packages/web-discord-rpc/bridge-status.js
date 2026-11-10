@@ -9,6 +9,10 @@
  *      with a reason: arrpc-closed | host-missing | rejected | hung
  *  - BRIDGE: what is the native port doing?
  *      idle | connecting | connected | waiting | error
+ *  - TRANSPORT: which one the host actually used, named on every status frame:
+ *      discord-ipc | arrpc | mixed
+ *      Absent until the host has chosen; the stored preference (`auto | ipc |
+ *      arrpc` in config.js) is a different vocabulary and never appears here.
  *
  * Absence of arRPC is never an error. Only a rejected application ID (and a
  * host that stays hung after bounded retries) needs the user to act. The raw
@@ -21,7 +25,6 @@
  */
 
 export const STATUS_KEY = "wdrStatus";
-export const TRANSPORT = "arrpc";
 
 export const AVAILABILITY = Object.freeze({
   UNKNOWN: "unknown",
@@ -43,6 +46,20 @@ export const REASON = Object.freeze({
   REJECTED: "rejected",
   HUNG: "hung",
 });
+
+/** What the host names for the transport it chose, per the wire contract. */
+export const CHOSEN_TRANSPORT = Object.freeze({
+  IPC: "discord-ipc",
+  ARRPC: "arrpc",
+  MIXED: "mixed",
+});
+
+export const CHOSEN_TRANSPORTS = Object.freeze(Object.values(CHOSEN_TRANSPORT));
+
+/** A reported transport when it is one the contract defines, otherwise null. */
+export function chosenTransportOf(value) {
+  return CHOSEN_TRANSPORTS.includes(value) ? value : null;
+}
 
 /** Friendly sentence-case copy. No transport names, stack traces or protocol text. */
 export const REASON_COPY = Object.freeze({
@@ -184,11 +201,18 @@ export const STATUS_DEFAULT = Object.freeze({
   availability: AVAILABILITY.UNKNOWN,
   reason: null,
   reasonKind: null,
+  transport: null,
 });
 
 export function bridgeStatusOf(current, message, retries = 0) {
-  const base = { ...STATUS_DEFAULT, ...(current || {}) };
-  if (!message || message.t !== "status") return base;
+  const carried = { ...STATUS_DEFAULT, ...(current || {}) };
+  if (!message || message.t !== "status") return carried;
+  // The host names the transport it used on every frame; an unrecognised value
+  // never reaches a surface, and a frame without one keeps the last known.
+  const base = {
+    ...carried,
+    transport: chosenTransportOf(message.transport) ?? chosenTransportOf(carried.transport),
+  };
 
   if (message.state === BRIDGE.CONNECTED) {
     return {

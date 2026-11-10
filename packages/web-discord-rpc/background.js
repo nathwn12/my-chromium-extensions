@@ -13,14 +13,24 @@
  * bridge-status.js.
  */
 
-import { HOST_NAME, SOURCE_YOUTUBE, SOURCE_YOUTUBE_MUSIC, resolveClientId, sourceForUrl } from "./config.js";
+import {
+  ENABLED_KEY,
+  HOST_NAME,
+  SOURCE_YOUTUBE,
+  SOURCE_YOUTUBE_MUSIC,
+  TRANSPORT_AUTO,
+  TRANSPORT_KEY,
+  resolveClientId,
+  resolveEnabled,
+  resolveTransport,
+  sourceForUrl,
+} from "./config.js";
 import { buildActivity, clampText } from "./activity.js";
 import {
   AVAILABILITY,
   BRIDGE,
   REASON,
   STATUS_KEY,
-  TRANSPORT,
   bridgeStatusOf,
   classifyBridgeFailure,
 } from "./bridge-status.js";
@@ -136,6 +146,21 @@ export function isPongOverdue(lastPingAt, lastPongAt, now = Date.now(), timeoutM
   return now - lastPingAt >= timeoutMs;
 }
 
+/**
+ * Sources the previous worker session published, from the persisted status.
+ * Only these are worth an explicit clear on startup: a source that was never
+ * published has no stale presence to remove.
+ */
+function stalePresenceOf(storedStatus) {
+  const activities =
+    storedStatus && typeof storedStatus === "object" ? storedStatus.activities : null;
+  if (!activities || typeof activities !== "object" || Array.isArray(activities)) return [];
+  return SOURCES.filter((source) => {
+    const entry = activities[source];
+    return Boolean(entry) && typeof entry === "object" && !Array.isArray(entry);
+  });
+}
+
 /* ============================================================== worker ==== */
 
 /**
@@ -156,6 +181,10 @@ export function createWorker({
   let sequence = 0;
   let port = null;
   let clientId = resolveClientId(null);
+  let transportPreference = TRANSPORT_AUTO;
+  let chosenTransport = null;
+  let enabled = true;
+  let staleSources = [];
   let bridgeState = BRIDGE.IDLE;
   let availability = AVAILABILITY.UNKNOWN;
   let reason = null;
@@ -189,7 +218,10 @@ export function createWorker({
       // Raw diagnostic for logs and the options diagnostics; the UI never
       // renders this string directly.
       detail,
-      transport: TRANSPORT,
+      // What the user chose (`auto|ipc|arrpc`) and what the host used
+      // (`discord-ipc|arrpc|mixed`, null until it reports).
+      transportPreference,
+      transport: chosenTransport,
       activities,
       // The host's own per-source view, carried opaquely for the popup.
       hostSources,
@@ -328,6 +360,8 @@ export function createWorker({
     if (!port) return;
     const dying = port;
     port = null;
+    // A dead port has no chosen transport; the next status frame names one.
+    chosenTransport = null;
     try {
       dying.onMessage.removeListener(onNativeMessage);
     } catch {
@@ -359,7 +393,7 @@ export function createWorker({
   }
 
   function scheduleReconnect() {
-    if (reconnectTimer !== null || !clientId) return;
+    if (reconnectTimer !== null || !clientId || !enabled) return;
     const delay = backoffMs;
     backoffMs = Math.min(BACKOFF_MAX_MS, Math.round(backoffMs * 1.6));
     reconnectTimer = schedule(() => {
@@ -374,10 +408,11 @@ export function createWorker({
     if (message.t === "status") {
       if (message.sources && typeof message.sources === "object") hostSources = message.sources;
       const next = bridgeStatusOf(
-        { bridgeState, lastError: detail, availability, reason, reasonKind },
+        { bridgeState, lastError: detail, availability, reason, reasonKind, transport: chosenTransport },
         message,
         hungCount
       );
+      if (next.transport !== null) chosenTransport = next.transport;
       if (next.bridgeState === BRIDGE.CONNECTED) {
         backoffMs = BACKOFF_MIN_MS;
         hungCount = 0;
@@ -444,6 +479,15 @@ export function createWorker({
 
   function ensurePort() {
     if (port) return;
+    if (!enabled) {
+      // Presence is off: no native port at all, and no reconnect can sneak in.
+      setBridge(BRIDGE.IDLE, null, {
+        availability: AVAILABILITY.UNKNOWN,
+        reason: null,
+        reasonKind: null,
+      });
+      return;
+    }
     if (!clientId) {
       setBridge(BRIDGE.IDLE);
       return;
@@ -466,7 +510,42 @@ export function createWorker({
       reason: null,
       reasonKind: null,
     });
-    post({ t: "hello", clientId, version: 1, transport: TRANSPORT });
+    post({ t: "hello", clientId, version: 1, transport: transportPreference });
+  }
+
+  /* ---------------------------------------------------------- presence off -- */
+
+  /**
+   * Publish an explicit clear for every source, straight down the port and past
+   * the send budget: switching presence off must not wait for a limiter window,
+   * and closing the socket is not a clear the host is required to send.
+   */
+  function clearPresence() {
+    if (!port) return;
+    for (const source of SOURCES) {
+      post({ t: "activity", source, id: `${source}:${++sequence}`, activity: null });
+    }
+  }
+
+  /** Honour the enable toggle: off tears the port down and stays down. */
+  function setEnabled(next) {
+    enabled = next;
+    if (enabled) {
+      reconnect();
+      return;
+    }
+    clearPresence();
+    for (const limiter of limiters.values()) limiter.reset();
+    if (reconnectTimer !== null) {
+      cancel(reconnectTimer);
+      reconnectTimer = null;
+    }
+    dropPort();
+    setBridge(BRIDGE.IDLE, null, {
+      availability: AVAILABILITY.UNKNOWN,
+      reason: null,
+      reasonKind: null,
+    });
   }
 
   /* ------------------------------------------------------------ activity -- */
@@ -521,6 +600,13 @@ export function createWorker({
     desired.set(source, best ? buildActivity(source, best.state, now()) : null);
     persist();
     push(source, false);
+  }
+
+  /** Publish an explicit clear for a source the last session left published. */
+  function clearSource(source) {
+    desired.set(source, null);
+    persist();
+    push(source, true);
   }
 
   /* ---------------------------------------------------------------- tabs -- */
@@ -594,6 +680,17 @@ export function createWorker({
       clientId = resolveClientId(changes.clientId.newValue);
       reconnect();
     }
+    if (changes[TRANSPORT_KEY]) {
+      const next = resolveTransport(changes[TRANSPORT_KEY].newValue);
+      if (next !== transportPreference) {
+        transportPreference = next;
+        reconnect();
+      }
+    }
+    if (changes[ENABLED_KEY]) {
+      const next = resolveEnabled(changes[ENABLED_KEY].newValue);
+      if (next !== enabled) setEnabled(next);
+    }
   }
 
   function handleMessage(message, sender, sendResponse) {
@@ -616,6 +713,7 @@ export function createWorker({
   /* ---------------------------------------------------------------- boot -- */
 
   function reconnect() {
+    if (!enabled) return;
     dropPort();
     lastSent.clear();
     for (const limiter of limiters.values()) limiter.reset();
@@ -629,12 +727,16 @@ export function createWorker({
   }
 
   async function loadConfig() {
+    let stored = null;
     try {
-      const stored = await api.storage.local.get(["clientId"]);
-      clientId = resolveClientId(stored && stored.clientId);
+      stored = await api.storage.local.get(["clientId", TRANSPORT_KEY, ENABLED_KEY, STATUS_KEY]);
     } catch {
-      clientId = resolveClientId(null);
+      stored = null;
     }
+    clientId = resolveClientId(stored && stored.clientId);
+    transportPreference = resolveTransport(stored && stored[TRANSPORT_KEY]);
+    enabled = resolveEnabled(stored && stored[ENABLED_KEY]);
+    staleSources = stalePresenceOf(stored && stored[STATUS_KEY]);
   }
 
   function armWatchdog() {
@@ -676,13 +778,15 @@ export function createWorker({
     await loadConfig();
     const restoredAny = await restore();
     armWatchdog();
-    ensurePort();
-    // A restored snapshot reconciles both sources: the one that had a tab
-    // replays its activity, the one that did not replays a clear. With no
-    // snapshot at all, a source stays unknown until its first report.
+    if (enabled) ensurePort();
+    // A restored tab republishes its activity; a source the last session
+    // published but nothing restored is explicitly cleared, so presence from a
+    // session that ended without a clean disconnect cannot linger on Discord.
     for (const source of SOURCES) {
       if (restoredAny || tabsBySource.get(source).size) recompute(source);
+      else if (staleSources.includes(source)) clearSource(source);
     }
+    staleSources = [];
   }
 
   return {
