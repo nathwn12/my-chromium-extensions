@@ -159,3 +159,11 @@ Append-only. Newest at the bottom. The digest is derived from here.
 - 2026-11-10T23:06:16.302Z · LANDED · wdr-docs-guard
 - 2026-11-10T23:06:16.304Z · LANDED · wdr-docs-guard 0b4e53b: unknown-pages row split for YouTube vs Music plus a doc-drift guard with four assertions; docs.test 12/12, verifier 16/16, full ready 7/7 green at that head; one seeded green-only failure text in the report copied the brief's stale prediction
 - 2026-11-10T23:06:16.305Z · AUDIT · wdr-docs-guard@0b4e53b PASS - lead-reconciled: diff read (2 paths inside brief), red-then-green evidenced, full ready re-ran green; the GO ledger text's mention of red was copy drift, not a finding
+- 2026-11-10T23:06:49.265Z · NOTE · check green at 9dea977: test, typecheck, lint, web-selftest, crp-selftest, web-e2e, verify
+- 2026-11-10T23:06:55.927Z · GOAL · turn=3 seat=lead verdict=not-yet reason="7/7 green at pushed HEAD 9dea977, tree clean, origin/main equal; only the live reload-and-play card check remains and it needs the owner's hands"
+- 2026-11-10T23:08:17.633Z · BRIEF · wrote wdr-1-0-1: YouTube Presence 1.0.1
+- 2026-11-10T23:12:53.609Z · READY · wdr-1-0-1: GO
+- 2026-11-10T23:12:59.025Z · LANDED · wdr-1-0-1 behind 2026-11-10T23:12:53.609Z
+- 2026-11-10T23:12:59.025Z · LANDED · wdr-1-0-1
+- 2026-11-10T23:12:59.027Z · LANDED · wdr-1-0-1 272d65c + c7bc11f: YouTube Presence 1.0.1 in manifest, package.json, README cell and changelog (dated 2026-11-11 to match repo dating); suite + verifier green, ready GO
+- 2026-11-10T23:12:59.027Z · AUDIT · wdr-1-0-1@c7bc11f PASS - lead-reconciled: diff read (4 paths inside brief), version cells cross-checked against manifests, full ready re-ran green; no independent audit
