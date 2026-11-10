@@ -7,6 +7,7 @@ Three Chromium extensions, loaded unpacked from this repository. Nothing is publ
 | [Audio Normalizer](packages/audio-normalizer) | Applies one target loudness to every site through a local audio graph. | 5.4.3 |
 | [Slowed Reverb](packages/slowed-reverb) | Slows YouTube playback and adds plate reverb in a local audio graph. | 1.0.3 |
 | [Crunchy Presence](packages/crunchy-presence) | Reports the Crunchyroll episode being watched as Discord rich presence. | 1.0.1 |
+| [Web Discord RPC](packages/web-discord-rpc) | Reports the YouTube or YouTube Music track being watched as Discord rich presence. | 1.0.0 |
 
 ## Install
 
@@ -37,6 +38,7 @@ The host scans `\\.\pipe\discord-ipc-0` through `-9`.
 
 ```
 node --test packages/crunchy-presence/test/
+node --test packages/web-discord-rpc/test/
 cd packages/audio-normalizer && node --test tests/
 cd packages/slowed-reverb && node test/mute-enforce.test.js
 ```
@@ -50,7 +52,7 @@ git tag v<version>
 git push origin HEAD v<version>
 ```
 
-The script bumps `manifest.json`, `package.json` and the `CHANGELOG`, and prints these exact commands without running them. Pushing the `v*` tag makes CI attach the three extension zips to a GitHub release.
+The script bumps `manifest.json`, `package.json` and the `CHANGELOG`, and prints these exact commands without running them. Pushing the `v*` tag makes CI attach the four extension zips to a GitHub release.
 
 ## Layout
 
@@ -59,6 +61,7 @@ packages/
   audio-normalizer/   per-site loudness levelling
   crunchy-presence/   Crunchyroll watch state to Discord
   slowed-reverb/      YouTube slowdown and plate reverb
+  web-discord-rpc/    YouTube watch state to Discord
 ```
 
 ## Scope

@@ -7,7 +7,7 @@
     "node": "26"
   },
   "scripts": {
-    "test": "npm test --workspace=audio-normalizer && npm test --workspace=crunchy-presence && npm test --workspace=slowed-reverb",
+    "test": "npm test --workspace=audio-normalizer && npm test --workspace=crunchy-presence && npm test --workspace=slowed-reverb && npm test --workspace=web-discord-rpc",
     "lint": "npm run lint --workspace=slowed-reverb",
     "typecheck": "npm run typecheck --workspace=audio-normalizer"
   },
