@@ -182,3 +182,9 @@ Append-only. Newest at the bottom. The digest is derived from here.
 - 2026-11-10T23:30:07.071Z · LANDED · wdr-surfaces-artist 753bb81: popup Music detail is artist — album, options Music row is title — artist — album; YouTube rows unchanged; red watched (An Album vs An Artist — An Album) then 23/23 UI and 103+196+12+229 green; ready GO
 - 2026-11-10T23:30:10.169Z · AUDIT · wdr-surfaces-artist@753bb81 PASS - lead-reconciled: diff read (3 paths inside brief), red evidence in report, brief check plus full ready re-ran green by lead; options returns joined string not {title,detail} so identical artist rule applied per report; no independent audit
 - 2026-11-10T23:30:15.102Z · RULING · wdr-surfaces-artist brief text called both describeActivity copies {title,detail} but options returns a joined string; employee kept return contracts and copied the artist rule exactly - accepted, Out met on both surfaces
+- 2026-11-10T23:31:28.825Z · BRIEF · wrote wdr-1-0-3: YouTube Presence 1.0.3 and lockfile truth
+- 2026-11-10T23:34:52.751Z · READY · wdr-1-0-3: GO
+- 2026-11-10T23:35:01.200Z · LANDED · wdr-1-0-3 behind 2026-11-10T23:34:52.751Z
+- 2026-11-10T23:35:01.201Z · LANDED · wdr-1-0-3
+- 2026-11-10T23:35:01.203Z · LANDED · wdr-1-0-3 ae70450: YouTube Presence 1.0.3 in manifest/package/changelog/root README; both stale workspace lock versions aligned; red README version pins then 103+196+12+229 tests and verifier 16/16 green; ready GO
+- 2026-11-10T23:35:01.204Z · AUDIT · wdr-1-0-3@ae70450 PASS - lead-reconciled: report first, five changed paths inside brief, lockfile diff exactly two workspace version edits, ready reran 7/7 checks green; live Chrome surface remains unverified
