@@ -93,3 +93,18 @@ Append-only. Newest at the bottom. The digest is derived from here.
 - 2026-11-10T21:48:37.997Z · LANDED · youtube-presence-ui
 - 2026-11-10T21:48:37.999Z · LANDED · youtube-presence-ui b1d36cc: YouTube Presence name, per-site toggles (YT Music first), docs true; 217/217 package, 528 total, verifier 15/15, both selftests, 7/7 configured checks
 - 2026-11-10T21:48:38.000Z · RULING · youtube-presence-ui force-landed: ready NO-GO'd on two false positives. (1) range b632283..b1d36cc includes sibling commit 51b5797 (sort-root-docs, own landed brief); b1d36cc itself touches exactly its 12 Files (git show --name-only). (2) .stack/config.json gained the stricter proving checks (web-selftest, crp-selftest, web-e2e, verify) before this seam; ready flags any config change, and it cannot be both kept and satisfied because committing it would put it in the range. Recorded GREEN at b1d36cc: 7/7 configured checks, 528 tests.
+- 2026-11-10T21:51:07.874Z · BRIEF · wrote site-disable-cancels-queue: switching a site off cancels its queued update
+- 2026-11-10T21:51:07.876Z · RED · audit finding: background.js setSiteEnabled clears without limiter.reset(); a queued non-null payload can publish after a site is disabled. New seam site-disable-cancels-queue
+- 2026-11-10T21:55:03.290Z · RED · check red at d5a9a4a: test
+- 2026-11-10T21:55:15.614Z · READY · site-disable-cancels-queue: GO
+- 2026-11-10T21:56:01.326Z · LANDED · site-disable-cancels-queue behind 2026-11-10T21:55:15.614Z
+- 2026-11-10T21:56:01.327Z · LANDED · site-disable-cancels-queue
+- 2026-11-10T21:56:01.330Z · LANDED · site-disable-cancels-queue d5a9a4a: disable resets the source limiter before the clear; regression watched red 34/35 then green; ready GO; 528/528 in a clean full run
+- 2026-11-10T22:03:44.488Z · GOAL · turn=1 seat=lead verdict=not-yet reason="stop conditions and budget named: green at pushed HEAD + independent audit PASS; max 3 worker / 2 audit dispatches; procedural bends with RULING, evidence never bends"
+- 2026-11-10T22:03:44.738Z · BRIEF · wrote verify-scans-tracked-source: the Playwright guard scans tracked source without silent skips
+- 2026-11-10T22:09:27.653Z · NOTE · check green at a052c90: test, typecheck, lint, web-selftest, crp-selftest, web-e2e, verify
+- 2026-11-10T22:09:40.239Z · READY · verify-scans-tracked-source: GO
+- 2026-11-10T22:09:40.241Z · NOTE · deleted two git-ignored stale package-level lockfiles that still named Playwright (audio-normalizer 4 refs, slowed-reverb 5 refs); untracked and generated, so the commit surface was never dirty, but npm ci inside those packages would have installed it
+- 2026-11-10T22:09:47.603Z · LANDED · verify-scans-tracked-source behind 2026-11-10T22:09:40.239Z
+- 2026-11-10T22:09:47.604Z · LANDED · verify-scans-tracked-source
+- 2026-11-10T22:09:47.605Z · LANDED · verify-scans-tracked-source a052c90: guard reads the commit surface with no silent catch, 16/16 green and 16/16 prove-red, planted .html caught by name; ready GO

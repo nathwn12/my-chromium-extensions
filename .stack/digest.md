@@ -1,4 +1,4 @@
-# Digest — 2026-11-11 05:37
+# Digest — 2026-11-11 05:57
 
 Rewritten by the lead. Newest first. An empty section is a true statement.
 
@@ -10,21 +10,18 @@ _Nothing. The owner has no open decision._
 
 ## New
 
-- **LANDED** · 4m · youtube-presence-settings b632283: youtubeEnabled/youtubeMusicEnabled flags (both on), YT Music first, disabled site cleared, edge fallback ipc; 45/45
-- **LANDED** · 4m · youtube-presence-settings
-- **RULING** · 4m · youtube-presence-settings landed without a GO, forced by the lead
-- **LANDED** · 10m · desktop-rpc-default c5bfab7 (205/205, selftest 10/10) and crunchy-1.2.0 fd249f3 (196 tests, selftest ok); desktop is default ipc
-- **LANDED** · 10m · crunchy-1-2-0
-- **RULING** · 10m · crunchy-1-2-0 landed without a GO, forced by the lead
-- **LANDED** · 10m · desktop-rpc-default
-- **RULING** · 10m · desktop-rpc-default landed without a GO, forced by the lead
+- **LANDED** · just now · site-disable-cancels-queue d5a9a4a: disable resets the source limiter before the clear; regression watched red 34/35 then green; ready GO; 528/528 in a clean full run
+- **LANDED** · just now · site-disable-cancels-queue
+- **LANDED** · just now · site-disable-cancels-queue behind 2026-11-10T21:55:15.614Z
+- **READY** · 2m · site-disable-cancels-queue: GO
+- **RED** · 2m · check red at d5a9a4a: test
+- **RED** · 6m · audit finding: background.js setSiteEnabled clears without limiter.reset(); a queued non-null payload can publish after a site is disabled. New seam site-disable-cancels-queue
+- **RULING** · 8m · youtube-presence-ui force-landed: ready NO-GO'd on two false positives. (1) range b632283..b1d36cc includes sibling commit 51b5797 (sort-root-docs, own landed brief); b1d36cc itself touches exactly its 12 Files (git show --name-only). (2) .stack/config.json gained the stricter proving checks (web-selftest, crp-selftest, web-e2e, verify) before this seam; ready flags any config change, and it cannot be both kept and satisfied because committing it would put it in the range. Recorded GREEN at b1d36cc: 7/7 configured checks, 528 tests.
+- **LANDED** · 8m · youtube-presence-ui b1d36cc: YouTube Presence name, per-site toggles (YT Music first), docs true; 217/217 package, 528 total, verifier 15/15, both selftests, 7/7 configured checks
 
 ## In progress
 
-| Seam | Owns | State | Age |
-| --- | --- | --- | --- |
-| [youtube-presence-ui](.stack/briefs/youtube-presence-ui.md) | packages/web-discord-rpc/manifest.json<br>packages/web-discord-rpc/package.json<br>packages/web-discord-rpc/popup.* | briefed | 3m |
-| [sort-root-docs](.stack/briefs/sort-root-docs.md) | README.md<br>scripts/verify-integration.mjs<br>packages/web-discord-rpc/scripts/install-host.mjs | briefed | 3m |
+_No briefed seam is open._
 
 ## Stall watch
 
@@ -49,3 +46,6 @@ _No seam is older than six hours._
 - desktop-rpc-default landed without a recorded verdict. Run `stacked-audit` and log it.
 - crunchy-1-2-0 landed without a recorded verdict. Run `stacked-audit` and log it.
 - youtube-presence-settings landed without a recorded verdict. Run `stacked-audit` and log it.
+- youtube-presence-ui landed without a recorded verdict. Run `stacked-audit` and log it.
+- sort-root-docs landed without a recorded verdict. Run `stacked-audit` and log it.
+- site-disable-cancels-queue landed without a recorded verdict. Run `stacked-audit` and log it.
