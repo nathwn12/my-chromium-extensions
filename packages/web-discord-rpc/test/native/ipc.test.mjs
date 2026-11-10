@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import net from "node:net";
+import os from "node:os";
+import path from "node:path";
 import { test } from "node:test";
 
 import {
@@ -15,9 +18,18 @@ const CLIENT_ID = "123456789012345678";
 /* ---------------------------------------------------------------- helpers */
 
 let pipeSeq = 0;
+
+/**
+ * A fresh endpoint per test: a named pipe on Windows, a Unix domain socket
+ * elsewhere. Both are the same `net` server/client, so CI on Linux exercises
+ * the real transport rather than skipping it.
+ */
 function nextPipePath() {
   pipeSeq += 1;
-  return `\\\\.\\pipe\\wdr-ipc-test-${process.pid}-${pipeSeq}-${Date.now().toString(36)}`;
+  const name = `wdr-ipc-test-${process.pid}-${pipeSeq}-${Date.now().toString(36)}`;
+  return process.platform === "win32"
+    ? `\\\\.\\pipe\\${name}`
+    : path.join(os.tmpdir(), `${name}.sock`);
 }
 
 /** Deterministic clock: the client's timers only fire when `advance` says so. */
@@ -156,6 +168,15 @@ async function startMockDiscord(options = {}) {
     async close() {
       for (const socket of state.sockets) socket.destroy();
       await new Promise((resolve) => server.close(resolve));
+      // Closing a Unix domain socket leaves the file behind; a named pipe
+      // needs no cleanup. Unique names keep runs independent either way.
+      if (process.platform !== "win32") {
+        try {
+          fs.rmSync(pipePath, { force: true });
+        } catch {
+          // Another process already removed it.
+        }
+      }
     },
   };
 }
