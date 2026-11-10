@@ -6,7 +6,7 @@
  *
  *  - AVAILABILITY: can presence reach Discord at all?
  *      unknown | available | unavailable
- *      with a reason: arrpc-closed | host-missing | rejected | hung
+ *      with a reason: discord-closed | arrpc-closed | host-missing | rejected | hung
  *  - BRIDGE: what is the native port doing?
  *      idle | connecting | connected | waiting | error
  *  - TRANSPORT: which one the host actually used, named on every status frame:
@@ -42,6 +42,10 @@ export const BRIDGE = Object.freeze({
 
 export const REASON = Object.freeze({
   ARRPC_CLOSED: "arrpc-closed",
+  // The host's wire vocabulary already names a Discord desktop pipe that is not
+  // there; without this member the worker dropped the hint and read a quit
+  // Discord as a silent one.
+  DISCORD_CLOSED: "discord-closed",
   HOST_MISSING: "host-missing",
   REJECTED: "rejected",
   HUNG: "hung",
@@ -64,6 +68,8 @@ export function chosenTransportOf(value) {
 /** Friendly sentence-case copy. No transport names, stack traces or protocol text. */
 export const REASON_COPY = Object.freeze({
   [REASON.ARRPC_CLOSED]:
+    "Discord is not running — presence paused, resumes automatically.",
+  [REASON.DISCORD_CLOSED]:
     "Discord is not running — presence paused, resumes automatically.",
   [REASON.HOST_MISSING]: "Native host not installed — run the installer.",
   [REASON.REJECTED]:
@@ -90,6 +96,16 @@ const PATTERNS = [
   // Nothing listening on the arRPC ports surfaces as ECONNREFUSED, and a
   // listener that stopped mid-frame as ECONNRESET.
   [/\bECONNREFUSED\b|\bECONNRESET\b|\bEHOSTUNREACH\b/i, REASON.ARRPC_CLOSED],
+  // A Discord desktop pipe that nothing answered is Discord not running, the
+  // same absence as a closed arRPC: `no Discord IPC pipe answered on N path(s)`
+  // is the IPC client's summary, `connect ENOENT \\.\pipe\discord-ipc-N` is the
+  // primary probe error, and `transport-unavailable` is the host's own ack code
+  // for a pipe that was not there (only the IPC leg ever returns it). A handshake
+  // or reply timeout is Discord running but silent, and stays HUNG below.
+  [
+    /no Discord IPC pipe answered|Discord IPC pipe (?:is )?(?:absent|closed|unavailable)|ENOENT[^\n]*discord-ipc|transport-unavailable/i,
+    REASON.DISCORD_CLOSED,
+  ],
   [
     /(specified )?native messaging host not found|access to the specified native messaging host is forbidden|native host not found/i,
     REASON.HOST_MISSING,

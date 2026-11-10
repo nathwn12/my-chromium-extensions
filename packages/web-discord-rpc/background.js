@@ -53,6 +53,21 @@ export const BACKOFF_MAX_MS = 8000;
 /** `chrome.storage.session` key holding the per-source tab map across worker suspension. */
 export const SESSION_TABS_KEY = "wdrTabs";
 
+/**
+ * Bridge states in which a desired activity may be handed to the host.
+ *
+ * The native port is ordered and the hello is posted before any activity on it,
+ * so the host can accept an activity the moment the worker has said who it is.
+ * Waiting for `connected` first deadlocks: the host only connects a source when
+ * an activity arrives, so a fresh boot would never become connected at all.
+ * `idle` (presence off) and `error` (rejected id, exhausted hang) stay silent.
+ */
+const SENDABLE_BRIDGE_STATES = new Set([
+  BRIDGE.CONNECTED,
+  BRIDGE.CONNECTING,
+  BRIDGE.WAITING,
+]);
+
 /* ================================================================ pure ==== */
 
 /**
@@ -604,8 +619,10 @@ export function createWorker({
 
   /**
    * Publish the desired activity for one source through its own budget. A dead
-   * port just leaves the desired value in place: the next `status connected`
-   * replays it.
+   * port just leaves the desired value in place: the next port, `connected`
+   * status or host reconnect replays it. A bridge that is still connecting or
+   * waiting for Discord is a live port and takes the payload: the host needs
+   * the activity to connect at all, and it keeps the last one for its own retry.
    */
   function push(source, force = false) {
     if (!desired.has(source)) return;
@@ -613,7 +630,7 @@ export function createWorker({
     const json = JSON.stringify(activity);
     if (!force && lastSent.get(source) === json) return;
     if (!port && reconnectTimer === null) ensurePort();
-    if (!port || bridgeState !== BRIDGE.CONNECTED) return;
+    if (!port || !SENDABLE_BRIDGE_STATES.has(bridgeState)) return;
     limiterFor(source).push(activity);
   }
 

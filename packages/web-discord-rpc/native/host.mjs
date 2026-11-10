@@ -387,6 +387,10 @@ export function createHost({
         entry.state = "waiting";
       }
     }
+    // Announce a live host with the transport it will try: with no activity yet
+    // the worker would otherwise keep a stale stored snapshot and never learn
+    // that the host answered. Copy for the connecting state is the worker's.
+    publish(null, null, "connecting");
   }
 
   function handleActivity(message) {

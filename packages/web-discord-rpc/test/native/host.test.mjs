@@ -90,6 +90,29 @@ test("ping answers pong without creating a transport", async () => {
   host.close();
 });
 
+test("a valid hello announces the host as connecting with the transport it will use", async () => {
+  const { frames, send } = collect();
+  const host = createHost({ send });
+
+  await host.handle({ t: "hello", clientId: DEFAULT_CLIENT_ID, version: 1, transport: "ipc" });
+
+  assert.deepEqual(frames, [
+    {
+      t: "status",
+      state: "connecting",
+      transport: "discord-ipc",
+      reason: null,
+      detail: null,
+      sources: { youtube: "idle", "youtube-music": "idle" },
+    },
+  ]);
+
+  // The same hello twice is not a second announcement.
+  await host.handle({ t: "hello", clientId: DEFAULT_CLIENT_ID, version: 1, transport: "ipc" });
+  assert.equal(frames.length, 1);
+  host.close();
+});
+
 test("hello sets the application id and an activity is acked after SET_ACTIVITY", async () => {
   const { frames, send } = collect();
   const fake = makeFakeClients();

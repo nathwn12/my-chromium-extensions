@@ -492,9 +492,10 @@ test("a start clears presence the last session published and has no tab for", as
   connect(port);
 
   const frames = activities(port);
-  assert.equal(frames.length, 1, "only the stale source is cleared");
-  assert.equal(frames[0].source, "youtube");
-  assert.equal(frames[0].activity, null);
+  // Once while connecting (the payload the host needs to connect at all) and
+  // once when the host reports connected (the replay after a lost presence).
+  assert.equal(frames.length, 2, "only the stale source is cleared");
+  assert.ok(frames.every((frame) => frame.source === "youtube" && frame.activity === null));
 });
 
 test("a start with nothing published last time sends no clear", async () => {
@@ -640,11 +641,18 @@ test("a fresh worker restores both sources and replays them after the port conne
   assert.ok(snapshot && snapshot.youtube["11"] && snapshot["youtube-music"]["12"]);
 
   const second = await boot({ session: { [SESSION_TABS_KEY]: snapshot } });
-  assert.equal(activities(second.port).length, 0, "nothing is sent before the port is connected");
+  const handedOver = activities(second.port);
+  assert.equal(handedOver.length, 2, "both restored sources reach the host while connecting");
+  const youtubeBefore = handedOver.find((frame) => frame.source === "youtube");
+  const musicBefore = handedOver.find((frame) => frame.source === "youtube-music");
+  assert.equal(youtubeBefore.activity.details, "Persisted Video");
+  assert.equal(youtubeBefore.activity.timestamps.start, BASE - 7 * SECOND);
+  assert.equal(musicBefore.activity.details, "Persisted Song");
+  assert.equal(musicBefore.activity.type, 2);
 
   connect(second.port);
   const replay = activities(second.port);
-  assert.equal(replay.length, 2, "both sources are replayed after suspension");
+  assert.equal(replay.length, 4, "both sources are replayed once the host is connected");
   const youtube = replay.find((frame) => frame.source === "youtube");
   const music = replay.find((frame) => frame.source === "youtube-music");
   assert.equal(youtube.activity.details, "Persisted Video");
@@ -703,7 +711,7 @@ test("a report that lands before the restore resolves does not clobber the store
 
   connect(chrome.ports[0]);
   const replay = activities(chrome.ports[0]);
-  assert.equal(replay.length, 2);
+  assert.equal(replay.length, 4, "the early report is handed over, then replayed");
   assert.equal(replay.find((frame) => frame.source === "youtube").activity.details, "Live Video");
   assert.equal(replay.find((frame) => frame.source === "youtube-music").activity, null);
 
@@ -721,10 +729,12 @@ test("a restored snapshot reconciles a source with no tab to a clear", async () 
   connect(port);
 
   const frames = activities(port);
-  assert.equal(frames.length, 2);
+  assert.equal(frames.length, 4, "each source is handed over while connecting, then replayed");
   assert.equal(frames.find((frame) => frame.source === "youtube").activity.details, "Still Watching");
-  assert.equal(frames.find((frame) => frame.source === "youtube-music").activity, null);
-  assert.equal(activities(port).filter((frame) => frame.source === "youtube").length, 1);
+  assert.ok(
+    frames.filter((frame) => frame.source === "youtube-music").every((frame) => frame.activity === null),
+    "the source with no tab is only ever cleared"
+  );
 });
 
 test("YouTube Music is processed first, so its frame is the first one after a connect", async () => {
@@ -740,7 +750,7 @@ test("YouTube Music is processed first, so its frame is the first one after a co
   connect(port);
 
   assert.deepEqual(
-    activities(port).map((frame) => frame.source),
+    activities(port).slice(0, 2).map((frame) => frame.source),
     ["youtube-music", "youtube"]
   );
 });
@@ -793,9 +803,8 @@ test("a start clears a disabled site the last session left published", async () 
   connect(port);
 
   const frames = activities(port);
-  assert.equal(frames.length, 1, "the disabled site's stale presence is removed");
-  assert.equal(frames[0].source, "youtube");
-  assert.equal(frames[0].activity, null);
+  assert.equal(frames.length, 2, "the disabled site's stale presence is removed");
+  assert.ok(frames.every((frame) => frame.source === "youtube" && frame.activity === null));
 });
 
 test("turning a site off cancels its queued update so the clear stays last", async () => {
@@ -828,4 +837,64 @@ test("turning a site off cancels its queued update so the clear stays last", asy
     "no queued activity resurfaces after the clear"
   );
   assert.equal(frames.at(-1).activity, null);
+});
+
+test("a desired activity is handed over while the bridge is still connecting", async () => {
+  const { chrome, port, worker } = await boot();
+  // The real fresh-boot order: the host says nothing until the worker sends
+  // something, so a push that waits for `connected` never happens at all.
+  sendState(chrome, 1, "youtube", youtubeState());
+
+  assert.equal(port.sent[0].t, "hello", "the hello goes out before any activity");
+  assert.equal(worker.status().bridgeState, "connecting");
+  const frames = activities(port);
+  assert.equal(frames.length, 1);
+  assert.equal(frames[0].source, "youtube");
+  assert.equal(frames[0].activity.details, "Big Buck Bunny");
+});
+
+test("a connecting bridge sends through the budget and the newest report wins", async () => {
+  const { chrome, clock, port } = await boot();
+  for (let position = 1; position <= 10; position += 1) {
+    sendState(chrome, 1, "youtube", youtubeState({ position }));
+  }
+  assert.equal(activities(port).length, MAX_UPDATES, "a connecting bridge is not spammed");
+
+  clock.advance(20001);
+  const frames = activities(port);
+  assert.equal(frames.length, MAX_UPDATES + 1, "one deferred send after the window");
+  assert.equal(frames.at(-1).activity.timestamps.start, BASE - 10 * SECOND);
+});
+
+test("a waiting bridge hands the activity over so the host can arm its reconnect", async () => {
+  const { chrome, port, worker } = await boot();
+  port.onMessage.fire({
+    t: "status",
+    state: "waiting",
+    transport: "discord-ipc",
+    reason: "discord-closed",
+    detail: "no Discord IPC pipe answered on 10 path(s)",
+  });
+  assert.equal(worker.status().bridgeState, "waiting");
+  assert.equal(worker.status().reasonKind, "discord-closed", "the host's hint is not dropped");
+
+  sendState(chrome, 1, "youtube", youtubeState());
+  assert.equal(activities(port).length, 1, "the host keeps the last activity and retries");
+});
+
+test("an error or an unknown bridge state never hands an activity over", async () => {
+  const { chrome, port } = await boot();
+  port.onMessage.fire({
+    t: "status",
+    state: "error",
+    transport: "arrpc",
+    reason: "rejected",
+    detail: "invalid client id",
+  });
+  sendState(chrome, 1, "youtube", youtubeState());
+  assert.equal(activities(port).length, 0, "a rejected id is not retried with an activity");
+
+  port.onMessage.fire({ t: "status", state: "percolating", transport: "arrpc" });
+  sendState(chrome, 2, "youtube-music", musicState());
+  assert.equal(activities(port).length, 0, "an unknown state is never guessed into a send");
 });
