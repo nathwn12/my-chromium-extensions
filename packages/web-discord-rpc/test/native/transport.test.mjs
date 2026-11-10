@@ -427,8 +427,75 @@ test("the transport overrides parse only when set, and drop nonsense", () => {
   );
 });
 
-test("WDR_DISCORD_PIPES reaches the spawned host's IPC probe", async () => {
-  const injected = "\\\\.\\pipe\\wdr-nonexistent-transport-override";
+test("the spawned host accepts Chrome's origin and parent-window arguments", async () => {
+  const child = spawn(
+    process.execPath,
+    [
+      HOST_PATH,
+      "chrome-extension://mnmmfbjinpokfnendlbhbbdmfjidgikf/",
+      "--parent-window=0",
+    ],
+    { stdio: ["pipe", "pipe", "pipe"] },
+  );
+
+  const frames = [];
+  const decoder = createDecoder();
+  let stderr = "";
+  let stdoutError = null;
+  child.stdout.on("data", (chunk) => {
+    try {
+      frames.push(...decoder.push(chunk));
+    } catch (error) {
+      stdoutError = error;
+    }
+  });
+  child.stderr.on("data", (chunk) => {
+    stderr += String(chunk);
+  });
+  child.stdin.write(encodeMessage({ t: "ping" }));
+
+  let code;
+  try {
+    await waitFor(() => frames.some((message) => message.t === "pong"), "pong");
+  } finally {
+    child.stdin.end();
+    code = await new Promise((resolve) => {
+      const timer = setTimeout(() => resolve("timeout"), 5_000);
+      child.once("exit", (exitCode) => {
+        clearTimeout(timer);
+        resolve(exitCode);
+      });
+    });
+    if (code === "timeout") child.kill();
+  }
+
+  assert.equal(stdoutError, null);
+  assert.deepEqual(frames, [{ t: "pong" }]);
+  assert.equal(code, 0, `Chrome's own arguments must not be fatal; stderr: ${stderr.trim()}`);
+});
+
+test("a genuinely unknown argument is still rejected", async () => {
+  const child = spawn(process.execPath, [HOST_PATH, "--not-a-thing"], {
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let stderr = "";
+  child.stderr.on("data", (chunk) => {
+    stderr += String(chunk);
+  });
+  const code = await new Promise((resolve) => {
+    const timer = setTimeout(() => resolve("timeout"), 5_000);
+    child.once("exit", (exitCode) => {
+      clearTimeout(timer);
+      resolve(exitCode);
+    });
+  });
+  if (code === "timeout") child.kill();
+
+  assert.equal(code, 2);
+  assert.match(stderr, /unknown argument: --not-a-thing/);
+});
+
+test("WDR_DISCORD_PIPES reaches the spawned host's IPC probe", async () => {  const injected = "\\\\.\\pipe\\wdr-nonexistent-transport-override";
   const { frames, stdoutError, code } = await spawnHost({
     env: { WDR_DISCORD_PIPES: injected },
     messages: [

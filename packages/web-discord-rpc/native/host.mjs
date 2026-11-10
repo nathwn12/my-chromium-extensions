@@ -985,10 +985,22 @@ async function runSelftest() {
 
 /* ----------------------------------------------------------------------- cli */
 
+/**
+ * Chrome starts the host with the caller's origin and, on Windows, its parent
+ * window handle: `host.mjs chrome-extension://<id>/ --parent-window=<n>`.
+ * Those are expected launcher arguments, not a usage error.
+ */
+const CHROME_ARGUMENTS = ["chrome-extension://", "--parent-window="];
+
+const isChromeArgument = (argument) =>
+  CHROME_ARGUMENTS.some((prefix) => argument.startsWith(prefix));
+
 async function main(argv) {
   if (argv.includes("--selftest")) return runSelftest();
-  if (argv.length > 0) {
-    process.stderr.write(`unknown argument: ${argv[0]}\n`);
+
+  const unknown = argv.find((argument) => !isChromeArgument(argument));
+  if (unknown !== undefined) {
+    process.stderr.write(`unknown argument: ${unknown}\n`);
     return 2;
   }
 
