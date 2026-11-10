@@ -1,0 +1,60 @@
+{
+  "manifest_version": 3,
+  "name": "Web Discord RPC",
+  "short_name": "Web Discord RPC",
+  "version": "1.0.0",
+  "description": "Show what you're watching on YouTube and YouTube Music as Discord rich presence.",
+  "minimum_chrome_version": "120",
+  "permissions": [
+    "nativeMessaging",
+    "storage",
+    "alarms"
+  ],
+  "host_permissions": [
+    "https://www.youtube.com/*",
+    "https://youtube.com/*",
+    "https://m.youtube.com/*",
+    "https://music.youtube.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.youtube.com/*",
+        "https://youtube.com/*",
+        "https://m.youtube.com/*",
+        "https://music.youtube.com/*"
+      ],
+      "js": [
+        "extract-youtube.js",
+        "content.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": true
+    }
+  ],
+  "action": {
+    "default_title": "Web Discord RPC",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAulw65ydNGECImVHO8bcbJVDuStWNdDCAFAuvkCwgTeY3uCJNp1TL1hw7OW8GjmECDhGjEbK8ljNf4kG47mbpai/D4hL3EvfVZ3/P+lIMKrmiQ6ZjPnRGN3URVmVatz5iR8ZFFecMYT0trW/UpV98bkz0hhz8zwSxBn7tIkgHMcZPDXmCVscrMWHaASjcKIEGBZRflN/5G23nsZKBNrGV++2tiVRUNxvzJkbxsRvspefloDNvYt+m2IFkWIXz+bA7qmOdpstuFFnl1E08tyN9y9mTNuj5W7Ol1MvtJz7MJEiWdpwNzXapLtsowPZikwZqy45rr32d80b1ax6buRSynQIDAQAB"
+}

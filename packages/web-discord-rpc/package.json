@@ -1,0 +1,16 @@
+{
+  "name": "web-discord-rpc",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Local-only MV3 extension + native host that publishes YouTube and YouTube Music activity to Discord Web over arRPC.",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test test/extension/config.test.mjs test/extension/manifest.test.mjs test/scripts/install-host.test.mjs test/scripts/extension-key.test.mjs",
+    "key": "node scripts/extension-key.mjs --print",
+    "install-host": "node scripts/install-host.mjs",
+    "uninstall-host": "node scripts/uninstall-host.mjs"
+  }
+}
