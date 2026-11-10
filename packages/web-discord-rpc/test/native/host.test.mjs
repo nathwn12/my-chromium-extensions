@@ -183,7 +183,7 @@ test("a failed connect acks arrpc-unavailable and reports waiting, not error", a
     error: "arrpc-unavailable",
   });
   const waiting = statusOf(frames, "waiting");
-  assert.equal(waiting.reason, "host-missing");
+  assert.equal(waiting.reason, "arrpc-closed");
   assert.equal(waiting.sources.youtube, "waiting");
   assert.equal(statusOf(frames, "error"), undefined);
   assert.equal(timers.size(), 1, "a reconnect is armed");

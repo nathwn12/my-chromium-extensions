@@ -98,7 +98,10 @@ test("connect probes ports in order and accepts only the arRPC READY", async () 
   assert.equal(client.ready, true);
   assert.equal(client.port, 6464);
   assert.equal(FakeWebSocket.instances.length, 2);
-  assert.equal(FakeWebSocket.instances[0].url, "ws://127.0.0.1:6463");
+  assert.equal(
+    FakeWebSocket.instances[0].url,
+    `ws://127.0.0.1:6463/?v=1&client_id=${CLIENT_ID}`,
+  );
   assert.equal(FakeWebSocket.instances[0].closed, true, "the non-arRPC socket is closed");
   assert.equal(FakeWebSocket.instances[1].closed, false);
 

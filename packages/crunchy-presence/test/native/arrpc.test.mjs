@@ -153,13 +153,13 @@ test('connect resolves on the arRPC READY and reports the port it used', async (
   assert.equal(client.port, 6463);
   assert.equal(client.user, 'arrpc');
   assert.equal(sockets.length, 1);
-  assert.equal(sockets[0].url, 'ws://127.0.0.1:6463');
+  assert.equal(sockets[0].url, `ws://127.0.0.1:6463/?v=1&client_id=${CLIENT_ID}`);
   client.close();
 });
 
 test('a READY from a non-arRPC listener is refused and the next port is tried', async () => {
   const { impl, sockets } = makeTransport((socket, url) => {
-    if (url.endsWith(':6463')) {
+    if (new URL(url).port === '6463') {
       socket.receive(readyFrame({ id: '999', username: 'someone-else' }));
       return;
     }

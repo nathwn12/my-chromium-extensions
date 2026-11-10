@@ -132,7 +132,7 @@ export class ArRpcClient {
     return new Promise((resolve, reject) => {
       let ws;
       try {
-        ws = new this.WebSocketImpl(`ws://127.0.0.1:${port}`);
+        ws = new this.WebSocketImpl(`ws://127.0.0.1:${port}/?v=1&client_id=${this.clientId}`);
       } catch (error) {
         reject(error);
         return;

@@ -222,7 +222,9 @@ export class ArRpcClient {
       timer?.unref?.();
 
       try {
-        socket = new this.#WebSocketImpl(`ws://127.0.0.1:${port}`);
+        socket = new this.#WebSocketImpl(
+          `ws://127.0.0.1:${port}/?v=1&client_id=${this.#clientId}`,
+        );
       } catch {
         finish({ ok: false });
         return;
