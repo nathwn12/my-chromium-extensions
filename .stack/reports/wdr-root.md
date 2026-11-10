@@ -6,7 +6,10 @@ the release zips it and attaches the fourth zip. The package `test` script runs
 every test under `test/` via the shared `run-tests.mjs` runner instead of an
 explicit four-file list, and `scripts/verify-integration.mjs` proves all eight
 wiring points with a `--prove-red` mode that fails each check against a broken
-fixture.
+fixture. Follow-up: the release zip now carries the popup/options surfaces,
+the CI job runs the native host selftest and both e2e scripts, and the
+verifier parses `manifest.json` to assert every local file it names ships in
+the zip.
 
 ## Evidence
 
@@ -20,11 +23,13 @@ PASS: package test script runs every test under test/
 PASS: package test/ holds at least one test file
 PASS: README names the package with its version
 PASS: CI defines a web-discord-rpc job that runs tests
+PASS: CI web job runs the native host selftest and both e2e scripts
 PASS: release zips the package and attaches the zip
 PASS: every file in the release zip step exists
+PASS: release zip contains every local file the manifest names
 
-verify-integration: 8/8 wiring points hold
-# tests 10, pass 10, fail 0 (config.test.mjs, duration_ms 181)
+verify-integration: 10/10 wiring points hold
+# tests 10, pass 10, fail 0 (config.test.mjs)
 ```
 
 Verifier goes red on broken fixtures (exit 0 means every check failed as required):
@@ -37,25 +42,39 @@ prove-red: package test script runs every test under test/ -> red as expected
 prove-red: package test/ holds at least one test file -> red as expected
 prove-red: README names the package with its version -> red as expected
 prove-red: CI defines a web-discord-rpc job that runs tests -> red as expected
+prove-red: CI web job runs the native host selftest and both e2e scripts -> red as expected
 prove-red: release zips the package and attaches the zip -> red as expected
 prove-red: every file in the release zip step exists -> red as expected
-prove-red: 8/8 checks can go red
+prove-red: release zip contains every local file the manifest names -> red as expected
+prove-red: 10/10 checks can go red
+```
+
+New CI steps run locally in packages/web-discord-rpc (exit 0 each):
+
+```text
+$ node native/host.mjs --selftest
+selftest: PASS (10/10)
+$ node scripts/e2e-arrpc.mjs
+e2e-arrpc: PASS (8/8)
+$ node scripts/e2e-ipc.mjs
+e2e-ipc: PASS (7/7)
 ```
 
 New package test entry, full suite (exit 0):
 
 ```text
 $ npm test --workspace=web-discord-rpc
-# tests 173, pass 173, fail 0, duration_ms 1344
+# tests 202, pass 202, fail 0, duration_ms 1173
 ```
 
 Devops return:
 
 ```text
-Stage:      ci job web-discord-rpc (`npm test` in packages/web-discord-rpc) run locally: 173 pass, 0 fail;
-            release stage "Zip loadable extensions" file list zipped locally with bsdtar: 12 files, OK.
-Artifact:   dist/web-discord-rpc.zip did not exist before; local smoke zip after: 24345 bytes,
-            SHA256 B350B55156916B9395DB02341CAB48AC93CD2604C5D4C1E9A7710509FF8B958A
+Stage:      ci job web-discord-rpc (npm test + host selftest + e2e-arrpc + e2e-ipc) run locally,
+            all green; release stage "Zip loadable extensions" file list zipped locally: 18 files, OK.
+Artifact:   dist/web-discord-rpc.zip: before 12 files / 24345 bytes (bsdtar smoke);
+            after 18 files / 34194 bytes,
+            SHA256 2E64DF5F713D890BBD878B61A4F6153C42C7ACF4C6EF54F7778192FFBD1D8D14
             (bsdtar bytes, not CI Info-ZIP bytes — identity is for the file list, not the hash).
 Secrets:    workflows read only secrets.GITHUB_TOKEN, passed as env GH_TOKEN to `gh release create`;
             never echoed, no secret in logs or workflow files.
@@ -76,17 +95,21 @@ Reproducible: clean clone needs node 26 (.nvmrc), npm, Info-ZIP `zip` (present o
 
 ## Scope
 
-Touched, all inside Owns:
+Touched this round (root files only):
+
+- `.github/workflows/ci.yml` (web job gains host selftest, arRPC e2e, IPC e2e steps)
+- `.github/workflows/release.yml` (wdr zip gains popup/options files)
+- `scripts/verify-integration.mjs` (manifest-driven zip check, CI selftest/e2e check)
+- `.stack/reports/wdr-root.md` (this report)
+
+Touched previously, all inside Owns:
 
 - `package.json` (root test script gains the web-discord-rpc workspace)
 - `README.md` (table row, dev command, four zips, layout line)
-- `.github/workflows/ci.yml` (new web-discord-rpc job)
-- `.github/workflows/release.yml` (wdr zip step plus release asset)
-- `scripts/verify-integration.mjs` (new verifier with --prove-red)
 - `packages/web-discord-rpc/package.json` (test runs every test under test/)
 
-Not touched: `packages/web-discord-rpc/README.md` (untracked, another seam's),
-popup/options UI files (do not exist yet), `.stack/*` (pre-existing lead edits).
+Not touched: package source and docs (`packages/web-discord-rpc/*` except the
+test command above — no source, manifest, UI, or doc file edited).
 
 ## Lesson
 

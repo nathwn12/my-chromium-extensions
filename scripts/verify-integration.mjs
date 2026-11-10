@@ -45,6 +45,44 @@ function collectTests(dir) {
   return out;
 }
 
+function zipFiles(release) {
+  if (typeof release !== "string") return null;
+  const line = release.split("\n").find((l) => l.includes(`(cd packages/${WDR}`));
+  if (!line) return null;
+  const files = line
+    .split("&&")[1]
+    ?.replace(/^.*zip\s+\S+\s+/, "")
+    .replace(/\)\s*$/, "")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  return files && files.length > 0 ? files : null;
+}
+
+// Every local file the manifest points at: the loader, content scripts,
+// popup and options pages, and all icons. Remote URLs never appear here.
+function manifestLocalFiles(manifest) {
+  if (!manifest || typeof manifest !== "object") return null;
+  const out = [];
+  if (typeof manifest?.background?.service_worker === "string")
+    out.push(manifest.background.service_worker);
+  for (const script of manifest.content_scripts ?? []) {
+    if (Array.isArray(script.js)) out.push(...script.js);
+  }
+  if (typeof manifest?.action?.default_popup === "string")
+    out.push(manifest.action.default_popup);
+  if (typeof manifest?.options_ui?.page === "string")
+    out.push(manifest.options_ui.page);
+  for (const icons of [manifest.icons, manifest?.action?.default_icon]) {
+    if (icons && typeof icons === "object") {
+      for (const value of Object.values(icons)) {
+        if (typeof value === "string") out.push(value);
+      }
+    }
+  }
+  return [...new Set(out)];
+}
+
 // Predicates over loaded content. Each returns true when the wiring holds.
 const predicates = {
   "workspaces cover packages/*": ({ rootPkg }) => {
@@ -80,24 +118,22 @@ const predicates = {
       !/if:\s*false/.test(job)
     );
   },
+  "CI web job runs the native host selftest and both e2e scripts": ({ ci }) => {
+    if (typeof ci !== "string" || !ci.includes(`${WDR}:`)) return false;
+    const job = ci.slice(ci.indexOf(`${WDR}:`));
+    return (
+      job.includes("node native/host.mjs --selftest") &&
+      job.includes("node scripts/e2e-arrpc.mjs") &&
+      job.includes("node scripts/e2e-ipc.mjs")
+    );
+  },
   "release zips the package and attaches the zip": ({ release }) =>
     typeof release === "string" &&
     release.includes(`dist/${WDR}.zip`) &&
     release.includes(`(cd packages/${WDR} `),
   "every file in the release zip step exists": ({ release }) => {
-    if (typeof release !== "string") return false;
-    const line = release
-      .split("\n")
-      .find((l) => l.includes(`(cd packages/${WDR}`));
-    if (!line) return false;
-    const files = line
-      .split("&&")[1]
-      ?.replace(/^.*zip\s+\S+\s+/, "")
-      .replace(/\)\s*$/, "")
-      .trim()
-      .split(/\s+/)
-      .filter(Boolean);
-    if (!files || files.length === 0) return false;
+    const files = zipFiles(release);
+    if (!files) return false;
     return files.every((f) => {
       try {
         return statSync(join(ROOT, "packages", WDR, f)).isFile();
@@ -105,6 +141,12 @@ const predicates = {
         return false;
       }
     });
+  },
+  "release zip contains every local file the manifest names": ({ release, manifest }) => {
+    const files = zipFiles(release);
+    const named = manifestLocalFiles(manifest);
+    if (!files || !named || named.length === 0) return false;
+    return named.every((f) => files.includes(f));
   },
 };
 
@@ -118,9 +160,11 @@ function loadContext() {
   };
   const rootRaw = read("package.json");
   const wdrRaw = read(`packages/${WDR}/package.json`);
+  const manifestRaw = read(`packages/${WDR}/manifest.json`);
   return {
     rootPkg: rootRaw ? parse(rootRaw) : null,
     wdrPkg: wdrRaw ? parse(wdrRaw) : null,
+    manifest: manifestRaw ? parse(manifestRaw) : null,
     readme: read("README.md"),
     ci: read(".github/workflows/ci.yml"),
     release: read(".github/workflows/release.yml"),
@@ -135,6 +179,7 @@ function brokenContext() {
       scripts: { test: "node --test test/extension/config.test.mjs" },
     },
     readme: "# nothing here\n",
+    manifest: null,
     ci: "jobs:\n  other:\n    steps: []\n",
     release: "steps: []\n",
   };

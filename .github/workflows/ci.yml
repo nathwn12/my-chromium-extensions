@@ -76,3 +76,12 @@ jobs:
       - name: Tests
         working-directory: packages/web-discord-rpc
         run: npm test
+      - name: Native host selftest
+        working-directory: packages/web-discord-rpc
+        run: node native/host.mjs --selftest
+      - name: arRPC e2e
+        working-directory: packages/web-discord-rpc
+        run: node scripts/e2e-arrpc.mjs
+      - name: Discord IPC e2e (self-skips off Windows)
+        working-directory: packages/web-discord-rpc
+        run: node scripts/e2e-ipc.mjs
