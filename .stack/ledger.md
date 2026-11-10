@@ -167,3 +167,11 @@ Append-only. Newest at the bottom. The digest is derived from here.
 - 2026-11-10T23:12:59.025Z · LANDED · wdr-1-0-1
 - 2026-11-10T23:12:59.027Z · LANDED · wdr-1-0-1 272d65c + c7bc11f: YouTube Presence 1.0.1 in manifest, package.json, README cell and changelog (dated 2026-11-11 to match repo dating); suite + verifier green, ready GO
 - 2026-11-10T23:12:59.027Z · AUDIT · wdr-1-0-1@c7bc11f PASS - lead-reconciled: diff read (4 paths inside brief), version cells cross-checked against manifests, full ready re-ran green; no independent audit
+- 2026-11-10T23:16:33.631Z · BRIEF · wrote wdr-music-names-artist: Music card and status name the artist
+- 2026-11-10T23:21:15.461Z · RULING · wdr-music-names-artist remainder done inline by the lead: two employees stalled at the ceiling on docs/version only, no design left (exact sentences in brief), evidence is the lead's own runs; popup-artist surface gap goes to a follow-up seam, not this one
+- 2026-11-10T23:24:38.083Z · READY · wdr-music-names-artist: GO
+- 2026-11-10T23:24:42.999Z · LANDED · wdr-music-names-artist behind 2026-11-10T23:24:38.083Z
+- 2026-11-10T23:24:43.000Z · LANDED · wdr-music-names-artist
+- 2026-11-10T23:24:43.002Z · LANDED · wdr-music-names-artist a0d858d: Music activity name is the artist when resolved (album in state, no repeat; old shape without one), docs corrected, 1.0.2 everywhere; red-first four pins, then 103+196+12+228, verifier 16/16, e2e 7/7; ready GO
+- 2026-11-10T23:24:43.003Z · AUDIT · wdr-music-names-artist@a0d858d PASS - lead-reconciled: diff read (9 paths inside brief), red evidence from the employee run, all checks re-run by the lead; report written by the lead after two ceiling stalls, noted in the report
+- 2026-11-10T23:24:43.004Z · NOTE · follow-ups found while landing: package-lock workspace versions drift (web-discord-rpc 1.0.0 vs 1.0.2, crunchy-presence 1.1.0 vs 1.2.0); popup/options describeActivity reads details+state only, so the artist no longer appears on those surfaces now that state carries the album
