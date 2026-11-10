@@ -45,6 +45,67 @@ function collectTests(dir) {
   return out;
 }
 
+// Playwright is banned in this repo: Gladius is the only browser tester, and a
+// stray dependency or import reinstalls a Chromium download on every install.
+// Each clause of the ban is a predicate, so one lockfile entry or one import
+// fails this script by name instead of quietly coming back.
+const PLAYWRIGHT = ["playwright", "playwright-core", "@playwright/test"];
+// The guard names the banned packages, and one import still lives in a package
+// this seam does not own. Both are skipped; delete the foreign entry when that
+// package lands its own removal and the scan tightens to the whole repo.
+const SCAN_SKIP = new Set([
+  "scripts/verify-integration.mjs",
+  "packages/crunchy-presence/scripts/e2e-live.mjs",
+]);
+const SOURCE_FILE = /\.(?:c|m)?js$|\.(?:c|m)?ts$/;
+const PLAYWRIGHT_SPECIFIER =
+  /["'](?:@playwright\/test|playwright-core|playwright)(?:\/[^"']*)?["']/;
+
+function walk(dir, out = []) {
+  let entries;
+  try {
+    entries = readdirSync(dir);
+  } catch {
+    return out;
+  }
+  for (const entry of entries) {
+    if (entry === "node_modules" || entry === ".git" || entry === ".stack") continue;
+    const full = join(dir, entry);
+    let st;
+    try {
+      st = statSync(full);
+    } catch {
+      continue;
+    }
+    if (st.isDirectory()) walk(full, out);
+    else out.push(full);
+  }
+  return out;
+}
+
+// Every file the ban can appear in: the manifests that declare it, the sources
+// that import it, and the CI steps that would install it.
+function collectPlaywrightSurface() {
+  const manifests = [];
+  const sources = [];
+  for (const full of walk(ROOT)) {
+    const path = full.slice(ROOT.length + 1).replace(/\\/g, "/");
+    if (/(^|\/)package\.json$/.test(path)) {
+      let pkg = null;
+      try {
+        pkg = JSON.parse(read(path) ?? "null");
+      } catch {
+        pkg = null;
+      }
+      manifests.push({ path, pkg });
+    }
+    if (SOURCE_FILE.test(path) || path.startsWith(".github/workflows/")) {
+      sources.push({ path, text: read(path) ?? "" });
+    }
+  }
+  return { manifests, sources };
+}
+
 function zipFiles(release) {
   if (typeof release !== "string") return null;
   const line = release.split("\n").find((l) => l.includes(`(cd packages/${WDR}`));
@@ -148,6 +209,47 @@ const predicates = {
     if (!files || !named || named.length === 0) return false;
     return named.every((f) => files.includes(f));
   },
+  "no package.json declares Playwright": ({ manifests }) => {
+    if (!manifests || manifests.length === 0) return "no package.json was read";
+    const bad = manifests
+      .filter(({ pkg }) =>
+        [
+          pkg?.dependencies,
+          pkg?.devDependencies,
+          pkg?.optionalDependencies,
+          pkg?.peerDependencies,
+        ].some((deps) => deps && PLAYWRIGHT.some((name) => name in deps))
+      )
+      .map(({ path }) => path);
+    return bad.length === 0 ? true : `declares Playwright: ${bad.join(", ")}`;
+  },
+  "the lockfile resolves no Playwright package": ({ lock }) => {
+    if (!lock?.packages) return "no lockfile was read";
+    const bad = [];
+    for (const [key, entry] of Object.entries(lock.packages)) {
+      if (/(^|\/)node_modules\/(@playwright\/test|playwright|playwright-core)$/.test(key))
+        bad.push(key);
+      const deps = {
+        ...entry?.dependencies,
+        ...entry?.devDependencies,
+        ...entry?.optionalDependencies,
+        ...entry?.peerDependencies,
+      };
+      for (const name of PLAYWRIGHT) {
+        if (name in deps) bad.push(`${key || "<root>"} -> ${name}`);
+      }
+    }
+    return bad.length === 0 ? true : `lockfile names Playwright: ${bad.join(", ")}`;
+  },
+  "no source or CI step imports Playwright": ({ sources }) => {
+    if (!sources) return "no sources were read";
+    const bad = sources
+      .filter(
+        ({ path, text }) => !SCAN_SKIP.has(path) && PLAYWRIGHT_SPECIFIER.test(text)
+      )
+      .map(({ path }) => path);
+    return bad.length === 0 ? true : `imports Playwright: ${bad.join(", ")}`;
+  },
 };
 
 function loadContext() {
@@ -168,6 +270,14 @@ function loadContext() {
     readme: read("README.md"),
     ci: read(".github/workflows/ci.yml"),
     release: read(".github/workflows/release.yml"),
+    lock: (() => {
+      try {
+        return JSON.parse(read("package-lock.json") ?? "null");
+      } catch {
+        return null;
+      }
+    })(),
+    ...collectPlaywrightSurface(),
   };
 }
 
@@ -206,7 +316,7 @@ if (process.argv.includes("--prove-red")) {
     else ROOT = realRoot;
     let ok = false;
     try {
-      ok = predicates[name](checkCtx);
+      ok = predicates[name](checkCtx) === true;
     } catch {
       ok = false;
     }
@@ -226,14 +336,18 @@ if (process.argv.includes("--prove-red")) {
 const ctx = loadContext();
 const failures = [];
 for (const name of names) {
-  let ok = false;
+  let result = false;
   try {
-    ok = predicates[name](ctx) === true;
+    result = predicates[name](ctx);
   } catch {
-    ok = false;
+    result = false;
   }
+  const ok = result === true;
   console.log(`${ok ? "PASS" : "FAIL"}: ${name}`);
-  if (!ok) failures.push(name);
+  if (!ok) {
+    if (typeof result === "string") console.error(`  ${name}: ${result}`);
+    failures.push(name);
+  }
 }
 if (failures.length > 0) {
   console.error(`\nverify-integration: ${failures.length} wiring point(s) broken (root: ${ROOT})`);

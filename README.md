@@ -43,6 +43,9 @@ cd packages/audio-normalizer && node --test tests/
 cd packages/slowed-reverb && node test/mute-enforce.test.js
 ```
 
+QA is browser-free and silent: no Playwright dependency is installed here, and
+every check above runs in Node. Gladius is the only browser tester.
+
 ## Release
 
 ```
