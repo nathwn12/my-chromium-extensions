@@ -108,3 +108,7 @@ Append-only. Newest at the bottom. The digest is derived from here.
 - 2026-11-10T22:09:47.603Z · LANDED · verify-scans-tracked-source behind 2026-11-10T22:09:40.239Z
 - 2026-11-10T22:09:47.604Z · LANDED · verify-scans-tracked-source
 - 2026-11-10T22:09:47.605Z · LANDED · verify-scans-tracked-source a052c90: guard reads the commit surface with no silent catch, 16/16 green and 16/16 prove-red, planted .html caught by name; ready GO
+- 2026-11-10T22:13:53.585Z · AUDIT · verify-scans-tracked-source@a052c90 PASS — guard reads the commit surface with no silent catch, 16/16 green and 16/16 prove-red, planted .html named; independent audit GUARD/BAN items PASS
+- 2026-11-10T22:13:53.587Z · AUDIT · site-disable-cancels-queue@d5a9a4a PASS — limiter reset precedes the clear, regression 35/35; independent audit WORKER item PASS
+- 2026-11-10T22:13:53.588Z · AUDIT · final-wave@1f463f2 PASS WITH NOTES — independent audit found no defects; commit scope (every commit inside its brief), storage-throw default, and per-workspace counts closed by lead receipts: 103/196/12/218
+- 2026-11-10T22:13:53.589Z · GOAL · turn=2 seat=lead verdict=met reason="independent audit PASS WITH NOTES with no findings; checks green at HEAD; remaining step is push and origin/main equality"
