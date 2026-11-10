@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Web Discord RPC — Settings</title>
+    <title>Discord RPC — Settings</title>
     <link rel="stylesheet" href="options.css" />
   </head>
   <body>
@@ -11,7 +11,7 @@
       <header class="hero">
         <img src="icons/icon48.png" alt="" width="40" height="40" />
         <div>
-          <h1>Web Discord RPC</h1>
+          <h1>Discord RPC</h1>
           <p class="sub">Local only. Nothing leaves this machine except the Discord call.</p>
         </div>
       </header>
@@ -50,13 +50,14 @@
         <h2 id="connection-title">2. Connection</h2>
         <label for="transport">Transport</label>
         <select id="transport" aria-describedby="transport-help transport-saved">
-          <option value="auto">Automatic — Discord desktop app, then arRPC</option>
-          <option value="ipc">Discord desktop app only</option>
-          <option value="arrpc">arRPC only</option>
+          <option value="ipc">Discord desktop app only — default</option>
+          <option value="auto">Automatic — desktop app first, then arRPC (deferred)</option>
+          <option value="arrpc">arRPC — Discord Web (deferred)</option>
         </select>
         <p id="transport-help" class="hint">
-          Automatic uses the Discord desktop app's local socket first and falls back to arRPC. A forced
-          mode never falls back.
+          Presence goes to the installed Discord desktop app over its local socket by default. Automatic
+          tries the desktop app first and falls back to arRPC; the arRPC path is deferred, so Automatic
+          and arRPC stay selectable but are not the default. A forced mode never falls back.
         </p>
         <p id="transport-saved" class="saved" role="status" aria-live="polite"></p>
 

@@ -198,7 +198,7 @@ function musicState(overrides = {}) {
 
 /* --------------------------------------------------------------- tests -- */
 
-test("boot opens one native port with the built-in application id and the auto transport preference", async () => {
+test("boot opens one native port with the built-in application id and the desktop IPC preference", async () => {
   const { chrome, port } = await boot();
   assert.equal(chrome.ports.length, 1);
   assert.equal(port.name, "com.nathwn12.web_discord_rpc");
@@ -206,7 +206,7 @@ test("boot opens one native port with the built-in application id and the auto t
     t: "hello",
     clientId: DEFAULT_CLIENT_ID,
     version: 1,
-    transport: "auto",
+    transport: "ipc",
   });
 });
 
@@ -225,9 +225,9 @@ test("a stored transport reaches hello and a change reconnects with the new pref
   });
 });
 
-test("an unknown stored transport falls back to auto in hello", async () => {
+test("an unknown stored transport falls back to desktop IPC in hello", async () => {
   const { chrome } = await boot({ transport: "carrier-pigeon" });
-  assert.equal(chrome.ports[0].sent[0].transport, "auto");
+  assert.equal(chrome.ports[0].sent[0].transport, "ipc");
 });
 
 test("one tab per source produces two simultaneous activities, WATCHING and LISTENING", async () => {

@@ -33,6 +33,23 @@ test("desktop-first setup names the desktop pipe before arRPC", () => {
   assert.match(readme, /6463-6472/, "README names the arRPC port range");
 });
 
+test("every doc calls the extension Discord RPC and defaults to the desktop IPC transport", () => {
+  for (const [name, doc] of [
+    ["README", readme],
+    ["ARCHITECTURE", arch],
+    ["RESEARCH", research],
+    ["INSTALL", install],
+    ["CHANGELOG", changelog],
+  ]) {
+    assert.ok(!doc.includes("Web Discord RPC"), `${name} drops the old name`);
+  }
+  assert.match(readme, /^# Discord RPC$/m, "README titles the extension Discord RPC");
+  assert.match(readme, /`ipc`[^\n]{0,80}default|default[^\n]{0,80}`ipc`/i, "README says desktop IPC is the default");
+  assert.match(arch, /`ipc`[^\n]{0,80}default|default[^\n]{0,80}`ipc`/i, "ARCHITECTURE says desktop IPC is the default");
+  assert.match(readme, /deferred/i, "README marks the web route deferred");
+  assert.match(install, /deferred/i, "INSTALL marks the web route deferred");
+});
+
 test("arRPC/Vencord fallback names the client_id query and the mock user", () => {
   assert.match(readme, /client_id/, "README names the client_id query");
   assert.match(readme, /Vencord/, "README names Vencord");

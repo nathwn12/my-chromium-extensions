@@ -1,13 +1,13 @@
 # Install
 
-Desktop-first install for Web Discord RPC. Dated 2026-11-10. Run from the repository root.
+Desktop-first install for Discord RPC. Dated 2026-11-11 (install and selftest receipts below are from 2026-11-10). Run from the repository root.
 
 ## What you need
 
 - Windows 10 or 11.
 - Chrome 120 or newer.
 - Node 22 or newer (`node --version`).
-- The Discord desktop app, signed in (primary path). arRPC or Vencord with the arRPC plugin covers the Discord Web fallback only.
+- The Discord desktop app, signed in (the default `ipc` path). arRPC or Vencord with the arRPC plugin covers the deferred Discord Web path only.
 
 ## 1. Install the native host
 
@@ -62,8 +62,8 @@ The host manifest's `allowed_origins` names exactly `chrome-extension://mnmmfbji
 ## 4. Start Discord desktop first, then open YouTube
 
 1. Sign in to the Discord desktop app.
-2. Keep the default `transport: "auto"`: the host probes `\\.\pipe\discord-ipc-0` through `-9` first.
-3. Only when no pipe answers does it probe `127.0.0.1:6463-6472` for arRPC (start arRPC, or Vencord with `WebRichPresence (arRPC)`, for this path). Note the pipe itself may be owned by arRPC when the desktop app is absent — the live probe on 2026-11-10 found `\\.\pipe\discord-ipc-0` answering with `user: "arrpc"` — so IPC-first can carry Discord Web traffic without the WebSocket fallback.
+2. Keep the default `transport: "ipc"`: the host probes `\\.\pipe\discord-ipc-0` through `-9` and nothing else.
+3. Select `auto` only if you want the deferred arRPC fallback after the pipes: it probes `127.0.0.1:6463-6472` when no pipe answers (start arRPC, or Vencord with `WebRichPresence (arRPC)`, for that path). Note the pipe itself may be owned by arRPC when the desktop app is absent — the live probe on 2026-11-10 found `\\.\pipe\discord-ipc-0` answering with `user: "arrpc"` — so IPC can carry Discord Web traffic without the WebSocket fallback.
 
 Live receipt (lead probe 2026-11-10, connect only, no presence changed): `{"ok":true,"pipePath":"\\\\.\\pipe\\discord-ipc-0","user":"arrpc"}`. The probe order and the `client_id` query are verified in `native/host.mjs`, `native/ipc.mjs`, and `native/arrpc.mjs` and by the selftest below.
 

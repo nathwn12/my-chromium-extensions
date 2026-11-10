@@ -8,9 +8,10 @@ How a YouTube tab becomes two Discord activities, what crosses each boundary, an
 YouTube / YouTube Music tab
   → content.js (extract-youtube.js)    read DOM + mediaSession, report flat state
   → background.js (per source, 4/20 s) one record per tab per source, two budgets
-  → native host (host.mjs)             Discord IPC first, arRPC fallback, per source
-  → local Discord pipe                \\.\pipe\discord-ipc-N, N = 0..9 (primary; may itself be owned by arRPC when the desktop app is absent)
-  → arRPC WebSocket                    127.0.0.1:6463-6472 (fallback; Vencord bridge)
+  → native host (host.mjs)             default `ipc`: Discord desktop pipe, per source
+                                       `auto`: IPC first, arRPC fallback
+  → local Discord pipe                \\.\pipe\discord-ipc-N, N = 0..9 (default; may itself be owned by arRPC when the desktop app is absent)
+  → arRPC WebSocket                    127.0.0.1:6463-6472 (deferred, only with `auto` or `arrpc`; Vencord bridge)
   → Discord                            SET_ACTIVITY, type 3 (YouTube) + type 2 (Music)
 ```
 
@@ -53,7 +54,7 @@ Host → extension:
 | `ack` | `source`, `id`, `ok: false`, `error` | one activity frame was not delivered (`transport-unavailable`, `arrpc-unavailable`, `rejected`, `unknown-source`) |
 | `pong` | — | reply to `ping` |
 
-`reason` is one of `discord-closed | arrpc-closed | host-missing | rejected | hung`. `transport` names what the host actually used; the stored preference (`auto | ipc | arrpc`) is a different vocabulary and never appears on the wire. Before any `hello` the host reports the legacy arRPC path.
+`reason` is one of `discord-closed | arrpc-closed | host-missing | rejected | hung`. `transport` names what the host actually used; the stored preference (`auto | ipc | arrpc`, default `ipc`) is a different vocabulary and never appears on the wire. Before any `hello` the host reports the legacy arRPC path.
 
 ## Availability and bridge state
 
@@ -145,7 +146,8 @@ The content script runs with `all_frames: true` but only the top frame may repor
 | --- | --- |
 | Native port dies | worker reconnects with backoff 500 ms → 8 s, resets each limiter, replays desired state; bridge shows `waiting` |
 | Discord desktop pipe drops | per-source IPC client reports `discord-closed`, rearms the reconnect only when a last activity exists |
-| Discord not running, no arRPC | `auto` probes the pipes first (which may themselves be arRPC-owned), then falls back to the arRPC WebSocket; all absent → `status waiting` with the primary reason; the native loop never crashes |
+| Discord not running, `auto` selected | `auto` probes the pipes first (which may themselves be arRPC-owned), then falls back to the arRPC WebSocket; all absent → `status waiting` with the primary reason; the native loop never crashes |
+| Discord not running, default `ipc` | no fallback: the pipe scan finds nothing, the host stays `waiting` and keeps retrying on reconnect |
 | Forced transport absent | no fallback: `ipc` without pipes (or `arrpc` without a listener) acks `transport-unavailable`/`arrpc-unavailable` and stays `waiting` |
 | Host stops ponging | a ping with no pong for 10 s (`PONG_TIMEOUT_MS`) drops the port and reconnects; only 3 consecutive timeouts become `error` |
 | Service worker sleeps | 30 s `alarms` watchdog reopens the port and pings; the tab map survives in `storage.session` |

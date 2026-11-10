@@ -7,7 +7,7 @@
  * application ID serves both YouTube (WATCHING) and YouTube Music (LISTENING).
  *
  * The same storage carries two preferences: which transport the native host
- * should use (`auto | ipc | arrpc`, `auto` by default) and whether presence is
+ * should use (`auto | ipc | arrpc`, `ipc` by default) and whether presence is
  * on at all. Both are validated here so no consumer has to invent a fourth
  * spelling or trust an unvalidated value.
  */
@@ -20,13 +20,16 @@ export const TRANSPORT_KEY = "transport";
 export const ENABLED_KEY = "enabled";
 
 /**
- * The transport preference sent in `hello`: `auto` lets the host prefer
- * Discord IPC and fall back to arRPC, a forced mode never falls back.
+ * The transport preference sent in `hello`: `ipc` is the installed Discord
+ * desktop app and the default; `auto` lets the host try IPC and fall back to
+ * arRPC; a forced mode never falls back. `auto` and `arrpc` reach the deferred
+ * Discord Web path and are marked as such on the surfaces.
  */
 export const TRANSPORT_AUTO = "auto";
 export const TRANSPORT_IPC = "ipc";
 export const TRANSPORT_ARRPC = "arrpc";
 export const TRANSPORTS = Object.freeze([TRANSPORT_AUTO, TRANSPORT_IPC, TRANSPORT_ARRPC]);
+export const DEFAULT_TRANSPORT = TRANSPORT_IPC;
 
 export const SOURCE_YOUTUBE = "youtube";
 export const SOURCE_YOUTUBE_MUSIC = "youtube-music";
@@ -87,10 +90,10 @@ export function clientIdToPersist(input) {
   return text === DEFAULT_CLIENT_ID ? null : text;
 }
 
-/** The stored transport preference, or `auto` for anything unknown. */
+/** The stored transport preference, or desktop IPC for anything unknown. */
 export function resolveTransport(stored) {
   const text = trimmed(stored).toLowerCase();
-  return TRANSPORTS.includes(text) ? text : TRANSPORT_AUTO;
+  return TRANSPORTS.includes(text) ? text : DEFAULT_TRANSPORT;
 }
 
 /** Presence is on unless it was switched off; only a real `false` disables. */

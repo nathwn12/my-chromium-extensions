@@ -48,9 +48,16 @@ function readPng(relative) {
 
 test("manifest is MV3 with the expected identity", () => {
   assert.equal(manifest.manifest_version, 3);
-  assert.equal(manifest.name, "Web Discord RPC");
+  assert.equal(manifest.name, "Discord RPC");
   assert.match(manifest.version, /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/, "strict semver MAJOR.MINOR.PATCH");
   assert.match(manifest.description, /YouTube/i);
+});
+
+test("the manifest calls the extension Discord RPC, never Web Discord RPC", () => {
+  assert.equal(manifest.name, "Discord RPC");
+  assert.equal(manifest.short_name, "Discord RPC");
+  assert.equal(manifest.action.default_title, "Discord RPC");
+  assert.ok(!JSON.stringify(manifest).includes("Web Discord RPC"), "the old name is gone from every field");
 });
 
 test("manifest requires Chrome 120, expressed as a major version", () => {
@@ -96,7 +103,7 @@ test("service worker, popup and options page are declared as local files", () =>
   assert.equal(manifest.background.service_worker, "background.js");
   assert.equal(manifest.background.type, "module");
   assert.equal(manifest.action.default_popup, "popup.html");
-  assert.equal(manifest.action.default_title, "Web Discord RPC");
+  assert.equal(manifest.action.default_title, "Discord RPC");
   assert.equal(manifest.options_ui.page, "options.html");
   assert.equal(manifest.options_ui.open_in_tab, true);
 });

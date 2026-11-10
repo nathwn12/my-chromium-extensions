@@ -4,6 +4,9 @@ Notable changes to this package. Dates are ISO 8601. This package is local-only 
 
 ## [Unreleased]
 
+- The default transport is now `ipc`: presence goes to the installed Discord desktop app over its local socket, with no fallback. `auto` and `arrpc` stay selectable in Settings and are marked deferred, because both reach the Discord Web path the owner has deferred.
+- The extension is named Discord RPC in the manifest, the popup, the settings page, and every doc; the package path `packages/web-discord-rpc`, the storage keys, the host name, and the extension ID are unchanged.
+
 ## [1.0.0] - 2026-11-10
 
 - You can now see YouTube and YouTube Music in Discord at the same time: watching a video shows a WATCHING card titled YouTube, listening shows a LISTENING card titled YouTube Music, and one app install covers both.

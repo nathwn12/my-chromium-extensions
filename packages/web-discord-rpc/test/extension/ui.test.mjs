@@ -78,6 +78,15 @@ test("the manifest points at popup and options, and both ship as local files", (
   }
 });
 
+test("popup and options title the extension Discord RPC, never Web Discord RPC", () => {
+  for (const surface of SURFACES) {
+    const html = readSurface(extensionDir, surface, "html");
+    assert.match(html, /<h1>Discord RPC<\/h1>/, `${surface}.html headings the new name`);
+    assert.match(html, /<title>Discord RPC/, `${surface}.html titles the new name`);
+    assert.ok(!html.includes("Web Discord RPC"), `${surface}.html drops the old name`);
+  }
+});
+
 test("each surface loads only its own local code: no remote URL, no inline script", () => {
   for (const surface of SURFACES) {
     for (const extension of ["html", "css", "js"]) {
@@ -371,14 +380,20 @@ test("options refuses an application ID that is not 17 to 20 digits and writes n
   }
 });
 
-test("options offers exactly auto, ipc and arrpc, persists a change, and falls back to auto", async () => {
+test("options offers desktop IPC first and keeps auto and arRPC selectable as deferred", async () => {
   const chrome = createChrome({ local: { enabled: true, transport: "gateway" }, status: CONNECTED });
   const ui = await mountSurface({ surface: "options", extensionDir, chrome });
   try {
     const select = ui.doc.getElementById("transport");
-    const values = ui.doc.querySelectorAll("#transport option").map((option) => option.getAttribute("value"));
-    assert.deepEqual(values, ["auto", "ipc", "arrpc"]);
-    assert.equal(select.value, "auto", "an unrecognised stored value resolves to auto");
+    const options = ui.doc.querySelectorAll("#transport option");
+    const values = options.map((option) => option.getAttribute("value"));
+    assert.deepEqual(values, ["ipc", "auto", "arrpc"], "the default comes first");
+    const label = (value) =>
+      options.find((option) => option.getAttribute("value") === value).textContent.toLowerCase();
+    assert.match(label("ipc"), /default/, "desktop IPC names itself the default");
+    assert.match(label("auto"), /deferred/, "automatic is selectable but deferred");
+    assert.match(label("arrpc"), /deferred/, "arRPC is selectable but deferred");
+    assert.equal(select.value, "ipc", "an unrecognised stored value resolves to desktop IPC");
 
     select.value = "arrpc";
     fireEvent(select, "change");

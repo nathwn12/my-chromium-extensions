@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   DEFAULT_CLIENT_ID,
+  DEFAULT_TRANSPORT,
   ENABLED_KEY,
   HOST_NAME,
   SOURCE_META,
@@ -81,24 +82,25 @@ test("resolveClientId keeps a valid stored override, trimmed", () => {
   assert.equal(resolveClientId(DEFAULT_CLIENT_ID), DEFAULT_CLIENT_ID);
 });
 
-test("the transport preference vocabulary is exactly auto, ipc and arrpc", () => {
+test("the transport preference vocabulary is exactly auto, ipc and arrpc, defaulting to desktop IPC", () => {
   assert.equal(TRANSPORT_AUTO, "auto");
   assert.equal(TRANSPORT_IPC, "ipc");
   assert.equal(TRANSPORT_ARRPC, "arrpc");
   assert.deepEqual([...TRANSPORTS], ["auto", "ipc", "arrpc"]);
   assert.ok(Object.isFrozen(TRANSPORTS));
+  assert.equal(DEFAULT_TRANSPORT, TRANSPORT_IPC, "a fresh install goes to the installed desktop app");
   assert.equal(TRANSPORT_KEY, "transport");
   assert.equal(ENABLED_KEY, "enabled");
 });
 
-test("resolveTransport keeps a stored preference and otherwise defaults to auto", () => {
-  for (const stored of [undefined, null, "", "   ", "junk", "discord-ipc", "AUTO?", "auto ", 42]) {
-    assert.equal(resolveTransport(stored), "auto", `stored=${String(stored)}`);
+test("resolveTransport keeps a stored preference and otherwise defaults to desktop IPC", () => {
+  for (const stored of [undefined, null, "", "   ", "junk", "discord-ipc", "AUTO?", 42]) {
+    assert.equal(resolveTransport(stored), "ipc", `stored=${String(stored)}`);
   }
-  assert.equal(resolveTransport("auto"), "auto");
+  assert.equal(resolveTransport("auto"), "auto", "the deferred web fallback stays selectable");
   assert.equal(resolveTransport("ipc"), "ipc");
   assert.equal(resolveTransport("IPC"), "ipc");
-  assert.equal(resolveTransport(" arrpc "), "arrpc");
+  assert.equal(resolveTransport(" arrpc "), "arrpc", "a forced arRPC survives trimming");
 });
 
 test("resolveEnabled only turns presence off on a real false", () => {
