@@ -4,7 +4,7 @@
  * Local-only, PURE NODE silent verification harness (qa/ is gitignored).
  * Session scratch id: ses_f07d8d804ffePLpg7UON9NAcAF
  *
- * SAFETY: no browser, no Chromium, no Playwright, no chrome-devtools/MCP, no
+ * SAFETY: no browser, no Chromium, no chrome-devtools/MCP, no
  * audio device, no sound. Worklet sources are executed inside node:vm with a
  * stub AudioWorkletProcessor. This file must never launch a browser.
  *
@@ -672,7 +672,7 @@ function main() {
   const json = {
     sessionId: SESSION_ID,
     generatedAt: new Date().toISOString(),
-    safety: 'PURE NODE (node:vm). No browser, no Chromium, no Playwright, no chrome-devtools/MCP, no audio device, no sound. Banned QA scripts (qa/responsive-normalizer-qa.cjs, qa/extension-qa.cjs) were not run.',
+    safety: 'PURE NODE (node:vm). No browser, no Chromium, no chrome-devtools/MCP, no audio device, no sound.',
     harness: __filename,
     thresholds: THRESHOLDS,
     variants: {
@@ -730,7 +730,7 @@ function buildTranscript(json) {
   if (json.amUpdatedAt) push(`amUpdatedAt: ${json.amUpdatedAt}`);
   if (json.rerun) push(`rerun: ${json.rerun}`);
   push(`harness: ${json.harness}`);
-  push('safety: no browser / no Playwright / no chrome-devtools / no audio device / no sound');
+  push('safety: no browser / no chrome-devtools / no audio device / no sound');
   push('');
   push('VARIANTS');
   push('  baseline = git show HEAD:audio/normalizer-worklet.js (written to temp, not hand-edited)');

@@ -5,10 +5,7 @@ export default [
     ignores: [
       "eslint.config.mjs",
       "**/node_modules/**",
-      "playwright-report/**",
-      "test-results/**",
       "qa/**",
-      ".playwright/**",
     ],
   },
   {

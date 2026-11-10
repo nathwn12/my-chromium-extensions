@@ -52,25 +52,17 @@ Plain MV3 extension. No build/bundle. No TS. Vanilla ES2020. Files are the sourc
 ```
 npm run lint                          # eslint (flat config eslint.config.mjs) — expect 0 errors, 0 warnings; skips qa/ (ignored in config)
 node --check <file>.js                # syntax check per script (no build step exists)
-node qa/mute-test-quick.js            # headless QA: real Chromium + extension, routed YouTube fixture
-node qa/mute-test.js                  # HEADED — user-invoked only; never run unattended
-npx playwright install chromium       # one-time browser download for QA (cached after)
 ```
-
-`npx playwright test --config qa/playwright.config.js` finds **0 tests** — no `*.spec.*`/`*.test.*` files exist; the standalone scripts above are the real QA (`qa-mute-check.js` doesn't match the runner's test pattern either).
 
 ## Verification safety
 
 - **No audio playback in any test, ever.** Do not launch any Chromium that can produce sound: no autoplay, no headed browser, no chrome-devtools MCP audio, and no muted-playback "audio test" either. A browser-based audio check is not permitted; if one is ever truly unavoidable, STOP and get explicit user approval before running it — never run it first and report afterwards.
 - Verification is **static and numeric only**: `npm run lint`, `node --check <file>.js`, unit tests, and offline numeric analysis of captured sample buffers that are never connected to a destination or device (`OfflineAudioContext`, or a worklet driven straight into a `Float32Array` from a plain Node harness with `AudioWorkletProcessor`/`registerProcessor`/`sampleRate` stubbed).
 - CPU evidence is the **browser usage gauge** (Chrome/Brave Task Manager, `Shift+Esc`) — a human-read gauge, not a benchmark. Do not add or run a bespoke CPU benchmark harness.
-- `qa/mute-test.js` (headed) and `qa/mute-test-quick.js` (headless) are browser audio checks and are **not run by agents**; user-invoked only.
 
 ## QA
 
-- `qa/mute-test.js` (headed) and `qa/mute-test-quick.js` (headless) launch real Chromium with the extension loaded unpacked and route a synthetic WAV fixture page under `youtube.com`; they assert the graph is **attached** and the element **muted** at neutral settings, and **detached** with the element **unmuted** when the tab is bypassed, across fresh play, reload-play, and pause-reload-play. These scripts perform browser audio checks and must **not** be run by agents — user-invoked only, consistent with `## Verification safety`.
 - `qa/headless-repro.js` is a fixture-driver module, not a standalone test.
-- If the browser bundle is missing, run `npx playwright install chromium` first.
 
 ## Editing `.js` files — environment gotcha (important)
 

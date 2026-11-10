@@ -49,14 +49,10 @@ function collectTests(dir) {
 // stray dependency or import reinstalls a Chromium download on every install.
 // Each clause of the ban is a predicate, so one lockfile entry or one import
 // fails this script by name instead of quietly coming back.
-const PLAYWRIGHT = ["playwright", "playwright-core", "@playwright/test"];
-// The guard names the banned packages, and one import still lives in a package
-// this seam does not own. Both are skipped; delete the foreign entry when that
-// package lands its own removal and the scan tightens to the whole repo.
-const SCAN_SKIP = new Set([
-  "scripts/verify-integration.mjs",
-  "packages/crunchy-presence/scripts/e2e-live.mjs",
-]);
+// The names are spelled in pieces so this guard file passes its own scan: no
+// path is exempt from the ban, this one included.
+const PW = "play" + "wright";
+const PLAYWRIGHT = [PW, `${PW}-core`, `@${PW}/test`];
 const SOURCE_FILE = /\.(?:c|m)?js$|\.(?:c|m)?ts$/;
 const PLAYWRIGHT_SPECIFIER =
   /["'](?:@playwright\/test|playwright-core|playwright)(?:\/[^"']*)?["']/;
@@ -244,9 +240,7 @@ const predicates = {
   "no source or CI step imports Playwright": ({ sources }) => {
     if (!sources) return "no sources were read";
     const bad = sources
-      .filter(
-        ({ path, text }) => !SCAN_SKIP.has(path) && PLAYWRIGHT_SPECIFIER.test(text)
-      )
+      .filter(({ text }) => PLAYWRIGHT_SPECIFIER.test(text))
       .map(({ path }) => path);
     return bad.length === 0 ? true : `imports Playwright: ${bad.join(", ")}`;
   },
@@ -310,6 +304,17 @@ if (process.argv.includes("--prove-red")) {
       checkCtx = {
         ...ctx,
         release: `(cd packages/${WDR} && zip -r ../../dist/${WDR}.zip manifest.json no-such-file.js)\ngh release create x dist/${WDR}.zip`,
+      };
+    }
+    if (name === "no source or CI step imports Playwright") {
+      // A planted import must fail by name. The path is the one the old skip
+      // hid, so a returning skip shows up here as a check that stayed green.
+      const planted = ["import { chromium } from '", PW, "-core';\n"].join("");
+      checkCtx = {
+        ...ctx,
+        sources: [
+          { path: "packages/crunchy-presence/scripts/e2e-live.mjs", text: planted },
+        ],
       };
     }
     if (name === "package test/ holds at least one test file") ROOT = emptyRoot;

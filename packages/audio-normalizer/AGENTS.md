@@ -9,13 +9,9 @@
 - `node qa/feed-transition-qa.cjs` — feed-boundary (reset-program) transitions; pure Node, allowed.
 - `node qa/program-boundary-qa.cjs` — page-hook program handoff; pure Node, allowed.
 - `npm run typecheck` — `tsc --noEmit` with `checkJs`. Needs `npm install` first (`package.json`/`tsconfig.json` are tracked; only `package-lock.json` is gitignored local-only). Only root `*.js` + `*.d.ts` are checked; `tests/` excluded, `qa/*.cjs` never typechecked.
-- `node qa/extension-qa.cjs` - popup/content-script flow. **BANNED from execution (see Audio Safety).**
-- `node qa/responsive-normalizer-qa.cjs` - AudioWorklet loud/quiet/burst/toggle scenarios. **BANNED from execution (see Audio Safety): launches Chromium and plays audio via a real AudioContext.**
-- QA loads Playwright from hardcoded Scoop path; override with `TN_PLAYWRIGHT_PATH`. `TN_QA_HEADLESS=0` for visible browser (default headless). **Do not run either QA script - see Audio Safety.**
 
 ## Audio Safety (permanent)
 - **No audio playback in any test, ever.** Never launch a Chromium instance that can produce sound: no autoplay, no headed browser, no chrome-devtools/MCP audio or traces, and **not even muted playback as a test**.
-- `qa/responsive-normalizer-qa.cjs` and `qa/extension-qa.cjs` are **banned from execution** - they launch Chromium and drive an oscillator/AudioContext.
 - All audio verification is **silent**: static/code checks plus offline numeric analysis of captured sample buffers, run in Node with no browser and no audio device (e.g. a worklet DSP simulation harness that stubs `AudioWorkletProcessor`/`registerProcessor`/`sampleRate` and calls `process()` on synthetic `Float32Array` blocks).
 - If a browser-based audio check is truly unavoidable, **STOP and escalate for explicit user approval** before launching anything.
 
