@@ -306,8 +306,8 @@ test("one tab per source produces two simultaneous activities, WATCHING and LIST
   assert.equal(youtube.activity.name, "YouTube");
   assert.equal(youtube.activity.details, "Big Buck Bunny");
   assert.equal(music.activity.type, 2);
-  assert.equal(music.activity.name, "YouTube Music");
-  assert.equal(music.activity.state, "An Artist — An Album");
+  assert.equal(music.activity.name, "An Artist");
+  assert.equal(music.activity.state, "An Album");
   assert.equal(typeof youtube.id, "string");
   assert.notEqual(youtube.id, music.id);
 });
@@ -460,7 +460,7 @@ test("the status payload carries both activities and is persisted for the popup"
 
   const persisted = chrome.writes.filter((write) => write[STATUS_KEY]).at(-1);
   assert.ok(persisted, "status is written to extension storage");
-  assert.equal(persisted[STATUS_KEY].activities["youtube-music"].state, "An Artist — An Album");
+  assert.equal(persisted[STATUS_KEY].activities["youtube-music"].state, "An Album");
 });
 
 test("a stored application id replaces the built-in one and reconnects", async () => {

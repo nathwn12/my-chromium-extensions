@@ -62,10 +62,10 @@ test("a YouTube watch page becomes a WATCHING card", () => {
 test("a YouTube Music track becomes a LISTENING card", () => {
   const activity = buildActivity("youtube-music", musicState(), NOW);
   assert.deepEqual(activity, {
-    name: "YouTube Music",
+    name: "An Artist",
     type: 2,
     details: "A Song",
-    state: "An Artist — An Album",
+    state: "An Album",
     assets: {
       large_image: "https://lh3.googleusercontent.com/cover",
       large_text: "An Album",
@@ -78,14 +78,22 @@ test("a YouTube Music track becomes a LISTENING card", () => {
   });
 });
 
-test("the album is optional and the artist falls back to the source label", () => {
+test("the album is optional and the artist names the card", () => {
   const withArtist = buildActivity("youtube-music", musicState({ album: null }), NOW);
-  assert.equal(withArtist.state, "An Artist");
+  assert.equal(withArtist.name, "An Artist");
+  assert.equal(withArtist.state, "YouTube Music");
   assert.equal(withArtist.assets.large_text, "A Song");
 
   const bare = buildActivity("youtube-music", musicState({ channel: null, album: null, artworkUrl: null }), NOW);
+  assert.equal(bare.name, "YouTube Music");
   assert.equal(bare.state, "YouTube Music");
   assert.equal("assets" in bare, false);
+});
+
+test("without an artist the Music card keeps the source label and the old state", () => {
+  const activity = buildActivity("youtube-music", musicState({ channel: null }), NOW);
+  assert.equal(activity.name, "YouTube Music");
+  assert.equal(activity.state, "YouTube Music — An Album");
 });
 
 test("the channel falls back to the source label for YouTube", () => {

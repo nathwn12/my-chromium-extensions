@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "YouTube Presence",
   "short_name": "YouTube Presence",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Show what you're watching on YouTube and YouTube Music as Discord rich presence.",
   "minimum_chrome_version": "120",
   "permissions": [

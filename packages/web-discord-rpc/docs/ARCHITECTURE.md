@@ -77,10 +77,10 @@ The host sends one `SET_ACTIVITY` per source connection as `{cmd: "SET_ACTIVITY"
 
 | Field | Value | Limit |
 | --- | --- | --- |
-| `name` | `YouTube` or `YouTube Music` | overrides the Discord application label |
+| `name` | `YouTube`, or the track artist on Music (`YouTube Music` without one) | overrides the Discord application label; Discord renders the header and status from it |
 | `type` | `3` (YouTube WATCHING), `2` (Music LISTENING) | must be exactly the source's type |
 | `details` | video/track title | 2–128 chars, whitespace-collapsed |
-| `state` | channel/artist, or `channel — album` on Music | 2–128 chars |
+| `state` | channel; on Music the album when the artist names the card, else `channel — album` or the label | 2–128 chars |
 | `timestamps.start` | `floor(now/1000)*1000 − floor(position)*1000` | integer epoch ms, whole seconds |
 | `timestamps.end` | `start + floor(duration)*1000`, position clamped to `[0, duration]` | integer, `end > start` |
 | `assets.large_image` | page `https` artwork URL | omitted without one |

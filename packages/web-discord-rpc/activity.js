@@ -5,7 +5,7 @@
  * SET_ACTIVITY payload for that source, or null when there is nothing worth
  * showing. YouTube becomes WATCHING (type 3), YouTube Music LISTENING (type 2);
  * `name` overrides the Discord application label so one application ID serves
- * both.
+ * both, and on Music it is the track's artist when one resolved.
  *
  * Rules live here, not in the worker: text limits, the source-hosted button,
  * and the timestamp maths are all decided in one place and proved by
@@ -65,12 +65,18 @@ export function buildActivity(source, state, now = Date.now()) {
 
   const channel = clampText(state.channel);
   const album = source === SOURCE_YOUTUBE_MUSIC ? clampText(state.album) : null;
-  const stateLine = album
+
+  // Music names the card after the artist: Discord renders the header and the
+  // status line from `name`, so the static source label would hide the artist
+  // the state line no longer carries. Without an artist the old shape stands.
+  const artist = source === SOURCE_YOUTUBE_MUSIC ? channel : null;
+  const labelledState = album
     ? clampText(`${channel || meta.label} — ${album}`)
     : channel || meta.label;
+  const stateLine = artist ? album || meta.label : labelledState;
 
   const activity = {
-    name: meta.name,
+    name: artist || meta.name,
     type: meta.type,
     details,
     state: stateLine,
