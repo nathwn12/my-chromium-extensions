@@ -128,7 +128,7 @@ arRPC frame: plain JSON text over `ws://127.0.0.1:<port>/?v=1&client_id=<id>`. T
 | 4 | Open Graph | `meta[property="og:title"]` | title text |
 | 5 | Document title | `<title>` minus ` - YouTube Music` / ` - YouTube` / ` | YouTube` suffixes | title fallback |
 
-Eligibility: the URL must be `https:` on a YouTube host **and** carry a watch media id (`?v=` 11-char id, or `/shorts|embed|live|v/` path). Otherwise `read` returns `null` and the content script clears the tab. Only the `video` element contributes playback fields (`currentTime`, `duration`, `paused`, `playbackRate`).
+Eligibility: the URL must be `https:` on a YouTube host, and on YouTube (`RULES.eligibility.requiresMediaId` is `["youtube"]`) it must also carry a watch media id (`?v=` 11-char id, or `/shorts|embed|live|v/` path); YouTube Music is eligible on any `https://music.youtube.com/...` page once a title resolves from mediaSession, the player bar, JSON-LD, og:title or the document title, and its `mediaId` is then `null`. Otherwise `read` returns `null` and the content script clears the tab. Only the `video` element contributes playback fields (`currentTime`, `duration`, `paused`, `playbackRate`).
 
 Precedence (verified in `extract-youtube.js`): YouTube prefers DOM title → session → JSON-LD → OG → document title, with `og:image` beating the lower-resolution MediaSession art; Music prefers session → DOM → JSON-LD → OG → document title, with session art first.
 
@@ -140,7 +140,7 @@ The content script runs with `all_frames: true` but only the top frame may repor
 - `wdr-gone` with `scope: "tab"` deletes the whole tab entry at once (pagehide, navigation that loses the player: `content.js` sends it when the URL stops being a watch URL, or on YouTube Music when no title resolves). Tab close deletes the entry via `tabs.onRemoved` → the worker's `handleTabRemoved` path.
 - Across tabs for one source, a playing tab beats a paused one; ties go to the newest report. A title that is not showable (under 2 chars after cleanup) never wins.
 - A tab that has not reported for 30 min (`TAB_TTL_MS`) is treated as closed.
-- The worker recomputes the desired activity after every report, tab close, alarm, reconnect, or storage change. `push` sends through the source limiter only when the bridge is `connected`; otherwise the desired value waits and the next `status connected` replays it.
+- The worker recomputes the desired activity after every report, tab close, alarm, reconnect, or storage change. `push` sends through the source limiter while the bridge is `connected`, `connecting` or `waiting` (`SENDABLE_BRIDGE_STATES`); `idle` and `error` stay silent, and each `status connected` resets every source limiter and replays its desired value.
 
 ## Recovery
 
