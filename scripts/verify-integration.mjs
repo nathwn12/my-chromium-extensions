@@ -5,9 +5,18 @@
 // Usage: node scripts/verify-integration.mjs [--prove-red]
 //   --prove-red runs the predicates against broken fixtures and exits 0 only
 //   when every predicate fails there (proves each check can go red).
-import { mkdtempSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import {
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 let ROOT = process.env.WDR_VERIFY_ROOT
@@ -53,53 +62,97 @@ function collectTests(dir) {
 // path is exempt from the ban, this one included.
 const PW = "play" + "wright";
 const PLAYWRIGHT = [PW, `${PW}-core`, `@${PW}/test`];
-const SOURCE_FILE = /\.(?:c|m)?js$|\.(?:c|m)?ts$/;
 const PLAYWRIGHT_SPECIFIER =
   /["'](?:@playwright\/test|playwright-core|playwright)(?:\/[^"']*)?["']/;
 
+// Directories that hold state or dependencies rather than source: node_modules
+// is installed output, .git is history, .stack is this workbench's own notes
+// (which discuss the ban and must not be mistaken for an import).
+const SCAN_EXCLUDED_DIRS = new Set(["node_modules", ".git", ".stack"]);
+
+// Assets a specifier cannot be written in, and which read as noise in UTF-8:
+// images, web fonts, archives and PDFs. Everything else is source.
+const SCAN_ASSET_EXTENSIONS = new Set([
+  ".png", ".ico", ".jpg", ".jpeg", ".gif", ".webp",
+  ".woff", ".woff2", ".ttf", ".zip", ".pdf",
+]);
+
+// Every path a commit would carry: tracked files plus untracked files that no
+// ignore rule covers. Ignored output (installed packages, media fixtures,
+// stale per-package lockfiles) is not repository source, and git is the only
+// authority on which is which -- no path is exempted by name here.
+function commitSurface() {
+  const raw = execFileSync(
+    "git",
+    ["-C", ROOT, "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+    { encoding: "utf8", maxBuffer: 64 * 1024 * 1024, windowsHide: true }
+  );
+  return new Set(raw.split("\0").filter(Boolean));
+}
+
+// Strict walk: no catch. An unreadable directory or entry throws, and the
+// error carries the path, so the scan fails by name instead of passing.
 function walk(dir, out = []) {
-  let entries;
-  try {
-    entries = readdirSync(dir);
-  } catch {
-    return out;
-  }
-  for (const entry of entries) {
-    if (entry === "node_modules" || entry === ".git" || entry === ".stack") continue;
+  for (const entry of readdirSync(dir).sort()) {
+    if (SCAN_EXCLUDED_DIRS.has(entry)) continue;
     const full = join(dir, entry);
-    let st;
-    try {
-      st = statSync(full);
-    } catch {
-      continue;
-    }
+    const st = statSync(full);
     if (st.isDirectory()) walk(full, out);
-    else out.push(full);
+    else if (!SCAN_ASSET_EXTENSIONS.has(extname(entry).toLowerCase()))
+      out.push(full);
   }
   return out;
 }
 
 // Every file the ban can appear in: the manifests that declare it, the sources
-// that import it, and the CI steps that would install it.
+// that import it, and the CI steps that would install it. The tree walk decides
+// what exists on disk; the commit surface decides what is source.
 function collectPlaywrightSurface() {
+  const scan = { walked: 0, files: 0, failures: [] };
+  let surface = new Set();
+  try {
+    surface = commitSurface();
+  } catch (error) {
+    scan.failures.push({
+      path: ROOT,
+      reason: `git ls-files: ${error?.code ?? error?.message ?? error}`,
+    });
+  }
+  const paths = [];
+  try {
+    walk(ROOT, paths);
+  } catch (error) {
+    scan.failures.push({
+      path: error?.path ?? ROOT,
+      reason: error?.code ?? String(error?.message ?? error),
+    });
+  }
+  scan.walked = paths.length;
   const manifests = [];
   const sources = [];
-  for (const full of walk(ROOT)) {
+  for (const full of paths) {
     const path = full.slice(ROOT.length + 1).replace(/\\/g, "/");
+    if (!surface.has(path)) continue;
+    scan.files += 1;
+    let text;
+    try {
+      text = readFileSync(full, "utf8");
+    } catch (error) {
+      scan.failures.push({ path, reason: error?.code ?? String(error?.message ?? error) });
+      continue;
+    }
+    sources.push({ path, text });
     if (/(^|\/)package\.json$/.test(path)) {
       let pkg = null;
       try {
-        pkg = JSON.parse(read(path) ?? "null");
+        pkg = JSON.parse(text);
       } catch {
         pkg = null;
       }
       manifests.push({ path, pkg });
     }
-    if (SOURCE_FILE.test(path) || path.startsWith(".github/workflows/")) {
-      sources.push({ path, text: read(path) ?? "" });
-    }
   }
-  return { manifests, sources };
+  return { manifests, sources, scan };
 }
 
 function zipFiles(release) {
@@ -273,6 +326,14 @@ const predicates = {
     }
     return bad.length === 0 ? true : `lockfile names Playwright: ${bad.join(", ")}`;
   },
+  "the Playwright scan reads every source file": ({ scan }) => {
+    if (!scan || !Array.isArray(scan.failures)) return "the scan did not report itself";
+    if (scan.failures.length > 0)
+      return `unreadable: ${scan.failures
+        .map(({ path, reason }) => `${path} (${reason})`)
+        .join("; ")}`;
+    return scan.files > 0 ? true : "no source file was read";
+  },
   "no source or CI step imports Playwright": ({ sources }) => {
     if (!sources) return "no sources were read";
     const bad = sources
@@ -356,6 +417,38 @@ if (process.argv.includes("--prove-red")) {
   const realRoot = ROOT;
   const emptyRoot = mkdtempSync(join(tmpdir(), "wdr-verify-red-"));
   let bad = 0;
+  // The walker must see the file types the old .js/.ts filter missed. Plant a
+  // quoted specifier in an .html file inside the real tree, watch the real scan
+  // fail by name, then remove it so the tree is left as it was found.
+  const plantedDir = mkdtempSync(join(realRoot, ".prove-red-scan-"));
+  const plantedFile = join(plantedDir, "planted.html");
+  const plantedRel = plantedFile.slice(realRoot.length + 1).replace(/\\/g, "/");
+  writeFileSync(
+    plantedFile,
+    ["<script type=\"module\">import { chromium } from '", PW, "-core';</script>\n"].join("")
+  );
+  let plantedResult;
+  try {
+    plantedResult = predicates["no source or CI step imports Playwright"](
+      collectPlaywrightSurface()
+    );
+  } finally {
+    rmSync(plantedDir, { recursive: true, force: true });
+  }
+  if (plantedResult !== true && String(plantedResult).includes(plantedRel)) {
+    console.log(`prove-red: a planted .html specifier -> red by name (${plantedRel})`);
+  } else {
+    console.error(
+      `PROVE-RED FAIL: a planted .html specifier did not fail by name: ${String(plantedResult)}`
+    );
+    bad += 1;
+  }
+  if (existsSync(plantedDir)) {
+    console.error(`PROVE-RED FAIL: the planted fixture was not removed: ${plantedDir}`);
+    bad += 1;
+  } else {
+    console.log("prove-red: the planted .html fixture was removed, tree unchanged");
+  }
   for (const name of names) {
     let checkCtx = ctx;
     if (name === "every file in the release zip step exists") {
@@ -374,6 +467,19 @@ if (process.argv.includes("--prove-red")) {
         sources: [
           { path: "packages/crunchy-presence/scripts/e2e-live.mjs", text: planted },
         ],
+      };
+    }
+    if (name === "the Playwright scan reads every source file") {
+      // An unreadable path must fail by name, not pass silently.
+      checkCtx = {
+        ...ctx,
+        scan: {
+          walked: 4,
+          files: 3,
+          failures: [
+            { path: "packages/audio-normalizer/locked", reason: "EACCES" },
+          ],
+        },
       };
     }
     if (name === "README lists every package once") {
@@ -425,6 +531,11 @@ if (process.argv.includes("--prove-red")) {
 }
 
 const ctx = loadContext();
+console.log(
+  `scan: ${ctx.scan.files} tracked source files read from ${ctx.scan.walked} on disk ` +
+    `(${ctx.sources.filter(({ path }) => path.endsWith(".html")).length} .html); ` +
+    `${ctx.scan.failures.length} unreadable`
+);
 const failures = [];
 for (const name of names) {
   let result = false;
