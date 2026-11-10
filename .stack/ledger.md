@@ -132,3 +132,13 @@ Append-only. Newest at the bottom. The digest is derived from here.
 - 2026-11-10T22:17:52.954Z · AUDIT · youtube-presence-settings@b632283 PASS — final-wave audit item 4 plus limiter regression; both flags default on, Music first
 - 2026-11-10T22:17:52.955Z · AUDIT · youtube-presence-ui@b1d36cc PASS — final-wave audit items 2 and 3: UI order/toggles and README versions; diff inside brief
 - 2026-11-10T22:17:52.956Z · AUDIT · sort-root-docs@51b5797 PASS — final-wave audit item 3: four rows at manifest versions; diff inside brief
+- 2026-11-10T22:18:16.490Z · LESSON · A guard must scan what a commit would carry, and any publish path that bypasses a limiter must reset it, because the queue outlives the clear.
+- 2026-11-10T22:18:16.953Z · CLOSE · GO at 6103f82 on main: 7 check(s) green, atlas not configured, armed written
+- 2026-11-10T22:39:37.293Z · INTAKE · options page stuck at Waiting for Discord to respond though DiscordCanary answers the pipe: worker withholds activities until CONNECTED but host only connects on activity (deadlock), and discord-closed is not a worker reason (mislabel)
+- 2026-11-10T22:39:37.603Z · BRIEF · wrote wdr-stuck-waiting: worker sends desired activities before connected
+- 2026-11-10T22:47:48.900Z · RED · wdr-stuck-waiting: NO-GO
+- 2026-11-10T22:50:04.564Z · READY · wdr-stuck-waiting: GO
+- 2026-11-10T22:50:11.522Z · LANDED · wdr-stuck-waiting behind 2026-11-10T22:50:04.564Z
+- 2026-11-10T22:50:11.523Z · LANDED · wdr-stuck-waiting
+- 2026-11-10T22:50:11.524Z · LANDED · wdr-stuck-waiting 396eaa3: desired handed over while connecting/waiting, hello announces connecting, discord-closed is a worker reason; 69 file-level + 536 repo tests, verifier 16/16, both selftests, e2e 8/8 + 7/7; ready GO
+- 2026-11-10T22:50:11.525Z · AUDIT · wdr-stuck-waiting@396eaa3 PASS - lead-reconciled (not independent): diff read (6 paths inside brief), red tests name each defect, all checks re-run green by the lead at this tree; one Unverified: no live-Chrome card observed
