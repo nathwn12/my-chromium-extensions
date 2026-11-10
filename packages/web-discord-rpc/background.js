@@ -572,6 +572,10 @@ export function createWorker({
     }
     desired.set(source, null);
     persist();
+    // The limiter may still hold a payload and a timer from earlier reports;
+    // reset it before the clear so nothing queued can republish the site after it.
+    const limiter = limiters.get(source);
+    if (limiter) limiter.reset();
     deliver(source, null);
   }
 

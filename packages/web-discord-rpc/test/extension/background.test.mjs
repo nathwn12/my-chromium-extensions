@@ -5,6 +5,7 @@ import { DEFAULT_CLIENT_ID } from "../../config.js";
 import {
   ALARM_NAME,
   BACKOFF_MIN_MS,
+  MAX_UPDATES,
   SESSION_TABS_KEY,
   SOURCES,
   TAB_TTL_MS,
@@ -795,4 +796,36 @@ test("a start clears a disabled site the last session left published", async () 
   assert.equal(frames.length, 1, "the disabled site's stale presence is removed");
   assert.equal(frames[0].source, "youtube");
   assert.equal(frames[0].activity, null);
+});
+
+test("turning a site off cancels its queued update so the clear stays last", async () => {
+  const { chrome, clock, port } = await boot();
+  connect(port);
+
+  // Exhaust the per-source budget so the next payload waits in the limiter,
+  // exactly as a burst of media reports leaves it.
+  for (let position = 1; position <= 10; position += 1) {
+    sendState(chrome, 1, "youtube", youtubeState({ position }));
+  }
+  const sent = activities(port).filter((frame) => frame.source === "youtube");
+  assert.equal(sent.length, MAX_UPDATES, "the budget is spent");
+  assert.ok(sent.at(-1).activity, "the last frame before the switch is a real activity");
+  assert.equal(clock.pending, 1, "one deferred flush is armed with a queued payload");
+
+  chrome.storage.onChanged.fire({ youtubeEnabled: { newValue: false } }, "local");
+  assert.equal(activities(port).at(-1).activity, null, "the clear is delivered at once");
+
+  // Fire whatever the limiter left behind: a reset cancels that timer, so
+  // nothing can republish the site after the clear.
+  clock.advance(25000);
+
+  const frames = activities(port);
+  const clearAt = frames.findIndex((frame) => frame.source === "youtube" && frame.activity === null);
+  assert.ok(clearAt >= 0, "the clear was delivered");
+  assert.deepEqual(
+    frames.slice(clearAt + 1).filter((frame) => frame.source === "youtube"),
+    [],
+    "no queued activity resurfaces after the clear"
+  );
+  assert.equal(frames.at(-1).activity, null);
 });
