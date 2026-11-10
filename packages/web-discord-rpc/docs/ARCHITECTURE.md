@@ -165,4 +165,4 @@ The content script runs with `all_frames: true` but only the top frame may repor
 | Local only | No account, no sync, no history. Presence exists only while this machine runs Chrome, the host, and Discord or arRPC. |
 | Shorts/embeds | Any URL with a media id is eligible, including Shorts and embeds; there is no watch-only filter beyond the id. |
 | Sleep | A sleeping tab stops producing events; the 1 s poll and the 30 s watchdog restore state on wake. |
-| Unknown pages | A page with no media id reports nothing, so the activity clears rather than guessing. |
+| Unknown pages | A YouTube page with no media id reports nothing; a music page reports only once a title resolves; otherwise the activity clears rather than guessing. |

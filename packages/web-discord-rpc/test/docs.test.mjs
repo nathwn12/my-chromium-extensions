@@ -115,6 +115,17 @@ test("changelogs speak to the reader with dates", () => {
   assert.match(crLog, /arRPC/i, "crunchy CHANGELOG names the fallback");
 });
 
+test("unknown pages name the per-host rule and the sendable bridge states", () => {
+  assert.ok(arch.includes("YouTube Music is eligible on any `https://music.youtube.com/...` page once a title resolves"),
+    "ARCHITECTURE says music is eligible on any page once a title resolves");
+  assert.ok(arch.includes("`connected`, `connecting` or `waiting` (`SENDABLE_BRIDGE_STATES`)"),
+    "ARCHITECTURE names the sendable bridge states");
+  assert.ok(!arch.includes("A page with no media id reports nothing"),
+    "ARCHITECTURE no longer claims an unknown page reports nothing");
+  assert.ok(!arch.includes("only when the bridge is `connected`"),
+    "ARCHITECTURE no longer narrows pushes to the connected bridge alone");
+});
+
 test("install doc quotes the real host name and extension id", () => {
   assert.equal(HOST_NAME, "com.nathwn12.web_discord_rpc", "code: host name is pinned");
   assert.match(install, /com\.nathwn12\.web_discord_rpc/, "INSTALL names the host");
