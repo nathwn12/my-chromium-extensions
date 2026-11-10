@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Web Discord RPC</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main class="popup">
+      <header>
+        <img src="icons/icon24.png" alt="" width="24" height="24" />
+        <h1>Web Discord RPC</h1>
+        <span
+          id="bridge"
+          class="pill"
+          data-state="unknown"
+          data-tone="waiting"
+          role="status"
+          aria-live="polite"
+          >Not connected</span
+        >
+      </header>
+
+      <ul id="sources" class="sources" aria-label="Presence by site">
+        <li class="source" data-source="youtube">
+          <h2 class="source-name">YouTube</h2>
+          <p id="youtube-activity" class="now">Nothing playing</p>
+          <p id="youtube-detail" class="detail"></p>
+        </li>
+        <li class="source" data-source="youtube-music">
+          <h2 class="source-name">YouTube Music</h2>
+          <p id="youtube-music-activity" class="now">Nothing playing</p>
+          <p id="youtube-music-detail" class="detail"></p>
+        </li>
+      </ul>
+
+      <p id="reason" class="reason" role="status" aria-live="polite" hidden></p>
+
+      <label class="toggle" for="enabled">
+        <input id="enabled" type="checkbox" role="switch" aria-describedby="reason" />
+        <span>Active</span>
+      </label>
+
+      <footer>
+        <a id="open-options" href="options.html">Settings</a>
+      </footer>
+    </main>
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>
