@@ -19,6 +19,7 @@ import {
   encodeDiscordFrame,
   encodeNativeMessage,
 } from './ipc.mjs';
+import { ArRpcClient } from './arrpc.mjs';
 import { statusMessage, validateActivity, validateMessage } from './protocol.mjs';
 import { classifyBridgeFailure } from '../bridge-status.js';
 
@@ -39,14 +40,35 @@ export class Host {
     this.retryTimer = null;
     this.retryDelay = CONNECT_RETRY_START;
 
+    // Which transport this process is on. `preference` is what the extension
+    // asked for; `transport` is what was actually chosen and is what the status
+    // frame reports.
+    this.preference = null;
+    this.transport = null;
+
     this.logger = {
       info: (line) => this.log(line),
       warn: (line) => this.log(line),
       error: (line) => this.log(line),
       status: (status) => this.emitStatus(status),
     };
-    this.makeClient =
-      options.makeClient ?? ((clientId) => new DiscordPipeClient({ clientId, logger: this.logger }));
+    this.defaultIpc = (clientId) => new DiscordPipeClient({ clientId, logger: this.logger });
+    this.defaultArrpc = (clientId) => new ArRpcClient({ clientId, logger: this.logger });
+    this.makeClient = options.makeClient ?? this.defaultIpc;
+    this.makeArrpc = options.makeArrpc ?? this.defaultArrpc;
+  }
+
+  /**
+   * The wire resolves one client per preference. `ipc` and `arrpc` are forced;
+   * `auto` starts on Discord IPC, the primary desktop path, and only reaches
+   * arRPC through `connectClient`'s fallback. An `auto` host narrowed to a
+   * custom IPC client and no custom arRPC factory has no fallback to make, so
+   * it can never probe the network behind an embedder's back. Measured per
+   * hello because a caller may assign `makeClient` after construction (the
+   * existing host tests do).
+   */
+  arrpcWired() {
+    return this.makeClient === this.defaultIpc || this.makeArrpc !== this.defaultArrpc;
   }
 
   /* ------------------------------------------------------------------ io */
@@ -67,6 +89,7 @@ export class Host {
           code: status.code,
           // A transient diagnostic never becomes a permanent error.
           fatal: status.fatal !== false,
+          transport: this.transport ?? undefined,
         }),
       );
       return;
@@ -80,11 +103,18 @@ export class Host {
         statusMessage('waiting', {
           detail: status.detail,
           reason: status.reason ?? classifyBridgeFailure(status?.detail).kind,
+          transport: this.transport ?? undefined,
         }),
       );
       return;
     }
-    this.write(statusMessage('connected', { appName: status?.appName, user: status?.user }));
+    this.write(
+      statusMessage('connected', {
+        appName: status?.appName,
+        user: status?.user,
+        transport: this.transport ?? undefined,
+      }),
+    );
   }
 
   /** Write the neutral waiting frame for a non-fatal connect failure. */
@@ -95,6 +125,7 @@ export class Host {
           detail: error.message,
           code: error.code ?? null,
           fatal: true,
+          transport: this.transport ?? undefined,
         }),
       );
       return;
@@ -106,6 +137,7 @@ export class Host {
       statusMessage('waiting', {
         detail,
         reason: verdict.kind,
+        transport: this.transport ?? undefined,
       }),
     );
   }
@@ -159,25 +191,45 @@ export class Host {
   }
 
   async onHello(message) {
-    if (this.client && this.client.clientId !== message.clientId) {
+    // Missing transport means "auto": Discord IPC first, arRPC as the fallback.
+    const preference = message.transport ?? 'auto';
+    const sameClient =
+      this.client &&
+      !this.client.closed &&
+      this.client.clientId === message.clientId &&
+      this.preference === preference;
+    if (this.client && !sameClient) {
       this.client.close();
       this.client = null;
+      this.transport = null;
     }
-    if (this.client?.closed) this.client = null;
-    if (!this.client) this.client = this.makeClient(message.clientId);
+    this.preference = preference;
+    if (!this.client && !this.createClient(message.clientId)) {
+      this.transport = 'arrpc';
+      this.log('arrpc transport requested, but this host has no arRPC client wired');
+      this.write(
+        statusMessage('waiting', {
+          detail: 'arRPC transport is not wired in this host',
+          reason: 'arrpc-closed',
+          transport: 'arrpc',
+        }),
+      );
+      return;
+    }
 
     if (this.client.ready) {
       this.write(
         statusMessage('connected', {
           appName: this.client.appName ?? 'Discord',
           user: this.client.user ?? '',
+          transport: this.transport,
         }),
       );
       return;
     }
 
     try {
-      await this.client.connect();
+      await this.connectClient(message.clientId);
     } catch (error) {
       this.emitFailure(error);
       // A permanent handshake rejection (invalid client id) never recovers
@@ -195,6 +247,7 @@ export class Host {
         statusMessage('connected', {
           appName: this.client.appName ?? 'Discord',
           user: this.client.user ?? '',
+          transport: this.transport,
         }),
       );
       return;
@@ -204,8 +257,51 @@ export class Host {
       statusMessage('connected', {
         appName: result.appName ?? this.client.appName ?? 'Discord',
         user: this.client.user ?? '',
+        transport: this.transport,
       }),
     );
+  }
+
+  /** Build the client for the resolved preference and record the transport. */
+  createClient(clientId) {
+    if (this.preference === 'arrpc') {
+      if (!this.arrpcWired()) return false;
+      this.client = this.makeArrpc(clientId);
+      this.transport = 'arrpc';
+      return true;
+    }
+    // `ipc`, and the primary leg of `auto`: desktop Discord over the pipe.
+    this.client = this.makeClient(clientId);
+    this.transport = 'discord-ipc';
+    return true;
+  }
+
+  /**
+   * Connect the chosen client. Under `auto` an unavailable Discord IPC falls
+   * back to arRPC once per hello; the forced preferences never fall back, so
+   * the caller's catch reports the absence. When both are absent the primary
+   * failure is the one reported, so a desktop user still reads "Discord is not
+   * running" rather than an arRPC diagnostic.
+   */
+  async connectClient(clientId) {
+    try {
+      await this.client.connect();
+    } catch (error) {
+      if (this.preference !== 'auto' || this.transport !== 'discord-ipc') throw error;
+      if (!this.arrpcWired()) throw error;
+      this.log(`discord ipc unavailable (${error.message}); trying arrpc`);
+      const fallback = this.makeArrpc(clientId);
+      try {
+        await fallback.connect();
+      } catch (secondary) {
+        fallback.close();
+        this.log(`arrpc unavailable (${secondary.message})`);
+        throw error;
+      }
+      this.client.close();
+      this.client = fallback;
+      this.transport = 'arrpc';
+    }
   }
 
   async onActivity(message) {
@@ -255,6 +351,7 @@ export class Host {
             statusMessage('connected', {
               appName: this.client.appName ?? 'Discord',
               user: this.client.user ?? '',
+              transport: this.transport,
             }),
           );
           return;
@@ -265,6 +362,7 @@ export class Host {
           statusMessage('connected', {
             appName: result.appName ?? this.client.appName ?? 'Discord',
             user: this.client.user ?? '',
+            transport: this.transport,
           }),
         );
       }).catch((error) => this.log(`connect retry failed: ${error.message}`));
@@ -457,6 +555,7 @@ export async function selftest() {
     JSON.stringify(status ?? null),
   );
   record('hello-skips-clear', fake.state.frames.length === 0, `${fake.state.frames.length} frames`);
+  record('hello-transport-ipc', status?.transport === 'discord-ipc', JSON.stringify(status ?? null));
   connected = status?.state === 'connected';
 
   await host.handle({ t: 'activity', id: 'n1', activity: { type: 3, details: 'Episode 1' } });
@@ -481,6 +580,140 @@ export async function selftest() {
   record('handshake-once', fake.state.handshakes === 1, `${fake.state.handshakes} handshakes`);
   host.client?.close();
   if (!connected) record('connected', false, 'host never reported connected');
+
+  // 4. Transport selection: auto uses Discord IPC when it is available, falls
+  //    back to arRPC only when IPC is absent, and a forced transport never
+  //    falls back.
+  const transportRun = async (preference, { ipcFails = false, arrpcFails = false } = {}) => {
+    const out = new Capture();
+    const created = [];
+    const clientId = '123456789012345678';
+    const fakeArrpc = {
+      clientId,
+      ready: false,
+      closed: false,
+      appName: null,
+      user: null,
+      async connect() {
+        if (arrpcFails) throw new Error('arrpc is not listening on 127.0.0.1');
+        this.ready = true;
+        this.user = 'arrpc';
+        return { ok: true, port: 6463, user: 'arrpc' };
+      },
+      async setActivity() {
+        return { ok: true, appName: 'Discord' };
+      },
+      close() {
+        this.closed = true;
+        created.push('arrpc.close');
+      },
+    };
+    const fakeIpc = {
+      clientId,
+      ready: false,
+      closed: false,
+      appName: 'Discord',
+      user: 'selftest',
+      async connect() {
+        if (ipcFails) throw new Error('connect ENOENT \\\\.\\pipe\\discord-ipc-0');
+        this.ready = true;
+        return { ok: true };
+      },
+      async setActivity() {
+        return { ok: true, appName: 'Discord' };
+      },
+      close() {
+        this.closed = true;
+        created.push('ipc.close');
+      },
+    };
+    const probe = new Host({
+      stdout: out,
+      stderr: { write: () => {} },
+      onExit: () => {},
+      makeClient: () => {
+        created.push('ipc.create');
+        return fakeIpc;
+      },
+      makeArrpc: () => {
+        created.push('arrpc.create');
+        return fakeArrpc;
+      },
+    });
+    await probe.handle({
+      t: 'hello',
+      clientId,
+      ...(preference === undefined ? {} : { transport: preference }),
+    });
+    probe.shutdown(0);
+    return {
+      created,
+      status: out.decode().filter((message) => message.t === 'status').at(-1),
+    };
+  };
+
+  const autoIpc = await transportRun(undefined);
+  record(
+    'transport-auto-prefers-ipc',
+    autoIpc.status?.state === 'connected' &&
+      autoIpc.status?.transport === 'discord-ipc' &&
+      autoIpc.status?.user === 'selftest' &&
+      !autoIpc.created.includes('arrpc.create'),
+    JSON.stringify(autoIpc.status ?? null),
+  );
+
+  const autoFallback = await transportRun(undefined, { ipcFails: true });
+  record(
+    'transport-auto-falls-back-to-arrpc',
+    autoFallback.status?.state === 'connected' &&
+      autoFallback.status?.transport === 'arrpc' &&
+      autoFallback.status?.user === 'arrpc' &&
+      autoFallback.created.includes('ipc.close') &&
+      autoFallback.created.includes('arrpc.create'),
+    JSON.stringify(autoFallback.status ?? null),
+  );
+
+  const strictArrpc = await transportRun('arrpc', { arrpcFails: true });
+  record(
+    'transport-arrpc-never-falls-back',
+    strictArrpc.status?.state === 'waiting' &&
+      strictArrpc.status?.reason === 'arrpc-closed' &&
+      strictArrpc.status?.transport === 'arrpc' &&
+      !strictArrpc.created.includes('ipc.create'),
+    JSON.stringify(strictArrpc.status ?? null),
+  );
+
+  const explicitIpc = await transportRun('ipc');
+  record(
+    'transport-ipc-skips-arrpc',
+    explicitIpc.status?.state === 'connected' &&
+      explicitIpc.status?.transport === 'discord-ipc' &&
+      !explicitIpc.created.includes('arrpc.create'),
+    JSON.stringify(explicitIpc.status ?? null),
+  );
+
+  // A forced ipc with no Discord must wait, not silently become the arRPC
+  // fallback: only `auto` may cross transports.
+  const strictIpc = await transportRun('ipc', { ipcFails: true });
+  record(
+    'transport-ipc-never-falls-back',
+    strictIpc.status?.state === 'waiting' &&
+      strictIpc.status?.reason === 'discord-closed' &&
+      strictIpc.status?.transport === 'discord-ipc' &&
+      !strictIpc.created.includes('arrpc.create'),
+    JSON.stringify(strictIpc.status ?? null),
+  );
+
+  // Auto with neither transport: the primary absence is what the user reads.
+  const autoNone = await transportRun(undefined, { ipcFails: true, arrpcFails: true });
+  record(
+    'transport-auto-reports-the-primary-absence',
+    autoNone.status?.state === 'waiting' &&
+      autoNone.status?.reason === 'discord-closed' &&
+      autoNone.status?.transport === 'discord-ipc' &&
+      autoNone.created.includes('arrpc.close'),
+    JSON.stringify(autoNone.status ?? null),
+  );
 
   const ok = checks.every((check) => check.ok);
   return { ok, checks };

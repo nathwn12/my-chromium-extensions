@@ -17,6 +17,8 @@ export const MAX_NATIVE_PAYLOAD = 1024 * 1024;
 export const CLIENT_ID_RE = /^[0-9]{17,20}$/;
 const ASSET_KEY_RE = /^[A-Za-z0-9_:/.-]+$/;
 const MESSAGE_TYPES = new Set(['hello', 'activity', 'ping']);
+const TRANSPORTS = new Set(['auto', 'arrpc', 'ipc']);
+const STATUS_TRANSPORTS = new Set(['arrpc', 'discord-ipc']);
 
 export const isPlainObject = (value) =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -153,6 +155,10 @@ export function validateMessage(message) {
   if (message.t === 'hello') {
     const r = validateClientId(message.clientId);
     if (!r.ok) return r;
+    // Absent means "auto"; anything else must be a transport we can name.
+    if (message.transport !== undefined && !TRANSPORTS.has(message.transport)) {
+      return fail(`message.transport must be one of ${[...TRANSPORTS].join(', ')}`);
+    }
   }
   if (message.t === 'activity') {
     if (!Object.prototype.hasOwnProperty.call(message, 'activity')) {
@@ -169,6 +175,7 @@ export function validateMessage(message) {
 
 export const WAITING_REASONS = Object.freeze([
   'discord-closed',
+  'arrpc-closed',
   'host-missing',
   'rejected',
   'hung',
@@ -181,12 +188,17 @@ export const WAITING_REASONS = Object.freeze([
  * a transient timeout). `error` is reserved for a permanent rejection; `fatal`
  * is explicit so a transient diagnostic can never be promoted to an error by a
  * raw string match on the extension side.
+ *
+ * `transport` names the chosen path once a hello has picked one; it is omitted
+ * on frames written before any transport exists.
  */
 export function statusMessage(state, extra = {}) {
+  const transport = STATUS_TRANSPORTS.has(extra.transport) ? extra.transport : undefined;
   if (state === 'error') {
     return {
       t: 'status',
       state: 'error',
+      ...(transport === undefined ? {} : { transport }),
       detail: typeof extra.detail === 'string' ? extra.detail : 'unknown error',
       code: Number.isInteger(extra.code) ? extra.code : null,
       fatal: extra.fatal !== false,
@@ -196,6 +208,7 @@ export function statusMessage(state, extra = {}) {
     return {
       t: 'status',
       state: 'waiting',
+      ...(transport === undefined ? {} : { transport }),
       reason: WAITING_REASONS.includes(extra.reason) ? extra.reason : 'discord-closed',
       detail: typeof extra.detail === 'string' ? extra.detail : '',
     };
@@ -203,6 +216,7 @@ export function statusMessage(state, extra = {}) {
   return {
     t: 'status',
     state: 'connected',
+    ...(transport === undefined ? {} : { transport }),
     appName: typeof extra.appName === 'string' ? extra.appName : '',
     user: typeof extra.user === 'string' ? extra.user : '',
   };

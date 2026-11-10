@@ -36,6 +36,7 @@ export const BRIDGE = Object.freeze({
 
 export const REASON = Object.freeze({
   DISCORD_CLOSED: "discord-closed",
+  ARRPC_CLOSED: "arrpc-closed",
   HOST_MISSING: "host-missing",
   REJECTED: "rejected",
   HUNG: "hung",
@@ -45,6 +46,8 @@ export const REASON = Object.freeze({
 export const REASON_COPY = Object.freeze({
   [REASON.DISCORD_CLOSED]:
     "Discord is not running — presence paused, resumes automatically.",
+  [REASON.ARRPC_CLOSED]:
+    "The arRPC bridge is not running — presence paused, resumes automatically.",
   [REASON.HOST_MISSING]: "Native host not installed — run the installer.",
   [REASON.REJECTED]:
     "Discord rejected this application ID. Check the application ID in Settings.",
@@ -68,6 +71,9 @@ export const BRIDGE_LABELS = Object.freeze({
 export const HUNG_RETRY_LIMIT = 3;
 
 const PATTERNS = [
+  // arRPC first: its probe failures carry ECONNREFUSED, which would otherwise
+  // read as "Discord is closed" when the truth is "the arRPC bridge is absent".
+  [/arrpc/i, REASON.ARRPC_CLOSED],
   [/no discord ipc pipe found/i, REASON.DISCORD_CLOSED],
   // A missing named pipe surfaces as ENOENT on Windows; a closed Discord
   // listener can surface as ECONNREFUSED/ECONNRESET.
