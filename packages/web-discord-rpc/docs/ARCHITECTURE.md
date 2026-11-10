@@ -137,7 +137,7 @@ Precedence (verified in `extract-youtube.js`): YouTube prefers DOM title → ses
 The content script runs with `all_frames: true` but only the top frame may report; a subframe's state would overwrite the tab's real activity. The worker keys state by `sender.tab.id` per source:
 
 - One record per tab per source: `{state, at, rankAt}`. The newest report wins the tab.
-- `wdr-gone` with `scope: "tab"` deletes the whole tab entry at once (pagehide, non-watch navigation: `content.js` sends it when the URL stops being a watch URL). Tab close deletes the entry via `tabs.onRemoved` → the worker's `handleTabRemoved` path.
+- `wdr-gone` with `scope: "tab"` deletes the whole tab entry at once (pagehide, navigation that loses the player: `content.js` sends it when the URL stops being a watch URL, or on YouTube Music when no title resolves). Tab close deletes the entry via `tabs.onRemoved` → the worker's `handleTabRemoved` path.
 - Across tabs for one source, a playing tab beats a paused one; ties go to the newest report. A title that is not showable (under 2 chars after cleanup) never wins.
 - A tab that has not reported for 30 min (`TAB_TTL_MS`) is treated as closed.
 - The worker recomputes the desired activity after every report, tab close, alarm, reconnect, or storage change. `push` sends through the source limiter only when the bridge is `connected`; otherwise the desired value waits and the next `status connected` replays it.

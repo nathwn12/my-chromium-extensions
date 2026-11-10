@@ -245,6 +245,26 @@ test("YouTube Music prefers mediaSession metadata and drops a lone artist byline
   assert.equal(read(lone.doc, lone.navigator, lone.location).album, null);
 });
 
+test("YouTube Music on Home reports the persistent player without a media id", () => {
+  const page = musicPage({
+    href: "https://music.youtube.com/",
+    title: "PIXELATED KISSES",
+    byline: [node("a", { text: "Joji" }), " • PIXELATED KISSES • 2025"],
+    artwork: "https://lh3.googleusercontent.com/cover=w544-h544",
+    children: [video({ currentTime: 3, duration: 111, paused: false })]
+  });
+  const state = read(page.doc, page.navigator, page.location);
+
+  assert.ok(state, "a Home page whose player bar is playing must not be null");
+  assert.equal(state.title, "PIXELATED KISSES");
+  assert.equal(state.channel, "Joji");
+  assert.equal(state.album, "PIXELATED KISSES");
+  assert.equal(state.mediaId, null);
+  assert.equal(state.pageUrl, "https://music.youtube.com/");
+  assert.equal(state.paused, false);
+  assert.equal(state.duration, 111);
+});
+
 test("JSON-LD is the fallback for title, channel, artwork and duration", () => {
   const page = makePage({
     href: WATCH,

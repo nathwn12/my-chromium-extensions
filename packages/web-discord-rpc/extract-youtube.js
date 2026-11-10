@@ -24,6 +24,15 @@
       "youtube-music": ["music.youtube.com"]
     },
 
+    // A media id is required only for `youtube`, where the watch URL is the sole
+    // page carrying a video (a browse-page h1 is a feed heading).
+    // `youtube-music` keeps one persistent player bar across Home, Explore and
+    // shelves and its SPA never rewrites the URL with `?v=`, so every page on the
+    // host is eligible and a resolved title stands in for the missing id.
+    eligibility: {
+      requiresMediaId: ["youtube"]
+    },
+
     // The <title> suffix the site appends; never part of the media title.
     noise: {
       suffixes: [" - YouTube Music", " - YouTube", " | YouTube"]
@@ -452,9 +461,9 @@
 
     var source = sourceForHref(href);
     if (!source) return null;
-    // A watch/player URL is the only page that can carry an activity.
+    var requiresMediaId = RULES.eligibility.requiresMediaId.indexOf(source) !== -1;
     var mediaId = mediaIdFrom(href);
-    if (!mediaId) return null;
+    if (requiresMediaId && !mediaId) return null;
 
     var video = readVideo(doc);
     var session = readMediaSession(nav);
@@ -479,6 +488,10 @@
       album = (session && session.album) || dom.album;
       artwork = (session && session.artwork) || dom.artwork || (ld && ld.artwork);
     }
+
+    // Where no media id identifies the page, a resolved title is the proof that
+    // the persistent player is present; without it there is nothing to show.
+    if (!requiresMediaId && !title) return null;
 
     var duration = video.length !== null ? video.length : ld ? ld.duration : null;
     var position = video.elapsed;
