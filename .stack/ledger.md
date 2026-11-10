@@ -112,3 +112,23 @@ Append-only. Newest at the bottom. The digest is derived from here.
 - 2026-11-10T22:13:53.587Z · AUDIT · site-disable-cancels-queue@d5a9a4a PASS — limiter reset precedes the clear, regression 35/35; independent audit WORKER item PASS
 - 2026-11-10T22:13:53.588Z · AUDIT · final-wave@1f463f2 PASS WITH NOTES — independent audit found no defects; commit scope (every commit inside its brief), storage-throw default, and per-workspace counts closed by lead receipts: 103/196/12/218
 - 2026-11-10T22:13:53.589Z · GOAL · turn=2 seat=lead verdict=met reason="independent audit PASS WITH NOTES with no findings; checks green at HEAD; remaining step is push and origin/main equality"
+- 2026-11-10T22:14:56.783Z · NOTE · check green at fcd3d20: test, typecheck, lint, web-selftest, crp-selftest, web-e2e, verify
+- 2026-11-10T22:17:52.938Z · AUDIT · wdr-scaffold@2d94c65 PASS WITH NOTES — sampled diff/report/proof (pinned key manifest.json:59); historical tests not rerun
+- 2026-11-10T22:17:52.939Z · AUDIT · wdr-extract@48d643d PASS WITH NOTES — sampled diff/report/proof (extractor extract-youtube.js:502); tests not rerun
+- 2026-11-10T22:17:52.940Z · AUDIT · wdr-host@a23f13e PASS WITH NOTES — sampled diff/report/proof (host imported by install-host.mjs:57); tests not rerun
+- 2026-11-10T22:17:52.941Z · AUDIT · wdr-state@8d3bdc2 PASS WITH NOTES — sampled diff/report/proof (per-source tabs background.js:179); tests not rerun
+- 2026-11-10T22:17:52.941Z · AUDIT · wdr-ipc@e17b938 PASS WITH NOTES — sampled diff/report/proof (host imports native/ipc.mjs:21); tests not rerun
+- 2026-11-10T22:17:52.942Z · AUDIT · wdr-transport@b56222a PASS WITH NOTES — sampled diff/report/proof (hello carries transport background.js:523); tests not rerun
+- 2026-11-10T22:17:52.943Z · AUDIT · wdr-arrpc-query@ea96742 PASS WITH NOTES — sampled diff/report/proof (client_id in native/arrpc.mjs:226); tests not rerun
+- 2026-11-10T22:17:52.944Z · AUDIT · wdr-ui@287b01c PASS WITH NOTES — sampled diff/report/proof (popup.js:39); tests not rerun
+- 2026-11-10T22:17:52.945Z · AUDIT · wdr-docs@2f5d289 PASS WITH NOTES — sampled diff/report/proof (crunchy ARCHITECTURE:100); tests not rerun
+- 2026-11-10T22:17:52.946Z · AUDIT · wdr-root@20d5711 PASS WITH NOTES — source diff inside brief; only outside path is the required report artifact .stack/reports/wdr-root.md; sampled package.json:4,10 and ci.yml:93
+- 2026-11-10T22:17:52.947Z · AUDIT · wdr-e2e-arrpc@cefe549 PASS WITH NOTES — sampled diff/report/proof (e2e script wired at ci.yml:93); execution not rerun
+- 2026-11-10T22:17:52.947Z · AUDIT · crp-arrpc@f8c9def PASS WITH NOTES — arRPC-first brief superseded by the owner's later IPC-primary contract (contracts.md: auto tries DiscordIpcClient first); mechanism current, order reversed on purpose; report artifact outside Files
+- 2026-11-10T22:17:52.948Z · AUDIT · remove-playwright@061d738 PASS — final-wave audit plus commit-scope check; verifier 16/16 at HEAD
+- 2026-11-10T22:17:52.949Z · AUDIT · playwright-residuals@f997812 PASS — final-wave audit plus commit-scope check; no Playwright on the commit surface
+- 2026-11-10T22:17:52.950Z · AUDIT · desktop-rpc-default@c5bfab7 PASS — final-wave audit item 4: ipc default for absent/unknown/throw; diff inside brief
+- 2026-11-10T22:17:52.951Z · AUDIT · crunchy-1-2-0@fd249f3 PASS — 196 tests plus 17-check selftest; IPC primary, arRPC optional; diff inside brief
+- 2026-11-10T22:17:52.954Z · AUDIT · youtube-presence-settings@b632283 PASS — final-wave audit item 4 plus limiter regression; both flags default on, Music first
+- 2026-11-10T22:17:52.955Z · AUDIT · youtube-presence-ui@b1d36cc PASS — final-wave audit items 2 and 3: UI order/toggles and README versions; diff inside brief
+- 2026-11-10T22:17:52.956Z · AUDIT · sort-root-docs@51b5797 PASS — final-wave audit item 3: four rows at manifest versions; diff inside brief
