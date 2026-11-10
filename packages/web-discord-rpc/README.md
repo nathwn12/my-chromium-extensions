@@ -1,4 +1,4 @@
-# Discord RPC
+# YouTube Presence
 
 Show what you are watching on YouTube and YouTube Music as Discord rich presence. Local only: a Chrome MV3 extension reads the tabs you have open, a small Node native host forwards each activity to Discord, and nothing is uploaded anywhere.
 
@@ -62,7 +62,11 @@ One native port carries two independent sources, each with its own tab state, de
 
 A fresh install publishes under the built-in application `1566530911514923188` with no paste step. A stored 17–20 digit ID in `storage.local` key `clientId` overrides it; the worker resolves it with `resolveClientId` and the host rejects anything else with `rejected`. Saving the built-in value (or clearing the stored one) restores the built-in application. The card title stays `YouTube` / `YouTube Music` (the `name` override); the application ID controls which Discord application — and icon — the card belongs to. (Crunchy still titles its card with the application name because it sends no `name`.)
 
-The popup and options surfaces edit `clientId`, `transport`, and `enabled` (`packages/web-discord-rpc/options.html`, `popup.html` and their scripts). This document describes the storage keys and the `hello` contract the worker and host implement.
+The popup and options surfaces edit `clientId`, `transport`, `enabled`, and one flag per site (`packages/web-discord-rpc/options.html`, `popup.html` and their scripts). This document describes the storage keys and the `hello` contract the worker and host implement.
+
+### Choosing sites
+
+YouTube Music first: the options page lists YouTube Music before YouTube, and the worker processes the two sources in the same order. Each site has its own toggle, stored as `storage.local` key `youtubeMusicEnabled` for YouTube Music and `youtubeEnabled` for YouTube, both on by default. The flags are independently selectable, so either site works alone and switching one off publishes nothing for it while the other keeps publishing; the popup says "Off in Settings" instead of "Nothing playing" for a site you turned off.
 
 The transport preference travels in `hello` as `transport: "auto" | "ipc" | "arrpc"` (`storage.local` key `transport`). The default is `ipc`: the installed Discord desktop app over its local socket, with no fallback. `auto` tries IPC first and falls back to arRPC; `arrpc` forces the WebSocket. Both `auto` and `arrpc` reach the deferred Discord Web path, so the options surface marks them deferred; forced values never fall back, and `auto` reports `mixed` when the two sources land on different transports.
 

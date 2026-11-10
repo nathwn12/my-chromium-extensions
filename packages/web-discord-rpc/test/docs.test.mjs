@@ -33,7 +33,7 @@ test("desktop-first setup names the desktop pipe before arRPC", () => {
   assert.match(readme, /6463-6472/, "README names the arRPC port range");
 });
 
-test("every doc calls the extension Discord RPC and defaults to the desktop IPC transport", () => {
+test("every doc calls the extension YouTube Presence and defaults to the desktop IPC transport", () => {
   for (const [name, doc] of [
     ["README", readme],
     ["ARCHITECTURE", arch],
@@ -41,13 +41,22 @@ test("every doc calls the extension Discord RPC and defaults to the desktop IPC 
     ["INSTALL", install],
     ["CHANGELOG", changelog],
   ]) {
-    assert.ok(!doc.includes("Web Discord RPC"), `${name} drops the old name`);
+    assert.ok(!doc.includes("Web Discord RPC"), `${name} drops the first name`);
+    assert.ok(!doc.includes("Discord RPC"), `${name} drops the earlier name`);
   }
-  assert.match(readme, /^# Discord RPC$/m, "README titles the extension Discord RPC");
+  assert.match(readme, /^# YouTube Presence$/m, "README titles the extension YouTube Presence");
   assert.match(readme, /`ipc`[^\n]{0,80}default|default[^\n]{0,80}`ipc`/i, "README says desktop IPC is the default");
   assert.match(arch, /`ipc`[^\n]{0,80}default|default[^\n]{0,80}`ipc`/i, "ARCHITECTURE says desktop IPC is the default");
   assert.match(readme, /deferred/i, "README marks the web route deferred");
   assert.match(install, /deferred/i, "INSTALL marks the web route deferred");
+});
+
+test("docs promise YouTube Music first and one toggle per site", () => {
+  assert.match(readme, /YouTube Music first/i, "README puts YouTube Music first");
+  assert.match(readme, /youtubeMusicEnabled/, "README names the Music flag");
+  assert.match(readme, /youtubeEnabled/, "README names the YouTube flag");
+  assert.match(readme, /independently|independent/i, "README says the sites are independent");
+  assert.match(arch, /youtubeMusicEnabled/, "ARCHITECTURE names the per-site flags");
 });
 
 test("arRPC/Vencord fallback names the client_id query and the mock user", () => {

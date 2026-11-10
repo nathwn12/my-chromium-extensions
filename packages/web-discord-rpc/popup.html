@@ -3,14 +3,14 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Discord RPC</title>
+    <title>YouTube Presence</title>
     <link rel="stylesheet" href="popup.css" />
   </head>
   <body>
     <main class="popup">
       <header>
         <img src="icons/icon24.png" alt="" width="24" height="24" />
-        <h1>Discord RPC</h1>
+        <h1>YouTube Presence</h1>
         <span
           id="bridge"
           class="pill"
@@ -23,15 +23,15 @@
       </header>
 
       <ul id="sources" class="sources" aria-label="Presence by site">
-        <li class="source" data-source="youtube">
-          <h2 class="source-name">YouTube</h2>
-          <p id="youtube-activity" class="now">Nothing playing</p>
-          <p id="youtube-detail" class="detail"></p>
-        </li>
         <li class="source" data-source="youtube-music">
           <h2 class="source-name">YouTube Music</h2>
           <p id="youtube-music-activity" class="now">Nothing playing</p>
           <p id="youtube-music-detail" class="detail"></p>
+        </li>
+        <li class="source" data-source="youtube">
+          <h2 class="source-name">YouTube</h2>
+          <p id="youtube-activity" class="now">Nothing playing</p>
+          <p id="youtube-detail" class="detail"></p>
         </li>
       </ul>
 

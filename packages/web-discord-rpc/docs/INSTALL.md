@@ -1,6 +1,6 @@
 # Install
 
-Desktop-first install for Discord RPC. Dated 2026-11-11 (install and selftest receipts below are from 2026-11-10). Run from the repository root.
+Desktop-first install for YouTube Presence. Dated 2026-11-11 (install and selftest receipts below are from 2026-11-10). Run from the repository root.
 
 ## What you need
 

@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Discord RPC — Settings</title>
+    <title>YouTube Presence — Settings</title>
     <link rel="stylesheet" href="options.css" />
   </head>
   <body>
@@ -11,7 +11,7 @@
       <header class="hero">
         <img src="icons/icon48.png" alt="" width="40" height="40" />
         <div>
-          <h1>Discord RPC</h1>
+          <h1>YouTube Presence</h1>
           <p class="sub">Local only. Nothing leaves this machine except the Discord call.</p>
         </div>
       </header>
@@ -71,8 +71,35 @@
         <p id="presence-saved" class="saved" role="status" aria-live="polite"></p>
       </section>
 
+      <section class="card" aria-labelledby="sites-title">
+        <h2 id="sites-title">3. Sites</h2>
+        <p id="sites-help" class="hint">
+          Each site publishes on its own, and both are on until you switch one off. YouTube Music comes
+          first; the other site keeps working while one is off.
+        </p>
+        <label class="toggle" for="site-youtube-music">
+          <input
+            id="site-youtube-music"
+            type="checkbox"
+            role="switch"
+            aria-describedby="sites-help sites-saved"
+          />
+          <span>YouTube Music</span>
+        </label>
+        <label class="toggle" for="site-youtube">
+          <input
+            id="site-youtube"
+            type="checkbox"
+            role="switch"
+            aria-describedby="sites-help sites-saved"
+          />
+          <span>YouTube</span>
+        </label>
+        <p id="sites-saved" class="saved" role="status" aria-live="polite"></p>
+      </section>
+
       <section id="status-section" class="card" aria-labelledby="status-title">
-        <h2 id="status-title">3. Status</h2>
+        <h2 id="status-title">4. Status</h2>
         <dl class="status" aria-live="polite">
           <div>
             <dt>Bridge</dt>
@@ -87,12 +114,12 @@
             <dd id="appName">—</dd>
           </div>
           <div>
-            <dt>YouTube <span id="youtube-host" class="host"></span></dt>
-            <dd id="youtube-activity">—</dd>
-          </div>
-          <div>
             <dt>YouTube Music <span id="youtube-music-host" class="host"></span></dt>
             <dd id="youtube-music-activity">—</dd>
+          </div>
+          <div>
+            <dt>YouTube <span id="youtube-host" class="host"></span></dt>
+            <dd id="youtube-activity">—</dd>
           </div>
         </dl>
         <p id="reason" class="reason" role="status" aria-live="polite" hidden></p>
@@ -102,7 +129,7 @@
       </section>
 
       <section class="card" aria-labelledby="install-title">
-        <h2 id="install-title">4. Native host</h2>
+        <h2 id="install-title">5. Native host</h2>
         <p class="hint">Run this once from the extension folder, with Node 22 or newer:</p>
         <pre id="install-command"><code>node scripts/install-host.mjs</code></pre>
         <p class="hint">Verify the host files and registry entries without writing anything:</p>
@@ -110,7 +137,7 @@
       </section>
 
       <section class="card" aria-labelledby="diag-title">
-        <h2 id="diag-title">5. Diagnostics</h2>
+        <h2 id="diag-title">6. Diagnostics</h2>
         <p class="hint">Raw status for a bug report. The status card never shows these strings.</p>
         <label for="diagnostics">Diagnostics</label>
         <textarea id="diagnostics" readonly rows="12" spellcheck="false"></textarea>

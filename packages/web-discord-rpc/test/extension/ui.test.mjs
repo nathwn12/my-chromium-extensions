@@ -78,13 +78,33 @@ test("the manifest points at popup and options, and both ship as local files", (
   }
 });
 
-test("popup and options title the extension Discord RPC, never Web Discord RPC", () => {
+test("popup and options title the extension YouTube Presence, never an earlier name", () => {
   for (const surface of SURFACES) {
     const html = readSurface(extensionDir, surface, "html");
-    assert.match(html, /<h1>Discord RPC<\/h1>/, `${surface}.html headings the new name`);
-    assert.match(html, /<title>Discord RPC/, `${surface}.html titles the new name`);
-    assert.ok(!html.includes("Web Discord RPC"), `${surface}.html drops the old name`);
+    assert.match(html, /<h1>YouTube Presence<\/h1>/, `${surface}.html headings the new name`);
+    assert.match(html, /<title>YouTube Presence/, `${surface}.html titles the new name`);
+    assert.ok(!html.includes("Web Discord RPC"), `${surface}.html drops the first name`);
+    assert.ok(!html.includes("Discord RPC"), `${surface}.html drops the earlier name`);
   }
+});
+
+test("both surfaces list YouTube Music before YouTube", () => {
+  const popup = createDocument(readSurface(extensionDir, "popup", "html"));
+  const popupOrder = popup.querySelectorAll(".source-name").map((node) => node.textContent.trim());
+  assert.deepEqual(popupOrder, ["YouTube Music", "YouTube"], "popup rows run Music first");
+
+  const options = createDocument(readSurface(extensionDir, "options", "html"));
+  const toggles = options
+    .querySelectorAll(".toggle span")
+    .map((node) => node.textContent.trim())
+    .filter((text) => text !== "Presence" && text !== "Active");
+  assert.deepEqual(toggles, ["YouTube Music", "YouTube"], "options site toggles run Music first");
+
+  const rows = options.querySelectorAll(".status dt").map((node) => node.textContent.trim());
+  assert.ok(
+    rows.findIndex((text) => text.startsWith("YouTube Music")) < rows.indexOf("YouTube"),
+    "options status rows run Music first"
+  );
 });
 
 test("each surface loads only its own local code: no remote URL, no inline script", () => {
@@ -268,6 +288,18 @@ test("popup toggle writes the presence preference and renders presence off", asy
   }
 });
 
+test("popup reports a site that is switched off in Settings instead of claiming it is idle", async () => {
+  const status = { ...CONNECTED, sites: { "youtube-music": false, youtube: true } };
+  const chrome = createChrome({ local: { enabled: true }, status });
+  const ui = await mountSurface({ surface: "popup", extensionDir, chrome });
+  try {
+    assert.equal(ui.doc.getElementById("youtube-music-activity").textContent, "Off in Settings");
+    assert.equal(ui.doc.getElementById("youtube-activity").textContent, "Never Gonna Give You Up");
+  } finally {
+    ui.unmount();
+  }
+});
+
 test("popup follows worker status changes while it is open", async () => {
   const chrome = createChrome({ local: { enabled: true }, status: CONNECTED });
   const ui = await mountSurface({ surface: "popup", extensionDir, chrome });
@@ -417,6 +449,53 @@ test("options toggle persists presence", async () => {
     assert.equal(chrome.state.local.enabled, false);
     assert.equal(ui.doc.getElementById("presence-saved").textContent, "Saved. Presence off.");
     assert.equal(ui.doc.getElementById("bridgeState").textContent, "Off");
+  } finally {
+    ui.unmount();
+  }
+});
+
+test("options reads and writes one independent flag per site, YouTube Music first", async () => {
+  const chrome = createChrome({ local: { enabled: true, youtubeMusicEnabled: false }, status: CONNECTED });
+  const ui = await mountSurface({ surface: "options", extensionDir, chrome });
+  try {
+    const music = ui.doc.getElementById("site-youtube-music");
+    const youtube = ui.doc.getElementById("site-youtube");
+    assert.ok(music && youtube, "both site toggles ship");
+    assert.equal(music.checked, false, "the stored Music flag loads");
+    assert.equal(youtube.checked, true, "the unset YouTube flag stays on");
+
+    youtube.checked = false;
+    fireEvent(youtube, "change");
+    await ui.settle();
+    assert.deepEqual(
+      chrome.writes.filter((write) => write.area === "local" && write.method === "set").map((write) => write.values),
+      [{ youtubeEnabled: false }],
+      "switching YouTube off writes only the YouTube key"
+    );
+    assert.equal(ui.doc.getElementById("sites-saved").textContent, "Saved. YouTube is off.");
+    assert.equal(chrome.state.local.youtubeMusicEnabled, false, "the other site's flag is untouched");
+
+    music.checked = true;
+    fireEvent(music, "change");
+    await ui.settle();
+    assert.equal(chrome.state.local.youtubeMusicEnabled, true);
+    assert.equal(ui.doc.getElementById("sites-saved").textContent, "Saved. YouTube Music is on.");
+  } finally {
+    ui.unmount();
+  }
+});
+
+test("options reports a site that is switched off instead of claiming it is idle", async () => {
+  const status = { ...CONNECTED, sites: { "youtube-music": false, youtube: true } };
+  const chrome = createChrome({ local: { enabled: true }, status });
+  const ui = await mountSurface({ surface: "options", extensionDir, chrome });
+  try {
+    assert.equal(ui.doc.getElementById("youtube-music-activity").textContent, "Off in Settings");
+    assert.equal(ui.doc.getElementById("youtube-activity").textContent, "Never Gonna Give You Up — Rick Astley");
+    assert.ok(
+      ui.doc.getElementById("diagnostics").value.includes('"youtube-music": false'),
+      "the flags are in the diagnostics block"
+    );
   } finally {
     ui.unmount();
   }

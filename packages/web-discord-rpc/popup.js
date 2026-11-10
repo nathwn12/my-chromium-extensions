@@ -10,10 +10,15 @@
  * `presentStatus().reason` (friendly copy) reaches the page.
  */
 
-import { SOURCE_META, resolveEnabled } from "./config.js";
+import {
+  SOURCE_YOUTUBE,
+  SOURCE_YOUTUBE_MUSIC,
+  resolveEnabled,
+} from "./config.js";
 import { STATUS_KEY, presentStatus } from "./bridge-status.js";
 
-const SOURCES = Object.keys(SOURCE_META);
+/** YouTube Music first: the owner's order and the worker's processing order. */
+const SOURCES = [SOURCE_YOUTUBE_MUSIC, SOURCE_YOUTUBE];
 
 const el = (id) => document.getElementById(id);
 
@@ -54,10 +59,15 @@ function renderStatus(status, enabled) {
   reasonEl.setAttribute("aria-live", view.isError ? "assertive" : "polite");
 
   const activities = (status && status.activities) || {};
+  const sites = (status && status.sites) || {};
   for (const source of SOURCES) {
-    const { title, detail } = enabled
-      ? describeActivity(activities[source])
-      : { title: "Presence off", detail: "" };
+    // A site switched off in Settings publishes nothing by design: say that,
+    // not "Nothing playing", which would blame the page.
+    const { title, detail } = !enabled
+      ? { title: "Presence off", detail: "" }
+      : sites[source] === false
+        ? { title: "Off in Settings", detail: "" }
+        : describeActivity(activities[source]);
     const titleEl = el(`${source}-activity`);
     const detailEl = el(`${source}-detail`);
     if (titleEl) titleEl.textContent = title;

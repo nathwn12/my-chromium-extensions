@@ -69,6 +69,8 @@ Two axes, deliberately separate (shared with the surfaces via `bridge-status.js`
 
 The enable toggle is always operable (`storage.local` key `enabled`, default on). Turning presence off posts an explicit clear for every source straight down the port, past the send budget, then drops the port and stays down.
 
+One independent flag per site follows it: `youtubeMusicEnabled` for YouTube Music and `youtubeEnabled` for YouTube, both default on (`SITE_ENABLED_KEYS` in `config.js`, resolved by `resolveSiteFlags`). The sources are processed YouTube Music first, then YouTube, matching the options page order; a site switched off posts nothing and its status reads as off rather than idle.
+
 ## Activity shape
 
 The host sends one `SET_ACTIVITY` per source connection as `{cmd: "SET_ACTIVITY", args: {pid, activity}, nonce}` with `pid = process.pid`. Everything except `type` is optional; `null` instead of an object clears that source.

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
-  "name": "Discord RPC",
-  "short_name": "Discord RPC",
+  "name": "YouTube Presence",
+  "short_name": "YouTube Presence",
   "version": "1.0.0",
   "description": "Show what you're watching on YouTube and YouTube Music as Discord rich presence.",
   "minimum_chrome_version": "120",
@@ -37,7 +37,7 @@
     }
   ],
   "action": {
-    "default_title": "Discord RPC",
+    "default_title": "YouTube Presence",
     "default_popup": "popup.html",
     "default_icon": {
       "16": "icons/icon16.png",
