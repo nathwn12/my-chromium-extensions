@@ -8,6 +8,10 @@ Notable changes to this package. Dates are ISO 8601. This package is local-only 
 - The extension is renamed YouTube Presence in the manifest, the popup, the settings page, and every doc, because it covers both YouTube and YouTube Music; the package path `packages/web-discord-rpc`, the storage keys, the host name, and the extension ID are unchanged.
 - YouTube and YouTube Music get one independent toggle each, both on by default: `youtubeMusicEnabled` for Music and `youtubeEnabled` for YouTube. Either site works alone, switching one off leaves the other publishing, and YouTube Music is listed first in Settings. A site switched off reports itself as off instead of claiming nothing is playing.
 
+## [1.0.3] - 2026-11-11
+
+- The popup now names a YouTube Music track with its artist and album (`artist — album`), and Settings reads the whole row as `title — artist — album`; YouTube rows still read the title and channel only.
+
 ## [1.0.2] - 2026-11-11
 
 - The YouTube Music card and status line now name the track artist when one resolved (Discord renders both from `activity.name`); the track stays in `details` and the album moves to `state`, so the artist is never repeated. Without an artist the card keeps the `YouTube Music` label and the old state.
