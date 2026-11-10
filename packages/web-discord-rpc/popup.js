@@ -30,7 +30,19 @@ const enabledEl = el("enabled");
 function describeActivity(activity) {
   if (!activity || typeof activity !== "object") return { title: "Nothing playing", detail: "" };
   const title = typeof activity.details === "string" && activity.details ? activity.details : "Watching";
-  const detail = typeof activity.state === "string" ? activity.state : "";
+  const state = typeof activity.state === "string" ? activity.state : "";
+  // Music names the card after the artist (`name`) and leaves only the album in
+  // `state`; the row must carry both. A static source label or a name that is
+  // the state itself stays as it was.
+  const artist =
+    typeof activity.name === "string" &&
+    activity.name &&
+    activity.name !== "YouTube" &&
+    activity.name !== "YouTube Music" &&
+    activity.name !== state
+      ? activity.name
+      : "";
+  const detail = artist ? (state ? `${artist} — ${state}` : artist) : state;
   return { title, detail };
 }
 

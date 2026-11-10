@@ -84,7 +84,20 @@ function ask(message) {
 
 function describeActivity(activity) {
   if (!activity || typeof activity !== "object") return "Nothing playing";
-  const parts = [activity.details, activity.state].filter(
+  const state = typeof activity.state === "string" ? activity.state : "";
+  // Music names the card after the artist (`name`) and leaves only the album in
+  // `state`; the row must carry both. A static source label or a name that is
+  // the state itself stays as it was.
+  const artist =
+    typeof activity.name === "string" &&
+    activity.name &&
+    activity.name !== "YouTube" &&
+    activity.name !== "YouTube Music" &&
+    activity.name !== state
+      ? activity.name
+      : "";
+  const detail = artist ? (state ? `${artist} — ${state}` : artist) : state;
+  const parts = [activity.details, detail].filter(
     (part) => typeof part === "string" && part
   );
   return parts.length ? parts.join(" — ") : "Nothing playing";

@@ -41,6 +41,16 @@ const CONNECTED = {
   updatedAt: 1,
 };
 
+/** Music names the artist in `name` and leaves the album in `state`. */
+const MUSIC = {
+  ...CONNECTED,
+  hostSources: { youtube: "connected", "youtube-music": "connected" },
+  activities: {
+    youtube: CONNECTED.activities.youtube,
+    "youtube-music": { name: "An Artist", type: 2, details: "A Song", state: "An Album" },
+  },
+};
+
 const WAITING = {
   ...CONNECTED,
   bridgeState: "waiting",
@@ -528,5 +538,33 @@ test("options shows the install commands and keeps the raw detail in diagnostics
     assert.ok(chrome.requests.length > before, "Refresh asks the worker again");
   } finally {
     ui.unmount();
+  }
+});
+
+test("Music rows read the artist from the activity name; YouTube rows still read only the channel", async () => {
+  const popupChrome = createChrome({ local: { enabled: true }, status: MUSIC });
+  const popup = await mountSurface({ surface: "popup", extensionDir, chrome: popupChrome });
+  try {
+    assert.equal(popup.doc.getElementById("youtube-music-activity").textContent, "A Song");
+    assert.equal(popup.doc.getElementById("youtube-music-detail").textContent, "An Artist — An Album");
+    assert.equal(popup.doc.getElementById("youtube-activity").textContent, "Never Gonna Give You Up");
+    assert.equal(popup.doc.getElementById("youtube-detail").textContent, "Rick Astley");
+  } finally {
+    popup.unmount();
+  }
+
+  const optionsChrome = createChrome({ local: { enabled: true }, status: MUSIC });
+  const options = await mountSurface({ surface: "options", extensionDir, chrome: optionsChrome });
+  try {
+    assert.equal(
+      options.doc.getElementById("youtube-music-activity").textContent,
+      "A Song — An Artist — An Album"
+    );
+    assert.equal(
+      options.doc.getElementById("youtube-activity").textContent,
+      "Never Gonna Give You Up — Rick Astley"
+    );
+  } finally {
+    options.unmount();
   }
 });
