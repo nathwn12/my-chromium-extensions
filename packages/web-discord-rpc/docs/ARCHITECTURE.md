@@ -9,7 +9,7 @@ YouTube / YouTube Music tab
   → content.js (extract-youtube.js)    read DOM + mediaSession, report flat state
   → background.js (per source, 4/20 s) one record per tab per source, two budgets
   → native host (host.mjs)             Discord IPC first, arRPC fallback, per source
-  → Discord desktop pipe               \\.\pipe\discord-ipc-N, N = 0..9 (primary)
+  → local Discord pipe                \\.\pipe\discord-ipc-N, N = 0..9 (primary; may itself be owned by arRPC when the desktop app is absent)
   → arRPC WebSocket                    127.0.0.1:6463-6472 (fallback; Vencord bridge)
   → Discord                            SET_ACTIVITY, type 3 (YouTube) + type 2 (Music)
 ```
@@ -101,7 +101,7 @@ uint32LE opcode | uint32LE length | UTF-8 JSON
 | 2 | CLOSE | Discord is closing the connection |
 | 3 / 4 | PING / PONG | transport keepalive, answered in kind |
 
-The IPC client scans `\\.\pipe\discord-ipc-0` through `-9` in order and stops at the first pipe that completes a handshake. Both decoders reassemble partial reads. Caps: 1 MiB per native message, 8 MiB per Discord frame.
+The IPC client scans `\\.\pipe\discord-ipc-0` through `-9` in order and stops at the first pipe that completes a handshake. An answering pipe is usually the Discord desktop app, but when the desktop app is absent arRPC itself can own the pipe (live probe 2026-11-10: `discord-ipc-0` answered with `user: "arrpc"`), so IPC-first can carry Discord Web traffic without the WebSocket fallback. A forced `arrpc` always uses `ws://127.0.0.1:<port>/?v=1&client_id=<id>` and never touches the pipes. Both decoders reassemble partial reads. Caps: 1 MiB per native message, 8 MiB per Discord frame.
 
 arRPC frame: plain JSON text over `ws://127.0.0.1:<port>/?v=1&client_id=<id>`. The client probes `6463–6472` in order, accepts only a `READY` whose `data.user` is the arRPC mock user (id `1045800378228281345`, username `arrpc`), sends `SET_ACTIVITY`, and matches the reply by `nonce`. `WDR_ARRPC_PORTS` / `WDR_DISCORD_PIPES` override the probe sets for integration runs only.
 
@@ -134,7 +134,7 @@ Precedence (verified in `extract-youtube.js`): YouTube prefers DOM title → ses
 The content script runs with `all_frames: true` but only the top frame may report; a subframe's state would overwrite the tab's real activity. The worker keys state by `sender.tab.id` per source:
 
 - One record per tab per source: `{state, at, rankAt}`. The newest report wins the tab.
-- `wdr-gone` with `scope: "tab"` deletes the whole tab entry at once (pagehide, non-watch navigation). A same-tab navigation away from YouTube drops the entry via `tabs.onUpdated` semantics in the worker's `handleTabRemoved` path.
+- `wdr-gone` with `scope: "tab"` deletes the whole tab entry at once (pagehide, non-watch navigation: `content.js` sends it when the URL stops being a watch URL). Tab close deletes the entry via `tabs.onRemoved` → the worker's `handleTabRemoved` path.
 - Across tabs for one source, a playing tab beats a paused one; ties go to the newest report. A title that is not showable (under 2 chars after cleanup) never wins.
 - A tab that has not reported for 30 min (`TAB_TTL_MS`) is treated as closed.
 - The worker recomputes the desired activity after every report, tab close, alarm, reconnect, or storage change. `push` sends through the source limiter only when the bridge is `connected`; otherwise the desired value waits and the next `status connected` replays it.
@@ -145,7 +145,7 @@ The content script runs with `all_frames: true` but only the top frame may repor
 | --- | --- |
 | Native port dies | worker reconnects with backoff 500 ms → 8 s, resets each limiter, replays desired state; bridge shows `waiting` |
 | Discord desktop pipe drops | per-source IPC client reports `discord-closed`, rearms the reconnect only when a last activity exists |
-| Discord not running, no arRPC | `auto` falls back to arRPC; both absent → `status waiting` with the primary reason; the native loop never crashes |
+| Discord not running, no arRPC | `auto` probes the pipes first (which may themselves be arRPC-owned), then falls back to the arRPC WebSocket; all absent → `status waiting` with the primary reason; the native loop never crashes |
 | Forced transport absent | no fallback: `ipc` without pipes (or `arrpc` without a listener) acks `transport-unavailable`/`arrpc-unavailable` and stays `waiting` |
 | Host stops ponging | a ping with no pong for 10 s (`PONG_TIMEOUT_MS`) drops the port and reconnects; only 3 consecutive timeouts become `error` |
 | Service worker sleeps | 30 s `alarms` watchdog reopens the port and pings; the tab map survives in `storage.session` |

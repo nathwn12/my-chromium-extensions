@@ -13,7 +13,7 @@ Show what you are watching on YouTube and YouTube Music as Discord rich presence
 | Node | 22 or newer, to run the installer and the native host |
 | Discord | Desktop app running and signed in **first**; Discord Web via arRPC is the fallback |
 
-Desktop-first: the host tries the Discord desktop pipe first and only reaches arRPC when no desktop pipe answers. You do not need arRPC, Vencord, or a browser tab open for the desktop path.
+Desktop-first: the host probes the local `\\.\pipe\discord-ipc-0` through `-9` first and only reaches the arRPC WebSocket when no pipe answers. You do not need arRPC, Vencord, or a browser tab open for the desktop path. When the desktop app is absent, arRPC itself can own that pipe, so IPC-first can still reach the Discord Web bridge without the WebSocket fallback.
 
 ## Install
 
@@ -39,13 +39,13 @@ The manifest carries a fixed `key`, so the extension keeps the same ID across re
 
 ### 3. Start Discord desktop first
 
-Sign in to the Discord desktop app before opening YouTube. With `transport: "auto"` (the default) the first `hello` makes the host probe `\\.\pipe\discord-ipc-0` through `-9`; only when no pipe answers does it probe the arRPC WebSocket on `127.0.0.1:6463-6472`. A forced `ipc` never touches the network; a forced `arrpc` never touches the pipes.
+Sign in to the Discord desktop app before opening YouTube. With `transport: "auto"` (the default) the first `hello` makes the host probe `\\.\pipe\discord-ipc-0` through `-9`; only when no pipe answers does it probe the arRPC WebSocket on `127.0.0.1:6463-6472`. A pipe that answers may itself be owned by arRPC when the desktop app is absent, so IPC-first can carry Discord Web traffic too. A forced `ipc` never touches the network; a forced `arrpc` always uses `ws://127.0.0.1:<port>/?v=1&client_id=<id>` and never touches the pipes.
 
 ## arRPC / Vencord fallback
 
 arRPC runs a WebSocket listener on `127.0.0.1:6463-6472` that speaks Discord's RPC commands, the same bridge Vencord's `WebRichPresence (arRPC)` plugin forwards to `LOCAL_ACTIVITY_UPDATE` in the Discord web client. The native host is an arRPC *client*: it opens `ws://127.0.0.1:<port>/?v=1&client_id=<id>` (the `client_id` query is required — without it arRPC stamps an empty application ID and Vencord cannot resolve the app or its assets), accepts only the arRPC mock user (`id 1045800378228281345`, username `arrpc`), sends one `SET_ACTIVITY` per source, and matches replies by `nonce`. No `Origin` header is set. Absence of arRPC is `waiting`, never an error.
 
-`UNVERIFIED here: the Vencord forwarding (`socketId` → `LOCAL_ACTIVITY_UPDATE`, two connections stacking two activities) and the empty-`application_id` failure were proved live on 2026-11-10 and recorded in `.stack/contracts.md`; this repository did not re-observe them.`
+`UNVERIFIED here: the Vencord forwarding (`socketId` → `LOCAL_ACTIVITY_UPDATE`, two connections stacking two activities) was proved live on 2026-11-10 and recorded in `.stack/contracts.md`; this repository did not re-observe it. The empty-`application_id` failure without the `client_id` query was observed live before `ea96742` (lead receipt) and the query fix is verified in `native/arrpc.mjs`.`
 
 ## What Discord shows: two stacked activities
 
@@ -60,9 +60,9 @@ One native port carries two independent sources, each with its own tab state, de
 
 ## Changing the application
 
-A fresh install publishes under the built-in application `1566530911514923188` with no paste step. A stored 17–20 digit ID in `storage.local` key `clientId` overrides it; the worker resolves it with `resolveClientId` and the host rejects anything else with `rejected`. Saving the built-in value (or clearing the stored one) restores the built-in application. The card's title is the application's name, so the name follows whichever ID is in force.
+A fresh install publishes under the built-in application `1566530911514923188` with no paste step. A stored 17–20 digit ID in `storage.local` key `clientId` overrides it; the worker resolves it with `resolveClientId` and the host rejects anything else with `rejected`. Saving the built-in value (or clearing the stored one) restores the built-in application. The card title stays `YouTube` / `YouTube Music` (the `name` override); the application ID controls which Discord application — and icon — the card belongs to. (Crunchy still titles its card with the application name because it sends no `name`.)
 
-`UNVERIFIED here: the popup/options surfaces that edit `clientId`, `transport`, and `enabled` belong to a separate seam and are not part of this document. This document describes the storage keys and the `hello` contract the worker and host implement.`
+The popup and options surfaces edit `clientId`, `transport`, and `enabled` (`packages/web-discord-rpc/options.html`, `popup.html` and their scripts). This document describes the storage keys and the `hello` contract the worker and host implement.
 
 The transport preference travels in `hello` as `transport: "auto" | "ipc" | "arrpc"` (`storage.local` key `transport`, default `"auto"`). `auto` prefers Discord IPC and falls back to arRPC, remembering the first success for the other source (`mixed` when the two sources land on different transports); forced values never fall back.
 

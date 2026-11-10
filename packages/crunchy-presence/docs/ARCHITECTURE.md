@@ -9,7 +9,7 @@ Crunchyroll tab
   → content.js (extract.js)              read DOM + mediaSession, report flat state
   → background.js (merge per tab, throttle)   one record per tab, 4 ordinary sends / 20 s (null clears bypass uncounted)
   → native host (host.mjs → ipc.mjs, arrpc.mjs) validate, frame, speak Discord IPC first, arRPC fallback
-  → \\.\pipe\discord-ipc-N                local named pipe, N = 0..9 (primary)
+  → \\.\pipe\discord-ipc-N                local named pipe, N = 0..9 (primary; may itself be owned by arRPC when the desktop app is absent)
   → arRPC WebSocket                        127.0.0.1:6463-6472 (fallback; Vencord bridge)
   → Discord                               SET_ACTIVITY, type 3 (WATCHING)
 ```
@@ -112,7 +112,7 @@ uint32LE opcode | uint32LE length | UTF-8 JSON
 
 The host scans `\\.\pipe\discord-ipc-0` through `-9` in order and stops at the first pipe that completes a handshake. Both decoders reassemble partial reads, so a frame split at any byte boundary is decoded exactly once. Caps: 1 MiB per native message, 8 MiB per Discord frame.
 
-arRPC frame: plain JSON text over `ws://127.0.0.1:<port>/?v=1&client_id=<id>`. The client probes `6463–6472` in order, accepts only a `READY` whose `data.user` is the arRPC mock user (id `1045800378228281345`, username `arrpc`), sends `SET_ACTIVITY`, and matches the reply by `nonce`. No `Origin` header is set. Forced `ipc` never touches the network; forced `arrpc` never touches the pipes; `auto` (the default when `hello` omits `transport`) tries the desktop pipes first and only reaches arRPC when no pipe answers.
+arRPC frame: plain JSON text over `ws://127.0.0.1:<port>/?v=1&client_id=<id>`. The client probes `6463–6472` in order, accepts only a `READY` whose `data.user` is the arRPC mock user (id `1045800378228281345`, username `arrpc`), sends `SET_ACTIVITY`, and matches the reply by `nonce`. No `Origin` header is set. Forced `ipc` never touches the network; forced `arrpc` always uses this WebSocket and never touches the pipes; `auto` (the default when `hello` omits `transport`) tries the pipes first and only reaches arRPC when no pipe answers — and an answering pipe may itself be owned by arRPC when the desktop app is absent, so IPC-first can carry Discord Web traffic too.
 
 ## Rate guard
 
