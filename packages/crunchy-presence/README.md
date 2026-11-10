@@ -4,7 +4,7 @@
 <h1 align="center">Crunchy Presence</h1>
 <p align="center"><strong>Show the Crunchyroll episode you are watching as Discord rich presence.</strong></p>
 
-Shows the Crunchyroll episode you are watching as Discord rich presence. Local only: a Chrome MV3 extension reads the page, a small Node native host forwards the activity to Discord over the local Discord IPC pipe first and the local arRPC bridge as fallback, and nothing is uploaded anywhere.
+Shows the Crunchyroll episode you are watching as Discord rich presence. Local only: a Chrome MV3 extension reads the page, a small Node native host forwards the activity to Discord over the local Discord IPC pipe, falling back to the optional local arRPC web bridge when no desktop pipe answers, and nothing is uploaded anywhere.
 
 ## Requirements
 
@@ -13,7 +13,7 @@ Shows the Crunchyroll episode you are watching as Discord rich presence. Local o
 | Windows | 10 or 11 (registry entries and named pipes) |
 | Chrome | 120 or newer (`minimum_chrome_version` in the manifest) |
 | Node | 22 or newer, to run the installer and the native host |
-| Discord | Desktop app running and signed in; Canary is fine |
+| Discord | Desktop app running and signed in; Canary is fine. Discord Web works only through the optional arRPC fallback below |
 
 ## Install
 
@@ -56,7 +56,13 @@ The options page carries one **Application ID** field, pre-filled with the built
 
 ## Transport: Discord desktop first, arRPC fallback
 
-Dated 2026-11-10. The extension opens one native port; the host chooses how to reach Discord per `hello` (`transport: "auto" | "ipc" | "arrpc"`, missing means `"auto"`). `auto` tries the local pipe (`\\.\pipe\discord-ipc-0` through `-9`) first and only reaches the arRPC WebSocket (`127.0.0.1:6463-6472`, the same bridge Vencord's `WebRichPresence (arRPC)` plugin forwards) when no pipe answers; the answering pipe may itself be owned by arRPC when the desktop app is absent (live auto proof 2026-11-10: default `hello` connected `discord-ipc-0` owned by arRPC and the bridge received `socketId: 11`). Forced `ipc` never touches the network; forced `arrpc` always uses the WebSocket and never touches the pipes. The status frame reports the chosen `transport: "discord-ipc" | "arrpc"`; `UNVERIFIED here: the live Vencord forwarding was proved on 2026-11-10 and recorded in `.stack/contracts.md`, not re-observed in this seam.` Absence of either transport is `waiting`, never an error; only a rejected application ID (or a host still hung after three retries) is an error.
+Dated 2026-11-10. Discord IPC over the desktop app's local pipe is the primary transport. The arRPC bridge is an optional fallback for Discord in the browser; it is never required, and there is no third transport.
+
+Primary path: the host scans `\\.\pipe\discord-ipc-0` through `-9` and speaks Discord IPC on the first pipe that completes a handshake.
+
+Optional web fallback: `127.0.0.1:6463-6472` is the loopback WebSocket that Vencord's `WebRichPresence (arRPC)` plugin forwards into a browser Discord client, so someone running Discord Web can still get presence. It is used only when no desktop pipe answers, so it costs nothing when the desktop app is running.
+
+The extension opens one native port; the host chooses the transport per `hello` (`transport: "auto" | "ipc" | "arrpc"`, missing means `"auto"`). `auto` tries the pipes first and only reaches arRPC when none answers; the answering pipe may itself be owned by arRPC when the desktop app is absent (live auto proof 2026-11-10: default `hello` connected `discord-ipc-0` owned by arRPC and the bridge received `socketId: 11`). Forced `ipc` never touches the network; forced `arrpc` always uses the WebSocket and never touches the pipes. The status frame reports the chosen `transport: "discord-ipc" | "arrpc"`. Absence of either transport is `waiting`, never an error; only a rejected application ID (or a host still hung after three retries) is an error.
 
 ## Privacy
 

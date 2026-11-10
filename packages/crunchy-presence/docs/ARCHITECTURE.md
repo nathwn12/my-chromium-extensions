@@ -97,6 +97,8 @@ Timestamps are only attached while `paused` is explicitly `false` and a duration
 
 ## Framing
 
+Discord IPC over the desktop pipe is the primary transport; arRPC is the optional web fallback for Discord in a browser. There is no third transport.
+
 Discord IPC frame, both directions:
 
 ```
