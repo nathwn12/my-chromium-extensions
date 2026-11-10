@@ -8,8 +8,9 @@
  *
  * The same storage carries two preferences: which transport the native host
  * should use (`auto | ipc | arrpc`, `ipc` by default) and whether presence is
- * on at all. Both are validated here so no consumer has to invent a fourth
- * spelling or trust an unvalidated value.
+ * on at all, plus a per-site enable flag for each of the two sources. All are
+ * validated here so no consumer has to invent a fourth spelling or trust an
+ * unvalidated value.
  */
 
 export const HOST_NAME = "com.nathwn12.web_discord_rpc";
@@ -33,6 +34,16 @@ export const DEFAULT_TRANSPORT = TRANSPORT_IPC;
 
 export const SOURCE_YOUTUBE = "youtube";
 export const SOURCE_YOUTUBE_MUSIC = "youtube-music";
+
+/**
+ * Per-site presence flags, one `storage.local` key each, both on by default.
+ * A site flagged off is ignored by the worker and its published presence is
+ * cleared.
+ */
+export const SITE_ENABLED_KEYS = Object.freeze({
+  [SOURCE_YOUTUBE]: "youtubeEnabled",
+  [SOURCE_YOUTUBE_MUSIC]: "youtubeMusicEnabled",
+});
 
 export const SOURCE_META = Object.freeze({
   youtube: {
@@ -99,4 +110,13 @@ export function resolveTransport(stored) {
 /** Presence is on unless it was switched off; only a real `false` disables. */
 export function resolveEnabled(stored) {
   return stored !== false;
+}
+
+/** The per-site flags, read with the same rule as the master switch. */
+export function resolveSiteFlags(stored) {
+  const flags = {};
+  for (const [source, key] of Object.entries(SITE_ENABLED_KEYS)) {
+    flags[source] = resolveEnabled(stored && stored[key]);
+  }
+  return flags;
 }

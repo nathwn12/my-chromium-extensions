@@ -6,6 +6,7 @@ import {
   ALARM_NAME,
   BACKOFF_MIN_MS,
   SESSION_TABS_KEY,
+  SOURCES,
   TAB_TTL_MS,
   createWorker,
   pickBestTab,
@@ -55,7 +56,16 @@ function makePort(name) {
   };
 }
 
-function fakeChrome({ clientId = null, transport, enabled, status, session: initialSession = {} } = {}) {
+function fakeChrome({
+  clientId = null,
+  transport,
+  enabled,
+  youtubeEnabled,
+  youtubeMusicEnabled,
+  status,
+  session: initialSession = {},
+  localReadFails = false,
+} = {}) {
   const runtime = { id: "ext-test-id", onMessage: signal(), onInstalled: signal(), lastError: null };
   const ports = [];
   runtime.connectNative = (name) => {
@@ -66,12 +76,17 @@ function fakeChrome({ clientId = null, transport, enabled, status, session: init
   const store = clientId ? { clientId } : {};
   if (transport !== undefined) store.transport = transport;
   if (enabled !== undefined) store.enabled = enabled;
+  if (youtubeEnabled !== undefined) store.youtubeEnabled = youtubeEnabled;
+  if (youtubeMusicEnabled !== undefined) store.youtubeMusicEnabled = youtubeMusicEnabled;
   if (status !== undefined) store[STATUS_KEY] = status;
   const writes = [];
   const sessionStore = { ...initialSession };
   const storage = {
     local: {
-      get: async () => ({ ...store }),
+      get: async () => {
+        if (localReadFails) throw new Error("storage unavailable");
+        return { ...store };
+      },
       set: async (values) => writes.push(values),
     },
     session: {
@@ -119,8 +134,26 @@ function fakeClock(start = BASE) {
   };
 }
 
-async function boot({ clientId, transport, enabled, status, session } = {}) {
-  const chrome = fakeChrome({ clientId, transport, enabled, status, session });
+async function boot({
+  clientId,
+  transport,
+  enabled,
+  youtubeEnabled,
+  youtubeMusicEnabled,
+  status,
+  session,
+  localReadFails,
+} = {}) {
+  const chrome = fakeChrome({
+    clientId,
+    transport,
+    enabled,
+    youtubeEnabled,
+    youtubeMusicEnabled,
+    status,
+    session,
+    localReadFails,
+  });
   const clock = fakeClock();
   const worker = createWorker({
     chrome,
@@ -208,6 +241,34 @@ test("boot opens one native port with the built-in application id and the deskto
     version: 1,
     transport: "ipc",
   });
+});
+
+test("a storage read failure and an early report still put desktop IPC in the first hello", async () => {
+  // start() is async: a content script can report before loadConfig settles, so
+  // the worker's initial transport must already be the default, not auto.
+  const chrome = fakeChrome({ localReadFails: true });
+  const clock = fakeClock();
+  const worker = createWorker({
+    chrome,
+    now: clock.now,
+    schedule: clock.schedule,
+    cancel: clock.cancel,
+  });
+  wire(worker, chrome);
+
+  const starting = worker.start();
+  sendState(chrome, 1, "youtube", youtubeState());
+  await starting;
+
+  assert.equal(chrome.ports.length, 1);
+  assert.deepEqual(chrome.ports[0].sent[0], {
+    t: "hello",
+    clientId: DEFAULT_CLIENT_ID,
+    version: 1,
+    transport: "ipc",
+  });
+  assert.equal(worker.status().transportPreference, "ipc");
+  assert.deepEqual(worker.status().sites, { youtube: true, "youtube-music": true });
 });
 
 test("a stored transport reaches hello and a change reconnects with the new preference", async () => {
@@ -663,4 +724,75 @@ test("a restored snapshot reconciles a source with no tab to a clear", async () 
   assert.equal(frames.find((frame) => frame.source === "youtube").activity.details, "Still Watching");
   assert.equal(frames.find((frame) => frame.source === "youtube-music").activity, null);
   assert.equal(activities(port).filter((frame) => frame.source === "youtube").length, 1);
+});
+
+test("YouTube Music is processed first, so its frame is the first one after a connect", async () => {
+  assert.deepEqual([...SOURCES], ["youtube-music", "youtube"]);
+
+  const session = {
+    [SESSION_TABS_KEY]: {
+      youtube: { 61: { state: youtubeState(), at: BASE, rankAt: BASE } },
+      "youtube-music": { 62: { state: musicState(), at: BASE, rankAt: BASE } },
+    },
+  };
+  const { port } = await boot({ session });
+  connect(port);
+
+  assert.deepEqual(
+    activities(port).map((frame) => frame.source),
+    ["youtube-music", "youtube"]
+  );
+});
+
+test("both site flags are on by default and the status payload carries them", async () => {
+  const { worker } = await boot();
+  const { sites } = worker.status();
+  assert.deepEqual(sites, { youtube: true, "youtube-music": true });
+  assert.deepEqual(Object.keys(sites), ["youtube-music", "youtube"], "music is processed first");
+});
+
+test("a disabled site publishes nothing while the other site still does", async () => {
+  const { chrome, port, worker } = await boot({ youtubeEnabled: false });
+  assert.equal(worker.status().sites.youtube, false);
+
+  connect(port);
+  sendState(chrome, 1, "youtube", youtubeState());
+  assert.equal(activities(port).length, 0, "the disabled site never reaches Discord");
+
+  sendState(chrome, 2, "youtube-music", musicState());
+  assert.equal(activities(port).length, 1);
+  assert.equal(activities(port)[0].source, "youtube-music");
+});
+
+test("turning a site off clears it, ignores later reports, and turning it back on republishes", async () => {
+  const { chrome, port } = await boot();
+  connect(port);
+  sendState(chrome, 1, "youtube", youtubeState());
+  assert.equal(activities(port).length, 1);
+
+  chrome.storage.onChanged.fire({ youtubeEnabled: { newValue: false } }, "local");
+  assert.equal(activities(port).length, 2, "the now-disabled site is cleared at once");
+  assert.equal(activities(port).at(-1).source, "youtube");
+  assert.equal(activities(port).at(-1).activity, null);
+
+  sendState(chrome, 1, "youtube", youtubeState({ position: 4 }));
+  assert.equal(activities(port).length, 2, "a report from a disabled site is ignored");
+
+  sendState(chrome, 2, "youtube-music", musicState());
+  assert.equal(activities(port).at(-1).source, "youtube-music", "the other site is unaffected");
+
+  chrome.storage.onChanged.fire({ youtubeEnabled: { newValue: true } }, "local");
+  assert.equal(activities(port).at(-1).source, "youtube");
+  assert.equal(activities(port).at(-1).activity.details, "Big Buck Bunny");
+});
+
+test("a start clears a disabled site the last session left published", async () => {
+  const status = { activities: { youtube: { details: "Old Video" }, "youtube-music": null } };
+  const { port } = await boot({ youtubeEnabled: false, status });
+  connect(port);
+
+  const frames = activities(port);
+  assert.equal(frames.length, 1, "the disabled site's stale presence is removed");
+  assert.equal(frames[0].source, "youtube");
+  assert.equal(frames[0].activity, null);
 });

@@ -6,6 +6,7 @@ import {
   DEFAULT_TRANSPORT,
   ENABLED_KEY,
   HOST_NAME,
+  SITE_ENABLED_KEYS,
   SOURCE_META,
   SOURCE_YOUTUBE,
   SOURCE_YOUTUBE_MUSIC,
@@ -17,6 +18,7 @@ import {
   clientIdToPersist,
   resolveClientId,
   resolveEnabled,
+  resolveSiteFlags,
   resolveTransport,
   sourceForUrl,
 } from "../../config.js";
@@ -107,6 +109,31 @@ test("resolveEnabled only turns presence off on a real false", () => {
   assert.equal(resolveEnabled(false), false);
   for (const stored of [true, undefined, null, "false", 0, "", {}]) {
     assert.equal(resolveEnabled(stored), true, `stored=${String(stored)}`);
+  }
+});
+
+test("each site has its own enable flag, and both are on until a real false says otherwise", () => {
+  assert.deepEqual({ ...SITE_ENABLED_KEYS }, {
+    youtube: "youtubeEnabled",
+    "youtube-music": "youtubeMusicEnabled",
+  });
+  assert.ok(Object.isFrozen(SITE_ENABLED_KEYS));
+  assert.deepEqual(resolveSiteFlags(null), { youtube: true, "youtube-music": true });
+  assert.deepEqual(resolveSiteFlags({}), { youtube: true, "youtube-music": true });
+  assert.deepEqual(resolveSiteFlags({ youtubeEnabled: false }), {
+    youtube: false,
+    "youtube-music": true,
+  });
+  assert.deepEqual(resolveSiteFlags({ youtubeMusicEnabled: false }), {
+    youtube: true,
+    "youtube-music": false,
+  });
+  for (const stored of [true, "false", 0, "", {}]) {
+    assert.deepEqual(
+      resolveSiteFlags({ youtubeEnabled: stored }),
+      { youtube: true, "youtube-music": true },
+      `stored=${String(stored)}`
+    );
   }
 });
 

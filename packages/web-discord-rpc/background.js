@@ -14,14 +14,16 @@
  */
 
 import {
+  DEFAULT_TRANSPORT,
   ENABLED_KEY,
   HOST_NAME,
+  SITE_ENABLED_KEYS,
   SOURCE_YOUTUBE,
   SOURCE_YOUTUBE_MUSIC,
-  TRANSPORT_AUTO,
   TRANSPORT_KEY,
   resolveClientId,
   resolveEnabled,
+  resolveSiteFlags,
   resolveTransport,
   sourceForUrl,
 } from "./config.js";
@@ -35,7 +37,8 @@ import {
   classifyBridgeFailure,
 } from "./bridge-status.js";
 
-export const SOURCES = Object.freeze([SOURCE_YOUTUBE, SOURCE_YOUTUBE_MUSIC]);
+/** YouTube Music is processed first; both sources stay independent. */
+export const SOURCES = Object.freeze([SOURCE_YOUTUBE_MUSIC, SOURCE_YOUTUBE]);
 
 export const MAX_UPDATES = 4;
 export const UPDATE_WINDOW_MS = 20000;
@@ -174,6 +177,7 @@ export function createWorker({
   cancel = (handle) => clearTimeout(handle),
 } = {}) {
   const tabsBySource = new Map(SOURCES.map((source) => [source, new Map()]));
+  const siteEnabled = new Map(SOURCES.map((source) => [source, true]));
   const desired = new Map();
   const lastSent = new Map();
   const limiters = new Map();
@@ -181,7 +185,7 @@ export function createWorker({
   let sequence = 0;
   let port = null;
   let clientId = resolveClientId(null);
-  let transportPreference = TRANSPORT_AUTO;
+  let transportPreference = DEFAULT_TRANSPORT;
   let chosenTransport = null;
   let enabled = true;
   let staleSources = [];
@@ -209,7 +213,11 @@ export function createWorker({
 
   function status() {
     const activities = {};
-    for (const source of SOURCES) activities[source] = desired.get(source) ?? null;
+    const sites = {};
+    for (const source of SOURCES) {
+      activities[source] = desired.get(source) ?? null;
+      sites[source] = siteEnabled.get(source);
+    }
     return {
       bridgeState,
       availability,
@@ -223,6 +231,8 @@ export function createWorker({
       transportPreference,
       transport: chosenTransport,
       activities,
+      // Per-site enable flags, so every surface reads one answer.
+      sites,
       // The host's own per-source view, carried opaquely for the popup.
       hostSources,
       updatedAt: now(),
@@ -548,6 +558,23 @@ export function createWorker({
     });
   }
 
+  /**
+   * Honour one site's flag: a site switched off stops publishing at once and
+   * its published presence is cleared down the port, past the send budget,
+   * because a media report may already be queued in that site's window.
+   */
+  function setSiteEnabled(source, next) {
+    if (siteEnabled.get(source) === next) return;
+    siteEnabled.set(source, next);
+    if (next) {
+      recompute(source);
+      return;
+    }
+    desired.set(source, null);
+    persist();
+    deliver(source, null);
+  }
+
   /* ------------------------------------------------------------ activity -- */
 
   function deliver(source, activity) {
@@ -596,7 +623,9 @@ export function createWorker({
     const map = tabsBySource.get(source);
     pruneStale(map, now());
     persistTabs();
-    const best = pickBestTab([...map.values()]);
+    // A disabled site is ignored: whatever its tabs report, the desired
+    // activity is null, so the clear is what gets published.
+    const best = siteEnabled.get(source) ? pickBestTab([...map.values()]) : null;
     desired.set(source, best ? buildActivity(source, best.state, now()) : null);
     persist();
     push(source, false);
@@ -621,6 +650,9 @@ export function createWorker({
     if (sender.frameId !== undefined && sender.frameId !== 0) return;
     const source = message.source;
     if (!tabsBySource.has(source)) return;
+    // A disabled site is ignored outright: its clear already went out when the
+    // flag was switched, and a report must not invent presence again.
+    if (!siteEnabled.get(source)) return;
     const state = message.state;
     if (!state || typeof state !== "object") return;
     const url = typeof state.pageUrl === "string" && state.pageUrl ? state.pageUrl : tab.url;
@@ -638,6 +670,11 @@ export function createWorker({
     if (sender.id !== api.runtime.id) return;
     const source = message.source;
     if (!tabsBySource.has(source)) return;
+    if (!siteEnabled.get(source)) {
+      // Still drop the tab so a later re-enable cannot resurrect it.
+      tabsBySource.get(source).delete(tab.id);
+      return;
+    }
     if (tabsBySource.get(source).delete(tab.id)) recompute(source);
   }
 
@@ -691,6 +728,11 @@ export function createWorker({
       const next = resolveEnabled(changes[ENABLED_KEY].newValue);
       if (next !== enabled) setEnabled(next);
     }
+    for (const [source, key] of Object.entries(SITE_ENABLED_KEYS)) {
+      if (!changes[key]) continue;
+      const next = resolveEnabled(changes[key].newValue);
+      setSiteEnabled(source, next);
+    }
   }
 
   function handleMessage(message, sender, sendResponse) {
@@ -729,13 +771,21 @@ export function createWorker({
   async function loadConfig() {
     let stored = null;
     try {
-      stored = await api.storage.local.get(["clientId", TRANSPORT_KEY, ENABLED_KEY, STATUS_KEY]);
+      stored = await api.storage.local.get([
+        "clientId",
+        TRANSPORT_KEY,
+        ENABLED_KEY,
+        STATUS_KEY,
+        ...Object.values(SITE_ENABLED_KEYS),
+      ]);
     } catch {
       stored = null;
     }
     clientId = resolveClientId(stored && stored.clientId);
     transportPreference = resolveTransport(stored && stored[TRANSPORT_KEY]);
     enabled = resolveEnabled(stored && stored[ENABLED_KEY]);
+    const siteFlags = resolveSiteFlags(stored);
+    for (const source of SOURCES) siteEnabled.set(source, siteFlags[source]);
     staleSources = stalePresenceOf(stored && stored[STATUS_KEY]);
   }
 
