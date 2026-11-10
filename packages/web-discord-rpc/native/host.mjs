@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Chrome native-messaging host for Web Discord RPC.
+ * Chrome native-messaging host for YouTube Presence.
  *
  * One arRPC connection per source, created on the first activity. The host
  * keeps the last activity per source and resends it after a reconnect, acks

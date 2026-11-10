@@ -70,6 +70,7 @@ test('host manifest and launcher are built from absolute paths', () => {
   const paths = installPaths({ root: 'Q:\\repo', localAppData: 'C:\\example\\AppData\\Local' });
   const manifest = buildHostManifest({ hostPath: paths.cmd, extensionId: FIXTURE_ID });
   assert.equal(manifest.name, HOST_NAME);
+  assert.equal(manifest.description, 'YouTube Presence native messaging host');
   assert.equal(manifest.type, 'stdio');
   assert.equal(manifest.path, paths.cmd);
   assert.deepEqual(manifest.allowed_origins, [`chrome-extension://${FIXTURE_ID}/`]);

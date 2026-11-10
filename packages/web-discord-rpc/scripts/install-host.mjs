@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * One job: install the native messaging host for Web Discord RPC (Chrome, Edge, Brave).
+ * One job: install the native messaging host for YouTube Presence (Chrome, Edge, Brave).
  *
  *   node scripts/install-host.mjs [--check] [--json]
  *
@@ -66,7 +66,7 @@ export function buildHostCmd({ nodePath, hostScript }) {
 export function buildHostManifest({ hostPath, extensionId }) {
   return {
     name: HOST_NAME,
-    description: 'Web Discord RPC native messaging host',
+    description: 'YouTube Presence native messaging host',
     path: hostPath,
     type: 'stdio',
     allowed_origins: [`chrome-extension://${extensionId}/`],

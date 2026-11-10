@@ -140,6 +140,18 @@ function manifestLocalFiles(manifest) {
   return [...new Set(out)];
 }
 
+// The root README is the only list of every extension: each row is a package
+// link plus a version cell. Both are checkable against the manifests, so a new
+// package, a deleted row, or a stale version fails here by name.
+const README_ROW = /^\|\s*\[[^\]]+\]\(packages\/([^)/]+)\)\s*\|[^|]*\|\s*(\S+)\s*\|\s*$/gm;
+const NUMBER_WORDS = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"];
+
+function readmeRows(readme) {
+  const rows = new Map();
+  for (const match of readme.matchAll(README_ROW)) rows.set(match[1], match[2]);
+  return rows;
+}
+
 // Predicates over loaded content. Each returns true when the wiring holds.
 const predicates = {
   "workspaces cover packages/*": ({ rootPkg }) => {
@@ -166,6 +178,30 @@ const predicates = {
     readme.includes(`packages/${WDR}`) &&
     typeof wdrPkg?.version === "string" &&
     readme.includes(wdrPkg.version),
+  "README lists every package once": ({ readme, packages }) => {
+    if (typeof readme !== "string" || !Array.isArray(packages) || packages.length === 0)
+      return false;
+    const rows = [...readmeRows(readme).keys()].sort();
+    const dirs = packages.map((pkg) => pkg.name).sort();
+    if (rows.join(",") !== dirs.join(",")) {
+      return `README rows are [${rows.join(", ")}]; packages are [${dirs.join(", ")}]`;
+    }
+    const stated = /^(\w+) Chromium extensions/m.exec(readme)?.[1]?.toLowerCase();
+    const expected = NUMBER_WORDS[packages.length];
+    if (stated !== expected) {
+      return `README says ${stated ?? "no count"}; there are ${packages.length} packages`;
+    }
+    return true;
+  },
+  "README lists each package at its manifest version": ({ readme, packages }) => {
+    if (typeof readme !== "string" || !Array.isArray(packages) || packages.length === 0)
+      return false;
+    const rows = readmeRows(readme);
+    const bad = packages
+      .filter((pkg) => rows.get(pkg.name) !== pkg.version)
+      .map((pkg) => `${pkg.name}: README ${rows.get(pkg.name) ?? "missing"} vs manifest ${pkg.version}`);
+    return bad.length === 0 ? true : bad.join("; ");
+  },
   "CI defines a web-discord-rpc job that runs tests": ({ ci }) => {
     if (typeof ci !== "string" || !ci.includes(`${WDR}:`)) return false;
     const job = ci.slice(ci.indexOf(`${WDR}:`));
@@ -257,10 +293,33 @@ function loadContext() {
   const rootRaw = read("package.json");
   const wdrRaw = read(`packages/${WDR}/package.json`);
   const manifestRaw = read(`packages/${WDR}/manifest.json`);
+  // Every directory under packages/ that carries a manifest is an extension the
+  // root README must list. The directory name is the path segment the README links.
+  const packages = (() => {
+    let entries;
+    try {
+      entries = readdirSync(join(ROOT, "packages"));
+    } catch {
+      return [];
+    }
+    const out = [];
+    for (const entry of entries.sort()) {
+      const raw = read(`packages/${entry}/manifest.json`);
+      if (raw === null) continue;
+      try {
+        const version = JSON.parse(raw)?.version;
+        if (typeof version === "string") out.push({ name: entry, version });
+      } catch {
+        continue;
+      }
+    }
+    return out;
+  })();
   return {
     rootPkg: rootRaw ? parse(rootRaw) : null,
     wdrPkg: wdrRaw ? parse(wdrRaw) : null,
     manifest: manifestRaw ? parse(manifestRaw) : null,
+    packages,
     readme: read("README.md"),
     ci: read(".github/workflows/ci.yml"),
     release: read(".github/workflows/release.yml"),
@@ -315,6 +374,33 @@ if (process.argv.includes("--prove-red")) {
         sources: [
           { path: "packages/crunchy-presence/scripts/e2e-live.mjs", text: planted },
         ],
+      };
+    }
+    if (name === "README lists every package once") {
+      // The stated count and the row count both say two, but only one row is
+      // present: the missing row alone must turn the check red.
+      checkCtx = {
+        ...ctx,
+        readme: [
+          "Two Chromium extensions.",
+          "",
+          "| Extension | What it does | Version |",
+          "| --- | --- | --- |",
+          "| [Audio Normalizer](packages/audio-normalizer) | loudness | 5.4.3 |",
+          "",
+        ].join("\n"),
+        packages: [
+          { name: "audio-normalizer", version: "5.4.3" },
+          { name: "crunchy-presence", version: "1.2.0" },
+        ],
+      };
+    }
+    if (name === "README lists each package at its manifest version") {
+      // A single stale version cell must fail by name.
+      checkCtx = {
+        ...ctx,
+        readme: "| [Slowed Reverb](packages/slowed-reverb) | slow | 1.0.3 |\n",
+        packages: [{ name: "slowed-reverb", version: "1.1.0" }],
       };
     }
     if (name === "package test/ holds at least one test file") ROOT = emptyRoot;
