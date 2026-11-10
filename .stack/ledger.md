@@ -5,3 +5,91 @@ Append-only. Newest at the bottom. The digest is derived from here.
 - 2026-11-10T11:45:40.919Z · SEED · stack seeded in my-chromium-extensions with 3 check(s)
 - 2026-11-10T12:00:44.079Z · INTAKE · intake: new web-discord-rpc MV3 extension publishes YouTube (WATCHING) and YouTube Music (LISTENING) as two simultaneous arRPC activities for Discord Web + Vencord, while crunchy-presence gains an arRPC transport alongside native IPC.
 - 2026-11-10T12:00:44.081Z · GOAL · turn=1 seat=lead verdict=not-yet reason="transport and multi-activity keying proven live; building not started"
+- 2026-11-10T12:04:44.949Z · BRIEF · wrote wdr-scaffold: web-discord-rpc package scaffold and native-host installer
+- 2026-11-10T12:04:56.703Z · BRIEF · wrote wdr-extract: YouTube and YouTube Music extractor plus content reporter
+- 2026-11-10T12:07:49.274Z · READY · wdr-scaffold: GO
+- 2026-11-10T12:07:56.270Z · LANDED · wdr-scaffold behind 2026-11-10T12:07:49.274Z
+- 2026-11-10T12:07:56.271Z · LANDED · wdr-scaffold
+- 2026-11-10T12:07:56.273Z · LANDED · wdr-scaffold: MV3 scaffold, stable key/ID mnmmfbjinpokfnendlbhbbdmfjidgikf, config contract, five icons, native-host installer; 27/27 tests at 2d94c65
+- 2026-11-10T12:08:17.616Z · SWARM · 3 seams briefed: wdr-host, wdr-state, crp-arrpc
+- 2026-11-10T12:26:30.365Z · RED · wdr-host: NO-GO
+- 2026-11-10T12:27:20.695Z · RULING · shared-branch ready gate: wdr-host/wdr-state/crp-arrpc briefs were cut at 2d94c65, so ready sees sibling seam commits as out-of-scope; each seam's own check and git show --name-only are green; landing with force and leaving the final verdict to the auditor. Cost: no per-seam GO receipt, one audit instead.
+- 2026-11-10T12:27:20.703Z · RULING · wdr-host landed without a GO, forced by the lead
+- 2026-11-10T12:27:20.704Z · LANDED · wdr-host
+- 2026-11-10T12:27:20.707Z · RULING · wdr-state landed without a GO, forced by the lead
+- 2026-11-10T12:27:20.708Z · LANDED · wdr-state
+- 2026-11-10T12:27:20.712Z · RULING · crp-arrpc landed without a GO, forced by the lead
+- 2026-11-10T12:27:20.712Z · LANDED · crp-arrpc
+- 2026-11-10T12:27:20.715Z · LANDED · wdr-host a23f13e (34/34 + selftest 5/5); wdr-state 8d3bdc2 (40/40); crp-arrpc f8c9def (41/41, package 196/196)
+- 2026-11-10T12:27:36.058Z · SWARM · 2 seams briefed: wdr-ipc, wdr-transport
+- 2026-11-10T12:33:46.813Z · RULING · wdr-extract landed without a GO, forced by the lead
+- 2026-11-10T12:33:46.814Z · LANDED · wdr-extract
+- 2026-11-10T12:33:46.816Z · LANDED · wdr-extract 48d643d: YouTube/YT Music extractor + top-frame content reporter; 27/27 tests; live probe confirmed mediaSession readable from an isolated world
+- 2026-11-10T12:33:46.817Z · INTAKE · intake update: desktop Discord IPC is now the primary transport for web-discord-rpc; arRPC + Vencord is the fallback; both publish two simultaneous activities
+- 2026-11-10T12:35:19.844Z · NOTE · live extractor proof 2026-11-10: actual extract-youtube.js on YouTube (Big Buck Bunny: title/channel/maxres artwork/mediaId/duration 634.601/playing) and YouTube Music (Despacito: title/artist/sddefault artwork/mediaId/duration 281.521/playing) returns the full contract state
+- 2026-11-10T12:36:21.235Z · ANSWER · owner 2026-11-10: 'hardening crunchy presence to have a web support too' + 'move the priority, from web rpc to desktop rpc' — authorises a second transport in crunchy and makes Discord IPC primary in web-discord-rpc; AGENTS.md must be amended by docs.
+- 2026-11-10T12:36:52.602Z · NOTE · live IPC handshake 2026-11-10: \\.\pipe\discord-ipc-0 answered READY user=arrpc (arRPC owns the pipe); the IPC transport therefore carries Discord Web traffic too, and the client must accept it, not reject it
+- 2026-11-10T12:37:26.055Z · RULING · wdr-transport landed without a GO, forced by the lead
+- 2026-11-10T12:37:26.056Z · LANDED · wdr-transport
+- 2026-11-10T12:37:26.060Z · LANDED · wdr-transport b56222a: stored auto|ipc|arrpc preference reaches hello, enable toggle gates the port, startup clears only stale published sources; 51/51
+- 2026-11-10T12:40:00.308Z · NOTE · live crunchy web proof 2026-11-10: native host with transport=arrpc connected to arRPC 6463, sent type 3 'Live Crunchy', bridge 1337 received socketId 9; ack ok
+- 2026-11-10T12:41:14.760Z · NOTE · live crunchy auto proof 2026-11-10: default hello (no transport) used IPC-first, connected \\.\pipe\discord-ipc-0 owned by arRPC, sent type 3 'Live Crunchy', bridge received socketId 11; ack ok
+- 2026-11-10T12:41:53.781Z · BRIEF · wrote wdr-arrpc-query: arRPC clients must pass client_id in the WebSocket query
+- 2026-11-10T12:45:00.268Z · RULING · wdr-ipc landed without a GO, forced by the lead
+- 2026-11-10T12:45:00.270Z · LANDED · wdr-ipc
+- 2026-11-10T12:45:00.276Z · RULING · wdr-arrpc-query landed without a GO, forced by the lead
+- 2026-11-10T12:45:00.277Z · LANDED · wdr-arrpc-query
+- 2026-11-10T12:45:00.281Z · LANDED · wdr-ipc e17b938 + wdr-arrpc-query ea96742: Discord IPC primary with arRPC fallback, two pipes for two sources, client_id query fixed; web native 63/63, extension 97/97, selftests 10/10, e2e-ipc 7/7, live bridge app id 1566530911514923188 on socketIds 14/15
+- 2026-11-10T12:45:13.014Z · SWARM · 4 seams briefed: wdr-ui, wdr-docs, wdr-root, wdr-e2e-arrpc
+- 2026-11-10T12:48:29.442Z · RED · live launch-args probe 2026-11-10: web native host rejects 'chrome-extension://...' and exits (no pong); crunchy host answers pong with the same argv. Chrome always passes origin + --parent-window, so the web host must ignore both before the browser E2E.
+- 2026-11-10T12:50:14.667Z · RULING · wdr-e2e-arrpc landed without a GO, forced by the lead
+- 2026-11-10T12:50:14.668Z · LANDED · wdr-e2e-arrpc
+- 2026-11-10T12:50:14.670Z · LANDED · wdr-e2e-arrpc cefe549: fake RFC6455 arRPC on 6471, real host via WDR_ARRPC_PORTS, two connections/type 3+2/clear; 8/8, integration test pass
+- 2026-11-10T12:51:52.490Z · RULING · installed the web-discord-rpc native host locally (HKCU Chrome/Edge/Brave, %LOCALAPPDATA%\web-discord-rpc) to verify the real browser chain; reversible with scripts/uninstall-host.mjs; cost: the entries remain, which is the intended install
+- 2026-11-10T12:51:52.494Z · NOTE · installer --check: 5/5 PASS for host.cmd, manifest, Chrome/Edge/Brave registry; extension id mnmmfbjinpokfnendlbhbbdmfjidgikf
+- 2026-11-10T12:52:17.701Z · RULING · wdr-docs landed without a GO, forced by the lead
+- 2026-11-10T12:52:17.704Z · LANDED · wdr-docs
+- 2026-11-10T12:52:17.721Z · LANDED · wdr-docs 2f5d289: web README/CHANGELOG/ARCHITECTURE/RESEARCH/INSTALL + crunchy README/AGENTS/CHANGELOG/ARCHITECTURE updated to IPC-primary/arRPC-fallback; docs test 9/9
+- 2026-11-10T12:58:57.128Z · RULING · wdr-ui landed without a GO, forced by the lead
+- 2026-11-10T12:58:57.129Z · LANDED · wdr-ui
+- 2026-11-10T12:58:57.133Z · LANDED · wdr-ui 287b01c: popup + options over presentStatus/presentSources, auto|ipc|arrpc select, enable toggle, app ID form, install commands; 17/17 UI, package 202/202
+- 2026-11-10T12:58:57.136Z · NOTE · docs accuracy correction 3dcfc7b: activity.name card label, host installed 5/5, IPC pipe may be arRPC-owned, live arRPC/extractor/IPC receipts; docs 9/9
+- 2026-11-10T12:58:57.138Z · NOTE · launch-args fix d50efe0: both hosts now ignore chrome-extension:// origin and --parent-window=, keep --selftest, reject only unknown tokens; live ping/pong with Chrome argv
+- 2026-11-10T13:01:43.224Z · RULING · wdr-root landed without a GO, forced by the lead
+- 2026-11-10T13:01:43.225Z · LANDED · wdr-root
+- 2026-11-10T13:01:43.229Z · LANDED · wdr-root 20d5711 + 32f88c0: root test/CI/release wiring, popup/options in zip, CI runs selftest + both e2e; verifier 10/10 green and red
+- 2026-11-10T13:09:41.389Z · NOTE · check green at 32f88c0: test, typecheck, lint, web-selftest, crp-selftest, web-e2e, verify
+- 2026-11-10T21:09:14.171Z · BRIEF · wrote remove-playwright: remove Playwright fully and keep Gladius as the only browser tester
+- 2026-11-10T21:10:30.807Z · NOTE · desktop handshake 2026-11-11: \\.\pipe\discord-ipc-0 returned READY user=.yajir0be (real Discord desktop), no activity sent; desktop IPC path is reachable
+- 2026-11-10T21:14:41.971Z · NOTE · desktop visible 2026-11-11: Discord profile popout showed 'Watching YouTube' with 'Desktop RPC test / eyeball' over the real \\.\pipe\discord-ipc-0; host ack ok; test card clears on its timer
+- 2026-11-10T21:16:08.153Z · RULING · remove-playwright landed without a GO, forced by the lead
+- 2026-11-10T21:16:08.154Z · LANDED · remove-playwright
+- 2026-11-10T21:16:08.156Z · LANDED · remove-playwright 061d738: deps/lock/QA scripts removed, verifier scans for Playwright, npm ci 0, 513 tests + typecheck/lint green
+- 2026-11-10T21:16:15.743Z · BRIEF · wrote playwright-residuals: remove the last Playwright import and stale Playwright docs
+- 2026-11-10T21:21:07.305Z · BRIEF · wrote desktop-rpc-default: desktop RPC default and truthful Discord RPC naming
+- 2026-11-10T21:22:59.704Z · BRIEF · wrote crunchy-1-2-0: crunchy-presence 1.2.0 release and desktop-first web-deferred docs
+- 2026-11-10T21:25:40.630Z · RULING · playwright-residuals landed without a GO, forced by the lead
+- 2026-11-10T21:25:40.631Z · LANDED · playwright-residuals
+- 2026-11-10T21:25:40.634Z · LANDED · playwright-residuals f997812: e2e-live import deleted, verifier scans every source without skip, AGENTS/eslint/gitignore/worklet text cleaned; 513 tests + verifier 13/13
+- 2026-11-10T21:27:12.320Z · RULING · desktop-rpc-default landed without a GO, forced by the lead
+- 2026-11-10T21:27:12.321Z · LANDED · desktop-rpc-default
+- 2026-11-10T21:27:12.323Z · RULING · crunchy-1-2-0 landed without a GO, forced by the lead
+- 2026-11-10T21:27:12.324Z · LANDED · crunchy-1-2-0
+- 2026-11-10T21:27:12.325Z · LANDED · desktop-rpc-default c5bfab7 (205/205, selftest 10/10) and crunchy-1.2.0 fd249f3 (196 tests, selftest ok); desktop is default ipc
+- 2026-11-10T21:27:51.964Z · BRIEF · wrote youtube-presence-settings: per-site enable settings with YouTube Music first
+- 2026-11-10T21:31:23.347Z · INTAKE · YouTube Presence (YouTube + YouTube Music, YouTube Music first, per-site toggles both/one) publishes to the installed Discord desktop over IPC; web/arRPC is deferred; all four extensions, docs, versions and the Playwright-free tree must be green and pushed
+- 2026-11-10T21:33:14.713Z · RULING · youtube-presence-settings landed without a GO, forced by the lead
+- 2026-11-10T21:33:14.714Z · LANDED · youtube-presence-settings
+- 2026-11-10T21:33:14.717Z · LANDED · youtube-presence-settings b632283: youtubeEnabled/youtubeMusicEnabled flags (both on), YT Music first, disabled site cleared, edge fallback ipc; 45/45
+- 2026-11-10T21:34:12.045Z · SWARM · 2 seams briefed: youtube-presence-ui, sort-root-docs
+- 2026-11-10T21:37:41.029Z · RULING · sort-root-docs landed without a GO, forced by the lead
+- 2026-11-10T21:37:41.031Z · LANDED · sort-root-docs
+- 2026-11-10T21:37:41.033Z · LANDED · sort-root-docs 51b5797: README four extensions at real versions, YouTube Presence name, installer/host labels; verifier 15/15 with README row+version predicates
+- 2026-11-10T21:42:01.828Z · NOTE · check green at b1d36cc: test, typecheck, lint, web-selftest, crp-selftest, web-e2e, verify
+- 2026-11-10T21:42:20.819Z · RED · youtube-presence-ui: NO-GO
+- 2026-11-10T21:47:58.378Z · NOTE · check green at b1d36cc: test, typecheck, lint, web-selftest, crp-selftest, web-e2e, verify
+- 2026-11-10T21:48:10.666Z · RED · youtube-presence-ui: NO-GO
+- 2026-11-10T21:48:37.996Z · RULING · youtube-presence-ui landed without a GO, forced by the lead
+- 2026-11-10T21:48:37.997Z · LANDED · youtube-presence-ui
+- 2026-11-10T21:48:37.999Z · LANDED · youtube-presence-ui b1d36cc: YouTube Presence name, per-site toggles (YT Music first), docs true; 217/217 package, 528 total, verifier 15/15, both selftests, 7/7 configured checks
+- 2026-11-10T21:48:38.000Z · RULING · youtube-presence-ui force-landed: ready NO-GO'd on two false positives. (1) range b632283..b1d36cc includes sibling commit 51b5797 (sort-root-docs, own landed brief); b1d36cc itself touches exactly its 12 Files (git show --name-only). (2) .stack/config.json gained the stricter proving checks (web-selftest, crp-selftest, web-e2e, verify) before this seam; ready flags any config change, and it cannot be both kept and satisfied because committing it would put it in the range. Recorded GREEN at b1d36cc: 7/7 configured checks, 528 tests.

@@ -1,4 +1,8 @@
-# Contracts — web-discord-rpc + crunchy web transport
+# Contracts — YouTube Presence + crunchy web transport
+
+> Owner update 2026-11-11: the RPC extension's display name is **YouTube Presence** (package path `packages/web-discord-rpc`, host name and extension ID stay for stability). It handles YouTube and YouTube Music, with YouTube Music processed first. Each site has an independent enable toggle, both or one only, stored in `storage.local`; the worker ignores and clears a disabled site. The default transport is `ipc` (installed Discord desktop); `auto` and `arrpc` remain selectable but are deferred web paths.
+>
+> Per-site settings: `config.js` exports `SITE_ENABLED_KEYS = { youtube: "youtubeEnabled", "youtube-music": "youtubeMusicEnabled" }` and `resolveSiteFlags(stored)`; both default to true, and only a real `false` disables one. The worker exposes them as `status.sites`, processes `SOURCES = [youtube-music, youtube]`, and on disable clears that source's published activity immediately. The surfaces read/write the two storage keys; there is no third source.
 
 Dated 2026-11-10. Every seam reads this file first. Where a seam's brief and this file disagree, this file wins for the shared boundary and the brief wins for the seam's own files.
 
@@ -79,6 +83,37 @@ YoutubeExtract.read(doc, nav, loc) -> state|null
 
 Rules: never throw; every field nullable; strip bidi/zero-width; collapse whitespace; cap text at 256 before the activity builder's 128. `paused` is `true` when no video exists. `visible` is `doc.visibilityState === "visible"`.
 
+Live probe 2026-11-10, `https://www.youtube.com/watch?v=aqz-KE-bpKQ`, main world and a CDP isolated world (content-script equivalent) both read:
+
+```js
+navigator.mediaSession.metadata = {
+  title: "Big Buck Bunny 60fps 4K - Official Blender Foundation Short Film",
+  artist: "Blender", album: null,
+  artwork: [{ src: "https://i.ytimg.com/vi/aqz-KE-bpKQ/hqdefault.jpg?...", sizes: "320x180" }]
+}
+document.querySelector("h1.ytd-watch-metadata yt-formatted-string").textContent // title
+document.querySelector("#owner #channel-name a").textContent // "Blender"
+document.querySelector('meta[property="og:image"]').content // maxresdefault, higher resolution
+document.querySelector("video") // duration 634.601, paused true, readyState 4
+```
+
+Therefore: `mediaSession` is readable from a content script and is the first metadata source; for YouTube, prefer `meta[property="og:image"]` over the MediaSession artwork (higher resolution); `h1.ytd-watch-metadata yt-formatted-string` is the title selector; `#owner #channel-name a` / `ytd-channel-name a` are the channel selectors.
+
+Live extractor proof 2026-11-10, the actual `extract-youtube.js` evaluated in the page:
+
+```text
+YouTube  https://www.youtube.com/watch?v=aqz-KE-bpKQ
+  title: "Big Buck Bunny 60fps 4K - Official Blender Foundation Short Film"
+  channel: "Blender"  artwork: maxresdefault.jpg  mediaId: aqz-KE-bpKQ
+  duration: 634.601  position: 14.349  paused: false
+YouTube Music  https://music.youtube.com/watch?v=kJQP7kiw5Fk
+  title: "Despacito"  channel/artist: "Luis Fonsi & Daddy Yankee"
+  artwork: sddefault.jpg  mediaId: kJQP7kiw5Fk
+  duration: 281.521  position: 5.230  paused: false
+```
+
+The YouTube Music player bar and `<video>` are present with a normal desktop user agent; the earlier headless default UA got the app shell only.
+
 `content.js` sends:
 
 ```js
@@ -111,7 +146,7 @@ Rules: return null without `title`; omit `assets` without an https artwork URL; 
 Extension -> host:
 
 ```js
-{ t: "hello", clientId: "<17-20 digits>", version: 1, transport: "arrpc" }
+{ t: "hello", clientId: "<17-20 digits>", version: 1, transport: "auto"|"ipc"|"arrpc" }
 { t: "activity", source: "youtube"|"youtube-music", id: "<string>", activity: <activity>|null }
 { t: "ping" }
 ```
@@ -119,13 +154,13 @@ Extension -> host:
 Host -> extension:
 
 ```js
-{ t: "status", state: "connected"|"waiting"|"error", transport: "arrpc", reason: "<kind>", detail: "<raw>", sources: { youtube: "<state>", "youtube-music": "<state>" } }
+{ t: "status", state: "connected"|"waiting"|"error", transport: "arrpc"|"discord-ipc", reason: "<kind>", detail: "<raw>", sources: { youtube: "<state>", "youtube-music": "<state>" } }
 { t: "ack", source, id, ok: true }
 { t: "ack", source, id, ok: false, error: "<string>" }
 { t: "pong" }
 ```
 
-`reason` kinds: `arrpc-closed`, `host-missing`, `rejected`, `hung`. Absence of arRPC is never `error`; only a rejected application id or an exhausted hang is.
+`reason` kinds: `discord-closed`, `arrpc-closed`, `host-missing`, `rejected`, `hung`. Absence of either transport is never `error`; only a rejected application id or an exhausted hang is. `transport` is `discord-ipc` or `arrpc`; `mixed` when the two sources are on different transports.
 
 ## Host transport
 
@@ -140,9 +175,29 @@ client.ready // boolean
 client.port  // number|null
 ```
 
-`connect()` probes ports in order. It accepts only a `READY` whose `data.user.id === "1045800378228281345"` or `data.user.username === "arrpc"`; anything else is closed and the next port tried. It sends one `SET_ACTIVITY` per source connection; `pid` is `process.pid`. It matches replies by `nonce`. On `close`, `ready` becomes false and `onClose` (if provided) fires. No Origin header is set.
+`connect()` probes ports in order. The URL is `ws://127.0.0.1:<port>/?v=1&client_id=<clientId>` — the query is required: without it arRPC stamps `application_id: ""` and Vencord cannot resolve the application or its assets (live bridge proved this). It accepts only a `READY` whose `data.user.id === "1045800378228281345"` or `data.user.username === "arrpc"`; anything else is closed and the next port tried. It sends one `SET_ACTIVITY` per source connection; `pid` is `process.pid`. It matches replies by `nonce`. On `close`, `ready` becomes false and `onClose` (if provided) fires. No Origin header is set. The same query is required in crunchy-presence's arRPC client.
 
-`native/host.mjs` owns one `ArRpcClient` per source, created lazily on the first activity. It keeps the last activity per source and resends it after a reconnect. A failed connect returns `ack ok:false, error:"arrpc-unavailable"` and a `status waiting`; it never throws out of the native loop.
+`native/ipc.mjs` exports `DiscordIpcClient`, adapted from crunchy-presence's proven client:
+
+```js
+new DiscordIpcClient({ clientId, source, logger, pipes = DISCORD_PIPES, connectImpl, pid = process.pid, rateLimit = 5, rateWindowMs = 20_000 })
+await client.connect() -> { ok: true, pipePath, user }
+await client.setActivity(activity|null) -> { ok: true }
+client.close()
+client.ready // boolean
+client.appName // string|null
+client.user // string|null
+```
+
+`connect()` scans `\\.\pipe\discord-ipc-0` through `-9`, sends `{v:1, client_id}` as opcode 0, and accepts the first `READY` dispatch. One client per source; two clients mean two pipes and two `socketId`s, so Discord desktop stacks both activities exactly as the web client does. It keeps the last activity and republishes it after a reconnect. `SET_ACTIVITY` replies are matched by `nonce`.
+
+`native/host.mjs` owns one client per source, created lazily on the first activity, plus the last activity per source. Selection per `hello`:
+
+- `auto` (default): try `DiscordIpcClient` first; if no Discord pipe answers, try `ArRpcClient`. The first successful transport becomes the preferred one for the other source; if that source must use the other transport, overall `transport` is `mixed`.
+- `ipc`: `DiscordIpcClient` only, `transport: "discord-ipc"`.
+- `arrpc`: `ArRpcClient` only, `transport: "arrpc"`.
+
+A failed connect returns `ack ok:false, error:"transport-unavailable"` and a `status waiting`; it never throws out of the native loop. After a reconnect it resends the last activity.
 
 `native/native-framing.mjs` is the Chrome stdio framing: `uint32LE length | UTF-8 JSON`, with a decoder that reassembles partial reads and caps at 1 MiB.
 
@@ -154,7 +209,7 @@ Crunchy's host chooses a transport per `hello`:
 { t: "hello", clientId, transport: "auto" | "arrpc" | "ipc" }  // missing => "auto"
 ```
 
-`auto` tries arRPC first (same `ArRpcClient` contract, one activity), then Discord IPC. `arrpc` never falls back. `ipc` is today's behaviour. The status frame gains `transport: "arrpc" | "discord-ipc"`. Existing message shapes and `type: 3` validation are unchanged.
+`auto` tries Discord IPC first (today's behaviour), then arRPC (same `ArRpcClient` contract, one activity). `arrpc` never falls back. `ipc` is today's behaviour and never falls back. The status frame gains `transport: "arrpc" | "discord-ipc"`. Existing message shapes and `type: 3` validation are unchanged.
 
 ## Test conventions
 
@@ -164,3 +219,4 @@ Crunchy's host chooses a transport per `hello`:
 - Native tests inject fake `WebSocket`, timers, and a fake arRPC server; no port binding in unit tests.
 - Manifest tests read `manifest.json` and assert MV3, permissions, content-script matches, stable `key`.
 - The integration script may bind ports 6463-6472 and 1337; it must skip cleanly with exit 0 and `SKIP` when a port is occupied by something other than its own process.
+- IPC integration uses a uniquely named `\\.\pipe\wdr-e2e-*` server and injects `WDR_DISCORD_PIPES` into the spawned host; it never touches a real `discord-ipc-*` pipe.

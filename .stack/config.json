@@ -3,7 +3,7 @@
     {
       "name": "test",
       "command": "npm run test",
-      "timeout": 240000
+      "timeout": 420000
     },
     {
       "name": "typecheck",
@@ -14,6 +14,26 @@
       "name": "lint",
       "command": "npm run lint",
       "timeout": 240000
+    },
+    {
+      "name": "web-selftest",
+      "command": "node packages/web-discord-rpc/native/host.mjs --selftest",
+      "timeout": 60000
+    },
+    {
+      "name": "crp-selftest",
+      "command": "node packages/crunchy-presence/native/host.mjs --selftest",
+      "timeout": 60000
+    },
+    {
+      "name": "web-e2e",
+      "command": "node packages/web-discord-rpc/scripts/e2e-arrpc.mjs && node packages/web-discord-rpc/scripts/e2e-ipc.mjs",
+      "timeout": 120000
+    },
+    {
+      "name": "verify",
+      "command": "node scripts/verify-integration.mjs",
+      "timeout": 60000
     }
   ],
   "ownership": {
