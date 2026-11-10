@@ -8,6 +8,12 @@ Notable changes to this package. Dates are ISO 8601. This package is local-only 
 - The extension is renamed YouTube Presence in the manifest, the popup, the settings page, and every doc, because it covers both YouTube and YouTube Music; the package path `packages/web-discord-rpc`, the storage keys, the host name, and the extension ID are unchanged.
 - YouTube and YouTube Music get one independent toggle each, both on by default: `youtubeMusicEnabled` for Music and `youtubeEnabled` for YouTube. Either site works alone, switching one off leaves the other publishing, and YouTube Music is listed first in Settings. A site switched off reports itself as off instead of claiming nothing is playing.
 
+## [1.0.1] - 2026-11-10
+
+- Presence reaches Discord while the connection is still being set up: the worker hands desired activities to the host when it is `connecting` or `waiting` instead of only once connected, so a running Discord no longer leaves the status stuck at Waiting. The host announces itself on `hello`, and a missing desktop pipe reads "Discord is not running" rather than "Waiting for Discord to respond".
+- YouTube Music is detected from any `music.youtube.com` page as soon as a title resolves, with no watch id required (it is null there); YouTube still requires a watch id.
+- Docs are corrected to match, and assertions guard both claims.
+
 ## [1.0.0] - 2026-11-10
 
 - You can now see YouTube and YouTube Music in Discord at the same time: watching a video shows a WATCHING card titled YouTube, listening shows a LISTENING card titled YouTube Music, and one app install covers both.
