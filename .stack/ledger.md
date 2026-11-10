@@ -175,3 +175,10 @@ Append-only. Newest at the bottom. The digest is derived from here.
 - 2026-11-10T23:24:43.002Z · LANDED · wdr-music-names-artist a0d858d: Music activity name is the artist when resolved (album in state, no repeat; old shape without one), docs corrected, 1.0.2 everywhere; red-first four pins, then 103+196+12+228, verifier 16/16, e2e 7/7; ready GO
 - 2026-11-10T23:24:43.003Z · AUDIT · wdr-music-names-artist@a0d858d PASS - lead-reconciled: diff read (9 paths inside brief), red evidence from the employee run, all checks re-run by the lead; report written by the lead after two ceiling stalls, noted in the report
 - 2026-11-10T23:24:43.004Z · NOTE · follow-ups found while landing: package-lock workspace versions drift (web-discord-rpc 1.0.0 vs 1.0.2, crunchy-presence 1.1.0 vs 1.2.0); popup/options describeActivity reads details+state only, so the artist no longer appears on those surfaces now that state carries the album
+- 2026-11-10T23:25:16.769Z · BRIEF · wrote wdr-surfaces-artist: popup and options show the Music artist
+- 2026-11-10T23:29:33.053Z · READY · wdr-surfaces-artist: GO
+- 2026-11-10T23:29:52.460Z · LANDED · wdr-surfaces-artist behind 2026-11-10T23:29:33.053Z
+- 2026-11-10T23:29:52.461Z · LANDED · wdr-surfaces-artist
+- 2026-11-10T23:30:07.071Z · LANDED · wdr-surfaces-artist 753bb81: popup Music detail is artist — album, options Music row is title — artist — album; YouTube rows unchanged; red watched (An Album vs An Artist — An Album) then 23/23 UI and 103+196+12+229 green; ready GO
+- 2026-11-10T23:30:10.169Z · AUDIT · wdr-surfaces-artist@753bb81 PASS - lead-reconciled: diff read (3 paths inside brief), red evidence in report, brief check plus full ready re-ran green by lead; options returns joined string not {title,detail} so identical artist rule applied per report; no independent audit
+- 2026-11-10T23:30:15.102Z · RULING · wdr-surfaces-artist brief text called both describeActivity copies {title,detail} but options returns a joined string; employee kept return contracts and copied the artist rule exactly - accepted, Out met on both surfaces
