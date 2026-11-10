@@ -4,7 +4,7 @@
 <h1 align="center">Crunchy Presence</h1>
 <p align="center"><strong>Show the Crunchyroll episode you are watching as Discord rich presence.</strong></p>
 
-Shows the Crunchyroll episode you are watching as Discord rich presence. Local only: a Chrome MV3 extension reads the page, a small Node native host forwards the activity to Discord over its local IPC pipe, and nothing is uploaded anywhere.
+Shows the Crunchyroll episode you are watching as Discord rich presence. Local only: a Chrome MV3 extension reads the page, a small Node native host forwards the activity to Discord over the local Discord IPC pipe first and the local arRPC bridge as fallback, and nothing is uploaded anywhere.
 
 ## Requirements
 
@@ -54,10 +54,14 @@ Discord only accepts `SET_ACTIVITY` from an IPC connection that identifies a Dis
 
 The options page carries one **Application ID** field, pre-filled with the built-in ID. Saving a different 17 to 20 digit ID stores an override and reconnects the bridge to that application. The card's title is the application's name, so the name follows whichever ID is in force. Saving the built-in value, or clearing the field and saving, removes the override and restores the built-in application.
 
+## Transport: Discord desktop first, arRPC fallback
+
+Dated 2026-11-10. The extension opens one native port; the host chooses how to reach Discord per `hello` (`transport: "auto" | "ipc" | "arrpc"`, missing means `"auto"`). `auto` tries the Discord desktop pipe (`\\.\pipe\discord-ipc-0` through `-9`) first and only reaches the arRPC WebSocket (`127.0.0.1:6463-6472`, the same bridge Vencord's `WebRichPresence (arRPC)` plugin forwards) when no desktop pipe answers. Forced `ipc` and forced `arrpc` never fall back. The status frame reports the chosen `transport: "discord-ipc" | "arrpc"`; `UNVERIFIED here: the live Vencord forwarding was proved on 2026-11-10 and recorded in `.stack/contracts.md`, not re-observed in this seam.` Absence of either transport is `waiting`, never an error; only a rejected application ID (or a host still hung after three retries) is an error.
+
 ## Privacy
 
 - The extension makes no network requests of its own. It reads the Crunchyroll tab you have open and talks to the native host over Chrome native messaging.
-- The native host makes no network requests. It only writes `SET_ACTIVITY` frames to Discord's local named pipe.
+- The native host makes no network requests on the desktop path: it writes `SET_ACTIVITY` frames to Discord's local named pipes. On the fallback path it opens a WebSocket to `127.0.0.1` (this machine only) for arRPC.
 - No telemetry, no analytics, no remote config, no update check.
 - Settings and the last extracted page state stay in `chrome.storage.local` / `chrome.storage.session` on this machine. The diagnostics on the options page are local text that you copy yourself.
 - Artwork URLs are handed to Discord, which fetches them. That request is Discord's, not the extension's.

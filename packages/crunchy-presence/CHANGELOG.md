@@ -4,6 +4,8 @@ Notable changes to this project. Dates are ISO 8601. This package is local-only 
 
 ## [Unreleased]
 
+- If the Discord desktop app is not running, presence now falls back to the local arRPC bridge (Discord Web via Vencord) instead of going silent, and switches back on its own — you do not need to change a setting. The desktop pipe stays the primary path and there is no third transport.
+
 ## [1.1.0] - 2026-11-10
 
 - Presence availability is now a separate axis from bridge state: a missing Discord pipe, a connect/handshake timeout and a missing native host render as neutral **Waiting** with friendly copy while the raw diagnostic stays in `lastError` and the copyable diagnostics; only a rejected application ID (or a host still hung after three retries) is an error. The host emits a `waiting` status on a dropped pipe, so the pill can no longer stick at Connected after Discord quits, and the toggle always stays operable so presence can be switched off while Discord is absent, sending the authoritative null clear. Activity payloads keep broken artwork as a safe fallback, the synopsis is now opt-in (default off), and an ad break (a playing video far shorter than the known episode) freezes the episode card without a timer instead of rendering ad progress.

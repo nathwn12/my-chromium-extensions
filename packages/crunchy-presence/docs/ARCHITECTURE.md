@@ -8,8 +8,9 @@ How one Crunchyroll tab becomes a Discord activity, what crosses each boundary, 
 Crunchyroll tab
   → content.js (extract.js)              read DOM + mediaSession, report flat state
   → background.js (merge per tab, throttle)   one record per tab, 4 ordinary sends / 20 s (null clears bypass uncounted)
-  → native host (host.mjs → ipc.mjs)      validate, frame, speak Discord IPC
-  → \\.\pipe\discord-ipc-N                local named pipe, N = 0..9
+  → native host (host.mjs → ipc.mjs, arrpc.mjs) validate, frame, speak Discord IPC first, arRPC fallback
+  → \\.\pipe\discord-ipc-N                local named pipe, N = 0..9 (primary)
+  → arRPC WebSocket                        127.0.0.1:6463-6472 (fallback; Vencord bridge)
   → Discord                               SET_ACTIVITY, type 3 (WATCHING)
 ```
 
@@ -25,8 +26,9 @@ Chrome starts the host as a child process through the registered `host.cmd`. Chr
 | `content.js` | content script, every frame | report `crp-state` on media events (no `timeupdate`), URL changes, visibility changes, bfcache `pageshow` restores, plus a 30 s keepalive while a video exists |
 | `background.js` | MV3 service worker | keep per-tab state, pick one activity, throttle, own the native port and reconnect |
 | `options.js` / `popup.js` | extension pages | Application ID, synopsis option, status, diagnostics, enable toggle, current buttons |
-| `native\host.mjs` | Node child of Chrome | message loop, Discord handshake, activity forwarding, retry |
-| `native\ipc.mjs` | Node | both framings, pipe scan, `SET_ACTIVITY` request/reply, rate guard |
+| `native\host.mjs` | Node child of Chrome | message loop, Discord IPC first with arRPC fallback per `hello`, activity forwarding, retry |
+| `native\ipc.mjs` | Node | Discord IPC framing, pipe scan, `SET_ACTIVITY` request/reply, rate guard |
+| `native\arrpc.mjs` | Node | arRPC WebSocket client, port probe, READY gate on the mock user, nonce-matched `SET_ACTIVITY` |
 | `native\protocol.mjs` | Node | message and activity validation shared with the tests |
 
 ## Message contract
@@ -35,7 +37,7 @@ Extension → host:
 
 | `t` | Fields | Meaning |
 | --- | --- | --- |
-| `hello` | `clientId` (17–20 digit string) | open the Discord handshake for this application |
+| `hello` | `clientId` (17–20 digit string), `transport: "auto" \| "ipc" \| "arrpc"` | open the Discord handshake for this application; missing `transport` means `"auto"` |
 | `activity` | `activity` (object or `null`), optional `id` | set or clear presence; `null` clears |
 | `ping` | — | liveness; the host answers `pong` |
 
@@ -43,14 +45,14 @@ Host → extension:
 
 | `t` | Fields | Meaning |
 | --- | --- | --- |
-| `status` | `state: "connected"`, `appName`, `user` | handshake succeeded, or an activity was accepted |
-| `status` | `state: "waiting"`, `reason`, `detail` | expected absence: Discord closed, host missing, or a transient timeout; `detail` is diagnostic only |
+| `status` | `state: "connected"`, `transport: "discord-ipc" \| "arrpc"`, `appName`, `user` | handshake succeeded, or an activity was accepted |
+| `status` | `state: "waiting"`, `transport`, `reason`, `detail` | expected absence: Discord desktop closed, arRPC bridge absent, host missing, or a transient timeout; `detail` is diagnostic only |
 | `status` | `state: "error"`, `detail`, `code`, `fatal` | a failure; `fatal: true` is only a permanent handshake rejection (bad application ID) |
 | `ack` | `id`, `ok: true`, `appName` | one activity frame was accepted |
-| `ack` | `id`, `ok: false`, `error` | one activity frame was rejected |
+| `ack` | `id`, `ok: false`, `error` | one activity frame was rejected (`transport-unavailable`, `arrpc-unavailable`, `rejected`) |
 | `pong` | — | reply to `ping` |
 
-`reason` is one of `discord-closed`, `host-missing`, `rejected`, `hung`.
+`reason` is one of `discord-closed`, `arrpc-closed`, `host-missing`, `rejected`, `hung`.
 `detail` keeps the raw diagnostic (a pipe name, `ENOENT`, a handshake code) for
 the options diagnostics; the popup and options status card render a separate
 friendly sentence and never show `detail`.
@@ -67,8 +69,8 @@ Two axes, deliberately separate:
 `bridge-status.js` is the single classifier and label table for both the worker
 and the two surfaces. Only `rejected` (bad application ID) and a host still
 hung after three consecutive pong timeouts map to `error`. `discord-closed`,
-`host-missing`, a connect/handshake timeout and a dropped pipe all map to
-`waiting` with no error. A sync `connectNative` throw and an async host-missing
+`arrpc-closed`, `host-missing`, a connect/handshake timeout and a dropped pipe all map to
+`waiting` with no error. An arRPC probe failure (`ECONNREFUSED`/`ECONNRESET` on loopback, `no arrpc`) maps to `arrpc-closed` before it can read as `discord-closed`. A sync `connectNative` throw and an async host-missing
 disconnect collapse to the same `host-missing` waiting state. The raw string is
 never deleted: `lastError` keeps it for logs and the copyable diagnostics.
 
@@ -109,6 +111,8 @@ uint32LE opcode | uint32LE length | UTF-8 JSON
 | 3 / 4 | PING / PONG | transport keepalive, answered in kind |
 
 The host scans `\\.\pipe\discord-ipc-0` through `-9` in order and stops at the first pipe that completes a handshake. Both decoders reassemble partial reads, so a frame split at any byte boundary is decoded exactly once. Caps: 1 MiB per native message, 8 MiB per Discord frame.
+
+arRPC frame: plain JSON text over `ws://127.0.0.1:<port>/?v=1&client_id=<id>`. The client probes `6463–6472` in order, accepts only a `READY` whose `data.user` is the arRPC mock user (id `1045800378228281345`, username `arrpc`), sends `SET_ACTIVITY`, and matches the reply by `nonce`. No `Origin` header is set. Forced `ipc` never touches the network; forced `arrpc` never touches the pipes; `auto` (the default when `hello` omits `transport`) tries the desktop pipes first and only reaches arRPC when no pipe answers.
 
 ## Rate guard
 
@@ -168,7 +172,8 @@ The content script runs with `all_frames: true`, so the top page and the player 
 | --- | --- |
 | Native port dies | worker reconnects with backoff from 500 ms to 8 s, resets the coalescing window and replays the stashed payload; the bridge shows `waiting`, never a latched error |
 | Discord IPC pipe drops | host client reconnects from 250 ms to 5 s, emits `waiting` immediately, and republishes the last activity on the next handshake |
-| Discord is not running yet | host retries the handshake from 1 s to 30 s and emits `waiting`; it emits `connected` on the first success and replays the last activity with no user action |
+| Discord is not running yet | `auto` tries the desktop pipes first, then the arRPC bridge; both absent emits `waiting` (`discord-closed` when no pipe answered, `arrpc-closed` when no listener answered). The host retries the handshake from 1 s to 30 s and emits `connected` on the first success, replaying the last activity with no user action |
+| Forced transport absent | no fallback: `ipc` without pipes (or `arrpc` without a listener) acks `transport-unavailable`/`arrpc-unavailable` and stays `waiting` |
 | Native host missing | both the sync throw and the async disconnect classify to `waiting` / `host-missing` with installer guidance; the worker keeps retrying |
 | Host stops ponging | a ping with no pong for 10 s drops the port and reconnects; only three consecutive timeouts become an error |
 | Service worker sleeps | a 30 s `alarms` watchdog wakes it, reopens the port and pings; the alarm is only created when absent so a reboot never resets the countdown. A restart suppresses the boot-time null publish until the first `crp-state` or 60 s after boot, so a restart never blanks a live presence while a closed site still clears. |
