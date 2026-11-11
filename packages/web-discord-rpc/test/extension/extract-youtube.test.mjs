@@ -106,6 +106,7 @@ test("a Music watch page yields the whole state", () => {
     "position",
     "title",
     "trackUrl",
+    "views",
     "visible"
   ]);
   assert.equal(state.title, "Never Gonna Give You Up");
@@ -220,7 +221,12 @@ test("mediaSession fills title and channel when the DOM is bare", () => {
 test("YouTube Music reads song, artist and album from the player bar", () => {
   const page = musicPage({
     title: "Song Name",
-    byline: [node("a", { text: "Artist Name" }), " • Album Name • 2020"],
+    byline: [
+      node("a", { attrs: { href: "channel/UCabc" }, text: "Artist Name" }),
+      " • ",
+      node("a", { attrs: { href: "browse/MPREb1" }, text: "Album Name" }),
+      " • 2020"
+    ],
     artwork: "https://lh3.googleusercontent.com/cover=w544-h544"
   });
   const state = read(page.doc, page.navigator, page.location);
@@ -264,7 +270,12 @@ test("YouTube Music on Home reports the persistent player without a media id", (
   const page = musicPage({
     href: "https://music.youtube.com/",
     title: "PIXELATED KISSES",
-    byline: [node("a", { text: "Joji" }), " • PIXELATED KISSES • 2025"],
+    byline: [
+      node("a", { attrs: { href: "channel/UCjoji" }, text: "Joji" }),
+      " • ",
+      node("a", { attrs: { href: "browse/MPREb2" }, text: "PIXELATED KISSES" }),
+      " • 2025"
+    ],
     artwork: "https://lh3.googleusercontent.com/cover=w544-h544",
     children: [video({ currentTime: 3, duration: 111, paused: false })]
   });
@@ -431,7 +442,96 @@ test("a byline without anchors yields no links and no crash", () => {
   assert.equal(state.artistUrl, null);
   assert.equal(state.albumUrl, null);
   assert.equal(state.channel, "Some Artist");
+  // A byline segment is never promoted to album: without an album anchor or
+  // MediaSession album there is no album at all.
+  assert.equal(state.album, null);
+  assert.equal(state.views, null);
+});
+
+test("a byline view count is a view count, never an album", () => {
+  const page = musicPage({
+    href: "https://music.youtube.com/",
+    title: "Song",
+    byline: "Dan • 1.5M views"
+  });
+  const state = read(page.doc, page.navigator, page.location);
+
+  assert.equal(state.views, "1.5M views");
+  assert.equal(state.album, null);
+  assert.equal(state.channel, "Dan");
+});
+
+test("an album anchor and a view count coexist in one byline", () => {
+  const page = musicPage({
+    href: MUSIC_WATCH,
+    title: "Song",
+    byline: [
+      node("a", { attrs: { href: "channel/UCabc" }, text: "Dan" }),
+      " • ",
+      node("a", { attrs: { href: "browse/MPREb123" }, text: "Some Album" }),
+      " • 1.5M views"
+    ]
+  });
+  const state = read(page.doc, page.navigator, page.location);
+
+  assert.equal(state.channel, "Dan");
   assert.equal(state.album, "Some Album");
+  assert.equal(state.views, "1.5M views");
+  assert.equal(state.albumUrl, "https://music.youtube.com/browse/MPREb123");
+});
+
+test("a year in the byline is neither an album nor a view count", () => {
+  const page = musicPage({
+    href: MUSIC_WATCH,
+    title: "Song",
+    byline: [
+      node("a", { attrs: { href: "channel/UCabc" }, text: "Dan" }),
+      " • ",
+      node("a", { attrs: { href: "browse/MPREb123" }, text: "Some Album" }),
+      " • 2024"
+    ]
+  });
+  const state = read(page.doc, page.navigator, page.location);
+
+  assert.equal(state.views, null);
+  assert.equal(state.album, "Some Album");
+});
+
+test("a view count parses only as a whole count-then-views segment", () => {
+  const counted = ["1,234 views", "812 views", "1.5K views", "2B Views"];
+  for (const text of counted) {
+    const page = musicPage({ href: MUSIC_WATCH, title: "Song", byline: `Dan • ${text}` });
+    assert.equal(read(page.doc, page.navigator, page.location).views, text, text);
+  }
+
+  const notCounted = ["views 1.5M", "1.5M", "2024", "views", "1.5M viewers"];
+  for (const text of notCounted) {
+    const page = musicPage({ href: MUSIC_WATCH, title: "Song", byline: `Dan • ${text}` });
+    assert.equal(read(page.doc, page.navigator, page.location).views, null, text);
+  }
+});
+
+test("a view count is never promoted to an artist", () => {
+  const page = musicPage({ href: MUSIC_WATCH, title: "Song", byline: "1.5M views" });
+  const state = read(page.doc, page.navigator, page.location);
+
+  assert.equal(state.views, "1.5M views");
+  assert.equal(state.channel, null);
+});
+
+test("MediaSession album wins with no album anchor and no segment becomes one", () => {
+  const page = musicPage({
+    href: MUSIC_WATCH,
+    title: "Song",
+    byline: "Dan • Some Album"
+  });
+  page.navigator.mediaSession = { metadata: { album: "Session Album" } };
+  const state = read(page.doc, page.navigator, page.location);
+  assert.equal(state.album, "Session Album");
+  assert.equal(state.views, null);
+
+  const bare = musicPage({ href: MUSIC_WATCH, title: "Song", byline: "Dan • Some Album" });
+  assert.equal(read(bare.doc, bare.navigator, bare.location).album, null);
 });
 
 test("links that leave music.youtube.com are rejected", () => {
