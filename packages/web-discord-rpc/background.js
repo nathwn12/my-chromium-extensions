@@ -5,7 +5,9 @@
  * send budget for YouTube Music (LISTENING) published to the installed Discord
  * desktop app over its local socket: a track change goes out at once, an
  * ordinary update at most once per `MIN_GAP_MS`, and nothing above
- * `MAX_UPDATES` per `UPDATE_WINDOW_MS`.
+ * `MAX_UPDATES` per `UPDATE_WINDOW_MS`. A playback rate that is not 1x takes
+ * the raised budget (`HIGH_RATE_*`): the content script re-anchors every
+ * second, because Discord counts elapsed time in wall time.
  *
  * The pure helpers are exported so the test suite can import this file
  * without a `chrome` global; `createWorker` takes the API object, so the tests
@@ -41,6 +43,17 @@ export const MAX_UPDATES = 8;
 export const UPDATE_WINDOW_MS = 20000;
 /** At most one ordinary update per this gap; a new track bypasses it. */
 export const MIN_GAP_MS = 1500;
+/**
+ * A non-1x playback re-anchors on every content-script tick: Discord counts
+ * elapsed time in wall time and has no field for the rate, so the card must be
+ * re-stamped every second to stay behind by less than a second. The raised
+ * budget is 30 per 30 s with a 900 ms floor.
+ */
+export const HIGH_RATE_MAX_UPDATES = 30;
+export const HIGH_RATE_WINDOW_MS = 30000;
+export const HIGH_RATE_MIN_GAP_MS = 900;
+/** A rate within this of 1 is 1x; the content script uses the same epsilon. */
+export const RATE_EPSILON = 0.01;
 /** A tab that has not reported for this long is treated as closed. */
 export const TAB_TTL_MS = 30 * 60 * 1000;
 /** A ping with no pong inside this window marks the bridge disconnected. */
@@ -76,13 +89,19 @@ const SENDABLE_BRIDGE_STATES = new Set([
  *
  * `urgent` spends a send ahead of the gap — a new track should not wait 1.5 s —
  * but never past the window ceiling. `force` (reconnect, clear) bypasses both.
- * `schedule`/`cancel`/`now` are injectable so tests never need real timers.
+ * `highFrequency` switches to the raised `high*` budget for a non-1x playback,
+ * where the content script re-anchors every second; the send history is shared,
+ * so only the ceiling, window and floor change. `schedule`/`cancel`/`now` are
+ * injectable so tests never need real timers.
  */
 export function createCoalescingLimiter({
   send,
   max = MAX_UPDATES,
   windowMs = UPDATE_WINDOW_MS,
   minGapMs = MIN_GAP_MS,
+  highMax = HIGH_RATE_MAX_UPDATES,
+  highWindowMs = HIGH_RATE_WINDOW_MS,
+  highMinGapMs = HIGH_RATE_MIN_GAP_MS,
   now = () => Date.now(),
   schedule = (fn, ms) => setTimeout(fn, ms),
   cancel = (handle) => clearTimeout(handle),
@@ -92,12 +111,39 @@ export function createCoalescingLimiter({
   let pending = null;
   let hasPending = false;
   let timer = null;
+  // The budget in force; a rate change only swaps which one applies.
+  let budget = { max, windowMs, minGapMs };
 
   /** The instant a deferred payload may go: past the gap, and past the window if it is full. */
   function nextSendAt(at) {
-    const afterGap = lastSentAt + minGapMs;
-    if (sentAt.length >= max) return Math.max(afterGap, sentAt[0] + windowMs);
+    const afterGap = lastSentAt + budget.minGapMs;
+    if (sentAt.length >= budget.max) return Math.max(afterGap, sentAt[0] + budget.windowMs);
     return afterGap;
+  }
+
+  /**
+   * Adopt the budget the playback rate calls for. A shorter window takes effect
+   * at once, and a payload already waiting on the old floor is rescheduled, so
+   * the raised budget is never delayed by a stale deadline.
+   */
+  function useBudget(highFrequency) {
+    const next = highFrequency
+      ? { max: highMax, windowMs: highWindowMs, minGapMs: highMinGapMs }
+      : { max, windowMs, minGapMs };
+    if (
+      next.max === budget.max &&
+      next.windowMs === budget.windowMs &&
+      next.minGapMs === budget.minGapMs
+    ) {
+      return;
+    }
+    budget = next;
+    const at = now();
+    sentAt = sentAt.filter((t) => at - t < budget.windowMs);
+    if (timer !== null && hasPending) {
+      cancel(timer);
+      timer = schedule(flush, Math.max(1, nextSendAt(at) - at));
+    }
   }
 
   function emit(payload, at) {
@@ -120,8 +166,8 @@ export function createCoalescingLimiter({
     timer = null;
     if (!hasPending) return;
     const at = now();
-    sentAt = sentAt.filter((t) => at - t < windowMs);
-    if (sentAt.length >= max || at - lastSentAt < minGapMs) {
+    sentAt = sentAt.filter((t) => at - t < budget.windowMs);
+    if (sentAt.length >= budget.max || at - lastSentAt < budget.minGapMs) {
       timer = schedule(flush, Math.max(1, nextSendAt(at) - at));
       return;
     }
@@ -129,13 +175,14 @@ export function createCoalescingLimiter({
   }
 
   return {
-    push(payload, { urgent = false, force = false } = {}) {
+    push(payload, { urgent = false, force = false, highFrequency = false } = {}) {
+      useBudget(highFrequency);
       const at = now();
       pending = payload;
       hasPending = true;
-      sentAt = sentAt.filter((t) => at - t < windowMs);
-      const gapOpen = at - lastSentAt >= minGapMs;
-      const room = sentAt.length < max;
+      sentAt = sentAt.filter((t) => at - t < budget.windowMs);
+      const gapOpen = at - lastSentAt >= budget.minGapMs;
+      const room = sentAt.length < budget.max;
       // The window is the hard ceiling: only `force` spends past it.
       if (force || (room && (gapOpen || urgent))) {
         emit(payload, at);
@@ -211,6 +258,17 @@ export function pickBestTab(entries) {
 }
 
 /**
+ * Whether a tab's playback rate is one Discord cannot represent: a finite rate
+ * more than `RATE_EPSILON` from 1. A missing or junk rate is 1x for this
+ * purpose — it must never switch the pacing mode by itself.
+ */
+export function isHighFrequencyState(state) {
+  const rate = state && typeof state === "object" ? state.playbackRate : undefined;
+  if (typeof rate !== "number" || !Number.isFinite(rate)) return false;
+  return Math.abs(rate - 1) > RATE_EPSILON;
+}
+
+/**
  * The instant a tab's state was sampled: the content script's own `state.at`
  * when it is a finite number, else the moment the worker received it. This is
  * the anchor handed to `buildActivity`, so a rebuild never moves `start`.
@@ -277,6 +335,9 @@ export function createWorker({
   const tabs = new Map();
   let desired = null;
   let hasDesired = false;
+  // Whether the winning tab plays at a rate Discord cannot represent: its
+  // reports arrive every second, so the limiter takes the raised budget.
+  let desiredHighFrequency = false;
   let lastSent = undefined;
   // The identity of the last payload that actually reached the port: only a
   // send updates it, so a deferred payload is never mistaken for published.
@@ -683,7 +744,7 @@ export function createWorker({
     }
     if (!port && reconnectTimer === null) ensurePort();
     if (!port || !SENDABLE_BRIDGE_STATES.has(bridgeState)) return;
-    limiterFor().push(desired, { urgent, force });
+    limiterFor().push(desired, { urgent, force, highFrequency: desiredHighFrequency });
   }
 
   function pruneStale(map, at) {
@@ -703,6 +764,7 @@ export function createWorker({
     // read here would move the anchor on every tick for a rejected stamp.
     desired = best ? buildActivity(best.state, sampleAt(best, best.at)) : null;
     hasDesired = true;
+    desiredHighFrequency = Boolean(best) && isHighFrequencyState(best.state);
     persist();
     // A new song, artist line or album is a discrete change and goes out at
     // once; a seek or a pause keeps the identity and takes the paced path.

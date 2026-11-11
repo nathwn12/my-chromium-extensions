@@ -141,10 +141,11 @@ export class DiscordIpcClient {
     pipes = DISCORD_PIPES,
     connectImpl = (pipePath) => net.connect(pipePath),
     pid = process.pid,
-    // The worker paces every update (1.5 s gap, 8 per 20 s) and this guard
-    // only exists for a host driven directly, so its budget must never bind
-    // under the worker's: 12 per 20 s leaves the worker's ceiling in charge.
-    rateLimit = 12,
+    // The worker paces every update (1.5 s gap, 8 per 20 s; 0.9 s and 30 per
+    // 30 s when the playback rate is not 1x) and this guard only exists for a
+    // host driven directly, so its budget must never bind under the worker's:
+    // 40 per 20 s leaves the worker's ceiling in charge in either mode.
+    rateLimit = 40,
     rateWindowMs = 20_000,
     connectTimeoutMs = DEFAULT_CONNECT_TIMEOUT_MS,
     replyTimeoutMs = DEFAULT_REPLY_TIMEOUT_MS,

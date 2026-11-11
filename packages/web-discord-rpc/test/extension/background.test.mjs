@@ -452,6 +452,32 @@ test("rapid skips publish at most eight times per 20 s, newest wins", async () =
   assert.equal(flushed.at(-1).activity.status_display_type, 1);
 });
 
+test("at 1.5x twenty per-second updates inside twenty seconds all publish", async () => {
+  const { chrome, clock, port } = await boot();
+  connect(port);
+
+  // The content script re-anchors every tick at a non-1x rate, so the limiter
+  // must let a per-second update through: the raised budget is 30 per 30 s
+  // with a 900 ms floor. Each position moves enough to change the whole-second
+  // `start`, so every one of the twenty is a real update.
+  for (let tick = 1; tick <= 20; tick += 1) {
+    clock.advance(1000);
+    sendState(chrome, 1, musicState({ playbackRate: 1.5, position: 1 + 2 * tick }));
+  }
+  assert.equal(activities(port).length, 20, "no tick is deferred by the default budget");
+});
+
+test("at 1x the ninth update inside twenty seconds is still deferred", async () => {
+  const { chrome, clock, port } = await boot();
+  connect(port);
+  for (let tick = 1; tick <= 9; tick += 1) {
+    clock.advance(2000);
+    // Distinct payloads, same identity: an ordinary update, never urgent.
+    sendState(chrome, 1, musicState({ playbackRate: 1, position: 1 + 3 * tick }));
+  }
+  assert.equal(activities(port).length, MAX_UPDATES, "the default budget is unchanged at 1x");
+});
+
 test("a new track 200 ms after the last publish goes out at once", async () => {
   const { chrome, clock, port } = await boot();
   connect(port);
