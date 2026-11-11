@@ -140,7 +140,8 @@
 
   function onMediaEvent(event) {
     var target = event && event.target;
-    if (!target || String(target.tagName || "").toUpperCase() !== "VIDEO") return;
+    var tag = String(target && target.tagName || "").toUpperCase();
+    if (tag !== "VIDEO" && tag !== "AUDIO") return;
     reportNow();
   }
 

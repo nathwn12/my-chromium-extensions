@@ -48,18 +48,20 @@ function readPng(relative) {
 
 test("manifest is MV3 with the expected identity", () => {
   assert.equal(manifest.manifest_version, 3);
-  assert.equal(manifest.name, "YouTube Presence");
+  assert.equal(manifest.name, "YouTube Music Presence");
+  assert.equal(manifest.version, "1.0.4");
   assert.match(manifest.version, /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/, "strict semver MAJOR.MINOR.PATCH");
-  assert.match(manifest.description, /YouTube/i);
+  assert.match(manifest.description, /YouTube Music/i);
 });
 
-test("the manifest calls the extension YouTube Presence, never an earlier name", () => {
-  assert.equal(manifest.name, "YouTube Presence");
-  assert.equal(manifest.short_name, "YouTube Presence");
-  assert.equal(manifest.action.default_title, "YouTube Presence");
+test("the manifest calls the extension YouTube Music Presence, never an earlier name", () => {
+  assert.equal(manifest.name, "YouTube Music Presence");
+  assert.equal(manifest.short_name, "YouTube Music Presence");
+  assert.equal(manifest.action.default_title, "YouTube Music Presence");
   const serialized = JSON.stringify(manifest);
   assert.ok(!serialized.includes("Discord RPC"), "the earlier name is gone from every field");
   assert.ok(!serialized.includes("Web Discord RPC"), "the first name is gone from every field");
+  assert.ok(!serialized.includes('"YouTube Presence"'), "the two-source name is gone from every field");
 });
 
 test("manifest requires Chrome 120, expressed as a major version", () => {
@@ -78,21 +80,15 @@ test("manifest key decodes to the stable extension ID the native host allows", (
   assert.equal(extensionIdFromKey(manifest.key), EXPECTED_EXTENSION_ID);
 });
 
-test("permissions stay minimal and host access is YouTube only", () => {
+test("permissions stay minimal and host access is YouTube Music only", () => {
   const permissions = [...manifest.permissions].sort();
   assert.deepEqual(permissions, ["alarms", "nativeMessaging", "storage"]);
   assert.ok(!("optional_permissions" in manifest), "no optional permissions to widen scope later");
-  const hosts = [...manifest.host_permissions].sort();
-  assert.deepEqual(hosts, [
-    "https://m.youtube.com/*",
-    "https://music.youtube.com/*",
-    "https://www.youtube.com/*",
-    "https://youtube.com/*",
-  ]);
+  assert.deepEqual(manifest.host_permissions, ["https://music.youtube.com/*"]);
   assert.ok(!JSON.stringify(manifest).includes("<all_urls>"));
 });
 
-test("content script covers YouTube and YouTube Music in every frame at document_idle", () => {
+test("content script covers YouTube Music in every frame at document_idle", () => {
   assert.ok(Array.isArray(manifest.content_scripts) && manifest.content_scripts.length === 1);
   const [script] = manifest.content_scripts;
   assert.deepEqual([...script.matches].sort(), [...manifest.host_permissions].sort());
@@ -105,7 +101,7 @@ test("service worker, popup and options page are declared as local files", () =>
   assert.equal(manifest.background.service_worker, "background.js");
   assert.equal(manifest.background.type, "module");
   assert.equal(manifest.action.default_popup, "popup.html");
-  assert.equal(manifest.action.default_title, "YouTube Presence");
+  assert.equal(manifest.action.default_title, "YouTube Music Presence");
   assert.equal(manifest.options_ui.page, "options.html");
   assert.equal(manifest.options_ui.open_in_tab, true);
 });
@@ -114,9 +110,8 @@ test("no remote code anywhere in the manifest or its HTML", () => {
   assert.ok(!("content_security_policy" in manifest), "default CSP only");
   const serialized = JSON.stringify(manifest);
   const withoutMatches = serialized
-    .replace(/https:\/\/([a-z0-9-]+\.)*youtube\.com/g, "")
-    .replace(/https:\/\/youtube\.com/g, "");
-  assert.ok(!/https?:\/\//.test(withoutMatches), "manifest references no remote URL beyond YouTube match patterns");
+    .replace(/https:\/\/([a-z0-9-]+\.)*music\.youtube\.com/g, "");
+  assert.ok(!/https?:\/\//.test(withoutMatches), "manifest references no remote URL beyond the Music match pattern");
   assert.ok(!("externally_connectable" in manifest));
   assert.ok(!("web_accessible_resources" in manifest), "nothing is exposed to the page");
 });

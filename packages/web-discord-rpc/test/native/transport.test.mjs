@@ -199,14 +199,14 @@ test("auto (the default) uses Discord IPC and never builds arRPC", async () => {
   const { host, frames } = makeHost(fakes);
 
   await host.handle({ t: "hello", clientId: DEFAULT_CLIENT_ID, version: 1 });
-  await host.handle({ t: "activity", source: "youtube", id: "a1", activity: ACTIVITY });
+  await host.handle({ t: "activity", source: "youtube-music", id: "a1", activity: ACTIVITY });
 
-  assert.deepEqual(ackOf(frames, "a1"), { t: "ack", source: "youtube", id: "a1", ok: true });
+  assert.deepEqual(ackOf(frames, "a1"), { t: "ack", source: "youtube-music", id: "a1", ok: true });
   assert.equal(fakes.ipcClients.length, 1);
   assert.equal(fakes.arrpcClients.length, 0, "the primary path never builds arRPC");
   assert.deepEqual(fakes.ipcClients[0].sent, [ACTIVITY]);
   assert.equal(statusOf(frames, "connected").transport, "discord-ipc");
-  assert.equal(statusOf(frames, "connected").sources.youtube, "connected");
+  assert.equal(statusOf(frames, "connected").sources["youtube-music"], "connected");
   host.close();
 });
 
@@ -216,7 +216,7 @@ test("auto falls back to arRPC when no Discord pipe answers", async () => {
   const { host, frames } = makeHost(fakes);
 
   await host.handle({ t: "hello", clientId: DEFAULT_CLIENT_ID, version: 1, transport: "auto" });
-  await host.handle({ t: "activity", source: "youtube", id: "a2", activity: ACTIVITY });
+  await host.handle({ t: "activity", source: "youtube-music", id: "a2", activity: ACTIVITY });
 
   assert.equal(ackOf(frames, "a2").ok, true);
   assert.equal(fakes.ipcClients[0].closed, true, "the failed IPC client is closed");
@@ -233,7 +233,7 @@ test("auto with neither transport acks transport-unavailable and waits", async (
   const { host, frames, timers } = makeHost(fakes);
 
   await host.handle({ t: "hello", clientId: DEFAULT_CLIENT_ID, version: 1, transport: "auto" });
-  await host.handle({ t: "activity", source: "youtube", id: "a3", activity: ACTIVITY });
+  await host.handle({ t: "activity", source: "youtube-music", id: "a3", activity: ACTIVITY });
 
   const ack = ackOf(frames, "a3");
   assert.equal(ack.ok, false);
@@ -254,7 +254,7 @@ test("a forced ipc never falls back to arRPC", async () => {
   const { host, frames } = makeHost(fakes);
 
   await host.handle({ t: "hello", clientId: DEFAULT_CLIENT_ID, version: 1, transport: "ipc" });
-  await host.handle({ t: "activity", source: "youtube", id: "a4", activity: ACTIVITY });
+  await host.handle({ t: "activity", source: "youtube-music", id: "a4", activity: ACTIVITY });
 
   assert.equal(ackOf(frames, "a4").error, "transport-unavailable");
   assert.equal(fakes.arrpcClients.length, 0, "a forced ipc never reaches arRPC");
@@ -270,7 +270,7 @@ test("a forced arrpc never builds ipc and reports arrpc-closed with the client's
   const { host, frames } = makeHost(fakes);
 
   await host.handle({ t: "hello", clientId: DEFAULT_CLIENT_ID, version: 1, transport: "arrpc" });
-  await host.handle({ t: "activity", source: "youtube", id: "a5", activity: ACTIVITY });
+  await host.handle({ t: "activity", source: "youtube-music", id: "a5", activity: ACTIVITY });
 
   assert.equal(fakes.ipcClients.length, 0);
   assert.equal(ackOf(frames, "a5").error, "arrpc-unavailable");
@@ -281,71 +281,60 @@ test("a forced arrpc never builds ipc and reports arrpc-closed with the client's
   host.close();
 });
 
-test("a successful connect publishes reason null on both transports", async () => {
+test("a successful connect publishes reason null on desktop IPC", async () => {
   const fakes = makeFakes();
   const { host, frames } = makeHost(fakes);
 
   await host.handle({ t: "hello", clientId: DEFAULT_CLIENT_ID, version: 1, transport: "auto" });
-  await host.handle({ t: "activity", source: "youtube", id: "g1", activity: ACTIVITY });
+  await host.handle({ t: "activity", source: "youtube-music", id: "g1", activity: ACTIVITY });
 
   const ipcConnected = statusOf(frames, "connected");
   assert.equal(ipcConnected.transport, "discord-ipc");
   assert.equal(ipcConnected.reason, null, "the popup switches on the reason string, not on connected");
-
-  fakes.scenario.ipcFail = "connect ENOENT \\\\.\\pipe\\discord-ipc-0";
-  await host.handle({ t: "activity", source: "youtube-music", id: "g2", activity: ACTIVITY });
-
-  const statuses = frames.filter((message) => message.t === "status" && message.state === "connected");
-  for (const status of statuses) assert.equal(status.reason, null);
-  assert.equal(statuses.at(-1).transport, "mixed");
+  assert.equal(ipcConnected.sources["youtube-music"], "connected");
   host.close();
 });
 
-test("the first success becomes the preference; a second source on the other transport is mixed", async () => {
+test("Music stays on its first transport: a second activity reuses the same IPC client", async () => {
   const fakes = makeFakes();
   const { host, frames } = makeHost(fakes);
 
   await host.handle({ t: "hello", clientId: DEFAULT_CLIENT_ID, version: 1, transport: "auto" });
-  await host.handle({ t: "activity", source: "youtube", id: "b1", activity: ACTIVITY });
+  await host.handle({ t: "activity", source: "youtube-music", id: "b1", activity: ACTIVITY });
   assert.equal(statusOf(frames, "connected").transport, "discord-ipc");
 
-  // Discord disappears between the two sources: the second tries the preferred
-  // transport first, then falls to the other one.
-  fakes.scenario.ipcFail = "connect ENOENT \\\\.\\pipe\\discord-ipc-0";
+  // Music is the only source, so a second activity reuses the IPC client
+  // instead of opening a second transport.
   await host.handle({ t: "activity", source: "youtube-music", id: "b2", activity: ACTIVITY });
 
+  assert.equal(fakes.ipcClients.length, 1, "one Music source keeps one IPC client");
+  assert.equal(fakes.arrpcClients.length, 0, "no second transport is built for Music");
   assert.deepEqual(
     fakes.log.filter((entry) => entry.endsWith(":youtube-music")),
     [
       "ipc.create:youtube-music",
       "ipc.connect:youtube-music",
-      "ipc.close:youtube-music",
-      "arrpc.create:youtube-music",
-      "arrpc.connect:youtube-music",
-      "arrpc.setActivity:youtube-music",
+      "ipc.setActivity:youtube-music",
+      "ipc.setActivity:youtube-music",
     ],
   );
   const connected = statusOf(frames, "connected");
-  assert.equal(connected.transport, "mixed");
-  assert.equal(connected.sources.youtube, "connected");
+  assert.equal(connected.transport, "discord-ipc");
   assert.equal(connected.sources["youtube-music"], "connected");
   host.close();
 });
 
-test("one client per source: two piped sources keep two independent clients", async () => {
+test("one client for Music: two activities share a single IPC client", async () => {
   const fakes = makeFakes();
   const { host, frames } = makeHost(fakes);
 
   await host.handle({ t: "hello", clientId: DEFAULT_CLIENT_ID, version: 1, transport: "auto" });
-  await host.handle({ t: "activity", source: "youtube", id: "c1", activity: { details: "One" } });
+  await host.handle({ t: "activity", source: "youtube-music", id: "c1", activity: { details: "One" } });
   await host.handle({ t: "activity", source: "youtube-music", id: "c2", activity: { details: "Two" } });
 
-  assert.equal(fakes.ipcClients.length, 2);
-  assert.deepEqual(
-    fakes.ipcClients.map((client) => client.options.source),
-    ["youtube", "youtube-music"],
-  );
-  assert.deepEqual(fakes.ipcClients.map((client) => client.sent), [[{ details: "One" }], [{ details: "Two" }]]);
+  assert.equal(fakes.ipcClients.length, 1);
+  assert.equal(fakes.ipcClients[0].options.source, "youtube-music");
+  assert.deepEqual(fakes.ipcClients.map((client) => client.sent), [[{ details: "One" }, { details: "Two" }]]);
   assert.equal(statusOf(frames, "connected").transport, "discord-ipc");
   host.close();
 });
@@ -354,7 +343,7 @@ test("activity before hello stays on the legacy arRPC path", async () => {
   const fakes = makeFakes();
   const { host, frames } = makeHost(fakes);
 
-  await host.handle({ t: "activity", source: "youtube", id: "d1", activity: ACTIVITY });
+  await host.handle({ t: "activity", source: "youtube-music", id: "d1", activity: ACTIVITY });
 
   assert.equal(fakes.ipcClients.length, 0, "no hello means no transport preference to honour");
   assert.equal(fakes.arrpcClients.length, 1);
@@ -380,7 +369,7 @@ test("a new hello rebuilds the transport and resends the last activity", async (
   const { host, frames, timers } = makeHost(fakes);
 
   await host.handle({ t: "hello", clientId: DEFAULT_CLIENT_ID, version: 1, transport: "arrpc" });
-  await host.handle({ t: "activity", source: "youtube", id: "e1", activity: ACTIVITY });
+  await host.handle({ t: "activity", source: "youtube-music", id: "e1", activity: ACTIVITY });
 
   await host.handle({ t: "hello", clientId: DEFAULT_CLIENT_ID, version: 1, transport: "ipc" });
   assert.equal(fakes.arrpcClients[0].closed, true, "the old transport is disconnected");
@@ -400,7 +389,7 @@ test("an IPC drop reports discord-closed and rearms the reconnect", async () => 
   const { host, frames, timers } = makeHost(fakes);
 
   await host.handle({ t: "hello", clientId: DEFAULT_CLIENT_ID, version: 1, transport: "auto" });
-  await host.handle({ t: "activity", source: "youtube", id: "f1", activity: ACTIVITY });
+  await host.handle({ t: "activity", source: "youtube-music", id: "f1", activity: ACTIVITY });
 
   fakes.ipcClients[0].ready = false;
   fakes.ipcClients[0].options.onClose({ reason: "discord-closed" });
@@ -500,7 +489,7 @@ test("WDR_DISCORD_PIPES reaches the spawned host's IPC probe", async () => {  co
     env: { WDR_DISCORD_PIPES: injected },
     messages: [
       { t: "hello", clientId: DEFAULT_CLIENT_ID, version: 1, transport: "ipc" },
-      { t: "activity", source: "youtube", id: "env-ipc", activity: ACTIVITY },
+      { t: "activity", source: "youtube-music", id: "env-ipc", activity: ACTIVITY },
     ],
   });
 
@@ -517,7 +506,7 @@ test("WDR_ARRPC_PORTS reaches the spawned host's arRPC probe", async () => {
     env: { WDR_ARRPC_PORTS: "6471" },
     messages: [
       { t: "hello", clientId: DEFAULT_CLIENT_ID, version: 1, transport: "arrpc" },
-      { t: "activity", source: "youtube", id: "env-arrpc", activity: ACTIVITY },
+      { t: "activity", source: "youtube-music", id: "env-arrpc", activity: ACTIVITY },
     ],
   });
 

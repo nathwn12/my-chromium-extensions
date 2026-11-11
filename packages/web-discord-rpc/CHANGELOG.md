@@ -2,11 +2,11 @@
 
 Notable changes to this package. Dates are ISO 8601. This package is local-only and is not published to a registry.
 
-## [Unreleased]
+## [1.0.4] - 2026-11-11
 
-- The default transport is now `ipc`: presence goes to the installed Discord desktop app over its local socket, with no fallback. `auto` and `arrpc` stay selectable in Settings and are marked deferred, because both reach the Discord Web path the owner has deferred.
-- The extension is renamed YouTube Presence in the manifest, the popup, the settings page, and every doc, because it covers both YouTube and YouTube Music; the package path `packages/web-discord-rpc`, the storage keys, the host name, and the extension ID are unchanged.
-- YouTube and YouTube Music get one independent toggle each, both on by default: `youtubeMusicEnabled` for Music and `youtubeEnabled` for YouTube. Either site works alone, switching one off leaves the other publishing, and YouTube Music is listed first in Settings. A site switched off reports itself as off instead of claiming nothing is playing.
+- YouTube Music is the only reported source and the extension publishes to Discord desktop over IPC, with one persistent presence switch.
+- Discord receives a static `YouTube Music` activity name, the track in `details`, the artist in `state`, and `status_display_type: 1`; tests prove the payload, not Discord's rendered member list.
+- Elapsed/end timestamps use the real audio/video position and duration, and are omitted when either is unavailable.
 
 ## [1.0.3] - 2026-11-11
 

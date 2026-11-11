@@ -7,8 +7,7 @@ const SCRIPT = fileURLToPath(new URL("../../scripts/e2e-arrpc.mjs", import.meta.
 
 /**
  * Runs the real script rather than re-implementing it: the script owns the
- * WebSocket server, the spawned host, and the assertions that two sources
- * stack on two connections and that a clear reaches arRPC as a null activity.
+ * WebSocket server, the spawned host, and the Music-only payload/clear assertions.
  */
 test("e2e-arrpc drives the native host over a real WebSocket", { timeout: 30_000 }, async () => {
   const child = spawn(process.execPath, [SCRIPT], { stdio: ["ignore", "pipe", "pipe"] });
@@ -26,11 +25,11 @@ test("e2e-arrpc drives the native host over a real WebSocket", { timeout: 30_000
   assert.equal(code, 0, `e2e-arrpc exited ${String(code)}\nstdout:\n${stdout}\nstderr:\n${stderr}`);
   assert.match(
     stdout,
-    /^PASS {2}e2e-arrpc: a real WebSocket server saw two connections, one per source, on the built-in client id$/m,
+    /^PASS {2}e2e-arrpc: a real WebSocket server saw one Music connection on the built-in client id$/m,
   );
   assert.match(
     stdout,
-    /^PASS {2}e2e-arrpc: each source reached arRPC as its own Discord type \(3 and 2\) on its own connection$/m,
+    /^PASS {2}e2e-arrpc: Music activity reaches internal host with artist display and timestamps$/m,
   );
   assert.match(
     stdout,

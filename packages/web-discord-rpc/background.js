@@ -1,10 +1,9 @@
 /**
  * web-discord-rpc — MV3 service worker (module).
  *
- * One native port, two independent sources. Each source keeps its own tab
- * state, its own desired activity and its own 4-per-20 s send budget, so
- * YouTube (WATCHING) and YouTube Music (LISTENING) publish side by side
- * without evicting each other.
+ * Music-only, desktop-IPC-only. One tab map, one desired activity and one
+ * 4-per-20 s send budget for YouTube Music (LISTENING) published to the
+ * installed Discord desktop app over its local socket.
  *
  * The pure helpers are exported so the test suite can import this file
  * without a `chrome` global; `createWorker` takes the API object, so the tests
@@ -14,17 +13,12 @@
  */
 
 import {
+  DEFAULT_CLIENT_ID,
   DEFAULT_TRANSPORT,
   ENABLED_KEY,
   HOST_NAME,
-  SITE_ENABLED_KEYS,
-  SOURCE_YOUTUBE,
   SOURCE_YOUTUBE_MUSIC,
-  TRANSPORT_KEY,
-  resolveClientId,
   resolveEnabled,
-  resolveSiteFlags,
-  resolveTransport,
   sourceForUrl,
 } from "./config.js";
 import { buildActivity, clampText } from "./activity.js";
@@ -37,8 +31,9 @@ import {
   classifyBridgeFailure,
 } from "./bridge-status.js";
 
-/** YouTube Music is processed first; both sources stay independent. */
-export const SOURCES = Object.freeze([SOURCE_YOUTUBE_MUSIC, SOURCE_YOUTUBE]);
+/** Music is the only source. */
+export const SOURCE = SOURCE_YOUTUBE_MUSIC;
+export const SOURCES = Object.freeze([SOURCE_YOUTUBE_MUSIC]);
 
 export const MAX_UPDATES = 4;
 export const UPDATE_WINDOW_MS = 20000;
@@ -50,7 +45,7 @@ export const ALARM_NAME = "wdr-watchdog";
 export const ALARM_PERIOD_MINUTES = 0.5;
 export const BACKOFF_MIN_MS = 500;
 export const BACKOFF_MAX_MS = 8000;
-/** `chrome.storage.session` key holding the per-source tab map across worker suspension. */
+/** `chrome.storage.session` key holding the tab map across worker suspension. */
 export const SESSION_TABS_KEY = "wdrTabs";
 
 /**
@@ -135,8 +130,8 @@ export function createCoalescingLimiter({
 }
 
 /**
- * The freshest tab for one source: playing beats paused, ties break on the
- * newest report. A tab whose title is not showable never wins.
+ * The freshest tab: playing beats paused, ties break on the newest report.
+ * A tab whose title is not showable never wins.
  */
 export function pickBestTab(entries) {
   const list = (Array.isArray(entries) ? entries : [...(entries?.values?.() ?? [])]).filter(
@@ -165,18 +160,17 @@ export function isPongOverdue(lastPingAt, lastPongAt, now = Date.now(), timeoutM
 }
 
 /**
- * Sources the previous worker session published, from the persisted status.
- * Only these are worth an explicit clear on startup: a source that was never
- * published has no stale presence to remove.
+ * Whether the previous worker session published Music presence. Only then is
+ * an explicit clear worth sending on startup.
  */
 function stalePresenceOf(storedStatus) {
   const activities =
     storedStatus && typeof storedStatus === "object" ? storedStatus.activities : null;
-  if (!activities || typeof activities !== "object" || Array.isArray(activities)) return [];
-  return SOURCES.filter((source) => {
-    const entry = activities[source];
-    return Boolean(entry) && typeof entry === "object" && !Array.isArray(entry);
-  });
+  if (!activities || typeof activities !== "object" || Array.isArray(activities)) return false;
+  const entry = activities[SOURCE_YOUTUBE_MUSIC];
+  // Legacy two-source snapshots may carry a `youtube` entry; ignore it: the
+  // Music-only worker never republishes or clears it.
+  return Boolean(entry) && typeof entry === "object" && !Array.isArray(entry);
 }
 
 /* ============================================================== worker ==== */
@@ -191,19 +185,19 @@ export function createWorker({
   schedule = (fn, ms) => setTimeout(fn, ms),
   cancel = (handle) => clearTimeout(handle),
 } = {}) {
-  const tabsBySource = new Map(SOURCES.map((source) => [source, new Map()]));
-  const siteEnabled = new Map(SOURCES.map((source) => [source, true]));
-  const desired = new Map();
-  const lastSent = new Map();
-  const limiters = new Map();
+  const tabs = new Map();
+  let desired = null;
+  let hasDesired = false;
+  let lastSent = undefined;
+  let limiter = null;
 
   let sequence = 0;
   let port = null;
-  let clientId = resolveClientId(null);
-  let transportPreference = DEFAULT_TRANSPORT;
+  const clientId = DEFAULT_CLIENT_ID;
+  const transportPreference = DEFAULT_TRANSPORT;
   let chosenTransport = null;
   let enabled = true;
-  let staleSources = [];
+  let staleMusic = false;
   let bridgeState = BRIDGE.IDLE;
   let availability = AVAILABILITY.UNKNOWN;
   let reason = null;
@@ -227,12 +221,6 @@ export function createWorker({
   /* -------------------------------------------------------------- status -- */
 
   function status() {
-    const activities = {};
-    const sites = {};
-    for (const source of SOURCES) {
-      activities[source] = desired.get(source) ?? null;
-      sites[source] = siteEnabled.get(source);
-    }
     return {
       bridgeState,
       availability,
@@ -241,13 +229,10 @@ export function createWorker({
       // Raw diagnostic for logs and the options diagnostics; the UI never
       // renders this string directly.
       detail,
-      // What the user chose (`auto|ipc|arrpc`) and what the host used
-      // (`discord-ipc|arrpc|mixed`, null until it reports).
+      // Always desktop IPC; the host's own choice is `transport`.
       transportPreference,
       transport: chosenTransport,
-      activities,
-      // Per-site enable flags, so every surface reads one answer.
-      sites,
+      activities: { [SOURCE_YOUTUBE_MUSIC]: desired },
       // The host's own per-source view, carried opaquely for the popup.
       hostSources,
       updatedAt: now(),
@@ -298,14 +283,10 @@ export function createWorker({
 
   function snapshotTabs() {
     const out = {};
-    for (const source of SOURCES) {
-      const tabs = {};
-      for (const [tabId, entry] of tabsBySource.get(source)) {
-        tabs[tabId] = { state: entry.state, at: entry.at, rankAt: entry.rankAt };
-      }
-      out[source] = tabs;
+    for (const [tabId, entry] of tabs) {
+      out[tabId] = { state: entry.state, at: entry.at, rankAt: entry.rankAt };
     }
-    return out;
+    return { [SOURCE_YOUTUBE_MUSIC]: out };
   }
 
   /**
@@ -333,29 +314,26 @@ export function createWorker({
    * Take what is usable from a stored snapshot and let a fresher live report
    * win on the same tab. Every field is validated because session storage is
    * writable by any code in the extension: a corrupt value is ignored, never
-   * thrown.
+   * thrown. Legacy `youtube` buckets are ignored.
    */
   function hydrateTabs(raw) {
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) return false;
+    const bucket = raw[SOURCE_YOUTUBE_MUSIC];
+    if (!bucket || typeof bucket !== "object" || Array.isArray(bucket)) return false;
     let restoredAny = false;
-    for (const source of SOURCES) {
-      const bucket = raw[source];
-      if (!bucket || typeof bucket !== "object" || Array.isArray(bucket)) continue;
-      const map = tabsBySource.get(source);
-      for (const [key, entry] of Object.entries(bucket)) {
-        const tabId = Number(key);
-        if (!Number.isInteger(tabId) || tabId < 0) continue;
-        if (!entry || typeof entry !== "object") continue;
-        if (!entry.state || typeof entry.state !== "object") continue;
-        const at = Number(entry.at);
-        if (!Number.isFinite(at) || at <= 0) continue;
-        const rankAtRaw = Number(entry.rankAt);
-        const rankAt = Number.isFinite(rankAtRaw) ? rankAtRaw : at;
-        const existing = map.get(tabId);
-        if (existing && existing.at >= at) continue;
-        map.set(tabId, { state: entry.state, at, rankAt });
-        restoredAny = true;
-      }
+    for (const [key, entry] of Object.entries(bucket)) {
+      const tabId = Number(key);
+      if (!Number.isInteger(tabId) || tabId < 0) continue;
+      if (!entry || typeof entry !== "object") continue;
+      if (!entry.state || typeof entry.state !== "object") continue;
+      const at = Number(entry.at);
+      if (!Number.isFinite(at) || at <= 0) continue;
+      const rankAtRaw = Number(entry.rankAt);
+      const rankAt = Number.isFinite(rankAtRaw) ? rankAtRaw : at;
+      const existing = tabs.get(tabId);
+      if (existing && existing.at >= at) continue;
+      tabs.set(tabId, { state: entry.state, at, rankAt });
+      restoredAny = true;
     }
     return restoredAny;
   }
@@ -418,7 +396,7 @@ export function createWorker({
   }
 
   function scheduleReconnect() {
-    if (reconnectTimer !== null || !clientId || !enabled) return;
+    if (reconnectTimer !== null || !enabled) return;
     const delay = backoffMs;
     backoffMs = Math.min(BACKOFF_MAX_MS, Math.round(backoffMs * 1.6));
     reconnectTimer = schedule(() => {
@@ -446,10 +424,10 @@ export function createWorker({
           reason: null,
           reasonKind: null,
         });
-        // Discord appeared (or returned): replay the latest payload for every
-        // source with no user action, resetting each coalescing window first.
-        for (const limiter of limiters.values()) limiter.reset();
-        for (const source of SOURCES) push(source, true);
+        // Discord appeared (or returned): replay the latest payload with no
+        // user action, resetting the coalescing window first.
+        if (limiter) limiter.reset();
+        push(true);
       } else {
         setBridge(next.bridgeState, next.lastError, {
           availability: next.availability,
@@ -471,7 +449,7 @@ export function createWorker({
             reasonKind: null,
           });
         }
-        for (const source of SOURCES) push(source, false);
+        push(false);
       } else {
         // Record the rejection without latching the bridge to "error": a slow
         // connect acks "arrpc-unavailable" while the arRPC handshake is in
@@ -513,10 +491,6 @@ export function createWorker({
       });
       return;
     }
-    if (!clientId) {
-      setBridge(BRIDGE.IDLE);
-      return;
-    }
     let fresh;
     try {
       fresh = api.runtime.connectNative(HOST_NAME);
@@ -541,15 +515,13 @@ export function createWorker({
   /* ---------------------------------------------------------- presence off -- */
 
   /**
-   * Publish an explicit clear for every source, straight down the port and past
-   * the send budget: switching presence off must not wait for a limiter window,
-   * and closing the socket is not a clear the host is required to send.
+   * Publish an explicit clear straight down the port and past the send
+   * budget: switching presence off must not wait for a limiter window, and
+   * closing the socket is not a clear the host is required to send.
    */
   function clearPresence() {
     if (!port) return;
-    for (const source of SOURCES) {
-      post({ t: "activity", source, id: `${source}:${++sequence}`, activity: null });
-    }
+    post({ t: "activity", source: SOURCE_YOUTUBE_MUSIC, id: `${SOURCE_YOUTUBE_MUSIC}:${++sequence}`, activity: null });
   }
 
   /** Honour the enable toggle: off tears the port down and stays down. */
@@ -560,7 +532,7 @@ export function createWorker({
       return;
     }
     clearPresence();
-    for (const limiter of limiters.values()) limiter.reset();
+    if (limiter) limiter.reset();
     if (reconnectTimer !== null) {
       cancel(reconnectTimer);
       reconnectTimer = null;
@@ -573,65 +545,41 @@ export function createWorker({
     });
   }
 
-  /**
-   * Honour one site's flag: a site switched off stops publishing at once and
-   * its published presence is cleared down the port, past the send budget,
-   * because a media report may already be queued in that site's window.
-   */
-  function setSiteEnabled(source, next) {
-    if (siteEnabled.get(source) === next) return;
-    siteEnabled.set(source, next);
-    if (next) {
-      recompute(source);
-      return;
-    }
-    desired.set(source, null);
-    persist();
-    // The limiter may still hold a payload and a timer from earlier reports;
-    // reset it before the clear so nothing queued can republish the site after it.
-    const limiter = limiters.get(source);
-    if (limiter) limiter.reset();
-    deliver(source, null);
-  }
-
   /* ------------------------------------------------------------ activity -- */
 
-  function deliver(source, activity) {
-    const id = `${source}:${++sequence}`;
-    if (post({ t: "activity", source, id, activity })) {
-      lastSent.set(source, JSON.stringify(activity));
+  function deliver(activity) {
+    const id = `${SOURCE_YOUTUBE_MUSIC}:${++sequence}`;
+    if (post({ t: "activity", source: SOURCE_YOUTUBE_MUSIC, id, activity })) {
+      lastSent = JSON.stringify(activity);
     }
   }
 
-  function limiterFor(source) {
-    let limiter = limiters.get(source);
+  function limiterFor() {
     if (!limiter) {
       limiter = createCoalescingLimiter({
-        send: (activity) => deliver(source, activity),
+        send: (activity) => deliver(activity),
         now,
         schedule,
         cancel,
       });
-      limiters.set(source, limiter);
     }
     return limiter;
   }
 
   /**
-   * Publish the desired activity for one source through its own budget. A dead
-   * port just leaves the desired value in place: the next port, `connected`
-   * status or host reconnect replays it. A bridge that is still connecting or
-   * waiting for Discord is a live port and takes the payload: the host needs
-   * the activity to connect at all, and it keeps the last one for its own retry.
+   * Publish the desired activity through its budget. A dead port just leaves
+   * the desired value in place: the next port, `connected` status or host
+   * reconnect replays it. A bridge that is still connecting or waiting for
+   * Discord is a live port and takes the payload: the host needs the activity
+   * to connect at all, and it keeps the last one for its own retry.
    */
-  function push(source, force = false) {
-    if (!desired.has(source)) return;
-    const activity = desired.get(source);
-    const json = JSON.stringify(activity);
-    if (!force && lastSent.get(source) === json) return;
+  function push(force = false) {
+    if (!hasDesired) return;
+    const json = JSON.stringify(desired);
+    if (!force && lastSent === json) return;
     if (!port && reconnectTimer === null) ensurePort();
     if (!port || !SENDABLE_BRIDGE_STATES.has(bridgeState)) return;
-    limiterFor(source).push(activity);
+    limiterFor().push(desired);
   }
 
   function pruneStale(map, at) {
@@ -640,23 +588,22 @@ export function createWorker({
     }
   }
 
-  function recompute(source) {
-    const map = tabsBySource.get(source);
-    pruneStale(map, now());
+  function recompute() {
+    pruneStale(tabs, now());
     persistTabs();
-    // A disabled site is ignored: whatever its tabs report, the desired
-    // activity is null, so the clear is what gets published.
-    const best = siteEnabled.get(source) ? pickBestTab([...map.values()]) : null;
-    desired.set(source, best ? buildActivity(source, best.state, now()) : null);
+    const best = pickBestTab([...tabs.values()]);
+    desired = best ? buildActivity(best.state, now()) : null;
+    hasDesired = true;
     persist();
-    push(source, false);
+    push(false);
   }
 
-  /** Publish an explicit clear for a source the last session left published. */
-  function clearSource(source) {
-    desired.set(source, null);
+  /** Publish an explicit clear for Music the last session left published. */
+  function clearSource() {
+    desired = null;
+    hasDesired = true;
     persist();
-    push(source, true);
+    push(true);
   }
 
   /* ---------------------------------------------------------------- tabs -- */
@@ -669,19 +616,16 @@ export function createWorker({
     // a nested YouTube embed must not overwrite the page it sits in.
     if (sender.id !== api.runtime.id) return;
     if (sender.frameId !== undefined && sender.frameId !== 0) return;
-    const source = message.source;
-    if (!tabsBySource.has(source)) return;
-    // A disabled site is ignored outright: its clear already went out when the
-    // flag was switched, and a report must not invent presence again.
-    if (!siteEnabled.get(source)) return;
+    // Music-only: legacy YouTube reports are ignored, never published.
+    if (message.source !== SOURCE_YOUTUBE_MUSIC) return;
     const state = message.state;
     if (!state || typeof state !== "object") return;
     const url = typeof state.pageUrl === "string" && state.pageUrl ? state.pageUrl : tab.url;
-    if (sourceForUrl(url) !== source) return;
+    if (sourceForUrl(url) !== SOURCE_YOUTUBE_MUSIC) return;
 
     const at = now();
-    tabsBySource.get(source).set(tab.id, { state, at, rankAt: at });
-    recompute(source);
+    tabs.set(tab.id, { state, at, rankAt: at });
+    recompute();
   }
 
   function handleGone(message, sender) {
@@ -689,22 +633,16 @@ export function createWorker({
     const tab = sender && sender.tab;
     if (!tab || tab.id === undefined) return;
     if (sender.id !== api.runtime.id) return;
-    const source = message.source;
-    if (!tabsBySource.has(source)) return;
-    if (!siteEnabled.get(source)) {
-      // Still drop the tab so a later re-enable cannot resurrect it.
-      tabsBySource.get(source).delete(tab.id);
+    if (message.source !== undefined && message.source !== SOURCE_YOUTUBE_MUSIC) {
+      // A legacy YouTube clear still drops the tab so it can never resurrect.
+      tabs.delete(tab.id);
       return;
     }
-    if (tabsBySource.get(source).delete(tab.id)) recompute(source);
+    if (tabs.delete(tab.id)) recompute();
   }
 
   function handleTabRemoved(tabId) {
-    let changed = false;
-    for (const source of SOURCES) {
-      if (tabsBySource.get(source).delete(tabId)) changed = true;
-    }
-    if (changed) for (const source of SOURCES) recompute(source);
+    if (tabs.delete(tabId)) recompute();
   }
 
   function handleAlarm(alarm) {
@@ -729,31 +667,17 @@ export function createWorker({
         lastPingAt = now();
       }
     }
-    for (const source of SOURCES) recompute(source);
+    recompute();
   }
 
   function handleStorageChange(changes, area) {
     if (area !== "local" || !changes) return;
-    if (changes.clientId) {
-      clientId = resolveClientId(changes.clientId.newValue);
-      reconnect();
-    }
-    if (changes[TRANSPORT_KEY]) {
-      const next = resolveTransport(changes[TRANSPORT_KEY].newValue);
-      if (next !== transportPreference) {
-        transportPreference = next;
-        reconnect();
-      }
-    }
     if (changes[ENABLED_KEY]) {
       const next = resolveEnabled(changes[ENABLED_KEY].newValue);
       if (next !== enabled) setEnabled(next);
     }
-    for (const [source, key] of Object.entries(SITE_ENABLED_KEYS)) {
-      if (!changes[key]) continue;
-      const next = resolveEnabled(changes[key].newValue);
-      setSiteEnabled(source, next);
-    }
+    // Legacy keys (`transport`, per-site flags, `clientId`) are ignored: the
+    // Music-only worker always uses the built-in app over desktop IPC.
   }
 
   function handleMessage(message, sender, sendResponse) {
@@ -778,36 +702,26 @@ export function createWorker({
   function reconnect() {
     if (!enabled) return;
     dropPort();
-    lastSent.clear();
-    for (const limiter of limiters.values()) limiter.reset();
+    lastSent = undefined;
+    if (limiter) limiter.reset();
     backoffMs = BACKOFF_MIN_MS;
     if (reconnectTimer !== null) {
       cancel(reconnectTimer);
       reconnectTimer = null;
     }
     ensurePort();
-    for (const source of SOURCES) push(source, true);
+    push(true);
   }
 
   async function loadConfig() {
     let stored = null;
     try {
-      stored = await api.storage.local.get([
-        "clientId",
-        TRANSPORT_KEY,
-        ENABLED_KEY,
-        STATUS_KEY,
-        ...Object.values(SITE_ENABLED_KEYS),
-      ]);
+      stored = await api.storage.local.get([ENABLED_KEY, STATUS_KEY]);
     } catch {
       stored = null;
     }
-    clientId = resolveClientId(stored && stored.clientId);
-    transportPreference = resolveTransport(stored && stored[TRANSPORT_KEY]);
     enabled = resolveEnabled(stored && stored[ENABLED_KEY]);
-    const siteFlags = resolveSiteFlags(stored);
-    for (const source of SOURCES) siteEnabled.set(source, siteFlags[source]);
-    staleSources = stalePresenceOf(stored && stored[STATUS_KEY]);
+    staleMusic = stalePresenceOf(stored && stored[STATUS_KEY]);
   }
 
   function armWatchdog() {
@@ -850,14 +764,12 @@ export function createWorker({
     const restoredAny = await restore();
     armWatchdog();
     if (enabled) ensurePort();
-    // A restored tab republishes its activity; a source the last session
+    // A restored tab republishes its activity; Music the last session
     // published but nothing restored is explicitly cleared, so presence from a
     // session that ended without a clean disconnect cannot linger on Discord.
-    for (const source of SOURCES) {
-      if (restoredAny || tabsBySource.get(source).size) recompute(source);
-      else if (staleSources.includes(source)) clearSource(source);
-    }
-    staleSources = [];
+    if (restoredAny || tabs.size) recompute();
+    else if (staleMusic) clearSource();
+    staleMusic = false;
   }
 
   return {

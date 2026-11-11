@@ -221,6 +221,20 @@ export function video(props = {}) {
   });
 }
 
+/** `<audio>` with playback state: the Music song path. Same shape as video. */
+export function audio(props = {}) {
+  return node("audio", {
+    props: {
+      currentTime: 0,
+      duration: 0,
+      paused: true,
+      playbackRate: 1,
+      readyState: 1,
+      ...props
+    }
+  });
+}
+
 export function meta(property, content) {
   return node("meta", { attrs: { property, content } });
 }

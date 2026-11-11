@@ -6,19 +6,13 @@ import {
   DEFAULT_TRANSPORT,
   ENABLED_KEY,
   HOST_NAME,
-  SITE_ENABLED_KEYS,
   SOURCE_META,
-  SOURCE_YOUTUBE,
   SOURCE_YOUTUBE_MUSIC,
-  TRANSPORTS,
-  TRANSPORT_ARRPC,
-  TRANSPORT_AUTO,
   TRANSPORT_IPC,
   TRANSPORT_KEY,
   clientIdToPersist,
   resolveClientId,
   resolveEnabled,
-  resolveSiteFlags,
   resolveTransport,
   sourceForUrl,
 } from "../../config.js";
@@ -35,33 +29,26 @@ test("HOST_NAME is the native messaging host the installer registers", () => {
   assert.equal(HOST_NAME, "com.nathwn12.web_discord_rpc");
 });
 
-test("source constants and metadata cover YouTube and YouTube Music only", () => {
-  assert.equal(SOURCE_YOUTUBE, "youtube");
+test("source constants and metadata cover YouTube Music only", () => {
   assert.equal(SOURCE_YOUTUBE_MUSIC, "youtube-music");
-  assert.deepEqual(Object.keys(SOURCE_META).sort(), ["youtube", "youtube-music"]);
-  assert.equal(SOURCE_META.youtube.type, 3);
-  assert.equal(SOURCE_META.youtube.name, "YouTube");
-  assert.equal(SOURCE_META.youtube.buttonLabel, "Watch on YouTube");
+  assert.deepEqual(Object.keys(SOURCE_META), ["youtube-music"]);
   assert.equal(SOURCE_META["youtube-music"].type, 2);
   assert.equal(SOURCE_META["youtube-music"].name, "YouTube Music");
   assert.equal(SOURCE_META["youtube-music"].buttonLabel, "Listen on YouTube Music");
   assert.ok(Object.isFrozen(SOURCE_META));
 });
 
-test("sourceForUrl maps YouTube hosts and rejects everything else", () => {
+test("sourceForUrl maps the Music host and rejects everything else, including YouTube video hosts", () => {
+  assert.equal(sourceForUrl("https://music.youtube.com/watch?v=abc12345678"), "youtube-music");
+  assert.equal(sourceForUrl("https://music.youtube.com/"), "youtube-music");
   for (const url of [
     "https://www.youtube.com/watch?v=abc12345678",
     "https://youtube.com/watch?v=abc12345678",
     "https://m.youtube.com/watch?v=abc12345678",
-  ]) {
-    assert.equal(sourceForUrl(url), "youtube", url);
-  }
-  assert.equal(sourceForUrl("https://music.youtube.com/watch?v=abc12345678"), "youtube-music");
-  for (const url of [
     "https://www.crunchyroll.com/watch/abc",
     "https://youtu.be/abc12345678",
     "https://www.youtube.com.evil.com/watch",
-    "http://www.youtube.com/watch?v=abc12345678",
+    "http://music.youtube.com/watch?v=abc12345678",
     "not a url",
     "",
     null,
@@ -84,25 +71,14 @@ test("resolveClientId keeps a valid stored override, trimmed", () => {
   assert.equal(resolveClientId(DEFAULT_CLIENT_ID), DEFAULT_CLIENT_ID);
 });
 
-test("the transport preference vocabulary is exactly auto, ipc and arrpc, defaulting to desktop IPC", () => {
-  assert.equal(TRANSPORT_AUTO, "auto");
+test("the transport is always desktop IPC: any stored or legacy value resolves to ipc", () => {
   assert.equal(TRANSPORT_IPC, "ipc");
-  assert.equal(TRANSPORT_ARRPC, "arrpc");
-  assert.deepEqual([...TRANSPORTS], ["auto", "ipc", "arrpc"]);
-  assert.ok(Object.isFrozen(TRANSPORTS));
-  assert.equal(DEFAULT_TRANSPORT, TRANSPORT_IPC, "a fresh install goes to the installed desktop app");
+  assert.equal(DEFAULT_TRANSPORT, TRANSPORT_IPC);
   assert.equal(TRANSPORT_KEY, "transport");
   assert.equal(ENABLED_KEY, "enabled");
-});
-
-test("resolveTransport keeps a stored preference and otherwise defaults to desktop IPC", () => {
-  for (const stored of [undefined, null, "", "   ", "junk", "discord-ipc", "AUTO?", 42]) {
+  for (const stored of [undefined, null, "", "   ", "junk", "auto", "arrpc", "AUTO?", "discord-ipc", 42]) {
     assert.equal(resolveTransport(stored), "ipc", `stored=${String(stored)}`);
   }
-  assert.equal(resolveTransport("auto"), "auto", "the deferred web fallback stays selectable");
-  assert.equal(resolveTransport("ipc"), "ipc");
-  assert.equal(resolveTransport("IPC"), "ipc");
-  assert.equal(resolveTransport(" arrpc "), "arrpc", "a forced arRPC survives trimming");
 });
 
 test("resolveEnabled only turns presence off on a real false", () => {
@@ -112,32 +88,7 @@ test("resolveEnabled only turns presence off on a real false", () => {
   }
 });
 
-test("each site has its own enable flag, and both are on until a real false says otherwise", () => {
-  assert.deepEqual({ ...SITE_ENABLED_KEYS }, {
-    youtube: "youtubeEnabled",
-    "youtube-music": "youtubeMusicEnabled",
-  });
-  assert.ok(Object.isFrozen(SITE_ENABLED_KEYS));
-  assert.deepEqual(resolveSiteFlags(null), { youtube: true, "youtube-music": true });
-  assert.deepEqual(resolveSiteFlags({}), { youtube: true, "youtube-music": true });
-  assert.deepEqual(resolveSiteFlags({ youtubeEnabled: false }), {
-    youtube: false,
-    "youtube-music": true,
-  });
-  assert.deepEqual(resolveSiteFlags({ youtubeMusicEnabled: false }), {
-    youtube: true,
-    "youtube-music": false,
-  });
-  for (const stored of [true, "false", 0, "", {}]) {
-    assert.deepEqual(
-      resolveSiteFlags({ youtubeEnabled: stored }),
-      { youtube: true, "youtube-music": true },
-      `stored=${String(stored)}`
-    );
-  }
-});
-
-test("clientIdToPersist saves an override, clears for empty/built-in, rejects junk", () => {
+test("clientIdToPersist is retained for the host import surface", () => {
   assert.equal(clientIdToPersist(""), null);
   assert.equal(clientIdToPersist("   "), null);
   assert.equal(clientIdToPersist(null), null);

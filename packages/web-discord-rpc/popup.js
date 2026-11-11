@@ -1,24 +1,21 @@
 /**
  * Popup controller.
  *
- * One job: show the bridge and what each site is publishing, and let presence be
- * switched off without leaving the popup. Plain ES modules, no build: the same
- * `config.js` and `bridge-status.js` the worker imports are imported here, so
- * the vocabulary cannot drift between the worker and this surface.
+ * Music-only: show the bridge and the YouTube Music activity, and let
+ * presence be switched off without leaving the popup. Plain ES modules, no
+ * build: the same `config.js` and `bridge-status.js` the worker imports are
+ * imported here, so the vocabulary cannot drift between the worker and this
+ * surface.
  *
  * `status.detail` is a raw native diagnostic. It is never rendered: only
- * `presentStatus().reason` (friendly copy) reaches the page.
+ * `presentStatus().reason` (friendly copy) reaches the page. The expanded
+ * card stays `Listening to YouTube Music` (track plus artist); the
+ * member-list line is the artist via `status_display_type: 1` on the wire —
+ * live Discord rendering is UNVERIFIED (see activity.js header).
  */
 
-import {
-  SOURCE_YOUTUBE,
-  SOURCE_YOUTUBE_MUSIC,
-  resolveEnabled,
-} from "./config.js";
+import { SOURCE_YOUTUBE_MUSIC, resolveEnabled } from "./config.js";
 import { STATUS_KEY, presentStatus } from "./bridge-status.js";
-
-/** YouTube Music first: the owner's order and the worker's processing order. */
-const SOURCES = [SOURCE_YOUTUBE_MUSIC, SOURCE_YOUTUBE];
 
 const el = (id) => document.getElementById(id);
 
@@ -26,23 +23,15 @@ const bridgeEl = el("bridge");
 const reasonEl = el("reason");
 const enabledEl = el("enabled");
 
-/** One `{ title, detail }` pair for a published activity, or the empty state. */
+/** One `{ title, detail }` pair for the Music activity, or the empty state. */
 function describeActivity(activity) {
   if (!activity || typeof activity !== "object") return { title: "Nothing playing", detail: "" };
-  const title = typeof activity.details === "string" && activity.details ? activity.details : "Watching";
-  const state = typeof activity.state === "string" ? activity.state : "";
-  // Music names the card after the artist (`name`) and leaves only the album in
-  // `state`; the row must carry both. A static source label or a name that is
-  // the state itself stays as it was.
-  const artist =
-    typeof activity.name === "string" &&
-    activity.name &&
-    activity.name !== "YouTube" &&
-    activity.name !== "YouTube Music" &&
-    activity.name !== state
-      ? activity.name
-      : "";
-  const detail = artist ? (state ? `${artist} — ${state}` : artist) : state;
+  const title = typeof activity.details === "string" && activity.details ? activity.details : "Listening";
+  const rawState = typeof activity.state === "string" ? activity.state : "";
+  // Header is static ("YouTube Music"); the row shows the artist from
+  // `state`. Collapse a state that merely repeats the track.
+  const detail =
+    rawState && rawState.toLowerCase() !== title.toLowerCase() ? rawState : "";
   return { title, detail };
 }
 
@@ -71,20 +60,13 @@ function renderStatus(status, enabled) {
   reasonEl.setAttribute("aria-live", view.isError ? "assertive" : "polite");
 
   const activities = (status && status.activities) || {};
-  const sites = (status && status.sites) || {};
-  for (const source of SOURCES) {
-    // A site switched off in Settings publishes nothing by design: say that,
-    // not "Nothing playing", which would blame the page.
-    const { title, detail } = !enabled
-      ? { title: "Presence off", detail: "" }
-      : sites[source] === false
-        ? { title: "Off in Settings", detail: "" }
-        : describeActivity(activities[source]);
-    const titleEl = el(`${source}-activity`);
-    const detailEl = el(`${source}-detail`);
-    if (titleEl) titleEl.textContent = title;
-    if (detailEl) detailEl.textContent = detail;
-  }
+  const { title, detail } = !enabled
+    ? { title: "Presence off", detail: "" }
+    : describeActivity(activities[SOURCE_YOUTUBE_MUSIC]);
+  const titleEl = el(`${SOURCE_YOUTUBE_MUSIC}-activity`);
+  const detailEl = el(`${SOURCE_YOUTUBE_MUSIC}-detail`);
+  if (titleEl) titleEl.textContent = title;
+  if (detailEl) detailEl.textContent = detail;
 }
 
 function ask(message) {

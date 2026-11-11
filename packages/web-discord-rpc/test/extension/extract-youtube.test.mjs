@@ -7,11 +7,11 @@ import { dirname, join } from "node:path";
 import {
   makePage,
   musicPage,
+  audio,
   node,
   jsonLd,
   meta,
-  video,
-  youtubePage
+  video
 } from "./helpers/fake-page.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -31,21 +31,27 @@ function read(doc, nav, loc) {
   return JSON.parse(JSON.stringify(api.read(doc, nav, loc)));
 }
 
-const WATCH = "https://www.youtube.com/watch?v=aqz-KE-bpKQ";
+const MUSIC_WATCH = "https://music.youtube.com/watch?v=aqz-KE-bpKQ";
 
-function watch({ href = WATCH, ...rest } = {}) {
-  return youtubePage({ href, ...rest });
+function musicWatch({ href = MUSIC_WATCH, ...rest } = {}) {
+  return musicPage({
+    href,
+    title: "Never Gonna Give You Up",
+    byline: [node("a", { text: "Rick Astley" })],
+    ...rest
+  });
 }
 
-test("sourceForLocation maps only the https YouTube hosts", () => {
+test("sourceForLocation maps only the https YouTube Music host", () => {
   const cases = [
-    ["https://www.youtube.com/watch?v=aqz-KE-bpKQ", "youtube"],
-    ["https://youtube.com/watch?v=aqz-KE-bpKQ", "youtube"],
-    ["https://m.youtube.com/watch?v=aqz-KE-bpKQ", "youtube"],
     ["https://music.youtube.com/watch?v=aqz-KE-bpKQ", "youtube-music"],
-    ["http://www.youtube.com/watch?v=aqz-KE-bpKQ", null],
+    ["https://music.youtube.com/", "youtube-music"],
+    ["https://www.youtube.com/watch?v=aqz-KE-bpKQ", null],
+    ["https://youtube.com/watch?v=aqz-KE-bpKQ", null],
+    ["https://m.youtube.com/watch?v=aqz-KE-bpKQ", null],
+    ["http://music.youtube.com/watch?v=aqz-KE-bpKQ", null],
     ["https://youtu.be/aqz-KE-bpKQ", null],
-    ["https://www.youtube.com.evil.test/watch?v=aqz-KE-bpKQ", null],
+    ["https://music.youtube.com.evil.test/watch?v=aqz-KE-bpKQ", null],
     ["https://example.com/watch?v=aqz-KE-bpKQ", null],
     ["not a url", null],
     ["", null]
@@ -77,8 +83,9 @@ test("read returns null off YouTube and off a watch page", () => {
   assert.equal(read(null, null, null), null);
 });
 
-test("a YouTube watch page yields the whole state", () => {
-  const page = watch({
+test("a Music watch page yields the whole state", () => {
+  const page = musicWatch({
+    artwork: "https://lh3.googleusercontent.com/cover=w544-h544",
     children: [
       video({ currentTime: 42.5, duration: 213.4, paused: false, playbackRate: 1.25 })
     ]
@@ -101,8 +108,8 @@ test("a YouTube watch page yields the whole state", () => {
   assert.equal(state.title, "Never Gonna Give You Up");
   assert.equal(state.channel, "Rick Astley");
   assert.equal(state.album, null);
-  assert.equal(state.artworkUrl, "https://i.ytimg.com/vi/dQw4w9WgXcQ/maxresdefault.jpg");
-  assert.equal(state.pageUrl, WATCH);
+  assert.equal(state.artworkUrl, "https://lh3.googleusercontent.com/cover=w544-h544");
+  assert.equal(state.pageUrl, MUSIC_WATCH);
   assert.equal(state.mediaId, "aqz-KE-bpKQ");
   assert.equal(state.duration, 213.4);
   assert.equal(state.position, 42.5);
@@ -111,29 +118,29 @@ test("a YouTube watch page yields the whole state", () => {
   assert.equal(state.visible, true);
 });
 
-test("media ids parse from watch, shorts, live and embed paths", () => {
-  const paths = [
-    "/watch?v=aqz-KE-bpKQ",
-    "/shorts/aqz-KE-bpKQ",
-    "/live/aqz-KE-bpKQ",
-    "/embed/aqz-KE-bpKQ"
-  ];
-  for (const path of paths) {
-    const href = `https://www.youtube.com${path}`;
-    const page = makePage({ href, children: [video({ duration: 10 })] });
-    const state = read(page.doc, page.navigator, page.location);
-    assert.equal(state.mediaId, "aqz-KE-bpKQ", path);
-    assert.equal(state.pageUrl, href, path);
-  }
-  const timed = makePage({
-    href: `${WATCH}&t=42s`,
+test("media ids parse from music watch urls and stay null on Home", () => {
+  const page = musicWatch({ children: [video({ duration: 10 })] });
+  const state = read(page.doc, page.navigator, page.location);
+  assert.equal(state.mediaId, "aqz-KE-bpKQ");
+  assert.equal(state.pageUrl, MUSIC_WATCH);
+
+  const timed = musicWatch({
+    href: `${MUSIC_WATCH}&t=42s`,
     children: [video({ duration: 10 })]
   });
-  assert.equal(read(timed.doc, timed.navigator, timed.location).pageUrl, `${WATCH}&t=42s`);
+  assert.equal(read(timed.doc, timed.navigator, timed.location).pageUrl, `${MUSIC_WATCH}&t=42s`);
+
+  const home = musicPage({
+    href: "https://music.youtube.com/",
+    title: "PIXELATED KISSES",
+    byline: [node("a", { text: "Joji" })],
+    children: [video({ duration: 111 })]
+  });
+  assert.equal(read(home.doc, home.navigator, home.location).mediaId, null);
 });
 
-test("a watch page without a video is paused with null playback numbers", () => {
-  const page = watch();
+test("a music page without media is paused with null playback numbers", () => {
+  const page = musicWatch();
   const state = read(page.doc, page.navigator, page.location);
   assert.equal(state.title, "Never Gonna Give You Up");
   assert.equal(state.paused, true);
@@ -143,12 +150,12 @@ test("a watch page without a video is paused with null playback numbers", () => 
 });
 
 test("position is clamped to duration and NaN is null", () => {
-  const clamped = watch({
+  const clamped = musicWatch({
     children: [video({ currentTime: 150, duration: 100, paused: false })]
   });
   assert.equal(read(clamped.doc, clamped.navigator, clamped.location).position, 100);
 
-  const broken = watch({
+  const broken = musicWatch({
     children: [video({ currentTime: Number.NaN, duration: Number.NaN, paused: false })]
   });
   const state = read(broken.doc, broken.navigator, broken.location);
@@ -157,8 +164,18 @@ test("position is clamped to duration and NaN is null", () => {
   assert.equal(state.playbackRate, 1);
 });
 
+test("audio playback extraction preserves its real position and duration for timestamps", () => {
+  const page = musicWatch({
+    children: [audio({ currentTime: 42.9, duration: 184.2, paused: false, playbackRate: 1 })]
+  });
+  const state = read(page.doc, page.navigator, page.location);
+  assert.equal(state.position, 42.9);
+  assert.equal(state.duration, 184.2);
+  assert.equal(state.paused, false);
+});
+
 test("visible mirrors document.visibilityState exactly", () => {
-  const hidden = watch();
+  const hidden = musicWatch();
   hidden.setVisibility("hidden");
   assert.equal(read(hidden.doc, hidden.navigator, hidden.location).visible, false);
 
@@ -166,31 +183,26 @@ test("visible mirrors document.visibilityState exactly", () => {
   assert.equal(read(hidden.doc, hidden.navigator, hidden.location).visible, false);
 });
 
-test("YouTube prefers og:image; a non-https artwork is dropped", () => {
-  const insecured = watch({ image: "http://i.ytimg.com/vi/aqz-KE-bpKQ/maxresdefault.jpg" });
+test("Music artwork keeps the player-bar https image and drops the rest", () => {
+  const insecured = musicWatch({ artwork: "http://lh3.googleusercontent.com/cover=w544-h544" });
   const insecure = read(insecured.doc, insecured.navigator, insecured.location);
   assert.equal(insecure.artworkUrl, null);
 
-  const sessionArt = "https://i.ytimg.com/vi/aqz-KE-bpKQ/hqdefault.jpg";
-  const withSession = makePage({
-    href: WATCH,
-    mediaSession: { title: "S", artist: "A", artwork: [{ src: sessionArt, sizes: "320x180" }] },
-    children: [meta("og:image", "https://i.ytimg.com/vi/aqz-KE-bpKQ/maxresdefault.jpg")]
-  });
+  const plain = musicWatch({ artwork: "https://lh3.googleusercontent.com/cover=w544-h544" });
   assert.equal(
-    read(withSession.doc, withSession.navigator, withSession.location).artworkUrl,
-    "https://i.ytimg.com/vi/aqz-KE-bpKQ/maxresdefault.jpg"
+    read(plain.doc, plain.navigator, plain.location).artworkUrl,
+    "https://lh3.googleusercontent.com/cover=w544-h544"
   );
 });
 
 test("mediaSession fills title and channel when the DOM is bare", () => {
   const page = makePage({
-    href: WATCH,
+    href: MUSIC_WATCH,
     mediaSession: {
       title: "Big Buck Bunny 60fps 4K - Official Blender Foundation Short Film",
       artist: "Blender",
       album: null,
-      artwork: [{ src: "https://i.ytimg.com/vi/aqz-KE-bpKQ/hqdefault.jpg", sizes: "320x180" }]
+      artwork: [{ src: "https://lh3.googleusercontent.com/cover=w544-h544", sizes: "544x544" }]
     },
     children: [video({ duration: 634.601 })]
   });
@@ -198,7 +210,7 @@ test("mediaSession fills title and channel when the DOM is bare", () => {
   assert.equal(state.title, "Big Buck Bunny 60fps 4K - Official Blender Foundation Short Film");
   assert.equal(state.channel, "Blender");
   assert.equal(state.album, null);
-  assert.equal(state.artworkUrl, "https://i.ytimg.com/vi/aqz-KE-bpKQ/hqdefault.jpg");
+  assert.equal(state.artworkUrl, "https://lh3.googleusercontent.com/cover=w544-h544");
   assert.equal(state.duration, 634.601);
 });
 
@@ -266,16 +278,17 @@ test("YouTube Music on Home reports the persistent player without a media id", (
 });
 
 test("JSON-LD is the fallback for title, channel, artwork and duration", () => {
-  const page = makePage({
-    href: WATCH,
+  const page = musicWatch({
+    title: null,
+    byline: null,
     children: [
       video({ duration: 0 }),
       jsonLd({
         "@context": "https://schema.org",
-        "@type": "VideoObject",
+        "@type": "MusicRecording",
         name: "LD Title",
         author: { "@type": "Person", name: "LD Channel" },
-        thumbnailUrl: ["http://bad.example/x.jpg", "https://i.ytimg.com/vi/aqz-KE-bpKQ/hq.jpg"],
+        thumbnailUrl: ["http://bad.example/x.jpg", "https://lh3.googleusercontent.com/cover=w300-h300"],
         duration: "PT3M33S"
       })
     ]
@@ -283,29 +296,29 @@ test("JSON-LD is the fallback for title, channel, artwork and duration", () => {
   const state = read(page.doc, page.navigator, page.location);
   assert.equal(state.title, "LD Title");
   assert.equal(state.channel, "LD Channel");
-  assert.equal(state.artworkUrl, "https://i.ytimg.com/vi/aqz-KE-bpKQ/hq.jpg");
+  assert.equal(state.artworkUrl, "https://lh3.googleusercontent.com/cover=w300-h300");
   assert.equal(state.duration, 213);
 });
 
 test("text is stripped, collapsed, de-noised and capped at 256", () => {
-  const noisy = watch({
+  const noisy = musicWatch({
     title: "\u200B  Never \n Gonna\u202E   Give  You Up  ",
-    channel: "\uFEFF Rick   Astley ",
-    image: null
+    byline: [node("a", { text: "\uFEFF Rick   Astley " })],
+    artwork: null
   });
   const state = read(noisy.doc, noisy.navigator, noisy.location);
   assert.equal(state.title, "Never Gonna Give You Up");
   assert.equal(state.channel, "Rick Astley");
 
-  const long = watch({ title: "x".repeat(300) });
+  const long = musicWatch({ title: "x".repeat(300) });
   assert.equal(read(long.doc, long.navigator, long.location).title.length, 256);
 
   const sufixed = makePage({
-    href: WATCH,
-    title: "Some Video - YouTube",
+    href: MUSIC_WATCH,
+    title: "Some Song - YouTube Music",
     children: [video({ duration: 1 })]
   });
-  assert.equal(read(sufixed.doc, sufixed.navigator, sufixed.location).title, "Some Video");
+  assert.equal(read(sufixed.doc, sufixed.navigator, sufixed.location).title, "Some Song");
 });
 
 test("read never throws, whatever the page hands it", () => {
@@ -337,12 +350,7 @@ test("read never throws, whatever the page hands it", () => {
 
   let state;
   assert.doesNotThrow(() => {
-    state = api.read(hostile, hostileNav, { href: WATCH });
+    state = api.read(hostile, hostileNav, { href: MUSIC_WATCH });
   });
-  assert.equal(state.title === null || state.title === undefined, true);
-  assert.equal(state.channel, null);
-  assert.equal(state.artworkUrl, null);
-  assert.equal(state.duration, null);
-  assert.equal(state.paused, true);
-  assert.equal(state.visible, false);
+  assert.equal(state, null);
 });

@@ -7,8 +7,7 @@ const SCRIPT = fileURLToPath(new URL("../../scripts/e2e-ipc.mjs", import.meta.ur
 
 /**
  * Runs the real script rather than re-implementing it: the script owns the
- * named-pipe scenario, the spawned host, and the assertions that a second
- * connection stacks a second activity.
+ * named-pipe scenario, the spawned host, and the Music activity payload.
  */
 test("e2e-ipc drives the native host over a real named pipe", { timeout: 30_000 }, async (t) => {
   if (process.platform !== "win32") {
@@ -29,6 +28,7 @@ test("e2e-ipc drives the native host over a real named pipe", { timeout: 30_000 
   const code = await new Promise((resolve) => child.once("exit", resolve));
 
   assert.equal(code, 0, `e2e-ipc exited ${String(code)}\nstdout:\n${stdout}\nstderr:\n${stderr}`);
-  assert.match(stdout, /^PASS {2}e2e-ipc: both sources ack over Discord IPC$/m);
-  assert.match(stdout, /^PASS {2}e2e-ipc: a real named pipe saw two connections and two handshakes$/m);
+  assert.match(stdout, /^PASS {2}e2e-ipc: Music activity acks over Discord IPC$/m);
+  assert.match(stdout, /^PASS {2}e2e-ipc: a real named pipe saw one connection and handshake$/m);
+  assert.match(stdout, /^PASS {2}e2e-ipc: Music activity reaches Discord with artist display and timestamps$/m);
   assert.match(stdout, /^e2e-ipc: PASS \(\d+\/\d+\)$/m);});

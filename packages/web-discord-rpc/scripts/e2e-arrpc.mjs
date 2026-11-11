@@ -7,8 +7,9 @@
  * pointed at an absent pipe, so the `auto` probe falls back to arRPC without
  * ever touching a Discord desktop that may be running on the machine. The
  * driver sends one hello plus one activity per source and then a clear, and
- * the host must open two WebSocket connections, publish a WATCHING (type 3)
- * and a LISTENING (type 2) activity, then clear one of them.
+ * the host opens one WebSocket connection for a Music activity and its clear.
+ * This tests the native host internally; the extension itself selects desktop
+ * IPC and has no user-facing transport setting.
  *
  *   node scripts/e2e-arrpc.mjs
  */
@@ -271,11 +272,14 @@ async function main() {
     stderr += String(chunk);
   });
 
-  const activities = [
-    { source: "youtube", id: "e2e-youtube", activity: { type: 3, details: "Big Buck Bunny", state: "Blender" } },
-    { source: "youtube-music", id: "e2e-music", activity: { type: 2, details: "Album Track", state: "Artist" } },
-  ];
-  const clear = { source: "youtube", id: "e2e-clear", activity: null };
+  const activities = [{
+    source: "youtube-music", id: "e2e-music", activity: {
+      name: "YouTube Music", type: 2, details: "Album Track", state: "Artist",
+      status_display_type: 1,
+      timestamps: { start: 1_700_000_000_000, end: 1_700_000_184_000 },
+    },
+  }];
+  const clear = { source: "youtube-music", id: "e2e-clear", activity: null };
   const ackOf = (id) => frames.filter((message) => message.t === "ack" && message.id === id).at(-1);
 
   try {
@@ -293,26 +297,25 @@ async function main() {
     const ids = [...activities.map(({ id }) => id), clear.id];
     await waitFor(
       () => ids.every((id) => ackOf(id) !== undefined),
-      "three acks (WebSocket upgrade, READY, SET_ACTIVITY, reply)",
+      "Music and clear acks (WebSocket upgrade, READY, SET_ACTIVITY, reply)",
     );
 
     const acks = ids.map((id) => ackOf(id));
-    check("both sources and the clear ack over arRPC", acks.every((ack) => ack?.ok === true), JSON.stringify(acks));
+    check("Music and clear ack over internal arRPC host test", acks.length === 2 && acks.every((ack) => ack?.ok === true), JSON.stringify(acks));
 
     const connected = frames.filter((message) => message.t === "status" && message.state === "connected").at(-1);
     check(
-      "status reports connected on arrpc with a null reason and both sources",
+      "status reports connected on arrpc with a null reason and Music",
       connected?.transport === "arrpc"
         && connected?.reason === null
-        && connected?.sources?.youtube === "connected"
         && connected?.sources?.["youtube-music"] === "connected",
       JSON.stringify(connected ?? null),
     );
 
     check(
-      "a real WebSocket server saw two connections, one per source, on the built-in client id",
-      state.connections === 2
-        && state.upgrades.length === 2
+      "a real WebSocket server saw one Music connection on the built-in client id",
+      state.connections === 1
+        && state.upgrades.length === 1
         && state.upgrades.every((upgrade) => upgrade.clientId === DEFAULT_CLIENT_ID && upgrade.version === "1"),
       JSON.stringify({ connections: state.connections, upgrades: state.upgrades }),
     );
@@ -322,14 +325,18 @@ async function main() {
       .map((frame) => ({
         type: frame.args?.activity?.type ?? null,
         details: frame.args?.activity?.details ?? null,
+        state: frame.args?.activity?.state ?? null,
+        display: frame.args?.activity?.status_display_type ?? null,
+        timestamps: frame.args?.activity?.timestamps ?? null,
         socket: frame.socket,
       }));
     check(
-      "each source reached arRPC as its own Discord type (3 and 2) on its own connection",
-      sent.length === 2
-        && new Set(sent.map((entry) => entry.socket)).size === 2
-        && JSON.stringify(sent.map((entry) => [entry.type, entry.details]).sort((a, b) => a[0] - b[0]))
-          === JSON.stringify([[2, "Album Track"], [3, "Big Buck Bunny"]]),
+      "Music activity reaches internal host with artist display and timestamps",
+      sent.length === 1
+        && sent[0].type === 2 && sent[0].details === "Album Track"
+        && sent[0].state === "Artist" && sent[0].display === 1
+        && sent[0].timestamps?.start === 1_700_000_000_000
+        && sent[0].timestamps?.end === 1_700_000_184_000,
       JSON.stringify(sent),
     );
 
@@ -337,13 +344,13 @@ async function main() {
     check(
       "the clear reached arRPC as a null activity on the connection that published it",
       cleared !== undefined
-        && cleared.socket === sent.find((entry) => entry.type === 3)?.socket,
+        && cleared.socket === sent[0]?.socket,
       JSON.stringify({ cleared: cleared ?? null, sent }),
     );
 
     check(
-      "all three SET_ACTIVITYs name the host's pid",
-      state.frames.length === 3 && state.frames.every((frame) => frame.args?.pid === child.pid),
+      "both SET_ACTIVITYs name the host's pid",
+      state.frames.length === 2 && state.frames.every((frame) => frame.args?.pid === child.pid),
       JSON.stringify(state.frames.map((frame) => frame.args?.pid ?? null)),
     );
   } catch (error) {

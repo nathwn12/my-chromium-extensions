@@ -5,9 +5,8 @@
  * A real Windows named pipe (`\\.\pipe\wdr-e2e-*`, never a `discord-ipc-*`
  * name) plays Discord. The real native host is spawned with
  * `WDR_DISCORD_PIPES` pointed at that pipe, receives one hello plus one
- * activity per source, and must answer both acks over two independent
- * connections / two handshakes — the stacking behaviour that makes two
- * activities appear at once.
+ * Music activity, and must answer its ack over one connection and handshake.
+ * The captured SET_ACTIVITY verifies artist display and timestamps at IPC.
  *
  *   node scripts/e2e-ipc.mjs
  */
@@ -121,10 +120,15 @@ async function main() {
     stderr += String(chunk);
   });
 
-  const activities = [
-    { source: "youtube", id: "e2e-youtube", activity: { type: 3, details: "Big Buck Bunny", state: "Blender" } },
-    { source: "youtube-music", id: "e2e-music", activity: { type: 2, details: "Album Track", state: "Artist" } },
-  ];
+  const activities = [{
+    source: "youtube-music",
+    id: "e2e-music",
+    activity: {
+      name: "YouTube Music", type: 2, details: "Album Track", state: "Artist",
+      status_display_type: 1,
+      timestamps: { start: 1_700_000_000_000, end: 1_700_000_184_000 },
+    },
+  }];
 
   try {
     child.stdin.write(encodeMessage({
@@ -138,38 +142,43 @@ async function main() {
     }
 
     const acked = () => activities.every(({ id }) => frames.some((message) => message.t === "ack" && message.id === id));
-    await waitFor(acked, "both acks (pipe wire, handshake, SET_ACTIVITY, reply)");
+    await waitFor(acked, "Music ack (pipe wire, handshake, SET_ACTIVITY, reply)");
 
     const acks = activities.map(({ id }) => frames.find((message) => message.t === "ack" && message.id === id));
-    check("both sources ack over Discord IPC", acks.every((ack) => ack?.ok === true), JSON.stringify(acks));
+    check("Music activity acks over Discord IPC", acks.length === 1 && acks[0]?.ok === true, JSON.stringify(acks));
 
     const connected = frames.filter((message) => message.t === "status" && message.state === "connected").at(-1);
     check(
-      "status reports connected on discord-ipc with a null reason and both sources",
+      "status reports connected on discord-ipc with a null reason and Music",
       connected?.transport === "discord-ipc"
         && connected?.reason === null
-        && connected?.sources?.youtube === "connected"
         && connected?.sources?.["youtube-music"] === "connected",
       JSON.stringify(connected ?? null),
     );
 
     check(
-      "a real named pipe saw two connections and two handshakes",
-      state.connections === 2
-        && state.handshakes === 2
+      "a real named pipe saw one connection and handshake",
+      state.connections === 1
+        && state.handshakes === 1
         && state.clientIds.every((clientId) => clientId === DEFAULT_CLIENT_ID),
       JSON.stringify({ connections: state.connections, handshakes: state.handshakes, clientIds: state.clientIds }),
     );
 
-    const sent = state.frames.map((frame) => frame?.args?.activity?.details).sort();
+    const sent = state.frames[0]?.args?.activity;
     check(
-      "each source's activity reached Discord on its own pipe",
-      JSON.stringify(sent) === JSON.stringify(["Album Track", "Big Buck Bunny"]),
-      JSON.stringify(state.frames),
+      "Music activity reaches Discord with artist display and timestamps",
+      state.frames.length === 1
+        && sent?.name === "YouTube Music"
+        && sent?.details === "Album Track"
+        && sent?.state === "Artist"
+        && sent?.status_display_type === 1
+        && sent?.timestamps?.start === 1_700_000_000_000
+        && sent?.timestamps?.end === 1_700_000_184_000,
+      JSON.stringify(sent ?? null),
     );
     check(
       "every SET_ACTIVITY names the host's pid",
-      state.frames.length === 2 && state.frames.every((frame) => frame?.args?.pid === child.pid),
+      state.frames.length === 1 && state.frames.every((frame) => frame?.args?.pid === child.pid),
       JSON.stringify(state.frames.map((frame) => frame?.args?.pid ?? null)),
     );
   } catch (error) {

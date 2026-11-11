@@ -1,5 +1,5 @@
 /**
- * web-discord-rpc — YouTube / YouTube Music extraction.
+ * web-discord-rpc — YouTube Music extraction.
  *
  * Loaded by the manifest as a *classic* content script (Chrome cannot load
  * content scripts as ES modules), so it exposes `globalThis.YoutubeExtract`.
@@ -8,7 +8,8 @@
  * injected `doc` / `nav` / `loc` arguments.
  *
  * Rule of this file: never throw. Every field is nullable; a malformed page
- * yields nulls, never an exception.
+ * yields nulls, never an exception. Playback comes from the real media
+ * element (`<video>` or `<audio>`); duration is never invented.
  */
 (function (root) {
   "use strict";
@@ -20,17 +21,15 @@
     maxUrlChars: 1024,
 
     hosts: {
-      youtube: ["www.youtube.com", "youtube.com", "m.youtube.com"],
       "youtube-music": ["music.youtube.com"]
     },
 
-    // A media id is required only for `youtube`, where the watch URL is the sole
-    // page carrying a video (a browse-page h1 is a feed heading).
-    // `youtube-music` keeps one persistent player bar across Home, Explore and
-    // shelves and its SPA never rewrites the URL with `?v=`, so every page on the
-    // host is eligible and a resolved title stands in for the missing id.
+    // YouTube Music keeps one persistent player bar across Home, Explore and
+    // shelves and its SPA never rewrites the URL with `?v=`, so every page on
+    // the host is eligible and a resolved title stands in for the missing id.
+    // No media id is ever required.
     eligibility: {
-      requiresMediaId: ["youtube"]
+      requiresMediaId: []
     },
 
     // The <title> suffix the site appends; never part of the media title.
@@ -39,8 +38,10 @@
     },
 
     dom: {
-      // live probe: the watch player carries video.html5-main-video
-      video: ["#movie_player video.html5-main-video", "video.html5-main-video", "video"],
+      // live probe: the Music player is an audio element on song pages (video
+      // on video pages); read whichever media element is present so timestamps
+      // come from the real clock, never invented.
+      video: ["#movie_player video.html5-main-video", "video.html5-main-video", "video", "audio"],
       // live probe: the watch h1 is the title, #owner #channel-name a the channel
       title: [
         "h1.ytd-watch-metadata yt-formatted-string",
@@ -188,7 +189,6 @@
     var parts = parseHref(href);
     if (!parts || parts.protocol !== "https:") return null;
     if (RULES.hosts["youtube-music"].indexOf(parts.host) !== -1) return "youtube-music";
-    if (RULES.hosts.youtube.indexOf(parts.host) !== -1) return "youtube";
     return null;
   }
 
@@ -468,30 +468,19 @@
     var video = readVideo(doc);
     var session = readMediaSession(nav);
     var ld = readJsonLd(doc);
-    var dom = source === "youtube" ? readYoutubeDom(doc) : readMusicDom(doc);
+    var dom = readMusicDom(doc);
     var ogTitle = clean(attrOf(queryOne(doc, RULES.dom.ogTitle), "content"));
     var documentTitle = safeDocumentTitle(doc);
 
-    var title;
-    var channel;
-    var album;
-    var artwork;
-    if (source === "youtube") {
-      title = dom.title || (session && session.title) || (ld && ld.name) || ogTitle || documentTitle;
-      channel = dom.channel || (session && session.artist) || (ld && ld.author);
-      album = null;
-      // live probe: og:image is maxresdefault and beats the MediaSession 320x180 art
-      artwork = dom.artwork || (session && session.artwork) || (ld && ld.artwork);
-    } else {
-      title = (session && session.title) || dom.title || (ld && ld.name) || ogTitle || documentTitle;
-      channel = (session && session.artist) || dom.channel || (ld && ld.author);
-      album = (session && session.album) || dom.album;
-      artwork = (session && session.artwork) || dom.artwork || (ld && ld.artwork);
-    }
+    // Music precedence: session first, then the player bar, JSON-LD, OG, title.
+    var title = (session && session.title) || dom.title || (ld && ld.name) || ogTitle || documentTitle;
+    var channel = (session && session.artist) || dom.channel || (ld && ld.author);
+    var album = (session && session.album) || dom.album;
+    var artwork = (session && session.artwork) || dom.artwork || (ld && ld.artwork);
 
-    // Where no media id identifies the page, a resolved title is the proof that
-    // the persistent player is present; without it there is nothing to show.
-    if (!requiresMediaId && !title) return null;
+    // A resolved title is the proof that the persistent player is present;
+    // without it there is nothing to show.
+    if (!title) return null;
 
     var duration = video.length !== null ? video.length : ld ? ld.duration : null;
     var position = video.elapsed;

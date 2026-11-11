@@ -18,37 +18,27 @@ const SURFACES = ["popup", "options"];
 
 const manifest = JSON.parse(readFileSync(join(extensionDir, "manifest.json"), "utf8"));
 
-/** What the worker returns for one connected frame: both sources, one playing. */
+/** What the worker returns for one connected Music frame. */
 const CONNECTED = {
   bridgeState: "connected",
   availability: "available",
   reason: null,
   reasonKind: null,
   detail: null,
-  transportPreference: "auto",
+  transportPreference: "ipc",
   transport: "discord-ipc",
-  hostSources: { youtube: "connected", "youtube-music": "waiting" },
+  hostSources: { "youtube-music": "connected" },
   activities: {
-    youtube: {
-      name: "YouTube",
-      type: 3,
-      details: "Never Gonna Give You Up",
-      state: "Rick Astley",
-      assets: { large_image: "https://i.ytimg.com/vi/dQw4w9WgXcQ/maxresdefault.jpg" },
+    "youtube-music": {
+      name: "YouTube Music",
+      type: 2,
+      details: "A Song",
+      state: "An Artist",
+      status_display_type: 1,
+      assets: { large_image: "https://lh3.googleusercontent.com/cover" },
     },
-    "youtube-music": null,
   },
   updatedAt: 1,
-};
-
-/** Music names the artist in `name` and leaves the album in `state`. */
-const MUSIC = {
-  ...CONNECTED,
-  hostSources: { youtube: "connected", "youtube-music": "connected" },
-  activities: {
-    youtube: CONNECTED.activities.youtube,
-    "youtube-music": { name: "An Artist", type: 2, details: "A Song", state: "An Album" },
-  },
 };
 
 const WAITING = {
@@ -56,9 +46,9 @@ const WAITING = {
   bridgeState: "waiting",
   availability: "unavailable",
   reason: "Discord is not running — presence paused, resumes automatically.",
-  reasonKind: "arrpc-closed",
-  detail: "connect ECONNREFUSED 127.0.0.1:6463",
-  activities: { youtube: null, "youtube-music": null },
+  reasonKind: "discord-closed",
+  detail: "no Discord IPC pipe answered",
+  activities: { "youtube-music": null },
 };
 
 const REJECTED = {
@@ -67,10 +57,9 @@ const REJECTED = {
   availability: "unavailable",
   reason: "Discord rejected this application ID. Check the application ID in Settings.",
   reasonKind: "rejected",
-  selectedTransport: null,
   transport: null,
   detail: "handshake rejected: invalid client_id 123",
-  activities: { youtube: null, "youtube-music": null },
+  activities: { "youtube-music": null },
 };
 
 /* ------------------------------------------------------------- static ---- */
@@ -88,33 +77,35 @@ test("the manifest points at popup and options, and both ship as local files", (
   }
 });
 
-test("popup and options title the extension YouTube Presence, never an earlier name", () => {
+test("popup and options title the extension YouTube Music Presence, never an earlier name", () => {
   for (const surface of SURFACES) {
     const html = readSurface(extensionDir, surface, "html");
-    assert.match(html, /<h1>YouTube Presence<\/h1>/, `${surface}.html headings the new name`);
-    assert.match(html, /<title>YouTube Presence/, `${surface}.html titles the new name`);
+    assert.match(html, /<h1>YouTube Music Presence<\/h1>/, `${surface}.html headings the new name`);
+    assert.match(html, /<title>YouTube Music Presence/, `${surface}.html titles the new name`);
     assert.ok(!html.includes("Web Discord RPC"), `${surface}.html drops the first name`);
     assert.ok(!html.includes("Discord RPC"), `${surface}.html drops the earlier name`);
+    assert.ok(!html.includes("<h1>YouTube Presence</h1>"), `${surface}.html drops the two-source name`);
   }
 });
 
-test("both surfaces list YouTube Music before YouTube", () => {
+test("both surfaces are Music-only: one row, no YouTube video row, one presence toggle", () => {
   const popup = createDocument(readSurface(extensionDir, "popup", "html"));
   const popupOrder = popup.querySelectorAll(".source-name").map((node) => node.textContent.trim());
-  assert.deepEqual(popupOrder, ["YouTube Music", "YouTube"], "popup rows run Music first");
+  assert.deepEqual(popupOrder, ["YouTube Music"], "popup has exactly the Music row");
+
+  const popupDoc = readSurface(extensionDir, "popup", "html");
+  assert.ok(!popupDoc.includes("youtube-activity"), "popup drops the YouTube video row");
+
+  for (const surface of SURFACES) {
+    const html = readSurface(extensionDir, surface, "html");
+    assert.ok(!html.includes("site-youtube"), `${surface}.html offers no per-site toggle`);
+    assert.ok(!html.includes("client-form"), `${surface}.html offers no application-id form`);
+    assert.ok(!html.includes('id="transport"'), `${surface}.html offers no transport selector`);
+  }
 
   const options = createDocument(readSurface(extensionDir, "options", "html"));
-  const toggles = options
-    .querySelectorAll(".toggle span")
-    .map((node) => node.textContent.trim())
-    .filter((text) => text !== "Presence" && text !== "Active");
-  assert.deepEqual(toggles, ["YouTube Music", "YouTube"], "options site toggles run Music first");
-
-  const rows = options.querySelectorAll(".status dt").map((node) => node.textContent.trim());
-  assert.ok(
-    rows.findIndex((text) => text.startsWith("YouTube Music")) < rows.indexOf("YouTube"),
-    "options status rows run Music first"
-  );
+  assert.ok(options.getElementById("enabled"), "options keeps the one presence toggle");
+  assert.ok(options.getElementById("youtube-music-activity"), "options keeps the Music status row");
 });
 
 test("each surface loads only its own local code: no remote URL, no inline script", () => {
@@ -195,7 +186,7 @@ test("every id the controllers ask for exists in the shipped markup", () => {
 
 /* -------------------------------------------------------------- popup ---- */
 
-test("popup renders the bridge and both source activities", async () => {
+test("popup renders the bridge and the Music activity", async () => {
   const chrome = createChrome({ local: { enabled: true }, status: CONNECTED });
   const ui = await mountSurface({ surface: "popup", extensionDir, chrome });
   try {
@@ -205,11 +196,9 @@ test("popup renders the bridge and both source activities", async () => {
     assert.equal(bridge.dataset.tone, "connected");
     assert.equal(bridge.getAttribute("role"), "status");
 
-    assert.equal(ui.doc.querySelectorAll(".source").length, 2, "one row per source");
-    assert.equal(ui.doc.getElementById("youtube-activity").textContent, "Never Gonna Give You Up");
-    assert.equal(ui.doc.getElementById("youtube-detail").textContent, "Rick Astley");
-    assert.equal(ui.doc.getElementById("youtube-music-activity").textContent, "Nothing playing");
-    assert.equal(ui.doc.getElementById("youtube-music-detail").textContent, "");
+    assert.equal(ui.doc.querySelectorAll(".source").length, 1, "one row: Music only");
+    assert.equal(ui.doc.getElementById("youtube-music-activity").textContent, "A Song");
+    assert.equal(ui.doc.getElementById("youtube-music-detail").textContent, "An Artist");
     assert.equal(ui.doc.getElementById("enabled").checked, true);
     assert.equal(chrome.requests[0].t, "wdr-get-status", "status comes from the worker first");
   } finally {
@@ -222,7 +211,7 @@ test("popup reads the persisted status when the worker cannot answer", async () 
   const ui = await mountSurface({ surface: "popup", extensionDir, chrome });
   try {
     assert.equal(ui.doc.getElementById("bridge").textContent, "Connected");
-    assert.equal(ui.doc.getElementById("youtube-activity").textContent, "Never Gonna Give You Up");
+    assert.equal(ui.doc.getElementById("youtube-music-activity").textContent, "A Song");
   } finally {
     ui.unmount();
   }
@@ -241,7 +230,7 @@ test("popup treats Discord's absence as waiting copy, never an error, and keeps 
     assert.equal(reason.getAttribute("role"), "status");
     assert.equal(reason.getAttribute("aria-live"), "polite");
     assert.ok(
-      !ui.doc.body.textContent.includes("ECONNREFUSED"),
+      !ui.doc.body.textContent.includes("no Discord IPC pipe"),
       "the raw diagnostic never reaches rendered text"
     );
   } finally {
@@ -285,7 +274,7 @@ test("popup toggle writes the presence preference and renders presence off", asy
     assert.equal(chrome.state.local.enabled, false);
     assert.equal(ui.doc.getElementById("bridge").textContent, "Off");
     assert.equal(ui.doc.getElementById("bridge").dataset.tone, "off");
-    assert.equal(ui.doc.getElementById("youtube-activity").textContent, "Presence off");
+    assert.equal(ui.doc.getElementById("youtube-music-activity").textContent, "Presence off");
     assert.equal(ui.doc.getElementById("reason").hidden, true);
 
     input.checked = true;
@@ -298,24 +287,10 @@ test("popup toggle writes the presence preference and renders presence off", asy
   }
 });
 
-test("popup reports a site that is switched off in Settings instead of claiming it is idle", async () => {
-  const status = { ...CONNECTED, sites: { "youtube-music": false, youtube: true } };
-  const chrome = createChrome({ local: { enabled: true }, status });
-  const ui = await mountSurface({ surface: "popup", extensionDir, chrome });
-  try {
-    assert.equal(ui.doc.getElementById("youtube-music-activity").textContent, "Off in Settings");
-    assert.equal(ui.doc.getElementById("youtube-activity").textContent, "Never Gonna Give You Up");
-  } finally {
-    ui.unmount();
-  }
-});
-
 test("popup follows worker status changes while it is open", async () => {
   const chrome = createChrome({ local: { enabled: true }, status: CONNECTED });
   const ui = await mountSurface({ surface: "popup", extensionDir, chrome });
   try {
-    // The worker persists a new state, then announces it; the popup re-reads
-    // the live status rather than trusting a possibly stale stored object.
     chrome.setStatus(WAITING);
     chrome.emit({ wdrStatus: { newValue: WAITING } }, "local");
     await ui.settle();
@@ -341,107 +316,16 @@ test("popup Settings opens the options page instead of leaving the popup", async
 
 /* ------------------------------------------------------------ options ---- */
 
-test("options renders the bridge, the chosen transport, the application and both activities", async () => {
-  const chrome = createChrome({
-    local: { enabled: true, clientId: "123456789012345678", transport: "ipc" },
-    status: { ...CONNECTED, transport: "arrpc" },
-  });
+test("options renders the bridge, desktop IPC transport and the Music activity", async () => {
+  const chrome = createChrome({ local: { enabled: true }, status: CONNECTED });
   const ui = await mountSurface({ surface: "options", extensionDir, chrome });
   try {
     const bridge = ui.doc.getElementById("bridgeState");
     assert.equal(bridge.textContent, "Connected");
     assert.equal(bridge.dataset.tone, "connected");
-    assert.equal(ui.doc.getElementById("transportUsed").textContent, "arRPC");
-    assert.equal(ui.doc.getElementById("appName").textContent, "Custom application 123456789012345678");
-    assert.equal(ui.doc.getElementById("youtube-activity").textContent, "Never Gonna Give You Up — Rick Astley");
-    assert.equal(ui.doc.getElementById("youtube-music-activity").textContent, "Nothing playing");
-    assert.equal(ui.doc.getElementById("youtube-host").textContent, "Connected");
-    assert.equal(ui.doc.getElementById("youtube-music-host").textContent, "Waiting");
-    assert.equal(ui.doc.getElementById("transport").value, "ipc", "the stored preference is selected");
-  } finally {
-    ui.unmount();
-  }
-});
-
-test("options saves a valid application ID and clears back to the built-in one", async () => {
-  const chrome = createChrome({ local: { enabled: true }, status: CONNECTED });
-  const ui = await mountSurface({ surface: "options", extensionDir, chrome });
-  try {
-    const form = ui.doc.getElementById("client-form");
-    const input = ui.doc.getElementById("clientId");
-    assert.equal(input.value, "1566530911514923188", "the built-in application ID is shown on load");
-
-    input.value = "123456789012345678";
-    fireEvent(form, "submit");
-    await ui.settle();
-    assert.equal(chrome.state.local.clientId, "123456789012345678");
-    assert.equal(input.value, "123456789012345678");
-    assert.equal(
-      ui.doc.getElementById("clientId-saved").textContent,
-      "Saved. Reconnecting with your application ID."
-    );
-    assert.equal(ui.doc.getElementById("appName").textContent, "Custom application 123456789012345678");
-
-    input.value = "";
-    fireEvent(form, "submit");
-    await ui.settle();
-    assert.equal("clientId" in chrome.state.local, false, "an empty field clears the override");
-    assert.equal(input.value, "1566530911514923188");
-    assert.equal(ui.doc.getElementById("clientId-saved").textContent, "Saved. Using the built-in application.");
-    assert.equal(ui.doc.getElementById("appName").textContent, "Built-in application");
-  } finally {
-    ui.unmount();
-  }
-});
-
-test("options refuses an application ID that is not 17 to 20 digits and writes nothing", async () => {
-  const chrome = createChrome({ local: { enabled: true }, status: CONNECTED });
-  const ui = await mountSurface({ surface: "options", extensionDir, chrome });
-  try {
-    const form = ui.doc.getElementById("client-form");
-    const input = ui.doc.getElementById("clientId");
-    const error = ui.doc.getElementById("clientId-error");
-    input.value = "12345";
-
-    fireEvent(form, "submit");
-    await ui.settle();
-
-    assert.equal(chrome.writes.length, 0, "an invalid ID never reaches storage");
-    assert.equal(error.hidden, false);
-    assert.match(error.textContent, /17 to 20 digits/);
-    assert.equal(error.getAttribute("role"), "alert");
-    assert.equal(input.getAttribute("aria-invalid"), "true");
-    assert.equal(input.focused, true, "focus returns to the field that needs fixing");
-
-    input.value = "12345678901234567";
-    fireEvent(input, "input");
-    assert.equal(error.hidden, true);
-    assert.equal(input.getAttribute("aria-invalid"), null);
-  } finally {
-    ui.unmount();
-  }
-});
-
-test("options offers desktop IPC first and keeps auto and arRPC selectable as deferred", async () => {
-  const chrome = createChrome({ local: { enabled: true, transport: "gateway" }, status: CONNECTED });
-  const ui = await mountSurface({ surface: "options", extensionDir, chrome });
-  try {
-    const select = ui.doc.getElementById("transport");
-    const options = ui.doc.querySelectorAll("#transport option");
-    const values = options.map((option) => option.getAttribute("value"));
-    assert.deepEqual(values, ["ipc", "auto", "arrpc"], "the default comes first");
-    const label = (value) =>
-      options.find((option) => option.getAttribute("value") === value).textContent.toLowerCase();
-    assert.match(label("ipc"), /default/, "desktop IPC names itself the default");
-    assert.match(label("auto"), /deferred/, "automatic is selectable but deferred");
-    assert.match(label("arrpc"), /deferred/, "arRPC is selectable but deferred");
-    assert.equal(select.value, "ipc", "an unrecognised stored value resolves to desktop IPC");
-
-    select.value = "arrpc";
-    fireEvent(select, "change");
-    await ui.settle();
-    assert.equal(chrome.state.local.transport, "arrpc");
-    assert.equal(ui.doc.getElementById("transport-saved").textContent, "Saved. Reconnecting to Discord.");
+    assert.equal(ui.doc.getElementById("transportUsed").textContent, "Discord desktop app");
+    assert.equal(ui.doc.getElementById("youtube-music-activity").textContent, "A Song — An Artist");
+    assert.equal(ui.doc.getElementById("youtube-music-host").textContent, "Connected");
   } finally {
     ui.unmount();
   }
@@ -464,48 +348,14 @@ test("options toggle persists presence", async () => {
   }
 });
 
-test("options reads and writes one independent flag per site, YouTube Music first", async () => {
-  const chrome = createChrome({ local: { enabled: true, youtubeMusicEnabled: false }, status: CONNECTED });
+test("options offers no alternate configuration: no transport, site or application controls", async () => {
+  const chrome = createChrome({ local: { enabled: true }, status: CONNECTED });
   const ui = await mountSurface({ surface: "options", extensionDir, chrome });
   try {
-    const music = ui.doc.getElementById("site-youtube-music");
-    const youtube = ui.doc.getElementById("site-youtube");
-    assert.ok(music && youtube, "both site toggles ship");
-    assert.equal(music.checked, false, "the stored Music flag loads");
-    assert.equal(youtube.checked, true, "the unset YouTube flag stays on");
-
-    youtube.checked = false;
-    fireEvent(youtube, "change");
-    await ui.settle();
-    assert.deepEqual(
-      chrome.writes.filter((write) => write.area === "local" && write.method === "set").map((write) => write.values),
-      [{ youtubeEnabled: false }],
-      "switching YouTube off writes only the YouTube key"
-    );
-    assert.equal(ui.doc.getElementById("sites-saved").textContent, "Saved. YouTube is off.");
-    assert.equal(chrome.state.local.youtubeMusicEnabled, false, "the other site's flag is untouched");
-
-    music.checked = true;
-    fireEvent(music, "change");
-    await ui.settle();
-    assert.equal(chrome.state.local.youtubeMusicEnabled, true);
-    assert.equal(ui.doc.getElementById("sites-saved").textContent, "Saved. YouTube Music is on.");
-  } finally {
-    ui.unmount();
-  }
-});
-
-test("options reports a site that is switched off instead of claiming it is idle", async () => {
-  const status = { ...CONNECTED, sites: { "youtube-music": false, youtube: true } };
-  const chrome = createChrome({ local: { enabled: true }, status });
-  const ui = await mountSurface({ surface: "options", extensionDir, chrome });
-  try {
-    assert.equal(ui.doc.getElementById("youtube-music-activity").textContent, "Off in Settings");
-    assert.equal(ui.doc.getElementById("youtube-activity").textContent, "Never Gonna Give You Up — Rick Astley");
-    assert.ok(
-      ui.doc.getElementById("diagnostics").value.includes('"youtube-music": false'),
-      "the flags are in the diagnostics block"
-    );
+    assert.equal(ui.doc.getElementById("transport"), null, "no transport selector");
+    assert.equal(ui.doc.getElementById("client-form"), null, "no application-id form");
+    assert.equal(ui.doc.getElementById("site-youtube-music"), null, "no per-site toggle");
+    assert.equal(ui.doc.getElementById("site-youtube"), null, "no YouTube toggle");
   } finally {
     ui.unmount();
   }
@@ -541,28 +391,22 @@ test("options shows the install commands and keeps the raw detail in diagnostics
   }
 });
 
-test("Music rows read the artist from the activity name; YouTube rows still read only the channel", async () => {
-  const popupChrome = createChrome({ local: { enabled: true }, status: MUSIC });
+test("Music rows show track then artist", async () => {
+  const popupChrome = createChrome({ local: { enabled: true }, status: CONNECTED });
   const popup = await mountSurface({ surface: "popup", extensionDir, chrome: popupChrome });
   try {
     assert.equal(popup.doc.getElementById("youtube-music-activity").textContent, "A Song");
-    assert.equal(popup.doc.getElementById("youtube-music-detail").textContent, "An Artist — An Album");
-    assert.equal(popup.doc.getElementById("youtube-activity").textContent, "Never Gonna Give You Up");
-    assert.equal(popup.doc.getElementById("youtube-detail").textContent, "Rick Astley");
+    assert.equal(popup.doc.getElementById("youtube-music-detail").textContent, "An Artist");
   } finally {
     popup.unmount();
   }
 
-  const optionsChrome = createChrome({ local: { enabled: true }, status: MUSIC });
+  const optionsChrome = createChrome({ local: { enabled: true }, status: CONNECTED });
   const options = await mountSurface({ surface: "options", extensionDir, chrome: optionsChrome });
   try {
     assert.equal(
       options.doc.getElementById("youtube-music-activity").textContent,
-      "A Song — An Artist — An Album"
-    );
-    assert.equal(
-      options.doc.getElementById("youtube-activity").textContent,
-      "Never Gonna Give You Up — Rick Astley"
+      "A Song — An Artist"
     );
   } finally {
     options.unmount();

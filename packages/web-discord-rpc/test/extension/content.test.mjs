@@ -3,14 +3,11 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { loadContent, makePage, musicPage, video, youtubePage } from "./helpers/fake-page.mjs";
+import { audio, loadContent, makePage, musicPage } from "./helpers/fake-page.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const extractSource = readFileSync(join(here, "..", "..", "extract-youtube.js"), "utf8");
 const contentSource = readFileSync(join(here, "..", "..", "content.js"), "utf8");
-
-const WATCH = "https://www.youtube.com/watch?v=aqz-KE-bpKQ";
-const NEXT = "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
 
 function boot(page, options = {}) {
   return loadContent({ extractSource, contentSource, page, ...options });
@@ -24,135 +21,94 @@ function gones(handle) {
   return handle.messages.filter((message) => message.t === "wdr-gone");
 }
 
-function watchPage(title = "First Video", props = {}) {
-  const page = youtubePage({ title, children: [video({ duration: 200, ...props })] });
-  page.setHref(WATCH);
-  return page;
+function musicWatch(title = "First Song", props = {}) {
+  return musicPage({ title, byline: "Artist", children: [audio({ duration: 200, ...props })] });
 }
 
-test("a watch page reports one wdr-state with source, state and at", () => {
-  const handle = boot(watchPage());
+test("a Music page reports one wdr-state with source, state and at", () => {
+  const handle = boot(musicWatch());
   assert.equal(handle.messages.length, 1);
-
   const message = handle.messages[0];
   assert.equal(message.t, "wdr-state");
-  assert.equal(message.source, "youtube");
-  assert.equal(message.state.title, "First Video");
-  assert.equal(message.state.channel, "Rick Astley");
-  assert.equal(message.state.mediaId, "aqz-KE-bpKQ");
+  assert.equal(message.source, "youtube-music");
+  assert.equal(message.state.title, "First Song");
+  assert.equal(message.state.channel, "Artist");
   assert.equal(typeof message.state.at, "number");
   assert.equal(Number.isFinite(message.state.at), true);
 });
 
-test("YouTube Music reports its own source", () => {
-  const page = musicPage({
-    title: "Song",
-    byline: ["Artist • Album"],
-    artwork: "https://lh3.googleusercontent.com/cover"
-  });
+test("audio media events report; timeupdate is never listened to", () => {
+  const page = musicWatch();
   const handle = boot(page);
-  assert.equal(handle.messages.length, 1);
-  assert.equal(handle.messages[0].source, "youtube-music");
-  assert.equal(handle.messages[0].state.title, "Song");
-});
-
-test("a non-watch page reports nothing", () => {
-  const page = makePage({ href: "https://www.youtube.com/", title: "YouTube" });
-  const handle = boot(page);
-  assert.deepEqual(handle.messages, []);
-  handle.poll();
-  assert.deepEqual(handle.messages, []);
-});
-
-test("media events report; timeupdate is never listened to", () => {
-  const page = watchPage();
-  const handle = boot(page);
-  const target = page.doc.querySelector("video");
-
+  const target = page.doc.querySelector("audio");
   page.dispatchOnDoc("timeupdate", { target });
   assert.equal(handle.messages.length, 1);
-
   page.dispatchOnDoc("play", { target });
   assert.equal(handle.messages.length, 2);
   assert.equal(handle.messages[1].t, "wdr-state");
 });
 
 test("the 1 s poll reports a title or pause change once, then stays quiet", () => {
-  const page = watchPage();
+  const page = musicWatch();
   const handle = boot(page);
   assert.deepEqual(handle.intervalDelays(), [1000]);
-  assert.equal(handle.messages.length, 1);
-
   handle.poll();
   assert.equal(handle.messages.length, 1);
-
-  page.doc.querySelector("h1 yt-formatted-string").textContent = "Second Video";
+  page.doc.querySelector("ytmusic-player-bar .title").textContent = "Second Song";
   handle.poll();
   assert.equal(handle.messages.length, 2);
-  assert.equal(handle.messages[1].state.title, "Second Video");
-
+  assert.equal(handle.messages[1].state.title, "Second Song");
   handle.poll();
   assert.equal(handle.messages.length, 2);
-
-  page.doc.querySelector("video").paused = false;
+  page.doc.querySelector("audio").paused = false;
   handle.poll();
   assert.equal(handle.messages.length, 3);
   assert.equal(handle.messages[2].state.paused, false);
 });
 
 test("same-URL SPA updates report immediately", () => {
-  const page = watchPage();
+  const page = musicWatch();
   const handle = boot(page);
-  page.doc.querySelector("h1 yt-formatted-string").textContent = "Re-rendered";
-
+  page.doc.querySelector("ytmusic-player-bar .title").textContent = "Re-rendered";
   page.dispatchOnDoc("yt-page-data-updated");
   assert.equal(handle.messages.length, 2);
   assert.equal(handle.messages[1].state.title, "Re-rendered");
 });
 
-test("a watch-to-watch SPA navigation reports once the page settles", () => {
-  const page = watchPage();
+test("a Music-to-Music SPA navigation reports once the page settles", () => {
+  const page = musicWatch();
   const handle = boot(page);
-
-  page.setHref(NEXT);
+  page.setHref("https://music.youtube.com/playlist?list=PL1");
   page.dispatchOnDoc("yt-navigate-finish");
-  page.doc.querySelector("h1 yt-formatted-string").textContent = "Next Video";
-
+  page.doc.querySelector("ytmusic-player-bar .title").textContent = "Next Song";
   assert.equal(handle.messages.length, 1);
   assert.equal(handle.pendingTimeouts(), 1);
-
   handle.flush();
   assert.equal(handle.messages.length, 2);
   assert.equal(handle.messages[1].t, "wdr-state");
-  assert.equal(handle.messages[1].state.title, "Next Video");
-  assert.equal(handle.messages[1].state.mediaId, "dQw4w9WgXcQ");
+  assert.equal(handle.messages[1].state.title, "Next Song");
 });
 
-test("navigating to a non-watch page sends one wdr-gone with scope tab", () => {
-  const page = watchPage();
+test("navigating off Music sends one tab-scoped wdr-gone", () => {
+  const page = musicWatch();
   const handle = boot(page);
-
   page.setHref("https://www.youtube.com/");
   page.dispatchOnDoc("yt-navigate-finish");
-  assert.deepEqual(gones(handle), [{ t: "wdr-gone", source: "youtube", scope: "tab" }]);
-
+  assert.deepEqual(gones(handle), [{ t: "wdr-gone", source: "youtube-music", scope: "tab" }]);
   handle.poll();
   assert.equal(gones(handle).length, 1);
   assert.equal(states(handle).length, 1);
 });
 
 test("pagehide sends wdr-gone with scope tab", () => {
-  const page = watchPage();
-  const handle = boot(page);
-
-  page.dispatchOnWindow("pagehide");
-  assert.deepEqual(gones(handle), [{ t: "wdr-gone", source: "youtube", scope: "tab" }]);
+  const handle = boot(musicWatch());
+  handle.page.dispatchOnWindow("pagehide");
+  assert.deepEqual(gones(handle), [{ t: "wdr-gone", source: "youtube-music", scope: "tab" }]);
 });
 
 test("visibilitychange republishes the state with the new visible flag", () => {
-  const page = watchPage();
+  const page = musicWatch();
   const handle = boot(page);
-
   page.setVisibility("hidden");
   page.dispatchOnDoc("visibilitychange");
   assert.equal(handle.messages.length, 2);
@@ -160,45 +116,38 @@ test("visibilitychange republishes the state with the new visible flag", () => {
 });
 
 test("a throwing chrome.runtime.sendMessage never escapes the script", () => {
-  const page = watchPage();
+  const page = musicWatch();
   let handle;
+  assert.doesNotThrow(() => { handle = boot(page, { sendMessage() { throw new Error("no receiver"); } }); });
   assert.doesNotThrow(() => {
-    handle = boot(page, {
-      sendMessage() {
-        throw new Error("no receiver");
-      }
-    });
-  });
-  assert.doesNotThrow(() => {
-    page.dispatchOnDoc("play", { target: page.doc.querySelector("video") });
+    page.dispatchOnDoc("play", { target: page.doc.querySelector("audio") });
     handle.poll();
     page.dispatchOnWindow("pagehide");
   });
 });
 
 test("content without the extractor does nothing and schedules no poll", () => {
-  const page = watchPage();
-  let handle;
-  assert.doesNotThrow(() => {
-    handle = loadContent({ extractSource: "", contentSource, page });
-  });
+  const page = musicWatch();
+  const handle = loadContent({ extractSource: "", contentSource, page });
   assert.deepEqual(handle.messages, []);
   assert.deepEqual(handle.intervalDelays(), []);
 });
 
 test("a subframe no-ops: only the top frame may report", () => {
-  const page = watchPage();
-  let handle;
-  assert.doesNotThrow(() => {
-    handle = boot(page, { top: {} });
-  });
+  const page = musicWatch();
+  const handle = boot(page, { top: {} });
   assert.deepEqual(handle.messages, []);
   assert.deepEqual(handle.intervalDelays(), []);
+  page.dispatchOnDoc("play", { target: page.doc.querySelector("audio") });
+  page.dispatchOnDoc("yt-navigate-finish");
+  page.dispatchOnWindow("pagehide");
+  assert.deepEqual(handle.messages, []);
+});
 
-  assert.doesNotThrow(() => {
-    page.dispatchOnDoc("play", { target: page.doc.querySelector("video") });
-    page.dispatchOnDoc("yt-navigate-finish");
-    page.dispatchOnWindow("pagehide");
-  });
+test("non-Music pages report nothing", () => {
+  const page = makePage({ href: "https://www.youtube.com/", title: "YouTube" });
+  const handle = boot(page);
+  assert.deepEqual(handle.messages, []);
+  handle.poll();
   assert.deepEqual(handle.messages, []);
 });
