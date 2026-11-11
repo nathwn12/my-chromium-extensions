@@ -5,7 +5,10 @@
  * send budget for YouTube Music (LISTENING) published to the installed Discord
  * desktop app over its local socket: a track change goes out at once, an
  * ordinary update at most once per `MIN_GAP_MS`, and nothing above
- * `MAX_UPDATES` per `UPDATE_WINDOW_MS`.
+ * `MAX_UPDATES` per `UPDATE_WINDOW_MS`. A playback rate that is not 1x keeps
+ * the same ceiling but spaces its updates `RATE_INTERVAL_MS` apart, and biases
+ * each anchor by half that interval's drift: Discord counts elapsed time in
+ * wall time and has no field for the rate.
  *
  * The pure helpers are exported so the test suite can import this file
  * without a `chrome` global; `createWorker` takes the API object, so the tests
@@ -41,6 +44,17 @@ export const MAX_UPDATES = 8;
 export const UPDATE_WINDOW_MS = 20000;
 /** At most one ordinary update per this gap; a new track bypasses it. */
 export const MIN_GAP_MS = 1500;
+/**
+ * A playback rate that is not 1x is re-anchored once per this interval, under
+ * the same 8-per-20 s ceiling that already lands today. The content script
+ * still reports every tick — that is cheap and keeps the sample fresh — and the
+ * worker decides the cadence. Discord counts elapsed time in wall time and has
+ * no field for the rate, so each update also biases its anchor by half this
+ * interval's drift (`rateBiasMs`).
+ */
+export const RATE_INTERVAL_MS = 2500;
+/** A rate within this of 1 is 1x; the content script uses the same epsilon. */
+export const RATE_EPSILON = 0.01;
 /** A tab that has not reported for this long is treated as closed. */
 export const TAB_TTL_MS = 30 * 60 * 1000;
 /** A ping with no pong inside this window marks the bridge disconnected. */
@@ -76,6 +90,8 @@ const SENDABLE_BRIDGE_STATES = new Set([
  *
  * `urgent` spends a send ahead of the gap — a new track should not wait 1.5 s —
  * but never past the window ceiling. `force` (reconnect, clear) bypasses both.
+ * `rateScaled` spaces ordinary sends `rateMinGapMs` apart for a non-1x playback;
+ * the ceiling and window are shared, so only the floor changes.
  * `schedule`/`cancel`/`now` are injectable so tests never need real timers.
  */
 export function createCoalescingLimiter({
@@ -83,6 +99,7 @@ export function createCoalescingLimiter({
   max = MAX_UPDATES,
   windowMs = UPDATE_WINDOW_MS,
   minGapMs = MIN_GAP_MS,
+  rateMinGapMs = RATE_INTERVAL_MS,
   now = () => Date.now(),
   schedule = (fn, ms) => setTimeout(fn, ms),
   cancel = (handle) => clearTimeout(handle),
@@ -92,12 +109,29 @@ export function createCoalescingLimiter({
   let pending = null;
   let hasPending = false;
   let timer = null;
+  // The floor in force; a non-1x playback spaces its updates further apart.
+  let floorMs = minGapMs;
 
   /** The instant a deferred payload may go: past the gap, and past the window if it is full. */
   function nextSendAt(at) {
-    const afterGap = lastSentAt + minGapMs;
+    const afterGap = lastSentAt + floorMs;
     if (sentAt.length >= max) return Math.max(afterGap, sentAt[0] + windowMs);
     return afterGap;
+  }
+
+  /**
+   * Adopt the floor the playback rate calls for. A payload already waiting on
+   * the old floor is rescheduled, so a rate change takes effect at once.
+   */
+  function useFloor(rateScaled) {
+    const next = rateScaled ? rateMinGapMs : minGapMs;
+    if (next === floorMs) return;
+    floorMs = next;
+    if (timer !== null && hasPending) {
+      cancel(timer);
+      const at = now();
+      timer = schedule(flush, Math.max(1, nextSendAt(at) - at));
+    }
   }
 
   function emit(payload, at) {
@@ -121,7 +155,7 @@ export function createCoalescingLimiter({
     if (!hasPending) return;
     const at = now();
     sentAt = sentAt.filter((t) => at - t < windowMs);
-    if (sentAt.length >= max || at - lastSentAt < minGapMs) {
+    if (sentAt.length >= max || at - lastSentAt < floorMs) {
       timer = schedule(flush, Math.max(1, nextSendAt(at) - at));
       return;
     }
@@ -129,12 +163,13 @@ export function createCoalescingLimiter({
   }
 
   return {
-    push(payload, { urgent = false, force = false } = {}) {
+    push(payload, { urgent = false, force = false, rateScaled = false } = {}) {
+      useFloor(rateScaled);
       const at = now();
       pending = payload;
       hasPending = true;
       sentAt = sentAt.filter((t) => at - t < windowMs);
-      const gapOpen = at - lastSentAt >= minGapMs;
+      const gapOpen = at - lastSentAt >= floorMs;
       const room = sentAt.length < max;
       // The window is the hard ceiling: only `force` spends past it.
       if (force || (room && (gapOpen || urgent))) {
@@ -211,6 +246,41 @@ export function pickBestTab(entries) {
 }
 
 /**
+ * Whether a tab's playback rate is one Discord cannot represent: a finite rate
+ * more than `RATE_EPSILON` from 1. A missing or junk rate is 1x for this
+ * purpose — it must never change the cadence or the anchor by itself.
+ */
+export function isRateScaled(state) {
+  const rate = state && typeof state === "object" ? state.playbackRate : undefined;
+  if (typeof rate !== "number" || !Number.isFinite(rate)) return false;
+  return Math.abs(rate - 1) > RATE_EPSILON;
+}
+
+/**
+ * The anchor offset for a non-1x sample: half the re-anchor interval's drift,
+ * subtracted — `-(rate - 1) * (RATE_INTERVAL_MS / 2)`, so -625 ms at 1.5x and
+ * +312.5 ms at 0.75x, exactly 0 at 1x. Discord counts elapsed as `now - start`,
+ * so an earlier `start` gives back the drift the interval accumulates: the
+ * error straddles the truth instead of always lagging. Clamped to half the
+ * interval, and a positive bias (a slower rate) never gives up more elapsed
+ * time than the sample has already played: that would stamp a `start` in the
+ * future.
+ */
+export function rateBiasMs(state) {
+  if (!isRateScaled(state)) return 0;
+  const limit = RATE_INTERVAL_MS / 2;
+  const bias = Math.max(-limit, Math.min(limit, (1 - state.playbackRate) * limit));
+  // A timestamp is only emitted with a real position (activity.js), and a
+  // positive bias may never give up more elapsed time than the sample has
+  // already played: that would stamp a `start` in the future.
+  const position = Number(state.position);
+  if (bias > 0 && Number.isFinite(position)) {
+    return Math.min(bias, Math.floor(Math.max(0, position)) * 1000);
+  }
+  return bias;
+}
+
+/**
  * The instant a tab's state was sampled: the content script's own `state.at`
  * when it is a finite number, else the moment the worker received it. This is
  * the anchor handed to `buildActivity`, so a rebuild never moves `start`.
@@ -277,6 +347,9 @@ export function createWorker({
   const tabs = new Map();
   let desired = null;
   let hasDesired = false;
+  // Whether the winning tab plays at a rate Discord cannot represent: its
+  // updates take the 2.5 s cadence and its anchor is biased.
+  let desiredRateScaled = false;
   let lastSent = undefined;
   // The identity of the last payload that actually reached the port: only a
   // send updates it, so a deferred payload is never mistaken for published.
@@ -683,7 +756,7 @@ export function createWorker({
     }
     if (!port && reconnectTimer === null) ensurePort();
     if (!port || !SENDABLE_BRIDGE_STATES.has(bridgeState)) return;
-    limiterFor().push(desired, { urgent, force });
+    limiterFor().push(desired, { urgent, force, rateScaled: desiredRateScaled });
   }
 
   function pruneStale(map, at) {
@@ -701,8 +774,18 @@ export function createWorker({
     // Discord's bar keeps counting instead of snapping forward every tick.
     // The reference is the entry's stored receipt time, not `now()`: a clock
     // read here would move the anchor on every tick for a rejected stamp.
-    desired = best ? buildActivity(best.state, sampleAt(best, best.at)) : null;
+    // A non-1x sample is anchored half an interval ahead of the sample instant,
+    // so the error the wall-clock timer accumulates is split either side of the
+    // truth instead of all of it landing behind. Rate 1 passes the sample
+    // through untouched, byte for byte.
+    const sample = best ? sampleAt(best, best.at) : 0;
+    const bias = best ? rateBiasMs(best.state) : 0;
+    const anchor = sample + bias;
+    desired = best
+      ? buildActivity(bias ? { ...best.state, at: anchor } : best.state, anchor)
+      : null;
     hasDesired = true;
+    desiredRateScaled = Boolean(best) && isRateScaled(best.state);
     persist();
     // A new song, artist line or album is a discrete change and goes out at
     // once; a seek or a pause keeps the identity and takes the paced path.

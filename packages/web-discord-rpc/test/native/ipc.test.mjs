@@ -392,20 +392,22 @@ test("a null clear bypasses the rate window", async (t) => {
   assert.equal(mock.state.frames.at(-1).args.activity, null);
 });
 
-test("the default budget forwards ten activities inside one window", async (t) => {
+test("the default budget forwards forty activities inside one window", async (t) => {
   const mock = await startMockDiscord();
   const client = makeClient(mock.path);
   t.after(() => client.close());
   t.after(() => mock.close());
 
   await client.connect();
-  for (let i = 1; i <= 10; i += 1) {
+  // A non-1x playback makes the worker send once a second; the host guard must
+  // stay above that in either pacing mode.
+  for (let i = 1; i <= 40; i += 1) {
     const result = await client.setActivity({ type: 3, details: `track ${i}` });
     assert.equal(result.ok, true);
     assert.equal(result.queued, undefined, `track ${i} is paced by the worker, not the host`);
   }
 
-  assert.equal(mock.state.frames.length, 10, "the host never binds under the worker's budget");
+  assert.equal(mock.state.frames.length, 40, "the host never binds under the worker's budget");
 
   const cleared = await client.setActivity(null);
   assert.equal(cleared.ok, true);

@@ -39,6 +39,10 @@
   // A live position this far from the anchored one is a seek, a rate change or
   // an event we never saw — not rounding.
   var DRIFT_SECONDS = 2.5;
+  // Discord counts elapsed time in wall time and has no field for the playback
+  // rate, so any non-1x playback falls behind by `rate - 1` every second.
+  // Reporting on every tick re-anchors the card before the gap is visible.
+  var RATE_EPSILON = 0.01;
   // YouTube's player swaps its DOM after the URL changes; read once it settles.
   var SPA_SETTLE_MS = 250;
 
@@ -182,6 +186,24 @@
     return Math.abs(live - expected) > DRIFT_SECONDS;
   }
 
+  /**
+   * A running playback at a rate Discord cannot represent: the card counts
+   * elapsed seconds in wall time, so at 1.5x it falls behind half a second per
+   * second and no RPC field can correct it. Every tick re-anchors it, which is
+   * the only way the timer stays with the track. A paused tab, a position that
+   * has not moved and a junk rate are all silence: they are not a rate gap, and
+   * reporting them would spend the worker's send budget for nothing.
+   */
+  function reanchorDue(state) {
+    var last = lastSample;
+    if (!last || last.paused || state.paused) return false;
+    if (!isFinite(state.position) || !isFinite(last.position)) return false;
+    if (state.position === last.position) return false;
+    var rate = state.playbackRate;
+    if (typeof rate !== "number" || !isFinite(rate)) return false;
+    return Math.abs(rate - 1) > RATE_EPSILON;
+  }
+
   function tick() {
     checkUrl();
     var state = readState();
@@ -193,7 +215,7 @@
       report(state);
       return;
     }
-    if (drifted(state)) report(state);
+    if (drifted(state) || reanchorDue(state)) report(state);
   }
 
   for (var i = 0; i < MEDIA_EVENTS.length; i += 1) {

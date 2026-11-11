@@ -2,6 +2,10 @@
 
 Notable changes to this package. Dates are ISO 8601. This package is local-only and is not published to a registry.
 
+## [1.1.7] - 2026-11-11
+
+- While the playback rate is not 1×, the card re-anchors at most once every 2.5 s and biases its reference by half the interval's drift, so the displayed time crosses the truth instead of lagging behind it; whole-second timestamps put a floor of roughly two seconds on the error at 1.5× (about three at 2×), and it never accumulates.
+
 ## [1.1.6] - 2026-11-11
 
 - A queued update is dropped when the port dies, and the pacing docs no longer promise more than the poll can detect.

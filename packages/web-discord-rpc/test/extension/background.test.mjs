@@ -7,6 +7,7 @@ import {
   BACKOFF_MIN_MS,
   MAX_UPDATES,
   MIN_GAP_MS,
+  RATE_INTERVAL_MS,
   SESSION_TABS_KEY,
   SOURCES,
   TAB_TTL_MS,
@@ -14,6 +15,7 @@ import {
   createCoalescingLimiter,
   createWorker,
   pickBestTab,
+  rateBiasMs,
   sampleAt,
   wire,
 } from "../../background.js";
@@ -450,6 +452,127 @@ test("rapid skips publish at most eight times per 20 s, newest wins", async () =
   assert.equal(flushed.length, MAX_UPDATES + 1, "one deferred send after the window, newest wins");
   assert.equal(flushed.at(-1).activity.details, "Song 10");
   assert.equal(flushed.at(-1).activity.status_display_type, 1);
+});
+
+test("at 1.5x the anchor is biased half an interval earlier", async () => {
+  const { chrome, clock, port } = await boot();
+  connect(port);
+  clock.advance(500);
+  sendState(chrome, 1, musicState({ playbackRate: 1.5, position: 10, duration: 200 }));
+
+  const sample = BASE + 500;
+  assert.equal(rateBiasMs({ playbackRate: 1.5 }), -625, "half of 2500 ms, negated for a faster rate");
+  const frame = activities(port).at(-1);
+  const unbiased = Math.floor(sample / 1000) - 10;
+  const biased = Math.floor((sample - 625) / 1000) - 10;
+  assert.equal(frame.activity.timestamps.start, biased, "the builder sees sample - 625 ms");
+  assert.equal(biased - unbiased, -1, "625 ms earlier crosses one whole second here");
+  assert.equal(frame.activity.timestamps.end, biased + 200);
+});
+
+test("at 1x the anchor carries no bias", async () => {
+  const { chrome, clock, port } = await boot();
+  connect(port);
+  clock.advance(500);
+  sendState(chrome, 1, musicState({ playbackRate: 1, position: 10, duration: 200 }));
+
+  const sample = BASE + 500;
+  assert.equal(rateBiasMs({ playbackRate: 1 }), 0);
+  assert.equal(rateBiasMs({}), 0);
+  assert.equal(rateBiasMs({ playbackRate: null }), 0);
+  assert.equal(
+    activities(port).at(-1).activity.timestamps.start,
+    Math.floor(sample / 1000) - 10,
+    "rate 1 keeps the sample instant exactly"
+  );
+});
+
+test("at 0.75x the anchor is biased later", async () => {
+  const { chrome, clock, port } = await boot();
+  connect(port);
+  clock.advance(800);
+  sendState(chrome, 1, musicState({ playbackRate: 0.75, position: 10, duration: 200 }));
+
+  const sample = BASE + 800;
+  assert.equal(rateBiasMs({ playbackRate: 0.75 }), 312.5, "a slower rate biases forward");
+  const unbiased = Math.floor(sample / 1000) - 10;
+  const biased = Math.floor((sample + 312.5) / 1000) - 10;
+  const frame = activities(port).at(-1);
+  assert.equal(frame.activity.timestamps.start, biased);
+  assert.ok(frame.activity.timestamps.start > unbiased, "a slower rate starts later");
+});
+
+test("at 1.5x a second update one second later waits for the 2500 ms interval", async () => {
+  const { chrome, clock, port } = await boot();
+  connect(port);
+  clock.advance(1000);
+  sendState(chrome, 1, musicState({ playbackRate: 1.5, position: 10 }));
+  assert.equal(activities(port).length, 1);
+
+  clock.advance(1000);
+  // A distinct payload: the whole-second `start` must differ for the limiter
+  // to see a second update at all.
+  sendState(chrome, 1, musicState({ playbackRate: 1.5, position: 12.4 }));
+  assert.equal(activities(port).length, 1, "the 2.5 s interval holds");
+
+  clock.advance(1499);
+  assert.equal(activities(port).length, 1, "one millisecond early");
+  clock.advance(1);
+  assert.equal(activities(port).length, 2, "published at 2500 ms");
+});
+
+test("a rate-scaled stream still spends only eight updates per 20 s", () => {
+  const clock = fakeClock();
+  const { limiter, sent } = makeLimiter(clock);
+
+  for (let i = 1; i <= MAX_UPDATES; i += 1) {
+    limiter.push({ details: `send ${i}` }, { rateScaled: true });
+    if (i < MAX_UPDATES) clock.advance(RATE_INTERVAL_MS);
+  }
+  assert.equal(sent.length, MAX_UPDATES, "2.5 s apart fills the window exactly");
+
+  limiter.push({ details: "ninth" }, { rateScaled: true });
+  assert.equal(sent.length, MAX_UPDATES, "a ninth inside the window is deferred");
+
+  clock.advance(RATE_INTERVAL_MS - 1);
+  assert.equal(sent.length, MAX_UPDATES, "the window is still full");
+  clock.advance(1);
+  assert.equal(sent.length, MAX_UPDATES + 1);
+  assert.equal(sent.at(-1).details, "ninth");
+});
+
+test("at 1x the ninth update inside twenty seconds is still deferred", async () => {
+  const { chrome, clock, port } = await boot();
+  connect(port);
+  for (let tick = 1; tick <= 9; tick += 1) {
+    clock.advance(2000);
+    // Distinct payloads, same identity: an ordinary update, never urgent.
+    sendState(chrome, 1, musicState({ playbackRate: 1, position: 1 + 3 * tick }));
+  }
+  assert.equal(activities(port).length, MAX_UPDATES, "the default budget is unchanged at 1x");
+});
+
+test("a track change at 1.5x still publishes at once", async () => {
+  const { chrome, clock, port } = await boot();
+  connect(port);
+  clock.advance(500);
+  sendState(chrome, 1, musicState({ playbackRate: 1.5, position: 10 }));
+  assert.equal(activities(port).length, 1);
+
+  clock.advance(200);
+  sendState(
+    chrome,
+    1,
+    musicState({ playbackRate: 1.5, title: "Next Song", mediaId: "song456", position: 10.3 })
+  );
+  const frames = activities(port);
+  assert.equal(frames.length, 2, "a new identity is urgent, inside the interval");
+  assert.equal(frames.at(-1).activity.details, "Next Song");
+  assert.equal(
+    frames.at(-1).activity.timestamps.start,
+    Math.floor((BASE + 700 - 625) / 1000) - 10,
+    "the urgent send carries the same bias"
+  );
 });
 
 test("a new track 200 ms after the last publish goes out at once", async () => {

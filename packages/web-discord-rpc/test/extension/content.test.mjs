@@ -118,7 +118,7 @@ test("steady playback drifts by rounding only, so the poll stays quiet", () => {
   assert.equal(handle.messages.length, 1);
 });
 
-test("at 1.5x the poll predicts 1.5 s per second and stays quiet", () => {
+test("at 1.5x every poll tick re-anchors the card", () => {
   const page = musicWatch("First Song", {
     duration: 300,
     currentTime: 10,
@@ -128,10 +128,48 @@ test("at 1.5x the poll predicts 1.5 s per second and stays quiet", () => {
   const clock = fakeClock();
   const handle = bootWithClock(page, clock);
   assert.equal(states(handle).length, 1);
-  clock.advance(6000);
-  page.doc.querySelector("audio").currentTime = 19;
+
+  // Discord counts elapsed time in wall time, so a steady 1.5x playback falls
+  // behind half a second per second: every tick has to re-stamp the card.
+  for (let tick = 1; tick <= 3; tick += 1) {
+    clock.advance(1000);
+    page.doc.querySelector("audio").currentTime = 10 + 1.5 * tick;
+    handle.poll();
+    assert.equal(states(handle).length, tick + 1, `tick ${tick} reports`);
+    assert.equal(states(handle).at(-1).state.position, 10 + 1.5 * tick);
+  }
+});
+
+test("a paused 1.5x state never forces a tick report", () => {
+  const page = musicWatch("First Song", {
+    duration: 300,
+    currentTime: 10,
+    paused: true,
+    playbackRate: 1.5
+  });
+  const clock = fakeClock();
+  const handle = bootWithClock(page, clock);
+  assert.equal(states(handle).length, 1);
+  clock.advance(1000);
+  page.doc.querySelector("audio").currentTime = 11.5;
   handle.poll();
-  assert.equal(handle.messages.length, 1, "a steady 1.5x playback is not a seek");
+  assert.equal(states(handle).length, 1, "a paused tab is not drift");
+});
+
+test("a non-finite playback rate never forces a tick report", () => {
+  const page = musicWatch("First Song", {
+    duration: 300,
+    currentTime: 10,
+    paused: false,
+    playbackRate: Number.NaN
+  });
+  const clock = fakeClock();
+  const handle = bootWithClock(page, clock);
+  assert.equal(states(handle).length, 1);
+  clock.advance(1000);
+  page.doc.querySelector("audio").currentTime = 11;
+  handle.poll();
+  assert.equal(states(handle).length, 1, "a junk rate is no reason to send");
 });
 
 test("a frozen position while time passes (buffering) never drift-reports", () => {
