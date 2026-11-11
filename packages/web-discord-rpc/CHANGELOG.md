@@ -2,6 +2,11 @@
 
 Notable changes to this package. Dates are ISO 8601. This package is local-only and is not published to a registry.
 
+## [1.1.5] - 2026-11-11
+
+- A queued update is dropped when the desired card returns to the one already published, so stale data can never overwrite what Discord is showing.
+- The drift check respects the reported playback rate and stays quiet while buffering, so playback that has not actually moved no longer churns the card.
+
 ## [1.1.4] - 2026-11-11
 
 - Presence updates land within 1.5 s and a track change publishes immediately, replacing the old four-per-20-second budget that could delay a song switch by up to twenty seconds.

@@ -1,6 +1,6 @@
 {
   "name": "web-discord-rpc",
-  "version": "1.1.4",
+  "version": "1.1.5",
   "private": true,
   "type": "module",
   "description": "Local-only MV3 extension + native host that publishes YouTube Music activity to the installed Discord desktop app over IPC.",

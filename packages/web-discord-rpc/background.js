@@ -143,6 +143,20 @@ export function createCoalescingLimiter({
       }
       if (timer === null) timer = schedule(flush, Math.max(1, nextSendAt(at) - at));
     },
+    /**
+     * Drop the deferred payload and its timer, leaving the send history
+     * untouched: when the desired state returns to what is already published,
+     * anything still queued is stale by definition, and the pacing window must
+     * not move because of a payload that was never sent.
+     */
+    cancelPending() {
+      pending = null;
+      hasPending = false;
+      if (timer !== null) {
+        cancel(timer);
+        timer = null;
+      }
+    },
     /** Drop the budget history and the deferred payload: a reconnect replays desired state. */
     reset() {
       sentAt = [];
@@ -658,7 +672,12 @@ export function createWorker({
   function push(force = false, urgent = false) {
     if (!hasDesired) return;
     const json = JSON.stringify(desired);
-    if (!force && lastSent === json) return;
+    if (!force && lastSent === json) {
+      // The desired state is the one already published, so a payload the
+      // limiter still holds would republish a state that is no longer true.
+      if (limiter) limiter.cancelPending();
+      return;
+    }
     if (!port && reconnectTimer === null) ensurePort();
     if (!port || !SENDABLE_BRIDGE_STATES.has(bridgeState)) return;
     limiterFor().push(desired, { urgent, force });
