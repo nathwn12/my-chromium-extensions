@@ -2,8 +2,10 @@
  * web-discord-rpc — MV3 service worker (module).
  *
  * Music-only, desktop-IPC-only. One tab map, one desired activity and one
- * 4-per-20 s send budget for YouTube Music (LISTENING) published to the
- * installed Discord desktop app over its local socket.
+ * send budget for YouTube Music (LISTENING) published to the installed Discord
+ * desktop app over its local socket: a track change goes out at once, an
+ * ordinary update at most once per `MIN_GAP_MS`, and nothing above
+ * `MAX_UPDATES` per `UPDATE_WINDOW_MS`.
  *
  * The pure helpers are exported so the test suite can import this file
  * without a `chrome` global; `createWorker` takes the API object, so the tests
@@ -35,8 +37,10 @@ import {
 export const SOURCE = SOURCE_YOUTUBE_MUSIC;
 export const SOURCES = Object.freeze([SOURCE_YOUTUBE_MUSIC]);
 
-export const MAX_UPDATES = 4;
+export const MAX_UPDATES = 8;
 export const UPDATE_WINDOW_MS = 20000;
+/** At most one ordinary update per this gap; a new track bypasses it. */
+export const MIN_GAP_MS = 1500;
 /** A tab that has not reported for this long is treated as closed. */
 export const TAB_TTL_MS = 30 * 60 * 1000;
 /** A ping with no pong inside this window marks the bridge disconnected. */
@@ -66,37 +70,45 @@ const SENDABLE_BRIDGE_STATES = new Set([
 /* ================================================================ pure ==== */
 
 /**
- * Rolling-window limiter: at most `max` sends per `windowMs`, newest wins.
- * A pending payload replaces the one before it, so a burst of reports costs
- * one deferred send instead of one per report. `schedule`/`cancel`/`now` are
- * injectable so tests never need real timers.
+ * Paced limiter: at most one ordinary send per `minGapMs`, at most `max` per
+ * `windowMs`, newest wins. A pending payload replaces the one before it, so a
+ * burst of reports costs one deferred send instead of one per report.
+ *
+ * `urgent` spends a send ahead of the gap — a new track should not wait 1.5 s —
+ * but never past the window ceiling. `force` (reconnect, clear) bypasses both.
+ * `schedule`/`cancel`/`now` are injectable so tests never need real timers.
  */
 export function createCoalescingLimiter({
   send,
   max = MAX_UPDATES,
   windowMs = UPDATE_WINDOW_MS,
+  minGapMs = MIN_GAP_MS,
   now = () => Date.now(),
   schedule = (fn, ms) => setTimeout(fn, ms),
   cancel = (handle) => clearTimeout(handle),
 }) {
   let sentAt = [];
+  let lastSentAt = -Infinity;
   let pending = null;
   let hasPending = false;
   let timer = null;
 
-  function flush() {
-    timer = null;
-    if (!hasPending) return;
-    const at = now();
-    sentAt = sentAt.filter((t) => at - t < windowMs);
-    if (sentAt.length >= max) {
-      timer = schedule(flush, Math.max(1, windowMs - (at - sentAt[0]) + 1));
-      return;
+  /** The instant a deferred payload may go: past the gap, and past the window if it is full. */
+  function nextSendAt(at) {
+    const afterGap = lastSentAt + minGapMs;
+    if (sentAt.length >= max) return Math.max(afterGap, sentAt[0] + windowMs);
+    return afterGap;
+  }
+
+  function emit(payload, at) {
+    if (timer !== null) {
+      cancel(timer);
+      timer = null;
     }
-    const payload = pending;
     pending = null;
     hasPending = false;
     sentAt.push(at);
+    lastSentAt = at;
     try {
       send(payload);
     } catch {
@@ -104,15 +116,37 @@ export function createCoalescingLimiter({
     }
   }
 
+  function flush() {
+    timer = null;
+    if (!hasPending) return;
+    const at = now();
+    sentAt = sentAt.filter((t) => at - t < windowMs);
+    if (sentAt.length >= max || at - lastSentAt < minGapMs) {
+      timer = schedule(flush, Math.max(1, nextSendAt(at) - at));
+      return;
+    }
+    emit(pending, at);
+  }
+
   return {
-    push(payload) {
+    push(payload, { urgent = false, force = false } = {}) {
+      const at = now();
       pending = payload;
       hasPending = true;
-      if (!timer) flush();
+      sentAt = sentAt.filter((t) => at - t < windowMs);
+      const gapOpen = at - lastSentAt >= minGapMs;
+      const room = sentAt.length < max;
+      // The window is the hard ceiling: only `force` spends past it.
+      if (force || (room && (gapOpen || urgent))) {
+        emit(payload, at);
+        return;
+      }
+      if (timer === null) timer = schedule(flush, Math.max(1, nextSendAt(at) - at));
     },
     /** Drop the budget history and the deferred payload: a reconnect replays desired state. */
     reset() {
       sentAt = [];
+      lastSentAt = -Infinity;
       pending = null;
       hasPending = false;
       if (timer !== null) {
@@ -127,6 +161,20 @@ export function createCoalescingLimiter({
       return hasPending;
     },
   };
+}
+
+/**
+ * The lines that name one track — `details`, `state` and the cover tooltip —
+ * as one comparable string. A change here is a new song, artist line or album:
+ * the only updates worth spending a send on ahead of the pacing gap. Position,
+ * pause and timestamps are deliberately absent, so a seek or a pause stays an
+ * ordinary update.
+ */
+function activityIdentity(activity) {
+  const line = (value) => (typeof value === "string" && value ? value : null);
+  if (!activity || typeof activity !== "object") return JSON.stringify([null, null, null]);
+  const assets = activity.assets && typeof activity.assets === "object" ? activity.assets : {};
+  return JSON.stringify([line(activity.details), line(activity.state), line(assets.large_text)]);
 }
 
 /**
@@ -216,6 +264,9 @@ export function createWorker({
   let desired = null;
   let hasDesired = false;
   let lastSent = undefined;
+  // The identity of the last payload that actually reached the port: only a
+  // send updates it, so a deferred payload is never mistaken for published.
+  let publishedIdentity = null;
   let limiter = null;
 
   let sequence = 0;
@@ -578,6 +629,7 @@ export function createWorker({
     const id = `${SOURCE_YOUTUBE_MUSIC}:${++sequence}`;
     if (post({ t: "activity", source: SOURCE_YOUTUBE_MUSIC, id, activity })) {
       lastSent = JSON.stringify(activity);
+      publishedIdentity = activityIdentity(activity);
     }
   }
 
@@ -599,14 +651,17 @@ export function createWorker({
    * reconnect replays it. A bridge that is still connecting or waiting for
    * Discord is a live port and takes the payload: the host needs the activity
    * to connect at all, and it keeps the last one for its own retry.
+   *
+   * `urgent` is decided by identity in `recompute`, never by the caller: a new
+   * track spends a send ahead of the pacing gap, a seek does not.
    */
-  function push(force = false) {
+  function push(force = false, urgent = false) {
     if (!hasDesired) return;
     const json = JSON.stringify(desired);
     if (!force && lastSent === json) return;
     if (!port && reconnectTimer === null) ensurePort();
     if (!port || !SENDABLE_BRIDGE_STATES.has(bridgeState)) return;
-    limiterFor().push(desired);
+    limiterFor().push(desired, { urgent, force });
   }
 
   function pruneStale(map, at) {
@@ -627,7 +682,9 @@ export function createWorker({
     desired = best ? buildActivity(best.state, sampleAt(best, best.at)) : null;
     hasDesired = true;
     persist();
-    push(false);
+    // A new song, artist line or album is a discrete change and goes out at
+    // once; a seek or a pause keeps the identity and takes the paced path.
+    push(false, activityIdentity(desired) !== publishedIdentity);
   }
 
   /** Publish an explicit clear for Music the last session left published. */
