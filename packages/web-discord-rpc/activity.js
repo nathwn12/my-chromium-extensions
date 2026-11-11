@@ -26,15 +26,24 @@
  * duration; `now` goes in as milliseconds.
  *
  * The anchor is a property of the SAMPLE, never of the send. `now` is the
- * instant the position was sampled, and a finite `state.at` (the content
- * script's own stamp) is that instant whenever it is not more than 5 seconds
- * ahead of `now`; otherwise — no stamp, a junk stamp, or a stamp far in the
- * future — the passed `now` is used. Discord renders elapsed time as
- * `clientNow - start`, so anchoring to the send instead would push `start`
- * later by exactly the staleness: the bar would lose the time since the last
- * sample on every rebuild and snap back on the next media event. Anchoring to
- * the sample makes the payload for one sample byte-identical whenever it is
- * rebuilt, which is what lets the worker skip the resend.
+ * sample reference: the instant the position was sampled, always a stored
+ * value on the caller's side — never a clock read taken at build time. A
+ * finite `state.at` (the content script's own stamp) is used whenever it is
+ * not more than 5 seconds ahead of that reference; otherwise — no stamp, a
+ * junk stamp, or a stamp far in the future — the passed `now` is used.
+ * Discord renders elapsed time as `clientNow - start`, so anchoring to the
+ * send instead would push `start` later by exactly the staleness: the bar
+ * would lose the time since the last sample on every rebuild and snap back on
+ * the next media event. Anchoring to the sample makes the payload for one
+ * sample byte-identical whenever it is rebuilt, which is what lets the worker
+ * skip the resend.
+ *
+ * This function cannot enforce that contract: a caller that passes `Date.now()`
+ * as `now` makes the "not more than 5 s ahead" guard relative to the rebuild
+ * clock, so a rejected stamp falls back to a limit that moves every tick. The
+ * worker therefore passes an instant it has stored (see `sampleAt` in
+ * background.js); there is deliberately no second clock in here to paper over
+ * a caller who does not.
  *
  * `status_display_type: 1` (State) asks the member list to show the artist
  * from `state` instead of the app name. UNVERIFIED: actual Discord member-list
@@ -127,10 +136,13 @@ export function pickLinkUrl(raw) {
  * Timestamps follow the contract exactly: `start = floor(anchor/1000) -
  * floor(clamp(position))`, `end = start + floor(duration)`, position clamped
  * to `[0, duration]`, and no timestamps at all unless the tab is playing with
- * a positive duration and a real position. `now` is milliseconds and means
- * "the instant the position was sampled"; the anchor is `state.at` when that
- * is a finite stamp no more than 5 s ahead of `now`, else `now` itself — so a
- * state sampled at T stamps the same `start` however late it is rebuilt.
+ * a positive duration and a real position. `now` is milliseconds and is the
+ * sample reference: the instant the position was sampled, a stored value, not
+ * a clock read taken here. The anchor is `state.at` when that is a finite
+ * stamp no more than 5 s ahead of `now`, else `now` itself — so a state
+ * sampled at T stamps the same `start` however late it is rebuilt. Passing a
+ * fresh clock as `now` breaks that guarantee (a rejected stamp then falls
+ * back to a moving limit); the builder does not second-guess the caller.
  * Whole seconds leave on the wire.
  *
  * Accepts the legacy `(source, state, now)` call shape: when the first

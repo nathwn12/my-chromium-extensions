@@ -452,6 +452,11 @@ test("a sample stamp up to 5 s ahead is trusted, further ahead is ignored for no
 
   const skewed = buildActivity(musicState({ position: 5, at: SAMPLE_AT + 60_000 }), SAMPLE_AT);
   assert.equal(skewed.timestamps.start, Math.floor(SAMPLE_AT / 1000) - 5);
+  assert.equal(
+    JSON.stringify(skewed),
+    JSON.stringify(buildActivity(musicState({ position: 5 }), SAMPLE_AT)),
+    "a future stamp is not a different payload from no stamp at all"
+  );
 });
 
 test("clampText collapses whitespace, rejects short text and caps length", () => {

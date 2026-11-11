@@ -156,6 +156,13 @@ export function pickBestTab(entries) {
  * A stamp more than `SAMPLE_SKEW_MS` ahead of `fallback` is junk, not a
  * sample: returning it would hand `buildActivity` a future `now`, and Discord
  * would render a bar that starts in the future. That case takes `fallback`.
+ *
+ * `fallback` MUST be a stored instant (the entry's receipt time), never a
+ * clock read at call time. With `now()` as the fallback, a rejected stamp
+ * would return a value that changes on every rebuild: the anchor would drift
+ * forward tick by tick and then jump the moment the stamp became acceptable,
+ * which is the very stutter this function exists to prevent. A stored instant
+ * makes every rebuild of one sample return the same number.
  */
 export function sampleAt(entry, fallback = 0) {
   if (!entry || typeof entry !== "object") return fallback;
@@ -615,7 +622,9 @@ export function createWorker({
     // Anchor to when the state was sampled, never to this rebuild: the same
     // sample must produce the same payload, so `push` skips the resend and
     // Discord's bar keeps counting instead of snapping forward every tick.
-    desired = best ? buildActivity(best.state, sampleAt(best, now())) : null;
+    // The reference is the entry's stored receipt time, not `now()`: a clock
+    // read here would move the anchor on every tick for a rejected stamp.
+    desired = best ? buildActivity(best.state, sampleAt(best, best.at)) : null;
     hasDesired = true;
     persist();
     push(false);
