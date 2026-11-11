@@ -1,10 +1,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { STATUS_DISPLAY_STATE, buildActivity, clampText } from "../../activity.js";
+import {
+  STATUS_DISPLAY_STATE,
+  buildActivity,
+  clampText,
+  pickLinkUrl,
+} from "../../activity.js";
 
 const NOW = 1_700_000_000_123;
-const SECOND = 1000;
+const NOW_SECONDS = Math.floor(NOW / 1000);
 
 function musicState(overrides = {}) {
   return {
@@ -13,6 +18,9 @@ function musicState(overrides = {}) {
     album: "An Album",
     artworkUrl: "https://lh3.googleusercontent.com/cover",
     pageUrl: "https://music.youtube.com/watch?v=song123",
+    trackUrl: "https://music.youtube.com/watch?v=song123",
+    artistUrl: "https://music.youtube.com/channel/UCartist",
+    albumUrl: "https://music.youtube.com/browse/MPREb_album",
     mediaId: "song123",
     duration: 200,
     position: 5,
@@ -29,18 +37,41 @@ test("a YouTube Music track becomes a LISTENING card under the YouTube Music hea
     name: "YouTube Music",
     type: 2,
     details: "A Song",
+    details_url: "https://music.youtube.com/watch?v=song123",
     state: "An Artist",
+    state_url: "https://music.youtube.com/channel/UCartist",
     status_display_type: 1,
     assets: {
       large_image: "https://lh3.googleusercontent.com/cover",
       large_text: "An Album",
+      large_url: "https://music.youtube.com/browse/MPREb_album",
     },
-    buttons: [{ label: "Listen on YouTube Music", url: "https://music.youtube.com/watch?v=song123" }],
+    buttons: [
+      { label: "Listen on YouTube Music", url: "https://music.youtube.com/watch?v=song123" },
+      { label: "View album", url: "https://music.youtube.com/browse/MPREb_album" },
+    ],
     timestamps: {
-      start: 1_700_000_000_000 - 5 * SECOND,
-      end: 1_700_000_000_000 - 5 * SECOND + 200 * SECOND,
+      start: NOW_SECONDS - 5,
+      end: NOW_SECONDS - 5 + 200,
     },
   });
+});
+
+test("the payload keys keep the documented order", () => {
+  const activity = buildActivity("youtube-music", musicState(), NOW);
+  assert.deepEqual(Object.keys(activity), [
+    "name",
+    "type",
+    "details",
+    "details_url",
+    "state",
+    "state_url",
+    "status_display_type",
+    "assets",
+    "buttons",
+    "timestamps",
+  ]);
+  assert.deepEqual(Object.keys(activity.assets), ["large_image", "large_text", "large_url"]);
 });
 
 test("the member-list line shows the artist: state is the artist and status_display_type is 1", () => {
@@ -71,7 +102,7 @@ test("the screenshot shape holds: header is static, second line is the artist, n
 });
 
 test("the artist stays the visible line and the album is tooltip-only", () => {
-  const withArtist = buildActivity("youtube-music", musicState({ album: null }), NOW);
+  const withArtist = buildActivity("youtube-music", musicState({ album: null, albumUrl: null }), NOW);
   assert.equal(withArtist.name, "YouTube Music");
   assert.equal(withArtist.state, "An Artist");
   assert.equal(withArtist.status_display_type, 1);
@@ -84,10 +115,134 @@ test("the artist stays the visible line and the album is tooltip-only", () => {
 });
 
 test("without an artist the Music card falls back to the album, then the source label", () => {
-  const albumOnly = buildActivity("youtube-music", musicState({ channel: null }), NOW);
+  const albumOnly = buildActivity("youtube-music", musicState({ channel: null, artistUrl: null }), NOW);
   assert.equal(albumOnly.name, "YouTube Music");
   assert.equal(albumOnly.state, "An Album");
   assert.equal(albumOnly.status_display_type, 1);
+});
+
+test("an album-fallback state line opens the album, never a borrowed artist link", () => {
+  const albumOnly = buildActivity("youtube-music", musicState({ channel: null, artistUrl: null }), NOW);
+  assert.equal(albumOnly.state, "An Album");
+  assert.equal(albumOnly.state_url, "https://music.youtube.com/browse/MPREb_album");
+
+  // An artist URL must not be borrowed when the line is the album.
+  const withStrayArtist = buildActivity(
+    "youtube-music",
+    musicState({ channel: null, artistUrl: "https://music.youtube.com/channel/UCother" }),
+    NOW
+  );
+  assert.equal(withStrayArtist.state, "An Album");
+  assert.equal(withStrayArtist.state_url, "https://music.youtube.com/browse/MPREb_album");
+
+  // No album link: the album line carries no link at all.
+  const albumTextOnly = buildActivity(
+    "youtube-music",
+    musicState({ channel: null, albumUrl: null }),
+    NOW
+  );
+  assert.equal(albumTextOnly.state, "An Album");
+  assert.equal("state_url" in albumTextOnly, false);
+});
+
+test("a label state line carries no state_url", () => {
+  const activity = buildActivity(
+    "youtube-music",
+    musicState({ title: "An Artist", channel: "An Artist", album: null, albumUrl: null }),
+    NOW
+  );
+  assert.equal(activity.state, "YouTube Music");
+  assert.equal("state_url" in activity, false);
+  assert.equal(activity.assets.large_url, "https://music.youtube.com/channel/UCartist");
+});
+
+test("a track with no album links the artist from the state line, the art and button 2", () => {
+  const activity = buildActivity(
+    "youtube-music",
+    musicState({ album: null, albumUrl: null }),
+    NOW
+  );
+  assert.equal(activity.state, "An Artist");
+  assert.equal(activity.state_url, "https://music.youtube.com/channel/UCartist");
+  assert.equal(activity.assets.large_url, "https://music.youtube.com/channel/UCartist");
+  assert.deepEqual(activity.buttons, [
+    { label: "Listen on YouTube Music", url: "https://music.youtube.com/watch?v=song123" },
+    { label: "View artist", url: "https://music.youtube.com/channel/UCartist" },
+  ]);
+});
+
+test("no links: the three url fields are absent and one button remains", () => {
+  const activity = buildActivity(
+    "youtube-music",
+    musicState({ trackUrl: null, artistUrl: null, albumUrl: null }),
+    NOW
+  );
+  assert.equal("details_url" in activity, false);
+  assert.equal("state_url" in activity, false);
+  assert.equal("large_url" in activity.assets, false);
+  assert.deepEqual(Object.keys(activity.assets), ["large_image", "large_text"]);
+  assert.deepEqual(activity.buttons, [
+    { label: "Listen on YouTube Music", url: "https://music.youtube.com/watch?v=song123" },
+  ]);
+});
+
+test("a track URL over the 256-character link cap is omitted", () => {
+  const long = `https://music.youtube.com/watch?v=${"a".repeat(300)}`;
+  const activity = buildActivity("youtube-music", musicState({ trackUrl: long }), NOW);
+  assert.equal("details_url" in activity, false);
+  // Button 1 falls back to the page URL, which is still a usable track link.
+  assert.equal(activity.buttons[0].url, "https://music.youtube.com/watch?v=song123");
+});
+
+test("a link that leaves the Music host is omitted, never emitted bare", () => {
+  const offHost = buildActivity(
+    "youtube-music",
+    musicState({ artistUrl: "https://www.youtube.com/channel/UCx" }),
+    NOW
+  );
+  assert.equal("state_url" in offHost, false);
+  assert.equal(offHost.assets.large_url, "https://music.youtube.com/browse/MPREb_album");
+  assert.deepEqual(offHost.buttons, [
+    { label: "Listen on YouTube Music", url: "https://music.youtube.com/watch?v=song123" },
+    { label: "View album", url: "https://music.youtube.com/browse/MPREb_album" },
+  ]);
+
+  const insecure = buildActivity(
+    "youtube-music",
+    musicState({ trackUrl: "http://music.youtube.com/watch?v=song123" }),
+    NOW
+  );
+  assert.equal("details_url" in insecure, false);
+
+  const junk = buildActivity(
+    "youtube-music",
+    musicState({ trackUrl: "not a url", albumUrl: "/browse/MPREb_album" }),
+    NOW
+  );
+  assert.equal("details_url" in junk, false);
+  assert.equal(junk.assets.large_url, "https://music.youtube.com/channel/UCartist");
+});
+
+test("pickLinkUrl validates host, scheme and the 256-character cap", () => {
+  const base = "https://music.youtube.com/watch?v=";
+  assert.equal(pickLinkUrl(`${base}song123`), `${base}song123`);
+  assert.equal(pickLinkUrl(base), base);
+
+  const atCap = `${base}${"a".repeat(256 - base.length)}`;
+  assert.equal(atCap.length, 256);
+  assert.equal(pickLinkUrl(atCap), atCap);
+
+  const overCap = `${base}${"a".repeat(257 - base.length)}`;
+  assert.equal(overCap.length, 257);
+  assert.equal(pickLinkUrl(overCap), null);
+
+  assert.equal(pickLinkUrl("http://music.youtube.com/watch?v=1"), null);
+  assert.equal(pickLinkUrl("https://www.youtube.com/watch?v=1"), null);
+  assert.equal(pickLinkUrl("https://evil.example/watch?v=1"), null);
+  assert.equal(pickLinkUrl("/watch?v=1"), null);
+  assert.equal(pickLinkUrl(""), null);
+  assert.equal(pickLinkUrl(null), null);
+  assert.equal(pickLinkUrl(undefined), null);
 });
 
 test("no title or no state means no activity; legacy YouTube reports are refused", () => {
@@ -99,9 +254,16 @@ test("no title or no state means no activity; legacy YouTube reports are refused
   assert.equal(buildActivity("youtube-music", null, NOW), null);
 });
 
-test("details cap at 128 characters", () => {
+test("details and state cap at 128 characters", () => {
   const activity = buildActivity("youtube-music", musicState({ title: "a".repeat(200) }), NOW);
   assert.equal(activity.details.length, 128);
+
+  const longArtist = buildActivity(
+    "youtube-music",
+    musicState({ channel: "b".repeat(200) }),
+    NOW
+  );
+  assert.equal(longArtist.state.length, 128);
 });
 
 test("assets are omitted without an https artwork URL", () => {
@@ -119,17 +281,47 @@ test("buttons are omitted unless the page URL is https on the Music host", () =>
     "https://music.youtube.com/watch?v=1",
   ]) {
     const last = pageUrl === "https://music.youtube.com/watch?v=1";
-    const activity = buildActivity("youtube-music", musicState({ pageUrl }), NOW);
+    const activity = buildActivity(
+      "youtube-music",
+      musicState({ pageUrl, trackUrl: null, artistUrl: null, albumUrl: null }),
+      NOW
+    );
     assert.equal("buttons" in activity, last, `expected ${last ? "buttons" : "no buttons"} for ${pageUrl}`);
     if (last) assert.equal(activity.status_display_type, 1);
   }
 
   const long = buildActivity(
     "youtube-music",
-    musicState({ pageUrl: `https://music.youtube.com/watch?v=${"a".repeat(500)}` }),
+    musicState({
+      pageUrl: `https://music.youtube.com/watch?v=${"a".repeat(500)}`,
+      trackUrl: null,
+      artistUrl: null,
+      albumUrl: null,
+    }),
     NOW
   );
   assert.equal("buttons" in long, false);
+});
+
+test("an album link still gets a button when the page URL is not usable", () => {
+  const activity = buildActivity(
+    "youtube-music",
+    musicState({ trackUrl: null, artistUrl: null, pageUrl: "https://evil.example/watch?v=1" }),
+    NOW
+  );
+  assert.deepEqual(activity.buttons, [
+    { label: "View album", url: "https://music.youtube.com/browse/MPREb_album" },
+  ]);
+});
+
+test("at most two buttons: album wins over artist for button 2", () => {
+  const activity = buildActivity("youtube-music", musicState(), NOW);
+  assert.equal(activity.buttons.length, 2);
+  assert.equal(activity.buttons[1].label, "View album");
+
+  const artistOnly = buildActivity("youtube-music", musicState({ albumUrl: null }), NOW);
+  assert.equal(artistOnly.buttons.length, 2);
+  assert.equal(artistOnly.buttons[1].label, "View artist");
 });
 
 test("timestamps need playing, a duration and a real position", () => {
@@ -140,15 +332,24 @@ test("timestamps need playing, a duration and a real position", () => {
   assert.equal("timestamps" in buildActivity("youtube-music", musicState({ position: null }), NOW), false);
 });
 
+test("timestamps are integer seconds, never milliseconds", () => {
+  const activity = buildActivity("youtube-music", musicState(), NOW);
+  assert.equal(activity.timestamps.start, 1_700_000_000 - 5);
+  assert.equal(activity.timestamps.end, 1_700_000_000 - 5 + 200);
+  assert.ok(Number.isInteger(activity.timestamps.start));
+  assert.ok(Number.isInteger(activity.timestamps.end));
+  assert.deepEqual(Object.keys(activity.timestamps), ["start", "end"]);
+});
+
 test("timestamps clamp the position into the duration", () => {
   const past = buildActivity("youtube-music", musicState({ position: 700 }), NOW);
-  assert.equal(past.timestamps.start, 1_700_000_000_000 - 200 * SECOND);
-  assert.equal(past.timestamps.end, 1_700_000_000_000);
+  assert.equal(past.timestamps.start, 1_700_000_000 - 200);
+  assert.equal(past.timestamps.end, 1_700_000_000);
   assert.equal(past.status_display_type, 1);
 
   const negative = buildActivity("youtube-music", musicState({ position: -5 }), NOW);
-  assert.equal(negative.timestamps.start, 1_700_000_000_000);
-  assert.equal(negative.timestamps.end, 1_700_000_000_000 + 200 * SECOND);
+  assert.equal(negative.timestamps.start, 1_700_000_000);
+  assert.equal(negative.timestamps.end, 1_700_000_000 + 200);
 });
 
 test("elapsed/end come from the real media clock: audio-backed playback still stamps time", () => {
@@ -160,8 +361,8 @@ test("elapsed/end come from the real media clock: audio-backed playback still st
     NOW
   );
   assert.ok("timestamps" in activity, "playing audio with a duration must stamp time");
-  assert.equal(activity.timestamps.start, 1_700_000_000_000 - 42 * SECOND);
-  assert.equal(activity.timestamps.end, 1_700_000_000_000 - 42 * SECOND + 184 * SECOND);
+  assert.equal(activity.timestamps.start, 1_700_000_000 - 42);
+  assert.equal(activity.timestamps.end, 1_700_000_000 - 42 + 184);
   assert.ok(activity.timestamps.end > activity.timestamps.start);
 });
 
