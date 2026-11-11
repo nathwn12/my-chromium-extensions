@@ -94,6 +94,8 @@ test("a Music watch page yields the whole state", () => {
 
   assert.deepEqual(Object.keys(state).sort(), [
     "album",
+    "albumUrl",
+    "artistUrl",
     "artworkUrl",
     "channel",
     "duration",
@@ -103,6 +105,7 @@ test("a Music watch page yields the whole state", () => {
     "playbackRate",
     "position",
     "title",
+    "trackUrl",
     "visible"
   ]);
   assert.equal(state.title, "Never Gonna Give You Up");
@@ -319,6 +322,257 @@ test("text is stripped, collapsed, de-noised and capped at 256", () => {
     children: [video({ duration: 1 })]
   });
   assert.equal(read(sufixed.doc, sufixed.navigator, sufixed.location).title, "Some Song");
+});
+
+test("trackUrl is rebuilt from the player-bar title link, not the address bar", () => {
+  const page = musicPage({
+    href: "https://music.youtube.com/",
+    title: node("a", { attrs: { href: "watch?v=dQw4w9WgXcQ" }, text: "Never Gonna Give You Up" }),
+    byline: [node("a", { attrs: { href: "channel/UCabc" }, text: "Rick Astley" })]
+  });
+  const state = read(page.doc, page.navigator, page.location);
+
+  assert.equal(state.trackUrl, "https://music.youtube.com/watch?v=dQw4w9WgXcQ");
+  assert.equal(state.mediaId, null);
+  assert.equal(state.pageUrl, "https://music.youtube.com/");
+});
+
+test("trackUrl falls back through the ytp title link, canonical link and location", () => {
+  const viaYtp = musicPage({
+    href: "https://music.youtube.com/",
+    title: "Song",
+    children: [
+      node("a", {
+        attrs: { class: "ytp-title-link", href: "https://music.youtube.com/watch?v=aaaaaaaaaaa" },
+        text: "Song"
+      })
+    ]
+  });
+  assert.equal(
+    read(viaYtp.doc, viaYtp.navigator, viaYtp.location).trackUrl,
+    "https://music.youtube.com/watch?v=aaaaaaaaaaa"
+  );
+
+  const viaCanonical = musicPage({
+    href: "https://music.youtube.com/",
+    title: "Song",
+    children: [
+      node("link", {
+        attrs: { rel: "canonical", href: "https://music.youtube.com/watch?v=bbbbbbbbbbb" }
+      })
+    ]
+  });
+  assert.equal(
+    read(viaCanonical.doc, viaCanonical.navigator, viaCanonical.location).trackUrl,
+    "https://music.youtube.com/watch?v=bbbbbbbbbbb"
+  );
+
+  const viaLocation = musicPage({
+    href: "https://music.youtube.com/watch?v=ccccccccccc",
+    title: "Song"
+  });
+  assert.equal(
+    read(viaLocation.doc, viaLocation.navigator, viaLocation.location).trackUrl,
+    "https://music.youtube.com/watch?v=ccccccccccc"
+  );
+});
+
+test("artist and album links resolve relative byline anchors against the page", () => {
+  const page = musicPage({
+    href: "https://music.youtube.com/",
+    title: "Song",
+    byline: [
+      node("a", { attrs: { href: "channel/UCabc" }, text: "Artist" }),
+      " • ",
+      node("a", { attrs: { href: "browse/MPREb123" }, text: "Album" })
+    ]
+  });
+  const state = read(page.doc, page.navigator, page.location);
+
+  assert.equal(state.trackUrl, null);
+  assert.equal(state.artistUrl, "https://music.youtube.com/channel/UCabc");
+  assert.equal(state.albumUrl, "https://music.youtube.com/browse/MPREb123");
+  assert.equal(state.channel, "Artist");
+  assert.equal(state.album, "Album");
+});
+
+test("state.channel joins artist anchors with '; ' and never splits one name", () => {
+  const two = musicPage({
+    href: MUSIC_WATCH,
+    title: "Song",
+    byline: [
+      node("a", { attrs: { href: "channel/UCa" }, text: "A" }),
+      " • ",
+      node("a", { attrs: { href: "channel/UCb" }, text: "B" })
+    ]
+  });
+  const twoState = read(two.doc, two.navigator, two.location);
+  assert.equal(twoState.channel, "A; B");
+  assert.equal(twoState.artistUrl, "https://music.youtube.com/channel/UCa");
+
+  const one = musicPage({
+    href: MUSIC_WATCH,
+    title: "Song",
+    byline: [node("a", { attrs: { href: "channel/UCtyler" }, text: "Tyler, The Creator" })]
+  });
+  assert.equal(read(one.doc, one.navigator, one.location).channel, "Tyler, The Creator");
+});
+
+test("a byline without anchors yields no links and no crash", () => {
+  const page = musicPage({
+    href: "https://music.youtube.com/",
+    title: "Song",
+    byline: "Some Artist • Some Album"
+  });
+  const state = read(page.doc, page.navigator, page.location);
+
+  assert.ok(state, "the player bar itself is enough to report a state");
+  assert.equal(state.trackUrl, null);
+  assert.equal(state.artistUrl, null);
+  assert.equal(state.albumUrl, null);
+  assert.equal(state.channel, "Some Artist");
+  assert.equal(state.album, "Some Album");
+});
+
+test("links that leave music.youtube.com are rejected", () => {
+  const page = musicPage({
+    href: MUSIC_WATCH,
+    title: "Song",
+    byline: [
+      node("a", { attrs: { href: "https://www.youtube.com/channel/UCx" }, text: "Elsewhere" })
+    ]
+  });
+  const state = read(page.doc, page.navigator, page.location);
+
+  assert.equal(state.artistUrl, null);
+  assert.equal(state.albumUrl, null);
+});
+
+test("a playlist browse id is never an album link", () => {
+  const page = musicPage({
+    href: MUSIC_WATCH,
+    title: "Song",
+    byline: [
+      node("a", { attrs: { href: "channel/UCabc" }, text: "Artist" }),
+      " • ",
+      node("a", { attrs: { href: "browse/VLplaylist" }, text: "A Playlist" })
+    ]
+  });
+  const state = read(page.doc, page.navigator, page.location);
+
+  assert.equal(state.albumUrl, null);
+  assert.equal(state.artistUrl, "https://music.youtube.com/channel/UCabc");
+});
+
+test("an album link is the path, never a query string that mentions one", () => {
+  const playlist = musicPage({
+    href: MUSIC_WATCH,
+    title: "Song",
+    byline: [
+      node("a", { attrs: { href: "channel/UCabc" }, text: "Artist" }),
+      " • ",
+      node("a", {
+        attrs: { href: "https://music.youtube.com/browse/VLPL123?ref=browse/MPRE" },
+        text: "A Playlist"
+      })
+    ]
+  });
+  assert.equal(read(playlist.doc, playlist.navigator, playlist.location).albumUrl, null);
+
+  const watch = musicPage({
+    href: MUSIC_WATCH,
+    title: "Song",
+    byline: [
+      node("a", { attrs: { href: "channel/UCabc" }, text: "Artist" }),
+      " • ",
+      node("a", {
+        attrs: { href: "https://music.youtube.com/watch?v=abc12345678&list=MPREb_x" },
+        text: "A Playlist"
+      })
+    ]
+  });
+  assert.equal(read(watch.doc, watch.navigator, watch.location).albumUrl, null);
+});
+
+test("a query containing /browse/MPRE or /channel/ is not a link", () => {
+  const page = musicPage({
+    href: MUSIC_WATCH,
+    title: "Song",
+    byline: [
+      node("a", {
+        attrs: { href: "https://music.youtube.com/playlist?list=PL123&next=/browse/MPREb_x" },
+        text: "A Playlist"
+      }),
+      " • ",
+      node("a", {
+        attrs: { href: "https://music.youtube.com/watch?v=abc12345678&next=/channel/UCy" },
+        text: "Nowhere"
+      })
+    ]
+  });
+  const state = read(page.doc, page.navigator, page.location);
+  assert.equal(state.albumUrl, null);
+  assert.equal(state.artistUrl, null);
+});
+
+test("a channel path stays an artist even when its query names another channel", () => {
+  const page = musicPage({
+    href: MUSIC_WATCH,
+    title: "Song",
+    byline: [
+      node("a", {
+        attrs: { href: "https://music.youtube.com/channel/UCx?next=/channel/UCy" },
+        text: "Artist"
+      })
+    ]
+  });
+  const state = read(page.doc, page.navigator, page.location);
+
+  assert.equal(state.artistUrl, "https://music.youtube.com/channel/UCx?next=/channel/UCy");
+});
+
+test("the complex-string fallback ignores a query that mentions an album path", () => {
+  const page = musicPage({
+    href: MUSIC_WATCH,
+    title: "Song",
+    byline: [node("a", { attrs: { href: "channel/UCabc" }, text: "Artist" })],
+    children: [
+      node("div", {
+        attrs: { class: "complex-string ytmusic-player-bar" },
+        children: [
+          node("a", {
+            attrs: { href: "watch?v=abc12345678&next=/browse/MPREb_x" },
+            text: "Not an album"
+          })
+        ]
+      })
+    ]
+  });
+  const state = read(page.doc, page.navigator, page.location);
+
+  assert.equal(state.albumUrl, null);
+});
+
+test("the complex-string album fallback keeps the last album anchor", () => {
+  const page = musicPage({
+    href: MUSIC_WATCH,
+    title: "Song",
+    byline: [node("a", { attrs: { href: "channel/UCabc" }, text: "Artist" })],
+    children: [
+      node("div", {
+        attrs: { class: "complex-string ytmusic-player-bar" },
+        children: [
+          node("a", { attrs: { href: "browse/MPREfirst" }, text: "First" }),
+          node("a", { attrs: { href: "browse/VLplaylist" }, text: "Playlist" }),
+          node("a", { attrs: { href: "browse/MPRElast" }, text: "Last" })
+        ]
+      })
+    ]
+  });
+  const state = read(page.doc, page.navigator, page.location);
+
+  assert.equal(state.albumUrl, "https://music.youtube.com/browse/MPRElast");
+  assert.equal(state.album, "Last");
 });
 
 test("read never throws, whatever the page hands it", () => {

@@ -16,14 +16,15 @@ music.youtube.com
 
 The worker opens one native port with `transport: "ipc"` and the built-in application id `1566530911514923188`. Only `source: "youtube-music"` reports are accepted. The host carries the activity to a Discord desktop named pipe; legacy YouTube reports are rejected by the extension path.
 
-The outgoing `SET_ACTIVITY` activity is type `2` (LISTENING), with `name: "YouTube Music"`, title in `details`, artist in `state`, and `status_display_type: 1` to request that Discord use the state in its member list. The expanded header remains `Listening to YouTube Music`. Tests inspect the outgoing IPC payload; actual Discord rendering has not been observed in this seam.
+The outgoing `SET_ACTIVITY` activity is type `2` (LISTENING), with `name: "YouTube Music"`, title in `details`, artist in `state`, and `status_display_type: 1` to request that Discord use the state in its member list. The expanded header remains `Listening to YouTube Music`. Four click targets follow the visible lines: the title, the artist or album line, the album art, and two buttons. Tests inspect the outgoing IPC payload; actual Discord rendering has not been observed in this seam.
 
 | Field | Rule |
 | --- | --- |
 | `details`, `state` | Collapsed, trimmed text, capped at 128 characters. Artist is preferred for state; then a distinct album; then the source label. |
+| `details_url`, `state_url`, `large_url` | HTTPS on `music.youtube.com` only, capped at 256 characters; a URL that fails either check is omitted, never emitted bare. `details_url` is the canonical track URL, so it names the song even when the address bar shows Home or Explore. `state_url` follows the line it sits on: the artist channel when `state` shows the artists, the album page when `state` fell back to the album, omitted otherwise. `large_url` opens the album page, then the artist channel, then the track. |
 | `assets.large_image` | HTTPS artwork only. `large_text` is a distinct album tooltip only, never a repeated visible line. |
-| `buttons` | At most one link, HTTPS and on `music.youtube.com`. |
-| `timestamps` | Only when playing and both a real finite position and positive duration exist. `start = floor(now/1000)*1000 - floor(clampedPosition)*1000`; `end = start + floor(duration)*1000`. Missing elapsed or duration means no timestamps; elapsed and duration are never invented. |
+| `buttons` | At most two, HTTPS and on `music.youtube.com`, URLs capped at 512 characters and labels at 32. The first targets the track URL, with the current page URL as the last resort; the second is "View album" when an album link exists, otherwise "View artist", and is absent when neither exists. That second label is decided from URLs, never from text. |
+| `timestamps` | Only when playing and both a real finite position and positive duration exist. Integer seconds on the wire: `start = floor(now/1000) - floor(clampedPosition)`, `end = start + floor(duration)`; `now` enters as milliseconds. Missing elapsed or duration means no timestamps; elapsed and duration are never invented. |
 
 The native host uses nonce-matched Discord IPC frames and retries after disconnect. The extension sends the current desired state on reconnect; the host replays its last activity across a pipe reconnect.
 

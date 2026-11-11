@@ -16,7 +16,6 @@ import {
 import { STATUS_KEY } from "../../bridge-status.js";
 
 const BASE = 1_700_000_000_000;
-const SECOND = 1000;
 
 /* --------------------------------------------------------------- fakes -- */
 
@@ -329,8 +328,8 @@ test("the outgoing SET_ACTIVITY frame carries artist state, display type 1 and r
   assert.equal(frame.activity.name, "YouTube Music");
   assert.equal(frame.activity.details, "A Song");
   assert.deepEqual(frame.activity.timestamps, {
-    start: BASE - 42 * SECOND,
-    end: BASE - 42 * SECOND + 184 * SECOND,
+    start: Math.floor(BASE / 1000) - 42,
+    end: Math.floor(BASE / 1000) - 42 + 184,
   });
 });
 
@@ -354,7 +353,7 @@ test("a port loss keeps the desired state and replays it after the reconnect", a
   connect(reconnected);
   const replay = activities(reconnected);
   assert.equal(replay.length, 1);
-  assert.equal(replay[0].activity.timestamps.start, BASE - 40 * SECOND);
+  assert.equal(replay[0].activity.timestamps.start, Math.floor(BASE / 1000) - 40);
 });
 
 test("a tab-scoped gone clears Music presence", async () => {
@@ -612,7 +611,7 @@ test("a fresh worker restores Music state and replays it after the port connects
   const handedOver = activities(second.port);
   assert.equal(handedOver.length, 1, "the restored source reaches the host while connecting");
   assert.equal(handedOver[0].activity.details, "Persisted Song");
-  assert.equal(handedOver[0].activity.timestamps.start, BASE - 7 * SECOND);
+  assert.equal(handedOver[0].activity.timestamps.start, Math.floor(BASE / 1000) - 7);
   assert.equal(handedOver[0].activity.type, 2);
 
   connect(second.port);
