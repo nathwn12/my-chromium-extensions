@@ -163,13 +163,22 @@
    * position predicts where the live one should be. A position far from that
    * prediction is a seek, a rate change or a swallowed event, so report it and
    * re-anchor. Rounding keeps a steady playback well inside the threshold.
+   *
+   * The prediction runs at the reported `playbackRate`, so a non-1x playback is
+   * not drift by design; anything that is not a finite positive rate counts as
+   * 1x. A position that has not moved at all is a stalled buffer, not a seek:
+   * reporting it would re-anchor every tick and spend the worker's send budget
+   * on silence. A seek still moves the position, so it still reports.
    */
   function drifted(state) {
     var last = lastSample;
     if (!last || last.paused || state.paused) return false;
     var live = state.position;
     if (!isFinite(live) || !isFinite(last.position)) return false;
-    var expected = last.position + (Date.now() - last.at) / 1000;
+    if (live === last.position) return false;
+    var rate = state.playbackRate;
+    if (!isFinite(rate) || rate <= 0) rate = 1;
+    var expected = last.position + ((Date.now() - last.at) / 1000) * rate;
     return Math.abs(live - expected) > DRIFT_SECONDS;
   }
 

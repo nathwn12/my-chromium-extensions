@@ -264,6 +264,34 @@ test("an urgent push inside the gap sends at once and drops the deferred payload
   assert.equal(sent.length, 2, "the replaced payload never fires later");
 });
 
+test("cancelPending drops the deferred payload and keeps the send window", () => {
+  const clock = fakeClock();
+  const { limiter, sent } = makeLimiter(clock);
+
+  limiter.push({ details: "one" });
+  clock.advance(100);
+  limiter.push({ details: "two" });
+  assert.equal(limiter.hasPending, true);
+
+  limiter.cancelPending();
+  assert.equal(limiter.hasPending, false);
+  assert.equal(limiter.pending, null);
+  assert.equal(clock.pending, 0, "the timer is gone too");
+
+  clock.advance(MIN_GAP_MS - 100 - 1);
+  assert.deepEqual(
+    sent.map((payload) => payload.details),
+    ["one"],
+    "the dropped payload never fires"
+  );
+
+  // The history is intact: the gap still binds for the next payload.
+  limiter.push({ details: "three" });
+  assert.equal(sent.length, 1, "the cancelled payload did not move the window");
+  clock.advance(1);
+  assert.deepEqual(sent.map((payload) => payload.details), ["one", "three"]);
+});
+
 test("after the window ceiling a ninth push waits for the window to open", () => {
   const clock = fakeClock();
   const { limiter, sent } = makeLimiter(clock);
@@ -460,6 +488,27 @@ test("a seek keeps the identity and waits for the 1.5 s gap", async () => {
   const frames = activities(port);
   assert.equal(frames.length, 2, "published once the gap opens");
   assert.equal(frames.at(-1).activity.timestamps.start, Math.floor((BASE + 200) / 1000) - 180);
+});
+
+test("a state that returns to the published one drops the queued payload", async () => {
+  const { chrome, clock, port } = await boot();
+  connect(port);
+  const published = musicState({ at: BASE, position: 1 });
+  sendState(chrome, 1, published);
+  assert.equal(activities(port).length, 1);
+
+  clock.advance(200);
+  sendState(chrome, 1, musicState({ at: BASE, position: 180 }));
+  assert.equal(activities(port).length, 1, "the seek is queued inside the gap");
+
+  clock.advance(200);
+  sendState(chrome, 1, published);
+  assert.equal(activities(port).length, 1, "back to the published state: nothing new to send");
+
+  clock.advance(MIN_GAP_MS * 2);
+  const frames = activities(port);
+  assert.equal(frames.length, 1, "the queued seek never fires after the truth returned");
+  assert.equal(frames.at(-1).activity.timestamps.start, Math.floor(BASE / 1000) - 1);
 });
 
 test("ten urgent changes in one window never exceed the send budget", async () => {

@@ -118,6 +118,58 @@ test("steady playback drifts by rounding only, so the poll stays quiet", () => {
   assert.equal(handle.messages.length, 1);
 });
 
+test("at 1.5x the poll predicts 1.5 s per second and stays quiet", () => {
+  const page = musicWatch("First Song", {
+    duration: 300,
+    currentTime: 10,
+    paused: false,
+    playbackRate: 1.5
+  });
+  const clock = fakeClock();
+  const handle = bootWithClock(page, clock);
+  assert.equal(states(handle).length, 1);
+  clock.advance(6000);
+  page.doc.querySelector("audio").currentTime = 19;
+  handle.poll();
+  assert.equal(handle.messages.length, 1, "a steady 1.5x playback is not a seek");
+});
+
+test("a frozen position while time passes (buffering) never drift-reports", () => {
+  const page = musicWatch("First Song", { duration: 300, currentTime: 10, paused: false });
+  const clock = fakeClock();
+  const handle = bootWithClock(page, clock);
+  assert.equal(states(handle).length, 1);
+  clock.advance(6000);
+  handle.poll();
+  assert.equal(handle.messages.length, 1, "a stalled buffer reports nothing");
+});
+
+test("an unannounced jump forward reports once with the live position", () => {
+  const page = musicWatch("First Song", { duration: 300, currentTime: 10, paused: false });
+  const clock = fakeClock();
+  const handle = bootWithClock(page, clock);
+  page.doc.querySelector("audio").currentTime = 190;
+  clock.advance(1000);
+  handle.poll();
+  assert.equal(states(handle).length, 2);
+  assert.equal(states(handle)[1].state.position, 190);
+  handle.poll();
+  assert.equal(states(handle).length, 2, "the re-anchor makes the next tick quiet");
+});
+
+test("an unannounced jump backward reports once with the live position", () => {
+  const page = musicWatch("First Song", { duration: 300, currentTime: 190, paused: false });
+  const clock = fakeClock();
+  const handle = bootWithClock(page, clock);
+  page.doc.querySelector("audio").currentTime = 30;
+  clock.advance(1000);
+  handle.poll();
+  assert.equal(states(handle).length, 2);
+  assert.equal(states(handle)[1].state.position, 30);
+  handle.poll();
+  assert.equal(states(handle).length, 2);
+});
+
 test("a paused page whose position jumps never drift-reports", () => {
   const page = musicWatch("First Song", { duration: 300, currentTime: 10 });
   const clock = fakeClock();
