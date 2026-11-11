@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { audio, loadContent, makePage, musicPage } from "./helpers/fake-page.mjs";
+import { audio, loadContent, makePage, musicPage, node } from "./helpers/fake-page.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const extractSource = readFileSync(join(here, "..", "..", "extract-youtube.js"), "utf8");
@@ -22,7 +22,11 @@ function gones(handle) {
 }
 
 function musicWatch(title = "First Song", props = {}) {
-  return musicPage({ title, byline: "Artist", children: [audio({ duration: 200, ...props })] });
+  return musicPage({
+    title,
+    byline: [node("a", { attrs: { href: "channel/UCartist" }, text: "Artist" })],
+    children: [audio({ duration: 200, ...props })]
+  });
 }
 
 test("a Music page reports one wdr-state with source, state and at", () => {
