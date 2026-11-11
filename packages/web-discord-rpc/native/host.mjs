@@ -547,7 +547,7 @@ async function runSelftest() {
 
     const client = new ArRpcClient({
       clientId: DEFAULT_CLIENT_ID,
-      source: "youtube",
+      source: "youtube-music",
       WebSocketImpl: SelftestSocket,
       ports: [6463],
       connectTimeoutMs: 200,
@@ -580,7 +580,7 @@ async function runSelftest() {
 
     const client = new ArRpcClient({
       clientId: DEFAULT_CLIENT_ID,
-      source: "youtube",
+      source: "youtube-music",
       WebSocketImpl: SelftestSocket,
       ports: [6463, 6464],
       connectTimeoutMs: 200,
@@ -636,7 +636,7 @@ async function runSelftest() {
     });
     await host.handle({
       t: "activity",
-      source: "youtube",
+      source: "youtube-music",
       id: "act-1",
       activity: { details: "Big Buck Bunny" },
     });
@@ -645,7 +645,7 @@ async function runSelftest() {
     assert.equal(ackFrame.ok, true);
     assert.equal(ackFrame.id, "act-1");
     assert.equal(clients[0].options.clientId, DEFAULT_CLIENT_ID);
-    assert.equal(clients[0].options.source, "youtube");
+    assert.equal(clients[0].options.source, "youtube-music");
     assert.deepEqual(clients[0].sent, [{ details: "Big Buck Bunny" }]);
     host.close();
   });
@@ -676,7 +676,7 @@ async function runSelftest() {
 
     await host.handle({
       t: "activity",
-      source: "youtube",
+      source: "youtube-music",
       id: "act-2",
       activity: { details: "queued" },
     });
@@ -688,7 +688,7 @@ async function runSelftest() {
     const waiting = frames.find((message) => message.t === "status" && message.state === "waiting");
     assert.equal(waiting.reason, "arrpc-closed");
     assert.equal(waiting.detail, "absent");
-    assert.equal(waiting.sources.youtube, "waiting");
+    assert.equal(waiting.sources["youtube-music"], "waiting");
     assert.equal(pending.size, 1);
 
     scenario.failConnect = false;
@@ -700,7 +700,7 @@ async function runSelftest() {
     const connected = frames.find(
       (message) => message.t === "status" && message.state === "connected",
     );
-    assert.equal(connected.sources.youtube, "connected");
+    assert.equal(connected.sources["youtube-music"], "connected");
     assert.deepEqual(clients[0].sent.at(-1), { details: "queued" });
     host.close();
   });
@@ -795,7 +795,7 @@ async function runSelftest() {
     const discord = selftestDiscord();
     const client = new DiscordIpcClient({
       clientId: DEFAULT_CLIENT_ID,
-      source: "youtube",
+      source: "youtube-music",
       ...ipcOptions(discord),
     });
 
@@ -817,7 +817,7 @@ async function runSelftest() {
     assert.equal(client.ready, false);
   });
 
-  await check("host auto prefers discord ipc and stacks two sources on two pipes", async () => {
+  await check("host auto prefers discord ipc for the Music source", async () => {
     const discord = selftestDiscord();
     const frames = [];
     const arrpcBuilt = [];
@@ -838,30 +838,22 @@ async function runSelftest() {
     });
     await host.handle({
       t: "activity",
-      source: "youtube",
+      source: "youtube-music",
       id: "ipc-a",
       activity: { details: "Big Buck Bunny" },
     });
-    await host.handle({
-      t: "activity",
-      source: "youtube-music",
-      id: "ipc-b",
-      activity: { details: "Album Track" },
-    });
-
     const acks = frames.filter((message) => message.t === "ack");
-    assert.deepEqual(acks.map((message) => [message.id, message.ok]), [["ipc-a", true], ["ipc-b", true]]);
-    assert.equal(discord.state.connections, 2);
-    assert.equal(discord.state.handshakes, 2);
+    assert.deepEqual(acks.map((message) => [message.id, message.ok]), [["ipc-a", true]]);
+    assert.equal(discord.state.connections, 1);
+    assert.equal(discord.state.handshakes, 1);
     assert.deepEqual(
       discord.state.frames.map((frame) => frame.args.activity.details),
-      ["Big Buck Bunny", "Album Track"],
+      ["Big Buck Bunny"],
     );
     assert.deepEqual(arrpcBuilt, []);
 
     const connected = frames.filter((message) => message.t === "status" && message.state === "connected").at(-1);
     assert.equal(connected.transport, "discord-ipc");
-    assert.equal(connected.sources.youtube, "connected");
     assert.equal(connected.sources["youtube-music"], "connected");
     host.close();
     discord.dropAll();
@@ -900,7 +892,7 @@ async function runSelftest() {
     });
     await host.handle({
       t: "activity",
-      source: "youtube",
+      source: "youtube-music",
       id: "fallback-1",
       activity: { details: "Fallback" },
     });
@@ -946,7 +938,7 @@ async function runSelftest() {
     });
     await host.handle({
       t: "activity",
-      source: "youtube",
+      source: "youtube-music",
       id: "strict-ipc",
       activity: { details: "Absent" },
     });
