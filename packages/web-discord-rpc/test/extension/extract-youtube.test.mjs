@@ -37,7 +37,7 @@ function musicWatch({ href = MUSIC_WATCH, ...rest } = {}) {
   return musicPage({
     href,
     title: "Never Gonna Give You Up",
-    byline: [node("a", { text: "Rick Astley" })],
+    byline: [node("a", { attrs: { href: "channel/UCrickastley" }, text: "Rick Astley" })],
     ...rest
   });
 }
@@ -317,7 +317,7 @@ test("JSON-LD is the fallback for title, channel, artwork and duration", () => {
 test("text is stripped, collapsed, de-noised and capped at 256", () => {
   const noisy = musicWatch({
     title: "\u200B  Never \n Gonna\u202E   Give  You Up  ",
-    byline: [node("a", { text: "\uFEFF Rick   Astley " })],
+    byline: [node("a", { attrs: { href: "channel/UCrickastley" }, text: "\uFEFF Rick   Astley " })],
     artwork: null
   });
   const state = read(noisy.doc, noisy.navigator, noisy.location);
@@ -441,7 +441,9 @@ test("a byline without anchors yields no links and no crash", () => {
   assert.equal(state.trackUrl, null);
   assert.equal(state.artistUrl, null);
   assert.equal(state.albumUrl, null);
-  assert.equal(state.channel, "Some Artist");
+  // A byline segment is never an artist: only an anchor, MediaSession or
+  // JSON-LD can name one.
+  assert.equal(state.channel, null);
   // A byline segment is never promoted to album: without an album anchor or
   // MediaSession album there is no album at all.
   assert.equal(state.album, null);
@@ -458,7 +460,7 @@ test("a byline view count is a view count, never an album", () => {
 
   assert.equal(state.views, "1.5M views");
   assert.equal(state.album, null);
-  assert.equal(state.channel, "Dan");
+  assert.equal(state.channel, null);
 });
 
 test("an album anchor and a view count coexist in one byline", () => {
@@ -517,6 +519,53 @@ test("a view count is never promoted to an artist", () => {
 
   assert.equal(state.views, "1.5M views");
   assert.equal(state.channel, null);
+});
+
+test("an anchorless byline never becomes the artist, localized counts included", () => {
+  // No localized-count pattern is recognized on purpose: `1,5 M vues` is not
+  // matched as a view count, and it must still never be the artist.
+  const localized = musicPage({
+    href: MUSIC_WATCH,
+    title: "Song",
+    byline: "1,5 M vues"
+  });
+  const localizedState = read(localized.doc, localized.navigator, localized.location);
+  assert.equal(localizedState.channel, null);
+  assert.equal(localizedState.views, null);
+  assert.equal(localizedState.artistUrl, null);
+
+  // A real name is not rescued by pattern matching either: the rule is
+  // structural, so `50 Cent` survives only through an anchor or MediaSession.
+  const named = musicPage({
+    href: MUSIC_WATCH,
+    title: "Song",
+    byline: "50 Cent • Album • 2024"
+  });
+  const namedState = read(named.doc, named.navigator, named.location);
+  assert.equal(namedState.channel, null);
+  assert.equal(namedState.album, null);
+});
+
+test("a real name survives through MediaSession or an artist anchor", () => {
+  const session = musicPage({
+    href: MUSIC_WATCH,
+    title: "Song",
+    byline: "50 Cent • Album • 2024"
+  });
+  session.navigator.mediaSession = { metadata: { artist: "50 Cent" } };
+  assert.equal(read(session.doc, session.navigator, session.location).channel, "50 Cent");
+
+  const anchored = musicPage({
+    href: MUSIC_WATCH,
+    title: "Song",
+    byline: [
+      node("a", { attrs: { href: "channel/UC50cent" }, text: "50 Cent" }),
+      " • Album • 2024"
+    ]
+  });
+  const anchoredState = read(anchored.doc, anchored.navigator, anchored.location);
+  assert.equal(anchoredState.channel, "50 Cent");
+  assert.equal(anchoredState.artistUrl, "https://music.youtube.com/channel/UC50cent");
 });
 
 test("MediaSession album wins with no album anchor and no segment becomes one", () => {
