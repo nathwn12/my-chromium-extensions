@@ -6,9 +6,12 @@ import {
   ALARM_NAME,
   BACKOFF_MIN_MS,
   MAX_UPDATES,
+  MIN_GAP_MS,
   SESSION_TABS_KEY,
   SOURCES,
   TAB_TTL_MS,
+  UPDATE_WINDOW_MS,
+  createCoalescingLimiter,
   createWorker,
   pickBestTab,
   sampleAt,
@@ -193,7 +196,110 @@ function musicState(overrides = {}) {
   };
 }
 
+function makeLimiter(clock, options = {}) {
+  const sent = [];
+  const limiter = createCoalescingLimiter({
+    send: (payload) => sent.push(payload),
+    now: clock.now,
+    schedule: clock.schedule,
+    cancel: clock.cancel,
+    ...options,
+  });
+  return { limiter, sent };
+}
+
 /* --------------------------------------------------------------- tests -- */
+
+test("the limiter sends the first payload at once and holds the next for the gap", () => {
+  const clock = fakeClock();
+  const { limiter, sent } = makeLimiter(clock);
+
+  limiter.push({ details: "one" });
+  assert.deepEqual(sent, [{ details: "one" }]);
+
+  clock.advance(100);
+  limiter.push({ details: "two" });
+  assert.equal(sent.length, 1, "inside the 1.5 s gap nothing goes out");
+  assert.equal(limiter.hasPending, true);
+
+  clock.advance(MIN_GAP_MS - 100 - 1);
+  assert.equal(sent.length, 1, "one millisecond early");
+  clock.advance(1);
+  assert.deepEqual(sent.map((payload) => payload.details), ["one", "two"]);
+});
+
+test("a newer payload replaces the deferred one: only the newest is sent", () => {
+  const clock = fakeClock();
+  const { limiter, sent } = makeLimiter(clock);
+
+  limiter.push({ details: "one" });
+  clock.advance(100);
+  limiter.push({ details: "two" });
+  clock.advance(100);
+  limiter.push({ details: "three" });
+  clock.advance(MIN_GAP_MS);
+
+  assert.deepEqual(sent.map((payload) => payload.details), ["one", "three"]);
+  assert.equal(limiter.hasPending, false);
+});
+
+test("an urgent push inside the gap sends at once and drops the deferred payload", () => {
+  const clock = fakeClock();
+  const { limiter, sent } = makeLimiter(clock);
+
+  limiter.push({ details: "one" });
+  clock.advance(100);
+  limiter.push({ details: "deferred" });
+  clock.advance(100);
+  limiter.push({ details: "new track" }, { urgent: true });
+
+  assert.deepEqual(
+    sent.map((payload) => payload.details),
+    ["one", "new track"],
+    "the track change does not wait for the gap"
+  );
+  assert.equal(limiter.hasPending, false);
+
+  clock.advance(MIN_GAP_MS * 2);
+  assert.equal(sent.length, 2, "the replaced payload never fires later");
+});
+
+test("after the window ceiling a ninth push waits for the window to open", () => {
+  const clock = fakeClock();
+  const { limiter, sent } = makeLimiter(clock);
+
+  for (let i = 1; i <= MAX_UPDATES; i += 1) {
+    limiter.push({ details: `send ${i}` }, { urgent: true });
+  }
+  assert.equal(sent.length, MAX_UPDATES);
+
+  limiter.push({ details: "ninth" }, { urgent: true });
+  assert.equal(sent.length, MAX_UPDATES, "the ceiling binds even for an urgent push");
+
+  clock.advance(UPDATE_WINDOW_MS - 1);
+  assert.equal(sent.length, MAX_UPDATES);
+  clock.advance(1);
+  assert.equal(sent.length, MAX_UPDATES + 1);
+  assert.equal(sent.at(-1).details, "ninth");
+});
+
+test("a forced push bypasses both the gap and the window", () => {
+  const clock = fakeClock();
+  const { limiter, sent } = makeLimiter(clock);
+
+  for (let i = 1; i <= MAX_UPDATES; i += 1) {
+    limiter.push({ details: `send ${i}` }, { urgent: true });
+  }
+  clock.advance(10);
+  limiter.push({ details: "clear" }, { force: true });
+
+  assert.equal(sent.length, MAX_UPDATES + 1);
+  assert.equal(sent.at(-1).details, "clear");
+
+  clock.advance(100);
+  limiter.push({ details: "after" });
+  assert.equal(sent.length, MAX_UPDATES + 1, "an ordinary push still waits for the gap");
+});
 
 test("music is the only source", () => {
   assert.deepEqual([...SOURCES], ["youtube-music"]);
@@ -296,7 +402,7 @@ test("a playing tab wins over a paused tab", async () => {
   assert.equal(activities(port).at(-1).activity.details, "Playing Song");
 });
 
-test("four sends per 20 s, newest wins: rapid skips collapse to the latest song", async () => {
+test("rapid skips publish at most eight times per 20 s, newest wins", async () => {
   const { chrome, clock, port } = await boot();
   connect(port);
 
@@ -305,17 +411,70 @@ test("four sends per 20 s, newest wins: rapid skips collapse to the latest song"
     sendState(chrome, position, musicState({ title: `Song ${position}`, position }));
   }
   const immediate = activities(port);
-  assert.equal(immediate.length, 4);
-  assert.equal(immediate.at(-1).activity.details, "Song 4");
+  assert.equal(immediate.length, MAX_UPDATES, "a new track is urgent, but the ceiling holds");
+  assert.equal(immediate.at(-1).activity.details, `Song ${MAX_UPDATES}`);
 
   clock.advance(10000);
-  assert.equal(activities(port).length, 4, "the window has not elapsed yet");
+  assert.equal(activities(port).length, MAX_UPDATES, "the window has not elapsed yet");
 
   clock.advance(1001);
   const flushed = activities(port);
-  assert.equal(flushed.length, 5, "one deferred send after the window, newest wins");
+  assert.equal(flushed.length, MAX_UPDATES + 1, "one deferred send after the window, newest wins");
   assert.equal(flushed.at(-1).activity.details, "Song 10");
   assert.equal(flushed.at(-1).activity.status_display_type, 1);
+});
+
+test("a new track 200 ms after the last publish goes out at once", async () => {
+  const { chrome, clock, port } = await boot();
+  connect(port);
+  sendState(chrome, 1, musicState({ title: "Song A" }));
+  assert.equal(activities(port).length, 1);
+
+  clock.advance(200);
+  sendState(chrome, 1, musicState({ title: "Song B", mediaId: "song456" }));
+  let frames = activities(port);
+  assert.equal(frames.length, 2, "a different identity is urgent");
+  assert.equal(frames.at(-1).activity.details, "Song B");
+
+  clock.advance(200);
+  sendState(chrome, 1, musicState({ title: "Song B", album: "Another Album", mediaId: "song456" }));
+  frames = activities(port);
+  assert.equal(frames.length, 3, "a new album line is urgent too");
+  assert.equal(frames.at(-1).activity.assets.large_text, "Another Album");
+});
+
+test("a seek keeps the identity and waits for the 1.5 s gap", async () => {
+  const { chrome, clock, port } = await boot();
+  connect(port);
+  sendState(chrome, 1, musicState({ position: 1 }));
+  assert.equal(activities(port).length, 1);
+
+  clock.advance(200);
+  sendState(chrome, 1, musicState({ position: 180 }));
+  assert.equal(activities(port).length, 1, "a seek is an ordinary update, not urgent");
+
+  clock.advance(MIN_GAP_MS - 200 - 1);
+  assert.equal(activities(port).length, 1, "still inside the gap");
+
+  clock.advance(1);
+  const frames = activities(port);
+  assert.equal(frames.length, 2, "published once the gap opens");
+  assert.equal(frames.at(-1).activity.timestamps.start, Math.floor((BASE + 200) / 1000) - 180);
+});
+
+test("ten urgent changes in one window never exceed the send budget", async () => {
+  const { chrome, clock, port } = await boot();
+  connect(port);
+  for (let i = 1; i <= 10; i += 1) {
+    clock.advance(200);
+    sendState(chrome, i, musicState({ title: `Song ${i}`, mediaId: `media${i}` }));
+  }
+  assert.equal(activities(port).length, MAX_UPDATES, "urgency never spends past the ceiling");
+
+  clock.advance(UPDATE_WINDOW_MS);
+  const frames = activities(port);
+  assert.equal(frames.length, MAX_UPDATES + 1);
+  assert.equal(frames.at(-1).activity.details, "Song 10");
 });
 
 test("the outgoing SET_ACTIVITY frame carries artist state, display type 1 and real timestamps", async () => {

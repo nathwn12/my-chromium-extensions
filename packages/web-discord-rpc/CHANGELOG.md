@@ -2,6 +2,10 @@
 
 Notable changes to this package. Dates are ISO 8601. This package is local-only and is not published to a registry.
 
+## [1.1.4] - 2026-11-11
+
+- Presence updates land within 1.5 s and a track change publishes immediately, replacing the old four-per-20-second budget that could delay a song switch by up to twenty seconds.
+
 ## [1.1.3] - 2026-11-11
 
 - A localized view count can no longer be read as the artist: the artist line comes only from artist anchors or MediaSession, never from an arbitrary byline segment.

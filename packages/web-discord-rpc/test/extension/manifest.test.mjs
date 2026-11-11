@@ -49,7 +49,7 @@ function readPng(relative) {
 test("manifest is MV3 with the expected identity", () => {
   assert.equal(manifest.manifest_version, 3);
   assert.equal(manifest.name, "YouTube Music Presence");
-  assert.equal(manifest.version, "1.1.3");
+  assert.equal(manifest.version, "1.1.4");
   assert.match(manifest.version, /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/, "strict semver MAJOR.MINOR.PATCH");
   assert.match(manifest.description, /YouTube Music/i);
 });
