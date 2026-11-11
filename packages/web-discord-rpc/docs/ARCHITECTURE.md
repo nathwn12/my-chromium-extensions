@@ -10,7 +10,7 @@ music.youtube.com
   background.js -> Chrome native messaging -> native host -> Discord desktop IPC
 ```
 
-`extract-youtube.js` reads media-session/player metadata and the actual `<audio>` or `<video>` element. `content.js` reports changes from media events, SPA navigation, visibility and page lifecycle; a one-second poll catches title/pause changes. `background.js` retains tab state in `storage.session`, selects the best playing tab, coalesces sends, and reconnects/replays after worker or Discord restarts. The accessible popup switch persists in `storage.local` and clears presence when switched off.
+`extract-youtube.js` reads media-session/player metadata and the actual `<audio>` or `<video>` element. `content.js` reports changes from media events, SPA navigation, visibility and page lifecycle; a one-second poll catches title and pause changes, and also re-reports when the live position drifts more than 2.5 seconds from where the last sample says it should be, so a seek the player never announced still re-aligns the card. `background.js` retains tab state in `storage.session`, selects the best playing tab, coalesces sends, and reconnects/replays after worker or Discord restarts. The accessible popup switch persists in `storage.local` and clears presence when switched off.
 
 ## Wire and activity
 
