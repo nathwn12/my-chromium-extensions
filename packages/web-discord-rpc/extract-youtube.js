@@ -54,7 +54,15 @@
       ogTitle: 'meta[property="og:title"]',
       musicTitle: "ytmusic-player-bar .title",
       musicByline: "ytmusic-player-bar .byline",
-      musicArtwork: "ytmusic-player-bar img",
+      // The title anchor is the canonical track id on the persistent player.
+      musicTitleLink: ["ytmusic-player-bar .title a", ".middle-controls .title a"],
+      // Byline anchors are classified in code: /channel/ is an artist,
+      // /browse/MPRE an album. No :last-child and no [href] selectors.
+      musicBylineLinks: [".byline.ytmusic-player-bar a", "ytmusic-player-bar .subtitle a"],
+      musicAlbumLink: [".complex-string.ytmusic-player-bar a"],
+      // Fallbacks when the player-bar title anchor is missing.
+      trackIdFallbacks: ['a.ytp-title-link', 'link[rel="canonical"]'],
+      musicArtwork: "ytmusic-player-bar img, ytmusic-player-bar img.image, #song-image img",
       jsonLd: 'script[type="application/ld+json"]'
     },
 
@@ -165,6 +173,19 @@
     return null;
   }
 
+  /** Every anchor matched by any selector, in document order, deduplicated. */
+  function collectAnchors(doc, selectors) {
+    var list = Array.isArray(selectors) ? selectors : [selectors];
+    var out = [];
+    for (var s = 0; s < list.length; s += 1) {
+      var hits = queryAll(doc, list[s]);
+      for (var i = 0; i < hits.length; i += 1) {
+        if (out.indexOf(hits[i]) === -1) out.push(hits[i]);
+      }
+    }
+    return out;
+  }
+
   /* ---------------------------------------------------------------- urls */
 
   function hrefOf(loc) {
@@ -199,6 +220,34 @@
     var path = /\/(?:shorts|embed|live|v)\/([A-Za-z0-9_-]{11})(?:[/?#]|$)/.exec(href);
     if (path) return path[1];
     return null;
+  }
+
+  /**
+   * Resolve an anchor href against the current page URL. This file is a
+   * classic content script evaluated in a bare `vm`, so the `URL` global does
+   * not exist; scheme, origin and directory resolution are done by hand.
+   * Unresolvable or dot-relative paths stay null: a wrong URL is worse than
+   * none, and a link is never invented.
+   */
+  function absoluteUrl(href, base) {
+    if (typeof href !== "string") return null;
+    var raw = stripInvisible(href).trim();
+    if (!raw) return null;
+    if (/^[a-z][a-z0-9+.-]*:/i.test(raw)) {
+      return /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : null;
+    }
+    var baseMatch = /^([a-z][a-z0-9+.-]*:)\/\/([^/?#]+)([^?#]*)/i.exec(
+      typeof base === "string" ? stripInvisible(base).trim() : ""
+    );
+    if (!baseMatch) return null;
+    if (raw.slice(0, 2) === "//") return baseMatch[1] + raw;
+    if (raw.charAt(0) === ".") return null;
+    var origin = baseMatch[1] + "//" + baseMatch[2];
+    var basePath = baseMatch[3] || "/";
+    if (raw.charAt(0) === "/") return origin + raw;
+    if (raw.charAt(0) === "?" || raw.charAt(0) === "#") return origin + basePath + raw;
+    var dir = basePath.slice(0, basePath.lastIndexOf("/") + 1) || "/";
+    return origin + dir + raw;
   }
 
   function pageUrlFor(href, source) {
@@ -415,10 +464,12 @@
     };
   }
 
-  function readMusicDom(doc) {
+  function readMusicDom(doc, base) {
+    // A byline without anchors still names the artist and album as text; it is
+    // the last fallback after the anchors and MediaSession.
     var byline = clean(textOf(queryOne(doc, RULES.dom.musicByline)));
-    var artist = null;
-    var album = null;
+    var segmentChannel = null;
+    var segmentAlbum = null;
     if (byline) {
       var parts = byline.split("•");
       var segments = [];
@@ -426,14 +477,71 @@
         var segment = clean(parts[i]);
         if (segment) segments.push(segment);
       }
-      if (segments.length) artist = segments[0];
-      if (segments.length >= 2 && !/^\d{4}$/.test(segments[1])) album = segments[1];
+      if (segments.length) segmentChannel = segments[0];
+      if (segments.length >= 2 && !/^\d{4}$/.test(segments[1])) segmentAlbum = segments[1];
     }
+
+    // Anchors are classified by their resolved href: /channel/ is an artist,
+    // /browse/MPRE an album. Playlist ids (/browse/VL…) never match.
+    var anchors = collectAnchors(doc, RULES.dom.musicBylineLinks);
+    var artistNames = [];
+    var artistUrl = null;
+    var artistSeen = false;
+    var albumAnchor = null;
+    var albumHref = null;
+    for (var a = 0; a < anchors.length; a += 1) {
+      var anchor = anchors[a];
+      var href = attrOf(anchor, "href");
+      var resolved = href ? absoluteUrl(href, base) : null;
+      if (!resolved) continue;
+      if (resolved.indexOf("/channel/") !== -1) {
+        // The first channel anchor decides artistUrl; a rejected host stays null.
+        if (!artistSeen) {
+          artistSeen = true;
+          artistUrl = pageUrlFor(resolved, "youtube-music");
+        }
+        var name = clean(textOf(anchor));
+        if (name) artistNames.push(name);
+      }
+      if (!albumAnchor && resolved.indexOf("/browse/MPRE") !== -1) {
+        albumAnchor = anchor;
+        albumHref = resolved;
+      }
+    }
+    if (!albumAnchor) {
+      // No album anchor in the byline: keep the last album link in the
+      // complex-string, never a playlist id.
+      var fallbackAnchors = queryAll(doc, RULES.dom.musicAlbumLink);
+      for (var f = fallbackAnchors.length - 1; f >= 0; f -= 1) {
+        var fallbackHref = absoluteUrl(attrOf(fallbackAnchors[f], "href"), base);
+        if (fallbackHref && fallbackHref.indexOf("/browse/MPRE") !== -1) {
+          albumAnchor = fallbackAnchors[f];
+          albumHref = fallbackHref;
+          break;
+        }
+      }
+    }
+
+    var trackId = null;
+    var titleLink = firstMatch(doc, RULES.dom.musicTitleLink);
+    if (titleLink) trackId = mediaIdFrom(attrOf(titleLink, "href"));
+    var fallbacks = RULES.dom.trackIdFallbacks;
+    for (var t = 0; t < fallbacks.length && !trackId; t += 1) {
+      var fallbackNode = queryOne(doc, fallbacks[t]);
+      trackId = fallbackNode ? mediaIdFrom(attrOf(fallbackNode, "href")) : null;
+    }
+    if (!trackId) trackId = mediaIdFrom(base);
+
     return {
       title: clean(textOf(queryOne(doc, RULES.dom.musicTitle))),
-      channel: artist,
-      album: album,
-      artwork: httpsUrl(attrOf(queryOne(doc, RULES.dom.musicArtwork), "src"))
+      channel: artistNames.length ? clean(artistNames.join("; ")) : null,
+      segmentChannel: segmentChannel,
+      album: albumAnchor ? clean(textOf(albumAnchor)) : null,
+      segmentAlbum: segmentAlbum,
+      artwork: httpsUrl(attrOf(firstMatch(doc, RULES.dom.musicArtwork), "src")),
+      artistUrl: artistUrl,
+      albumUrl: albumAnchor ? pageUrlFor(albumHref, "youtube-music") : null,
+      trackId: trackId
     };
   }
 
@@ -468,19 +576,28 @@
     var video = readVideo(doc);
     var session = readMediaSession(nav);
     var ld = readJsonLd(doc);
-    var dom = readMusicDom(doc);
+    var dom = readMusicDom(doc, href);
     var ogTitle = clean(attrOf(queryOne(doc, RULES.dom.ogTitle), "content"));
     var documentTitle = safeDocumentTitle(doc);
 
     // Music precedence: session first, then the player bar, JSON-LD, OG, title.
     var title = (session && session.title) || dom.title || (ld && ld.name) || ogTitle || documentTitle;
-    var channel = (session && session.artist) || dom.channel || (ld && ld.author);
-    var album = (session && session.album) || dom.album;
+    // Artist anchors outrank the session; a byline without anchors falls back
+    // to MediaSession's artist, then to the byline's first segment.
+    var channel = dom.channel || (session && session.artist) || dom.segmentChannel || (ld && ld.author);
+    // Album text and album URL come from the same matched anchor, so the
+    // tooltip can never name an album the link does not open.
+    var album = dom.album || (session && session.album) || dom.segmentAlbum;
     var artwork = (session && session.artwork) || dom.artwork || (ld && ld.artwork);
 
     // A resolved title is the proof that the persistent player is present;
     // without it there is nothing to show.
     if (!title) return null;
+
+    // The canonical track URL is rebuilt from the id, never copied from an
+    // address bar that may still be sitting on Home or Explore.
+    var trackId = dom.trackId || mediaId;
+    var trackUrl = trackId ? "https://music.youtube.com/watch?v=" + trackId : null;
 
     var duration = video.length !== null ? video.length : ld ? ld.duration : null;
     var position = video.elapsed;
@@ -491,6 +608,9 @@
       channel: channel || null,
       album: album || null,
       artworkUrl: artwork || null,
+      trackUrl: trackUrl,
+      artistUrl: dom.artistUrl,
+      albumUrl: dom.albumUrl,
       pageUrl: pageUrlFor(href, source),
       mediaId: mediaId,
       duration: duration,

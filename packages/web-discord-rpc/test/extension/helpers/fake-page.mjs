@@ -288,13 +288,20 @@ export function youtubePage({
 export function musicPage({ title, byline, artwork, ...rest } = {}) {
   const barChildren = [];
   if (title !== null && title !== undefined) {
-    barChildren.push(node("div", { attrs: { class: "title" }, text: title }));
+    barChildren.push(
+      node("div", {
+        attrs: { class: "title" },
+        // A node is already the <a> YT Music puts inside the title cell.
+        ...(typeof title === "string" ? { text: title } : { children: [title] })
+      })
+    );
   }
   if (byline !== null && byline !== undefined) {
     const parts = Array.isArray(byline) ? byline : [byline];
     barChildren.push(
       node("div", {
-        attrs: { class: "byline" },
+        // Live YT Music carries both classes on the byline element.
+        attrs: { class: "byline ytmusic-player-bar" },
         children: parts.map((part) =>
           typeof part === "string" ? node("span", { text: part }) : part
         )
