@@ -7,18 +7,17 @@
  * label so the expanded card reads "Listening to YouTube Music"; `details`
  * is the track, `state` is the artists (album fallback, then the label).
  *
- * Four click targets, each a door to the real thing and each capped at 256
- * characters (Discord's `*_url` limit) and pinned to https on
- * `music.youtube.com`:
- *   - the track title line -> `details_url` (canonical track URL)
- *   - the artist / album line -> `state_url` (the URL of the line it sits on;
- *     omitted when that line has no link)
- *   - the album art -> `assets.large_url` (album, else artist, else track)
- *   - button 1 "Listen on YouTube Music" -> the track URL; `pageUrl` only
- *     when it is itself a `/watch` page with an 11-character `v`, else no
+ * The card is plain text. Discord underlines every linked field and offers no
+ * way to link without the underline, so no `*_url` field is ever emitted —
+ * not `details_url`, not `state_url`, not `assets.large_url`. The cover is
+ * not a link. Two buttons are the only clickable things, each pinned to https
+ * on `music.youtube.com` and capped at 512 characters:
+ *   - button 1 "Listen on YouTube Music" -> the canonical track URL; `pageUrl`
+ *     only when it is itself a `/watch` page with an 11-character `v`, else no
  *     button 1 at all; button 2 "View album" / "View artist" -> album, else
  *     artist.
- * The album also keeps its tooltip (`assets.large_text`) while unique.
+ * The cover tooltip (`assets.large_text`) is the album while it is unique,
+ * else the view count, else absent.
  *
  * Timestamps are integer SECONDS on the wire: `start = floor(anchor/1000) -
  * floor(clamp(position))`, `end = start + floor(duration)`. Nothing is
@@ -51,9 +50,9 @@
  * payload is asserted (see `scripts/e2e-ipc.mjs` and
  * `test/extension/activity.test.mjs`).
  *
- * Rules live here, not in the worker: text limits, the link and button
- * policies, and the timestamp maths are all decided in one place and proved
- * by test/extension/activity.test.mjs.
+ * Rules live here, not in the worker: text limits, the button policy, and the
+ * timestamp maths are all decided in one place and proved by
+ * test/extension/activity.test.mjs.
  */
 
 import { SOURCE_META, SOURCE_YOUTUBE_MUSIC, sourceForUrl } from "./config.js";
@@ -61,7 +60,6 @@ import { SOURCE_META, SOURCE_YOUTUBE_MUSIC, sourceForUrl } from "./config.js";
 const MAX_TEXT = 128;
 const MAX_BUTTON_LABEL = 32;
 const MAX_BUTTON_URL = 512;
-const MAX_LINK_URL = 256;
 /** A sample stamp this far ahead of `now` is still trusted, as clock skew. */
 export const SAMPLE_SKEW_MS = 5000;
 
@@ -120,17 +118,6 @@ function watchPageUrl(raw) {
 }
 
 /**
- * Only an https page on the Music host may become a `*_url` link, and it must
- * fit Discord's 256-character cap. A rejected link is omitted, never emitted.
- */
-export function pickLinkUrl(raw) {
-  if (sourceForUrl(raw) !== SOURCE_YOUTUBE_MUSIC) return null;
-  const url = httpsUrl(raw);
-  if (!url || url.length > MAX_LINK_URL) return null;
-  return url;
-}
-
-/**
  * ONE activity for the Music state, or null.
  *
  * Timestamps follow the contract exactly: `start = floor(anchor/1000) -
@@ -175,23 +162,19 @@ export function buildActivity(sourceOrState, stateOrNow, nowArg = Date.now()) {
   const channel = clampText(state.channel);
   const album = clampText(state.album);
 
-  const trackUrl = pickLinkUrl(state.trackUrl);
-  const artistUrl = pickLinkUrl(state.artistUrl);
-  const albumUrl = pickLinkUrl(state.albumUrl);
+  const trackUrl = pickButtonUrl(state.trackUrl);
+  const artistUrl = pickButtonUrl(state.artistUrl);
+  const albumUrl = pickButtonUrl(state.albumUrl);
 
   // Music header is static: Discord renders "Listening to <name>", so the
   // artist must live in `state` to stay visible in the member list and the
-  // card. The album is only a fallback line; `state_url` follows whichever
-  // line won, so the artist line can never open the album page.
+  // card. The album is only a fallback line.
   const same = (a, b) => a.toLowerCase() === b.toLowerCase();
   let stateLine;
-  let stateSource = "label";
   if (channel && !same(channel, details) && !same(channel, meta.name)) {
     stateLine = channel;
-    stateSource = "artist";
   } else if (album && !same(album, details) && !same(album, meta.name)) {
     stateLine = album;
-    stateSource = "album";
   } else {
     stateLine = meta.label;
   }
@@ -201,16 +184,19 @@ export function buildActivity(sourceOrState, stateOrNow, nowArg = Date.now()) {
     type: meta.type,
     details,
   };
-  if (trackUrl) activity.details_url = trackUrl;
   activity.state = stateLine;
-  if (stateSource === "artist" && artistUrl) activity.state_url = artistUrl;
-  else if (stateSource === "album" && albumUrl) activity.state_url = albumUrl;
   activity.status_display_type = STATUS_DISPLAY_STATE;
 
   const artwork = httpsUrl(state.artworkUrl);
   if (artwork) {
     activity.assets = { large_image: artwork };
-    // Tooltip only, and only when it says something the card does not.
+    // Tooltip only, and only when it says something the card does not: the
+    // album while it is unique, else the view count. The title owns line 1
+    // and is never repeated here.
+    const views =
+      typeof state.views === "string" && state.views.trim()
+        ? state.views.replace(/\s+/g, " ").trim().slice(0, MAX_TEXT)
+        : null;
     if (
       album &&
       !same(album, details) &&
@@ -218,11 +204,9 @@ export function buildActivity(sourceOrState, stateOrNow, nowArg = Date.now()) {
       !same(album, stateLine)
     ) {
       activity.assets.large_text = album;
+    } else if (views) {
+      activity.assets.large_text = views;
     }
-    // The artwork is the album's face: open the album, else the artist that
-    // owns it, else the song itself.
-    const largeUrl = albumUrl || artistUrl || trackUrl;
-    if (largeUrl) activity.assets.large_url = largeUrl;
   }
 
   const label = clampText(meta.buttonLabel, MAX_BUTTON_LABEL);

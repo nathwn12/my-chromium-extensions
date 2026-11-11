@@ -5,7 +5,6 @@ import {
   STATUS_DISPLAY_STATE,
   buildActivity,
   clampText,
-  pickLinkUrl,
 } from "../../activity.js";
 
 const NOW = 1_700_000_000_123;
@@ -31,20 +30,34 @@ function musicState(overrides = {}) {
   };
 }
 
+/** Every key in the payload, nested objects and arrays included. */
+function allKeys(value, out = []) {
+  if (Array.isArray(value)) {
+    for (const item of value) allKeys(item, out);
+    return out;
+  }
+  if (value && typeof value === "object") {
+    for (const [key, nested] of Object.entries(value)) {
+      out.push(key);
+      allKeys(nested, out);
+    }
+  }
+  return out;
+}
+
+const linkKeys = (activity) => allKeys(activity).filter((key) => key.endsWith("_url"));
+
 test("a YouTube Music track becomes a LISTENING card under the YouTube Music header", () => {
   const activity = buildActivity("youtube-music", musicState(), NOW);
   assert.deepEqual(activity, {
     name: "YouTube Music",
     type: 2,
     details: "A Song",
-    details_url: "https://music.youtube.com/watch?v=song123",
     state: "An Artist",
-    state_url: "https://music.youtube.com/channel/UCartist",
     status_display_type: 1,
     assets: {
       large_image: "https://lh3.googleusercontent.com/cover",
       large_text: "An Album",
-      large_url: "https://music.youtube.com/browse/MPREb_album",
     },
     buttons: [
       { label: "Listen on YouTube Music", url: "https://music.youtube.com/watch?v=song123" },
@@ -55,6 +68,16 @@ test("a YouTube Music track becomes a LISTENING card under the YouTube Music hea
       end: NOW_SECONDS - 5 + 200,
     },
   });
+  assert.deepEqual(Object.keys(activity).sort(), [
+    "assets",
+    "buttons",
+    "details",
+    "name",
+    "state",
+    "status_display_type",
+    "timestamps",
+    "type",
+  ]);
 });
 
 test("the payload keys keep the documented order", () => {
@@ -63,15 +86,13 @@ test("the payload keys keep the documented order", () => {
     "name",
     "type",
     "details",
-    "details_url",
     "state",
-    "state_url",
     "status_display_type",
     "assets",
     "buttons",
     "timestamps",
   ]);
-  assert.deepEqual(Object.keys(activity.assets), ["large_image", "large_text", "large_url"]);
+  assert.deepEqual(Object.keys(activity.assets), ["large_image", "large_text"]);
 });
 
 test("the member-list line shows the artist: state is the artist and status_display_type is 1", () => {
@@ -121,66 +142,57 @@ test("without an artist the Music card falls back to the album, then the source 
   assert.equal(albumOnly.status_display_type, 1);
 });
 
-test("an album-fallback state line opens the album, never a borrowed artist link", () => {
+test("the album-fallback line is plain text; button 2 still opens the album", () => {
   const albumOnly = buildActivity("youtube-music", musicState({ channel: null, artistUrl: null }), NOW);
   assert.equal(albumOnly.state, "An Album");
-  assert.equal(albumOnly.state_url, "https://music.youtube.com/browse/MPREb_album");
+  assert.deepEqual(linkKeys(albumOnly), []);
+  assert.deepEqual(albumOnly.buttons, [
+    { label: "Listen on YouTube Music", url: "https://music.youtube.com/watch?v=song123" },
+    { label: "View album", url: "https://music.youtube.com/browse/MPREb_album" },
+  ]);
 
-  // An artist URL must not be borrowed when the line is the album.
-  const withStrayArtist = buildActivity(
-    "youtube-music",
-    musicState({ channel: null, artistUrl: "https://music.youtube.com/channel/UCother" }),
-    NOW
-  );
-  assert.equal(withStrayArtist.state, "An Album");
-  assert.equal(withStrayArtist.state_url, "https://music.youtube.com/browse/MPREb_album");
-
-  // No album link: the album line carries no link at all.
+  // An album line without an album link still carries no link at all.
   const albumTextOnly = buildActivity(
     "youtube-music",
     musicState({ channel: null, albumUrl: null }),
     NOW
   );
   assert.equal(albumTextOnly.state, "An Album");
-  assert.equal("state_url" in albumTextOnly, false);
+  assert.deepEqual(linkKeys(albumTextOnly), []);
 });
 
-test("a label state line carries no state_url", () => {
+test("a label state line is plain text and the card carries no link field", () => {
   const activity = buildActivity(
     "youtube-music",
     musicState({ title: "An Artist", channel: "An Artist", album: null, albumUrl: null }),
     NOW
   );
   assert.equal(activity.state, "YouTube Music");
-  assert.equal("state_url" in activity, false);
-  assert.equal(activity.assets.large_url, "https://music.youtube.com/channel/UCartist");
+  assert.deepEqual(linkKeys(activity), []);
 });
 
-test("a track with no album links the artist from the state line, the art and button 2", () => {
+test("a track with no album keeps the artist line and the View artist button", () => {
   const activity = buildActivity(
     "youtube-music",
     musicState({ album: null, albumUrl: null }),
     NOW
   );
   assert.equal(activity.state, "An Artist");
-  assert.equal(activity.state_url, "https://music.youtube.com/channel/UCartist");
-  assert.equal(activity.assets.large_url, "https://music.youtube.com/channel/UCartist");
+  assert.deepEqual(linkKeys(activity), []);
   assert.deepEqual(activity.buttons, [
     { label: "Listen on YouTube Music", url: "https://music.youtube.com/watch?v=song123" },
     { label: "View artist", url: "https://music.youtube.com/channel/UCartist" },
   ]);
 });
 
-test("no links: the three url fields are absent and one button remains", () => {
+test("no links: the card carries no url field and one button remains", () => {
   const watch = "https://music.youtube.com/watch?v=abc12345678";
   const activity = buildActivity(
     "youtube-music",
     musicState({ trackUrl: null, artistUrl: null, albumUrl: null, pageUrl: watch }),
     NOW
   );
-  assert.equal("details_url" in activity, false);
-  assert.equal("state_url" in activity, false);
-  assert.equal("large_url" in activity.assets, false);
+  assert.deepEqual(linkKeys(activity), []);
   assert.deepEqual(Object.keys(activity.assets), ["large_image", "large_text"]);
   assert.deepEqual(activity.buttons, [
     { label: "Listen on YouTube Music", url: watch },
@@ -243,27 +255,26 @@ test("a watch page URL whose v is not 11 characters is not a song", () => {
   }
 });
 
-test("a track URL over the 256-character link cap is omitted", () => {
-  const long = `https://music.youtube.com/watch?v=${"a".repeat(300)}`;
+test("a track URL over the 512-character button cap falls back to the watch page URL", () => {
+  const long = `https://music.youtube.com/watch?v=${"a".repeat(500)}`;
   const watch = "https://music.youtube.com/watch?v=abc12345678";
   const activity = buildActivity(
     "youtube-music",
     musicState({ trackUrl: long, pageUrl: watch }),
     NOW
   );
-  assert.equal("details_url" in activity, false);
+  assert.deepEqual(linkKeys(activity), []);
   // Button 1 falls back to the page URL, which is still a usable track link.
   assert.equal(activity.buttons[0].url, watch);
 });
 
-test("a link that leaves the Music host is omitted, never emitted bare", () => {
+test("a URL that leaves the Music host is omitted, never emitted bare", () => {
   const offHost = buildActivity(
     "youtube-music",
     musicState({ artistUrl: "https://www.youtube.com/channel/UCx" }),
     NOW
   );
-  assert.equal("state_url" in offHost, false);
-  assert.equal(offHost.assets.large_url, "https://music.youtube.com/browse/MPREb_album");
+  assert.deepEqual(linkKeys(offHost), []);
   assert.deepEqual(offHost.buttons, [
     { label: "Listen on YouTube Music", url: "https://music.youtube.com/watch?v=song123" },
     { label: "View album", url: "https://music.youtube.com/browse/MPREb_album" },
@@ -274,37 +285,20 @@ test("a link that leaves the Music host is omitted, never emitted bare", () => {
     musicState({ trackUrl: "http://music.youtube.com/watch?v=song123" }),
     NOW
   );
-  assert.equal("details_url" in insecure, false);
+  assert.deepEqual(linkKeys(insecure), []);
+  assert.deepEqual(insecure.buttons, [
+    { label: "View album", url: "https://music.youtube.com/browse/MPREb_album" },
+  ]);
 
   const junk = buildActivity(
     "youtube-music",
     musicState({ trackUrl: "not a url", albumUrl: "/browse/MPREb_album" }),
     NOW
   );
-  assert.equal("details_url" in junk, false);
-  assert.equal(junk.assets.large_url, "https://music.youtube.com/channel/UCartist");
-});
-
-test("pickLinkUrl validates host, scheme and the 256-character cap", () => {
-  const base = "https://music.youtube.com/watch?v=";
-  assert.equal(pickLinkUrl(`${base}song123`), `${base}song123`);
-  assert.equal(pickLinkUrl(base), base);
-
-  const atCap = `${base}${"a".repeat(256 - base.length)}`;
-  assert.equal(atCap.length, 256);
-  assert.equal(pickLinkUrl(atCap), atCap);
-
-  const overCap = `${base}${"a".repeat(257 - base.length)}`;
-  assert.equal(overCap.length, 257);
-  assert.equal(pickLinkUrl(overCap), null);
-
-  assert.equal(pickLinkUrl("http://music.youtube.com/watch?v=1"), null);
-  assert.equal(pickLinkUrl("https://www.youtube.com/watch?v=1"), null);
-  assert.equal(pickLinkUrl("https://evil.example/watch?v=1"), null);
-  assert.equal(pickLinkUrl("/watch?v=1"), null);
-  assert.equal(pickLinkUrl(""), null);
-  assert.equal(pickLinkUrl(null), null);
-  assert.equal(pickLinkUrl(undefined), null);
+  assert.deepEqual(linkKeys(junk), []);
+  assert.deepEqual(junk.buttons, [
+    { label: "View artist", url: "https://music.youtube.com/channel/UCartist" },
+  ]);
 });
 
 test("no title or no state means no activity; legacy YouTube reports are refused", () => {
@@ -385,6 +379,117 @@ test("at most two buttons: album wins over artist for button 2", () => {
   const artistOnly = buildActivity("youtube-music", musicState({ albumUrl: null }), NOW);
   assert.equal(artistOnly.buttons.length, 2);
   assert.equal(artistOnly.buttons[1].label, "View artist");
+});
+
+test("the two buttons are the only clickable things", () => {
+  const both = buildActivity("youtube-music", musicState(), NOW);
+  assert.deepEqual(both.buttons.map((button) => button.label), [
+    "Listen on YouTube Music",
+    "View album",
+  ]);
+
+  const artistOnly = buildActivity("youtube-music", musicState({ albumUrl: null }), NOW);
+  assert.deepEqual(artistOnly.buttons.map((button) => button.label), [
+    "Listen on YouTube Music",
+    "View artist",
+  ]);
+
+  const neither = buildActivity("youtube-music", musicState({ albumUrl: null, artistUrl: null }), NOW);
+  assert.deepEqual(neither.buttons, [
+    { label: "Listen on YouTube Music", url: "https://music.youtube.com/watch?v=song123" },
+  ]);
+});
+
+test("no activity built from any fixture carries a link field", () => {
+  const fixtures = [
+    ["default", musicState()],
+    ["artist only", musicState({ album: null, albumUrl: null })],
+    ["album only", musicState({ channel: null, artistUrl: null })],
+    ["no urls", musicState({ trackUrl: null, artistUrl: null, albumUrl: null })],
+    ["no artwork", musicState({ artworkUrl: null })],
+    ["no metadata", musicState({ channel: null, album: null })],
+    ["views", musicState({ album: null, albumUrl: null, views: "1,234,567 views" })],
+    ["paused", musicState({ paused: true })],
+    ["long text", musicState({ title: "a".repeat(200), channel: "b".repeat(200), album: "c".repeat(200) })],
+    ["off host", musicState({ artistUrl: "https://www.youtube.com/channel/UCx" })],
+  ];
+  for (const [name, state] of fixtures) {
+    const activity = buildActivity("youtube-music", state, NOW);
+    assert.ok(activity, `expected an activity for ${name}`);
+    assert.deepEqual(linkKeys(activity), [], `${name} must carry no *_url key`);
+  }
+});
+
+test("large_text is the album only when it says something the card does not", () => {
+  const distinct = buildActivity("youtube-music", musicState(), NOW);
+  assert.equal(distinct.assets.large_text, "An Album");
+
+  // The album is the title: line 1 already says it.
+  const sameAsTitle = buildActivity(
+    "youtube-music",
+    musicState({ title: "An Album", album: "An Album" }),
+    NOW
+  );
+  assert.equal("large_text" in sameAsTitle.assets, false);
+
+  // The album is the state line.
+  const sameAsState = buildActivity(
+    "youtube-music",
+    musicState({ channel: null, artistUrl: null, album: "An Artist" }),
+    NOW
+  );
+  assert.equal(sameAsState.state, "An Artist");
+  assert.equal("large_text" in sameAsState.assets, false);
+
+  // The album is the app name.
+  const sameAsName = buildActivity(
+    "youtube-music",
+    musicState({ channel: null, artistUrl: null, album: "YouTube Music" }),
+    NOW
+  );
+  assert.equal("large_text" in sameAsName.assets, false);
+});
+
+test("large_text falls back to the view count when no album is distinct", () => {
+  const activity = buildActivity(
+    "youtube-music",
+    musicState({ album: null, albumUrl: null, views: "1,234,567 views" }),
+    NOW
+  );
+  assert.equal(activity.state, "An Artist");
+  assert.equal(activity.assets.large_text, "1,234,567 views");
+});
+
+test("large_text is omitted when there is no distinct album and no views", () => {
+  for (const views of [undefined, null, "", "   ", 42]) {
+    const activity = buildActivity(
+      "youtube-music",
+      musicState({ album: null, albumUrl: null, views }),
+      NOW
+    );
+    assert.equal(
+      "large_text" in activity.assets,
+      false,
+      `expected no large_text for views=${JSON.stringify(views)}`
+    );
+  }
+});
+
+test("the title is never the cover tooltip", () => {
+  const activity = buildActivity(
+    "youtube-music",
+    musicState({ title: "A Song", album: "A Song" }),
+    NOW
+  );
+  assert.equal("large_text" in activity.assets, false);
+
+  const withViews = buildActivity(
+    "youtube-music",
+    musicState({ title: "A Song", album: "A Song", views: "42 views" }),
+    NOW
+  );
+  assert.equal(withViews.assets.large_text, "42 views");
+  assert.notEqual(withViews.assets.large_text, withViews.details);
 });
 
 test("timestamps need playing, a duration and a real position", () => {
