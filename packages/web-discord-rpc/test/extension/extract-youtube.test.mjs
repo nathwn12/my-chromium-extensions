@@ -464,6 +464,95 @@ test("a playlist browse id is never an album link", () => {
   assert.equal(state.artistUrl, "https://music.youtube.com/channel/UCabc");
 });
 
+test("an album link is the path, never a query string that mentions one", () => {
+  const playlist = musicPage({
+    href: MUSIC_WATCH,
+    title: "Song",
+    byline: [
+      node("a", { attrs: { href: "channel/UCabc" }, text: "Artist" }),
+      " • ",
+      node("a", {
+        attrs: { href: "https://music.youtube.com/browse/VLPL123?ref=browse/MPRE" },
+        text: "A Playlist"
+      })
+    ]
+  });
+  assert.equal(read(playlist.doc, playlist.navigator, playlist.location).albumUrl, null);
+
+  const watch = musicPage({
+    href: MUSIC_WATCH,
+    title: "Song",
+    byline: [
+      node("a", { attrs: { href: "channel/UCabc" }, text: "Artist" }),
+      " • ",
+      node("a", {
+        attrs: { href: "https://music.youtube.com/watch?v=abc12345678&list=MPREb_x" },
+        text: "A Playlist"
+      })
+    ]
+  });
+  assert.equal(read(watch.doc, watch.navigator, watch.location).albumUrl, null);
+});
+
+test("a query containing /browse/MPRE or /channel/ is not a link", () => {
+  const page = musicPage({
+    href: MUSIC_WATCH,
+    title: "Song",
+    byline: [
+      node("a", {
+        attrs: { href: "https://music.youtube.com/playlist?list=PL123&next=/browse/MPREb_x" },
+        text: "A Playlist"
+      }),
+      " • ",
+      node("a", {
+        attrs: { href: "https://music.youtube.com/watch?v=abc12345678&next=/channel/UCy" },
+        text: "Nowhere"
+      })
+    ]
+  });
+  const state = read(page.doc, page.navigator, page.location);
+  assert.equal(state.albumUrl, null);
+  assert.equal(state.artistUrl, null);
+});
+
+test("a channel path stays an artist even when its query names another channel", () => {
+  const page = musicPage({
+    href: MUSIC_WATCH,
+    title: "Song",
+    byline: [
+      node("a", {
+        attrs: { href: "https://music.youtube.com/channel/UCx?next=/channel/UCy" },
+        text: "Artist"
+      })
+    ]
+  });
+  const state = read(page.doc, page.navigator, page.location);
+
+  assert.equal(state.artistUrl, "https://music.youtube.com/channel/UCx?next=/channel/UCy");
+});
+
+test("the complex-string fallback ignores a query that mentions an album path", () => {
+  const page = musicPage({
+    href: MUSIC_WATCH,
+    title: "Song",
+    byline: [node("a", { attrs: { href: "channel/UCabc" }, text: "Artist" })],
+    children: [
+      node("div", {
+        attrs: { class: "complex-string ytmusic-player-bar" },
+        children: [
+          node("a", {
+            attrs: { href: "watch?v=abc12345678&next=/browse/MPREb_x" },
+            text: "Not an album"
+          })
+        ]
+      })
+    ]
+  });
+  const state = read(page.doc, page.navigator, page.location);
+
+  assert.equal(state.albumUrl, null);
+});
+
 test("the complex-string album fallback keeps the last album anchor", () => {
   const page = musicPage({
     href: MUSIC_WATCH,

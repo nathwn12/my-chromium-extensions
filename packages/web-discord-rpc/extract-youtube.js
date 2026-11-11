@@ -250,6 +250,22 @@
     return origin + dir + raw;
   }
 
+  /**
+   * The path of an absolute URL, query and fragment dropped. Classification
+   * must never read the query: `?next=/browse/MPRE…` is not an album link.
+   */
+  function pathOf(href) {
+    if (typeof href !== "string") return null;
+    var m = /^[a-z][a-z0-9+.-]*:\/\/[^/?#]*([^?#]*)/i.exec(stripInvisible(href).trim());
+    if (!m) return null;
+    return m[1] || "/";
+  }
+
+  function pathStartsWith(href, prefix) {
+    var path = pathOf(href);
+    return path !== null && path.slice(0, prefix.length) === prefix;
+  }
+
   function pageUrlFor(href, source) {
     if (!href || !source) return null;
     var parts = parseHref(href);
@@ -481,8 +497,9 @@
       if (segments.length >= 2 && !/^\d{4}$/.test(segments[1])) segmentAlbum = segments[1];
     }
 
-    // Anchors are classified by their resolved href: /channel/ is an artist,
-    // /browse/MPRE an album. Playlist ids (/browse/VL…) never match.
+    // Anchors are classified by their resolved path: /channel/ is an artist,
+    // /browse/MPRE an album. Playlist ids (/browse/VL…) never match, and a
+    // query string that merely mentions one of those paths never qualifies.
     var anchors = collectAnchors(doc, RULES.dom.musicBylineLinks);
     var artistNames = [];
     var artistUrl = null;
@@ -494,7 +511,7 @@
       var href = attrOf(anchor, "href");
       var resolved = href ? absoluteUrl(href, base) : null;
       if (!resolved) continue;
-      if (resolved.indexOf("/channel/") !== -1) {
+      if (pathStartsWith(resolved, "/channel/")) {
         // The first channel anchor decides artistUrl; a rejected host stays null.
         if (!artistSeen) {
           artistSeen = true;
@@ -503,7 +520,7 @@
         var name = clean(textOf(anchor));
         if (name) artistNames.push(name);
       }
-      if (!albumAnchor && resolved.indexOf("/browse/MPRE") !== -1) {
+      if (!albumAnchor && pathStartsWith(resolved, "/browse/MPRE")) {
         albumAnchor = anchor;
         albumHref = resolved;
       }
@@ -514,7 +531,7 @@
       var fallbackAnchors = queryAll(doc, RULES.dom.musicAlbumLink);
       for (var f = fallbackAnchors.length - 1; f >= 0; f -= 1) {
         var fallbackHref = absoluteUrl(attrOf(fallbackAnchors[f], "href"), base);
-        if (fallbackHref && fallbackHref.indexOf("/browse/MPRE") !== -1) {
+        if (fallbackHref && pathStartsWith(fallbackHref, "/browse/MPRE")) {
           albumAnchor = fallbackAnchors[f];
           albumHref = fallbackHref;
           break;
