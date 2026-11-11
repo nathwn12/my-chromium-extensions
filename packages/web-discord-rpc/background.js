@@ -258,15 +258,18 @@ export function isRateScaled(state) {
 
 /**
  * The anchor offset for a non-1x sample: half the re-anchor interval's drift,
- * `(rate - 1) * (RATE_INTERVAL_MS / 2)` — +625 ms at 1.5x, -312.5 ms at 0.75x,
- * exactly 0 at 1x. Clamped to half the interval, and never past the whole
- * seconds the sample has already played: a positive bias that outran the
- * elapsed time would stamp a `start` in the future.
+ * subtracted — `-(rate - 1) * (RATE_INTERVAL_MS / 2)`, so -625 ms at 1.5x and
+ * +312.5 ms at 0.75x, exactly 0 at 1x. Discord counts elapsed as `now - start`,
+ * so an earlier `start` gives back the drift the interval accumulates: the
+ * error straddles the truth instead of always lagging. Clamped to half the
+ * interval, and a positive bias (a slower rate) never gives up more elapsed
+ * time than the sample has already played: that would stamp a `start` in the
+ * future.
  */
 export function rateBiasMs(state) {
   if (!isRateScaled(state)) return 0;
   const limit = RATE_INTERVAL_MS / 2;
-  const bias = Math.max(-limit, Math.min(limit, (state.playbackRate - 1) * limit));
+  const bias = Math.max(-limit, Math.min(limit, (1 - state.playbackRate) * limit));
   // A timestamp is only emitted with a real position (activity.js), and a
   // positive bias may never give up more elapsed time than the sample has
   // already played: that would stamp a `start` in the future.

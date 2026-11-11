@@ -454,19 +454,19 @@ test("rapid skips publish at most eight times per 20 s, newest wins", async () =
   assert.equal(flushed.at(-1).activity.status_display_type, 1);
 });
 
-test("at 1.5x the anchor is biased by half the 2.5 s interval", async () => {
+test("at 1.5x the anchor is biased half an interval earlier", async () => {
   const { chrome, clock, port } = await boot();
   connect(port);
   clock.advance(500);
   sendState(chrome, 1, musicState({ playbackRate: 1.5, position: 10, duration: 200 }));
 
   const sample = BASE + 500;
-  assert.equal(rateBiasMs({ playbackRate: 1.5 }), 625, "half of 2500 ms, scaled by rate - 1");
+  assert.equal(rateBiasMs({ playbackRate: 1.5 }), -625, "half of 2500 ms, negated for a faster rate");
   const frame = activities(port).at(-1);
   const unbiased = Math.floor(sample / 1000) - 10;
-  const biased = Math.floor((sample + 625) / 1000) - 10;
-  assert.equal(frame.activity.timestamps.start, biased, "the builder sees sample + 625 ms");
-  assert.equal(biased - unbiased, 1, "625 ms of real bias crosses one whole second here");
+  const biased = Math.floor((sample - 625) / 1000) - 10;
+  assert.equal(frame.activity.timestamps.start, biased, "the builder sees sample - 625 ms");
+  assert.equal(biased - unbiased, -1, "625 ms earlier crosses one whole second here");
   assert.equal(frame.activity.timestamps.end, biased + 200);
 });
 
@@ -487,19 +487,19 @@ test("at 1x the anchor carries no bias", async () => {
   );
 });
 
-test("at 0.75x the anchor is biased earlier", async () => {
+test("at 0.75x the anchor is biased later", async () => {
   const { chrome, clock, port } = await boot();
   connect(port);
-  clock.advance(100);
+  clock.advance(800);
   sendState(chrome, 1, musicState({ playbackRate: 0.75, position: 10, duration: 200 }));
 
-  const sample = BASE + 100;
-  assert.equal(rateBiasMs({ playbackRate: 0.75 }), -312.5);
+  const sample = BASE + 800;
+  assert.equal(rateBiasMs({ playbackRate: 0.75 }), 312.5, "a slower rate biases forward");
   const unbiased = Math.floor(sample / 1000) - 10;
-  const biased = Math.floor((sample - 312.5) / 1000) - 10;
+  const biased = Math.floor((sample + 312.5) / 1000) - 10;
   const frame = activities(port).at(-1);
   assert.equal(frame.activity.timestamps.start, biased);
-  assert.ok(frame.activity.timestamps.start < unbiased, "a slower rate starts earlier");
+  assert.ok(frame.activity.timestamps.start > unbiased, "a slower rate starts later");
 });
 
 test("at 1.5x a second update one second later waits for the 2500 ms interval", async () => {
@@ -570,7 +570,7 @@ test("a track change at 1.5x still publishes at once", async () => {
   assert.equal(frames.at(-1).activity.details, "Next Song");
   assert.equal(
     frames.at(-1).activity.timestamps.start,
-    Math.floor((BASE + 700 + 625) / 1000) - 10,
+    Math.floor((BASE + 700 - 625) / 1000) - 10,
     "the urgent send carries the same bias"
   );
 });
