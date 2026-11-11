@@ -20,10 +20,21 @@
  *     artist.
  * The album also keeps its tooltip (`assets.large_text`) while unique.
  *
- * Timestamps are integer SECONDS on the wire: `start = floor(now/1000) -
+ * Timestamps are integer SECONDS on the wire: `start = floor(anchor/1000) -
  * floor(clamp(position))`, `end = start + floor(duration)`. Nothing is
  * stamped unless the tab is playing with a finite position and a positive
  * duration; `now` goes in as milliseconds.
+ *
+ * The anchor is a property of the SAMPLE, never of the send. `now` is the
+ * instant the position was sampled, and a finite `state.at` (the content
+ * script's own stamp) is that instant whenever it is not more than 5 seconds
+ * ahead of `now`; otherwise — no stamp, a junk stamp, or a stamp far in the
+ * future — the passed `now` is used. Discord renders elapsed time as
+ * `clientNow - start`, so anchoring to the send instead would push `start`
+ * later by exactly the staleness: the bar would lose the time since the last
+ * sample on every rebuild and snap back on the next media event. Anchoring to
+ * the sample makes the payload for one sample byte-identical whenever it is
+ * rebuilt, which is what lets the worker skip the resend.
  *
  * `status_display_type: 1` (State) asks the member list to show the artist
  * from `state` instead of the app name. UNVERIFIED: actual Discord member-list
@@ -42,6 +53,8 @@ const MAX_TEXT = 128;
 const MAX_BUTTON_LABEL = 32;
 const MAX_BUTTON_URL = 512;
 const MAX_LINK_URL = 256;
+/** A sample stamp this far ahead of `now` is still trusted, as clock skew. */
+const SAMPLE_SKEW_MS = 5000;
 
 /** Member-list line: 1 = State (the artist). See header UNVERIFIED note. */
 export const STATUS_DISPLAY_STATE = 1;
@@ -111,11 +124,14 @@ export function pickLinkUrl(raw) {
 /**
  * ONE activity for the Music state, or null.
  *
- * Timestamps follow the contract exactly: `start = floor(now/1000) -
+ * Timestamps follow the contract exactly: `start = floor(anchor/1000) -
  * floor(clamp(position))`, `end = start + floor(duration)`, position clamped
  * to `[0, duration]`, and no timestamps at all unless the tab is playing with
- * a positive duration and a real position. `now` is milliseconds on input;
- * whole seconds leave on the wire.
+ * a positive duration and a real position. `now` is milliseconds and means
+ * "the instant the position was sampled"; the anchor is `state.at` when that
+ * is a finite stamp no more than 5 s ahead of `now`, else `now` itself — so a
+ * state sampled at T stamps the same `start` however late it is rebuilt.
+ * Whole seconds leave on the wire.
  *
  * Accepts the legacy `(source, state, now)` call shape: when the first
  * argument is the `"youtube-music"` source string it is skipped.
@@ -133,6 +149,13 @@ export function buildActivity(sourceOrState, stateOrNow, nowArg = Date.now()) {
   }
   const meta = SOURCE_META[SOURCE_YOUTUBE_MUSIC];
   if (!state || typeof state !== "object") return null;
+
+  // The sample's own stamp wins, never the moment of the rebuild; a stamp
+  // further than SAMPLE_SKEW_MS ahead is treated as junk and ignored.
+  const sampledAt =
+    typeof state.at === "number" && Number.isFinite(state.at) ? state.at : null;
+  const anchor =
+    sampledAt !== null && sampledAt - now <= SAMPLE_SKEW_MS ? sampledAt : now;
 
   const details = clampText(state.title);
   if (!details) return null;
@@ -210,7 +233,7 @@ export function buildActivity(sourceOrState, stateOrNow, nowArg = Date.now()) {
     Number.isFinite(position)
   ) {
     const clamped = Math.min(Math.max(position, 0), duration);
-    const start = Math.floor(now / 1000) - Math.floor(clamped);
+    const start = Math.floor(anchor / 1000) - Math.floor(clamped);
     activity.timestamps = {
       start,
       end: start + Math.floor(duration),

@@ -429,6 +429,31 @@ test("elapsed/end come from the real media clock: audio-backed playback still st
   assert.ok(activity.timestamps.end > activity.timestamps.start);
 });
 
+const SAMPLE_AT = 1_700_000_000_000;
+
+test("the anchor is the sample instant: a late rebuild yields the same start", () => {
+  const sampled = musicState({ position: 40, at: SAMPLE_AT });
+  const prompt = buildActivity(sampled, SAMPLE_AT);
+  const late = buildActivity(sampled, SAMPLE_AT + 45_000);
+
+  assert.equal(prompt.timestamps.start, Math.floor(SAMPLE_AT / 1000) - 40);
+  assert.equal(late.timestamps.start, Math.floor(SAMPLE_AT / 1000) - 40);
+  assert.deepEqual(late, prompt, "the payload for one sample is rebuild-stable");
+});
+
+test("a state without `at` keeps the passed now as the anchor", () => {
+  const activity = buildActivity(musicState({ position: 5 }), SAMPLE_AT + 45_000);
+  assert.equal(activity.timestamps.start, Math.floor((SAMPLE_AT + 45_000) / 1000) - 5);
+});
+
+test("a sample stamp up to 5 s ahead is trusted, further ahead is ignored for now", () => {
+  const ahead = buildActivity(musicState({ position: 5, at: SAMPLE_AT + 5_000 }), SAMPLE_AT);
+  assert.equal(ahead.timestamps.start, Math.floor((SAMPLE_AT + 5_000) / 1000) - 5);
+
+  const skewed = buildActivity(musicState({ position: 5, at: SAMPLE_AT + 60_000 }), SAMPLE_AT);
+  assert.equal(skewed.timestamps.start, Math.floor(SAMPLE_AT / 1000) - 5);
+});
+
 test("clampText collapses whitespace, rejects short text and caps length", () => {
   assert.equal(clampText("  a   b  "), "a b");
   assert.equal(clampText("a"), null);

@@ -149,6 +149,20 @@ export function pickBestTab(entries) {
 }
 
 /**
+ * The instant a tab's state was sampled: the content script's own `state.at`
+ * when it is a finite number, else the moment the worker received it. This is
+ * the anchor handed to `buildActivity`, so a rebuild never moves `start`.
+ */
+export function sampleAt(entry, fallback = 0) {
+  if (!entry || typeof entry !== "object") return fallback;
+  const sampled = entry.state ? entry.state.at : undefined;
+  if (typeof sampled === "number" && Number.isFinite(sampled)) return sampled;
+  const reported = entry.at;
+  if (typeof reported === "number" && Number.isFinite(reported)) return reported;
+  return fallback;
+}
+
+/**
  * True when a ping is still awaiting its pong past the bounded window: the
  * host is hung and the bridge must be marked disconnected so the normal
  * reconnect path runs. Pure so tests can prove the timeout without timers.
@@ -592,7 +606,10 @@ export function createWorker({
     pruneStale(tabs, now());
     persistTabs();
     const best = pickBestTab([...tabs.values()]);
-    desired = best ? buildActivity(best.state, now()) : null;
+    // Anchor to when the state was sampled, never to this rebuild: the same
+    // sample must produce the same payload, so `push` skips the resend and
+    // Discord's bar keeps counting instead of snapping forward every tick.
+    desired = best ? buildActivity(best.state, sampleAt(best, now())) : null;
     hasDesired = true;
     persist();
     push(false);
