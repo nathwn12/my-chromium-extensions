@@ -2,7 +2,11 @@
 
 Notable changes to this package. Dates are ISO 8601. This package is local-only and is not published to a registry.
 
-## [1.1.0] — 2026-11-11
+## [1.1.1] - 2026-11-11
+
+- Timestamps are anchored to the instant the position was sampled, so the progress bar never jumps or lags after a watchdog tick or a Discord reconnect.
+
+## [1.1.0] - 2026-11-11
 
 - The activity maps onto the official Spotify presence field for field: `details` is the track, `state` the artist anchors joined with `"; "`, `assets.large_image` the album art, `assets.large_text` the album while it is distinct, and there is no small image.
 - The card carries four click targets: the track title opens the song, the artist line opens the artist channel, the album art opens the album, and two buttons cover the song and the album or artist channel.
