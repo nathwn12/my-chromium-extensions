@@ -13,6 +13,30 @@ function boot(page, options = {}) {
   return loadContent({ extractSource, contentSource, page, ...options });
 }
 
+/**
+ * content.js runs inside the fake page's vm realm, which owns its own `Date`.
+ * The page helper exposes no clock, so the test installs one through `window`
+ * before the script body runs.
+ */
+function fakeClock(start = 1_700_000_000_000) {
+  let now = start;
+  return {
+    now: () => now,
+    advance(ms) {
+      now += ms;
+    }
+  };
+}
+
+function bootWithClock(page, clock) {
+  page.win.__wdrNow = clock.now;
+  return loadContent({
+    extractSource,
+    contentSource: `Date.now = window.__wdrNow;\n${contentSource}`,
+    page
+  });
+}
+
 function states(handle) {
   return handle.messages.filter((message) => message.t === "wdr-state");
 }
@@ -68,6 +92,53 @@ test("the 1 s poll reports a title or pause change once, then stays quiet", () =
   handle.poll();
   assert.equal(handle.messages.length, 3);
   assert.equal(handle.messages[2].state.paused, false);
+});
+
+test("the poll reports a seek no media event announced", () => {
+  const page = musicWatch("First Song", { duration: 300, currentTime: 10, paused: false });
+  const clock = fakeClock();
+  const handle = bootWithClock(page, clock);
+  assert.equal(states(handle).length, 1);
+  assert.equal(states(handle)[0].state.position, 10);
+  page.doc.querySelector("audio").currentTime = 190;
+  clock.advance(1000);
+  handle.poll();
+  assert.equal(states(handle).length, 2);
+  assert.equal(states(handle)[1].state.position, 190);
+});
+
+test("steady playback drifts by rounding only, so the poll stays quiet", () => {
+  const page = musicWatch("First Song", { duration: 300, currentTime: 10, paused: false });
+  const clock = fakeClock();
+  const handle = bootWithClock(page, clock);
+  assert.equal(handle.messages.length, 1);
+  clock.advance(1000);
+  page.doc.querySelector("audio").currentTime = 11;
+  handle.poll();
+  assert.equal(handle.messages.length, 1);
+});
+
+test("a paused page whose position jumps never drift-reports", () => {
+  const page = musicWatch("First Song", { duration: 300, currentTime: 10 });
+  const clock = fakeClock();
+  const handle = bootWithClock(page, clock);
+  assert.equal(states(handle)[0].state.paused, true);
+  page.doc.querySelector("audio").currentTime = 190;
+  clock.advance(1000);
+  handle.poll();
+  assert.equal(handle.messages.length, 1);
+});
+
+test("a title change still reports on the next poll", () => {
+  const page = musicWatch("First Song", { duration: 300, currentTime: 10, paused: false });
+  const clock = fakeClock();
+  const handle = bootWithClock(page, clock);
+  page.doc.querySelector("ytmusic-player-bar .title").textContent = "Second Song";
+  clock.advance(1000);
+  page.doc.querySelector("audio").currentTime = 11;
+  handle.poll();
+  assert.equal(handle.messages.length, 2);
+  assert.equal(handle.messages[1].state.title, "Second Song");
 });
 
 test("same-URL SPA updates report immediately", () => {

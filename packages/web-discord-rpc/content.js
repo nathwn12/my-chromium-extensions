@@ -7,8 +7,9 @@
  *
  * Only the top frame may report: a subframe's state would overwrite the tab's
  * real activity. Media events, SPA navigation, visibility and pagehide drive
- * reports; a 1 s URL/title/pause poll covers the gaps. `timeupdate` is never
- * observed.
+ * reports; a 1 s URL/title/pause poll covers the gaps, and predicts the running
+ * position so a seek whose events were swallowed still re-aligns the card.
+ * `timeupdate` is never observed.
  */
 (function () {
   "use strict";
@@ -35,6 +36,9 @@
     "emptied"
   ];
   var POLL_MS = 1000;
+  // A live position this far from the anchored one is a seek, a rate change or
+  // an event we never saw — not rounding.
+  var DRIFT_SECONDS = 2.5;
   // YouTube's player swaps its DOM after the URL changes; read once it settles.
   var SPA_SETTLE_MS = 250;
 
@@ -42,6 +46,7 @@
   var lastSource = null;
   var lastTitle = null;
   var lastPaused = null;
+  var lastSample = null;
   var reported = false;
   var settleTimer = null;
 
@@ -83,11 +88,13 @@
     if (!reported) {
       lastTitle = null;
       lastPaused = null;
+      lastSample = null;
       return;
     }
     reported = false;
     lastTitle = null;
     lastPaused = null;
+    lastSample = null;
     send({ t: "wdr-gone", source: sourceNow() || lastSource, scope: "tab" });
   }
 
@@ -105,6 +112,12 @@
     lastSource = source;
     lastTitle = state.title;
     lastPaused = state.paused;
+    lastSample = {
+      title: state.title,
+      paused: state.paused,
+      position: state.position,
+      at: state.at
+    };
     reported = true;
     send({ t: "wdr-state", source: source, state: state });
   }
@@ -145,6 +158,21 @@
     reportNow();
   }
 
+  /**
+   * The poll's own check on the player: if playback is running, the anchored
+   * position predicts where the live one should be. A position far from that
+   * prediction is a seek, a rate change or a swallowed event, so report it and
+   * re-anchor. Rounding keeps a steady playback well inside the threshold.
+   */
+  function drifted(state) {
+    var last = lastSample;
+    if (!last || last.paused || state.paused) return false;
+    var live = state.position;
+    if (!isFinite(live) || !isFinite(last.position)) return false;
+    var expected = last.position + (Date.now() - last.at) / 1000;
+    return Math.abs(live - expected) > DRIFT_SECONDS;
+  }
+
   function tick() {
     checkUrl();
     var state = readState();
@@ -154,7 +182,9 @@
     }
     if (!reported || state.title !== lastTitle || state.paused !== lastPaused) {
       report(state);
+      return;
     }
+    if (drifted(state)) report(state);
   }
 
   for (var i = 0; i < MEDIA_EVENTS.length; i += 1) {
