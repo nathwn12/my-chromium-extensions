@@ -568,6 +568,9 @@ export function createWorker({
   function onPortDisconnect() {
     const message = api.runtime?.lastError?.message;
     dropPort();
+    // A payload queued for a dead port is stale by definition: `push(true)` on
+    // reconnect replays the current desired activity instead.
+    if (limiter) limiter.cancelPending();
     applyFailure(message || "native host disconnected");
     scheduleReconnect();
   }

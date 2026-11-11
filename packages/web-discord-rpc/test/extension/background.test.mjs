@@ -565,6 +565,34 @@ test("a port loss keeps the desired state and replays it after the reconnect", a
   assert.equal(replay[0].activity.timestamps.start, Math.floor(BASE / 1000) - 40);
 });
 
+test("a port loss drops the deferred payload and the reconnect sends only the current one", async () => {
+  const { chrome, clock, port } = await boot();
+  connect(port);
+  sendState(chrome, 1, musicState({ position: 1 }));
+  assert.equal(activities(port).length, 1);
+
+  clock.advance(200);
+  sendState(chrome, 1, musicState({ position: 180 }));
+  assert.equal(activities(port).length, 1, "the seek is deferred inside the gap");
+
+  // The port dies with that payload still queued, and the truth moves on
+  // before the backoff opens the next port.
+  port.onDisconnect.fire();
+  sendState(chrome, 1, musicState({ position: 190 }));
+  clock.advance(BACKOFF_MIN_MS);
+  const reconnected = chrome.ports[1];
+  assert.equal(reconnected.sent[0].t, "hello");
+
+  // Past the old gap deadline: a surviving payload would fire down the new port.
+  clock.advance(MIN_GAP_MS - 200 - BACKOFF_MIN_MS);
+  assert.equal(activities(reconnected).length, 0, "a dead port's queue is dropped, never replayed");
+
+  connect(reconnected);
+  const replay = activities(reconnected);
+  assert.equal(replay.length, 1);
+  assert.equal(replay[0].activity.timestamps.start, Math.floor((BASE + 200) / 1000) - 190);
+});
+
 test("a tab-scoped gone clears Music presence", async () => {
   const { chrome, port } = await boot();
   connect(port);
