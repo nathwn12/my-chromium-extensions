@@ -1,33 +1,30 @@
-# Digest — 2026-11-11 07:13
+# Digest — 2026-11-11 15:12
 
 Rewritten by the lead. Newest first. An empty section is a true statement.
 
-**Objective** — connected but still Nothing playing: the music tab URL is music.youtube.com with no v= id while a song plays from a shelf, and extract-youtube.js refuses any page without a media id in the URL; live probe proved Discord accepts the exact activity shape, so extraction is the only blocker
+**Objective** — Done, superseded. The YouTube Presence Music-only work landed in `54fb974` / `71fe194` and was built upon through 1.1.7 (`21ad6a1`, 42 commits later), which still carries the Music-only source, artist status and real-media timestamps. The owner closed the session; live Discord observation is no longer owed.
 
 ## Needs you
 
-_Nothing. The owner has no open decision._
+_Nothing. No open decision, no open seam._
 
-## New
+## Landed evidence
 
-- **LANDED** · just now · wdr-1-0-1 272d65c + c7bc11f: YouTube Presence 1.0.1 in manifest, package.json, README cell and changelog (dated 2026-11-11 to match repo dating); suite + verifier green, ready GO
-- **LANDED** · just now · wdr-1-0-1
-- **LANDED** · just now · wdr-1-0-1 behind 2026-11-10T23:12:53.609Z
-- **READY** · just now · wdr-1-0-1: GO
-- **NOTE** · 6m · check green at 9dea977: test, typecheck, lint, web-selftest, crp-selftest, web-e2e, verify
-- **LANDED** · 7m · wdr-docs-guard 0b4e53b: unknown-pages row split for YouTube vs Music plus a doc-drift guard with four assertions; docs.test 12/12, verifier 16/16, full ready 7/7 green at that head; one seeded green-only failure text in the report copied the brief's stale prediction
-- **LANDED** · 7m · wdr-docs-guard
-- **LANDED** · 7m · wdr-docs-guard behind 2026-11-10T23:06:08.235Z
+- `54fb974` Music-only presence: one IPC path, one persisted toggle, artist in `status_display_type: 1`, duplicate album suppressed, real-media elapsed/end, 1.0.4 across manifest/package/lockfile/docs.
+- `71fe194` native selftest aligned to the Music-only roster.
+- Verified by the lead at `71fe194`: package tests 212/212, native selftest 10/10, verifier 16/16, ready gate GO on 7/7 checks.
+- Independent audit FAILed `54fb974` on the then-red `web-selftest`; `71fe194` closed exactly that reason.
 
-## In progress
+## Unverified
 
-_No briefed seam is open._
+- Discord member-list artist line and duplicate-free expanded card were never observed live. Superseded by later releases; not owed.
+
+## Housekeeping
+
+- Scoped sweep ran 2026-11-11: no junk. One huge candidate reported, not deleted: `%TEMP%\opencode\iso2\iso.db` (6.95 GB).
+- Three preserved stashes (designer UI, partial Music-only, WIP + display fix) are superseded; retained, not dropped.
+- Scratch `.stack/fix-extract.mjs` removed; session briefs committed with this closure.
 
 ## Stall watch
 
-_No seam is older than six hours._
-
-## Landed, unaudited
-
-- wdr-music-any-page landed without a recorded verdict. Run `stacked-audit` and log it.
-- wdr-docs-truth landed without a recorded verdict. Run `stacked-audit` and log it.
+_Nothing live._
