@@ -2,9 +2,13 @@
 
 Notable changes to this package. Dates are ISO 8601. This package is local-only and is not published to a registry.
 
+## [1.1.6] - 2026-11-11
+
+- A queued update is dropped when the port dies, and the pacing docs no longer promise more than the poll can detect.
+
 ## [1.1.5] - 2026-11-11
 
-- A queued update is dropped when the desired card returns to the one already published, so stale data can never overwrite what Discord is showing.
+- A queued update is dropped when the desired card returns to the published one or when the port dies, so a payload queued for a state that is no longer true is never sent later. Two edges remain: a rate change the player never reports can mask or delay one drift report until the next poll, and buffering can still produce a single report.
 - The drift check respects the reported playback rate and stays quiet while buffering, so playback that has not actually moved no longer churns the card.
 
 ## [1.1.4] - 2026-11-11
