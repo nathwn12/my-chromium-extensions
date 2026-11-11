@@ -44,14 +44,14 @@ test("timestamp documentation requires real media position and duration", () => 
   }
 });
 
-test("version 1.1.2 is aligned across package, manifest, root index and changelog", () => {
+test("version 1.1.3 is aligned across package, manifest, root index and changelog", () => {
   const pkg = JSON.parse(read("package.json"));
   const manifest = JSON.parse(read("manifest.json"));
-  assert.equal(pkg.version, "1.1.2");
-  assert.equal(manifest.version, "1.1.2");
-  assert.equal(rootLock.packages["packages/web-discord-rpc"].version, "1.1.2");
-  assert.match(changelog, /\[1\.1\.2\]/);
-  assert.match(rootReadme, /YouTube Music.*\| 1\.1\.2/);
+  assert.equal(pkg.version, "1.1.3");
+  assert.equal(manifest.version, "1.1.3");
+  assert.equal(rootLock.packages["packages/web-discord-rpc"].version, "1.1.3");
+  assert.match(changelog, /\[1\.1\.3\]/);
+  assert.match(rootReadme, /YouTube Music.*\| 1\.1\.3/);
   assert.equal(DEFAULT_CLIENT_ID, "1566530911514923188");
 });
 

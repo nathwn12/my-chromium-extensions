@@ -2,6 +2,12 @@
 
 Notable changes to this package. Dates are ISO 8601. This package is local-only and is not published to a registry.
 
+## [1.1.3] - 2026-11-11
+
+- A localized view count can no longer be read as the artist: the artist line comes only from artist anchors or MediaSession, never from an arbitrary byline segment.
+- The cover tooltip is only used when it says something the card does not, so a view count that repeats the visible lines is dropped.
+- Every button target is shape-checked - a track URL must be a watch page with an 11-character id, an album URL a `/browse/MPRE` page, an artist URL a `/channel` page - and anything else is dropped rather than repointed.
+
 ## [1.1.2] — 2026-11-11
 
 - The card carries no link fields and no underlined text: `details_url`, `state_url` and `large_url` are gone, so the track title, artist and album are plain text and the two buttons are the only click targets.

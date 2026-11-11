@@ -11,13 +11,17 @@
  * way to link without the underline, so no `*_url` field is ever emitted —
  * not `details_url`, not `state_url`, not `assets.large_url`. The cover is
  * not a link. Two buttons are the only clickable things, each pinned to https
- * on `music.youtube.com` and capped at 512 characters:
- *   - button 1 "Listen on YouTube Music" -> the canonical track URL; `pageUrl`
- *     only when it is itself a `/watch` page with an 11-character `v`, else no
- *     button 1 at all; button 2 "View album" / "View artist" -> album, else
- *     artist.
- * The cover tooltip (`assets.large_text`) is the album while it is unique,
- * else the view count, else absent.
+ * on `music.youtube.com` and capped at 512 characters, and each judged by its
+ * own path — a same-host Home or Explore URL is never a button:
+ *   - button 1 "Listen on YouTube Music" -> the canonical track URL, which
+ *     must be `/watch` with an 11-character `v`; `pageUrl` is only a fallback
+ *     when it has that same shape, else no button 1 at all.
+ *   - button 2 "View album" -> an album URL whose path starts `/browse/MPRE`,
+ *     else "View artist" -> an artist URL whose path starts `/channel/`.
+ *     A URL that fails its shape is dropped; it never becomes another target.
+ * The cover tooltip (`assets.large_text`) is the album while it is distinct
+ * from every visible line, else the view count while it is distinct from
+ * them, else absent. The title is never the tooltip.
  *
  * Timestamps are integer SECONDS on the wire: `start = floor(anchor/1000) -
  * floor(clamp(position))`, `end = start + floor(duration)`. Nothing is
@@ -98,6 +102,30 @@ export function pickButtonUrl(raw) {
 
 /** A YouTube Music song page: `/watch` and video id `v`, exactly as YTM serves it. */
 const WATCH_ID = /^[A-Za-z0-9_-]{11}$/;
+/** Album and artist pages are told apart by path, never by host or query. */
+const ALBUM_PATH = "/browse/MPRE";
+const ARTIST_PATH = "/channel/";
+
+/** A button URL only for a path with the given prefix; host/scheme/length first. */
+function pathShapedUrl(raw, prefix) {
+  const url = pickButtonUrl(raw);
+  if (!url) return null;
+  try {
+    return new URL(url).pathname.startsWith(prefix) ? url : null;
+  } catch {
+    return null;
+  }
+}
+
+/** An album button opens `/browse/MPRE…`, never Home or a playlist. */
+function albumPageUrl(raw) {
+  return pathShapedUrl(raw, ALBUM_PATH);
+}
+
+/** An artist button opens `/channel/…`, never Home or a watch page. */
+function artistPageUrl(raw) {
+  return pathShapedUrl(raw, ARTIST_PATH);
+}
 
 /**
  * The page URL is only a song when it is that song's own watch page. YTM is
@@ -162,9 +190,12 @@ export function buildActivity(sourceOrState, stateOrNow, nowArg = Date.now()) {
   const channel = clampText(state.channel);
   const album = clampText(state.album);
 
-  const trackUrl = pickButtonUrl(state.trackUrl);
-  const artistUrl = pickButtonUrl(state.artistUrl);
-  const albumUrl = pickButtonUrl(state.albumUrl);
+  // Each button is decided by its own path shape, so a same-host Home or
+  // Explore URL never becomes one; a URL that fails its shape is dropped and
+  // never stands in for a different target.
+  const trackUrl = watchPageUrl(state.trackUrl);
+  const artistUrl = artistPageUrl(state.artistUrl);
+  const albumUrl = albumPageUrl(state.albumUrl);
 
   // Music header is static: Discord renders "Listening to <name>", so the
   // artist must live in `state` to stay visible in the member list and the
@@ -179,6 +210,10 @@ export function buildActivity(sourceOrState, stateOrNow, nowArg = Date.now()) {
     stateLine = meta.label;
   }
 
+  /** Tooltip text must say something no visible line already says. */
+  const distinct = (text) =>
+    Boolean(text) && !same(text, details) && !same(text, stateLine) && !same(text, meta.name);
+
   const activity = {
     name: meta.name,
     type: meta.type,
@@ -191,20 +226,15 @@ export function buildActivity(sourceOrState, stateOrNow, nowArg = Date.now()) {
   if (artwork) {
     activity.assets = { large_image: artwork };
     // Tooltip only, and only when it says something the card does not: the
-    // album while it is unique, else the view count. The title owns line 1
-    // and is never repeated here.
+    // album while it is distinct, else the view count while it is distinct.
+    // The title owns line 1 and is never repeated here.
     const views =
       typeof state.views === "string" && state.views.trim()
         ? state.views.replace(/\s+/g, " ").trim().slice(0, MAX_TEXT)
         : null;
-    if (
-      album &&
-      !same(album, details) &&
-      !same(album, meta.name) &&
-      !same(album, stateLine)
-    ) {
+    if (distinct(album)) {
       activity.assets.large_text = album;
-    } else if (views) {
+    } else if (distinct(views)) {
       activity.assets.large_text = views;
     }
   }

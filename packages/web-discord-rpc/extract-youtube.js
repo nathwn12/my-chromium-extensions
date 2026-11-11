@@ -10,6 +10,17 @@
  * Rule of this file: never throw. Every field is nullable; a malformed page
  * yields nulls, never an exception. Playback comes from the real media
  * element (`<video>` or `<audio>`); duration is never invented.
+ *
+ * MediaSession values are trusted as-is: when the page publishes a title,
+ * artist or album there, it is taken verbatim and only trimmed/collapsed like
+ * every other string. The player-bar DOM outranks it for the artist and the
+ * album because those come with the anchor the button opens.
+ *
+ * An artist is structural, never textual: only a `/channel/` anchor,
+ * MediaSession's `artist`, or JSON-LD's `author` may name one. A byline
+ * segment is never promoted to artist, so a localized count such as
+ * `1,5 M vues` can never become one; a real name such as `50 Cent` is not
+ * special-cased either — it survives only through one of those three sources.
  */
 (function (root) {
   "use strict";
@@ -493,22 +504,16 @@
   }
 
   function readMusicDom(doc, base) {
-    // A byline without anchors still names the artist as text; it is the last
-    // fallback after the anchors and MediaSession. A view-count segment is
-    // never an artist and never an album: it is its own field.
+    // The byline is read for the view count only. Its text is never an artist:
+    // only an anchor names one, so `1,5 M vues` (no anchors) cannot become
+    // the artist and needs no localized-count pattern to reject.
     var byline = clean(textOf(queryOne(doc, RULES.dom.musicByline)));
-    var segmentChannel = null;
     var views = null;
     if (byline) {
       var parts = byline.split("•");
-      var segments = [];
       for (var i = 0; i < parts.length; i += 1) {
         var segment = clean(parts[i]);
-        if (segment) segments.push(segment);
-      }
-      if (segments.length && !isViewCount(segments[0])) segmentChannel = segments[0];
-      for (var v = 0; v < segments.length && !views; v += 1) {
-        if (isViewCount(segments[v])) views = segments[v];
+        if (segment && !views && isViewCount(segment)) views = segment;
       }
     }
 
@@ -567,7 +572,6 @@
     return {
       title: clean(textOf(queryOne(doc, RULES.dom.musicTitle))),
       channel: artistNames.length ? clean(artistNames.join("; ")) : null,
-      segmentChannel: segmentChannel,
       album: albumAnchor ? clean(textOf(albumAnchor)) : null,
       views: views,
       artwork: httpsUrl(attrOf(firstMatch(doc, RULES.dom.musicArtwork), "src")),
@@ -614,10 +618,10 @@
 
     // Music precedence: session first, then the player bar, JSON-LD, OG, title.
     var title = (session && session.title) || dom.title || (ld && ld.name) || ogTitle || documentTitle;
-    // Artist anchors outrank the session; a byline without anchors falls back
-    // to MediaSession's artist, then to the byline's first segment (never a
-    // view count).
-    var channel = dom.channel || (session && session.artist) || dom.segmentChannel || (ld && ld.author);
+    // Artist anchors outrank the session; without an anchor MediaSession's
+    // artist is trusted as-is, then JSON-LD's author. A byline segment is
+    // never an artist, so a localized count cannot become one.
+    var channel = dom.channel || (session && session.artist) || (ld && ld.author);
     // Album text and album URL come from the same matched anchor, so the
     // tooltip can never name an album the link does not open. MediaSession's
     // album is the only other source: a byline segment is never an album.
