@@ -14,8 +14,10 @@
  *   - the artist / album line -> `state_url` (the URL of the line it sits on;
  *     omitted when that line has no link)
  *   - the album art -> `assets.large_url` (album, else artist, else track)
- *   - button 1 "Listen on YouTube Music" -> the track URL, `pageUrl` as last
- *     resort; button 2 "View album" / "View artist" -> album, else artist.
+ *   - button 1 "Listen on YouTube Music" -> the track URL; `pageUrl` only
+ *     when it is itself a `/watch` page with an 11-character `v`, else no
+ *     button 1 at all; button 2 "View album" / "View artist" -> album, else
+ *     artist.
  * The album also keeps its tooltip (`assets.large_text`) while unique.
  *
  * Timestamps are integer SECONDS on the wire: `start = floor(now/1000) -
@@ -72,6 +74,27 @@ export function pickButtonUrl(raw) {
   const url = httpsUrl(raw);
   if (!url || url.length > MAX_BUTTON_URL) return null;
   return url;
+}
+
+/** A YouTube Music song page: `/watch` and video id `v`, exactly as YTM serves it. */
+const WATCH_ID = /^[A-Za-z0-9_-]{11}$/;
+
+/**
+ * The page URL is only a song when it is that song's own watch page. YTM is
+ * an SPA, so a playing tab's `pageUrl` can be Home, Explore, a playlist or a
+ * channel; opening any of those from the card is the wrong door. Outer host,
+ * scheme and length policy stays `pickButtonUrl`'s.
+ */
+function watchPageUrl(raw) {
+  const url = pickButtonUrl(raw);
+  if (!url) return null;
+  try {
+    const parsed = new URL(url);
+    if (parsed.pathname !== "/watch") return null;
+    return WATCH_ID.test(parsed.searchParams.get("v") || "") ? url : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -168,7 +191,7 @@ export function buildActivity(sourceOrState, stateOrNow, nowArg = Date.now()) {
   }
 
   const label = clampText(meta.buttonLabel, MAX_BUTTON_LABEL);
-  const primaryUrl = trackUrl || pickButtonUrl(state.pageUrl);
+  const primaryUrl = trackUrl || watchPageUrl(state.pageUrl);
   const buttons = [];
   if (primaryUrl && label) buttons.push({ label, url: primaryUrl });
   // Decided by URL, never by album text: an album name with no album link

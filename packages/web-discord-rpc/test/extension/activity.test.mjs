@@ -172,9 +172,10 @@ test("a track with no album links the artist from the state line, the art and bu
 });
 
 test("no links: the three url fields are absent and one button remains", () => {
+  const watch = "https://music.youtube.com/watch?v=abc12345678";
   const activity = buildActivity(
     "youtube-music",
-    musicState({ trackUrl: null, artistUrl: null, albumUrl: null }),
+    musicState({ trackUrl: null, artistUrl: null, albumUrl: null, pageUrl: watch }),
     NOW
   );
   assert.equal("details_url" in activity, false);
@@ -182,16 +183,77 @@ test("no links: the three url fields are absent and one button remains", () => {
   assert.equal("large_url" in activity.assets, false);
   assert.deepEqual(Object.keys(activity.assets), ["large_image", "large_text"]);
   assert.deepEqual(activity.buttons, [
-    { label: "Listen on YouTube Music", url: "https://music.youtube.com/watch?v=song123" },
+    { label: "Listen on YouTube Music", url: watch },
   ]);
+});
+
+test("the listen button never falls back to a page URL that is not a watch page", () => {
+  for (const pageUrl of ["https://music.youtube.com/", "https://music.youtube.com/explore"]) {
+    const activity = buildActivity(
+      "youtube-music",
+      musicState({ trackUrl: null, artistUrl: null, albumUrl: null, pageUrl }),
+      NOW
+    );
+    assert.equal("buttons" in activity, false, `expected no buttons for ${pageUrl}`);
+  }
+});
+
+test("the listen button falls back to a real watch page URL carrying an 11-character v", () => {
+  const watch = "https://music.youtube.com/watch?v=abc12345678";
+  const activity = buildActivity(
+    "youtube-music",
+    musicState({ trackUrl: null, artistUrl: null, albumUrl: null, pageUrl: watch }),
+    NOW
+  );
+  assert.deepEqual(activity.buttons, [
+    { label: "Listen on YouTube Music", url: watch },
+  ]);
+});
+
+test("the canonical track URL wins over any page URL", () => {
+  for (const pageUrl of [
+    "https://music.youtube.com/explore",
+    "https://music.youtube.com/watch?v=abc12345678",
+    null,
+  ]) {
+    const activity = buildActivity(
+      "youtube-music",
+      musicState({
+        trackUrl: "https://music.youtube.com/watch?v=song123",
+        artistUrl: null,
+        albumUrl: null,
+        pageUrl,
+      }),
+      NOW
+    );
+    assert.deepEqual(activity.buttons, [
+      { label: "Listen on YouTube Music", url: "https://music.youtube.com/watch?v=song123" },
+    ]);
+  }
+});
+
+test("a watch page URL whose v is not 11 characters is not a song", () => {
+  for (const v of ["abc1234567", "abc123456789", ""]) {
+    const activity = buildActivity(
+      "youtube-music",
+      musicState({ trackUrl: null, artistUrl: null, albumUrl: null, pageUrl: `https://music.youtube.com/watch?v=${v}` }),
+      NOW
+    );
+    assert.equal("buttons" in activity, false, `expected no buttons for v=${v}`);
+  }
 });
 
 test("a track URL over the 256-character link cap is omitted", () => {
   const long = `https://music.youtube.com/watch?v=${"a".repeat(300)}`;
-  const activity = buildActivity("youtube-music", musicState({ trackUrl: long }), NOW);
+  const watch = "https://music.youtube.com/watch?v=abc12345678";
+  const activity = buildActivity(
+    "youtube-music",
+    musicState({ trackUrl: long, pageUrl: watch }),
+    NOW
+  );
   assert.equal("details_url" in activity, false);
   // Button 1 falls back to the page URL, which is still a usable track link.
-  assert.equal(activity.buttons[0].url, "https://music.youtube.com/watch?v=song123");
+  assert.equal(activity.buttons[0].url, watch);
 });
 
 test("a link that leaves the Music host is omitted, never emitted bare", () => {
@@ -272,15 +334,16 @@ test("assets are omitted without an https artwork URL", () => {
 });
 
 test("buttons are omitted unless the page URL is https on the Music host", () => {
+  const watch = "https://music.youtube.com/watch?v=abc12345678";
   for (const pageUrl of [
     null,
-    "http://music.youtube.com/watch?v=1",
-    "https://www.youtube.com/watch?v=1",
-    "https://evil.example/watch?v=1",
+    "http://music.youtube.com/watch?v=abc12345678",
+    "https://www.youtube.com/watch?v=abc12345678",
+    "https://evil.example/watch?v=abc12345678",
     "not a url",
-    "https://music.youtube.com/watch?v=1",
+    watch,
   ]) {
-    const last = pageUrl === "https://music.youtube.com/watch?v=1";
+    const last = pageUrl === watch;
     const activity = buildActivity(
       "youtube-music",
       musicState({ pageUrl, trackUrl: null, artistUrl: null, albumUrl: null }),
