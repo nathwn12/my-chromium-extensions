@@ -592,6 +592,50 @@ test("a later report from a paused tab does not move the playing tab's anchor", 
   assert.equal(activities(port).at(-1).activity.timestamps.start, anchor);
 });
 
+test("a future-dated sample falls back to the stored instant, not to the clock", async () => {
+  const { chrome, clock, worker, port } = await boot();
+  connect(port);
+  // 60 s ahead of its own receipt: junk, so the receipt time is the anchor.
+  sendState(chrome, 1, musicState({ position: 40, at: BASE + 60_000 }));
+  const publish = activities(port);
+  assert.equal(publish.length, 1);
+  const anchor = Math.floor(BASE / 1000) - 40;
+  assert.equal(publish[0].activity.timestamps.start, anchor);
+  const frame = JSON.stringify(publish[0].activity);
+
+  clock.advance(45_000);
+  chrome.alarms.onAlarm.fire({ name: ALARM_NAME });
+  clock.advance(45_000);
+  chrome.alarms.onAlarm.fire({ name: ALARM_NAME });
+
+  assert.equal(
+    worker.status().activities["youtube-music"].timestamps.start,
+    anchor,
+    "a rejected sample must not re-anchor to the rebuild clock"
+  );
+  assert.equal(activities(port).length, 1, "only the first frame is published");
+  assert.equal(
+    JSON.stringify(worker.status().activities["youtube-music"]),
+    frame,
+    "the same sample rebuilds byte-identically"
+  );
+});
+
+test("the same sample rebuilt 45 s later is byte-identical", async () => {
+  const { chrome, clock, worker, port } = await boot();
+  connect(port);
+  sendState(chrome, 1, musicState({ position: 40, at: BASE }));
+  const atPublish = JSON.stringify(worker.status().activities["youtube-music"]);
+
+  clock.advance(45_000);
+  chrome.alarms.onAlarm.fire({ name: ALARM_NAME });
+
+  assert.equal(
+    JSON.stringify(worker.status().activities["youtube-music"]),
+    atPublish
+  );
+});
+
 test("sampleAt refuses a sample instant from the future", () => {
   assert.equal(sampleAt({ state: { at: BASE + 60_000 }, at: BASE }, BASE), BASE);
   assert.equal(sampleAt({ state: { at: BASE - 1000 }, at: BASE }, BASE), BASE - 1000);
