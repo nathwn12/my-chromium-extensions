@@ -11,6 +11,7 @@ import {
   TAB_TTL_MS,
   createWorker,
   pickBestTab,
+  sampleAt,
   wire,
 } from "../../background.js";
 import { STATUS_KEY } from "../../bridge-status.js";
@@ -559,6 +560,52 @@ test("a stale tab state is pruned by the watchdog and clears presence", async ()
 
   assert.ok(port.sent.some((message) => message.t === "ping"));
   assert.equal(activities(port).at(-1).activity, null);
+});
+
+test("a watchdog tick 45 s later publishes no second frame: the anchor is the sample", async () => {
+  const { chrome, clock, worker, port } = await boot();
+  connect(port);
+  sendState(chrome, 1, musicState({ position: 40, at: BASE }));
+  const first = activities(port);
+  assert.equal(first.length, 1);
+  const anchor = first[0].activity.timestamps.start;
+  assert.equal(anchor, Math.floor(BASE / 1000) - 40);
+
+  clock.advance(45_000);
+  chrome.alarms.onAlarm.fire({ name: ALARM_NAME });
+
+  assert.equal(activities(port).length, 1, "the same sample is not a resend");
+  assert.equal(worker.status().activities["youtube-music"].timestamps.start, anchor);
+});
+
+test("a later report from a paused tab does not move the playing tab's anchor", async () => {
+  const { chrome, clock, worker, port } = await boot();
+  connect(port);
+  sendState(chrome, 1, musicState({ position: 40, at: BASE }));
+  const anchor = activities(port)[0].activity.timestamps.start;
+
+  clock.advance(45_000);
+  sendState(chrome, 2, musicState({ title: "Paused Song", paused: true, position: 10, at: BASE + 45_000 }));
+
+  assert.equal(worker.status().activities["youtube-music"].details, "A Song");
+  assert.equal(worker.status().activities["youtube-music"].timestamps.start, anchor);
+  assert.equal(activities(port).at(-1).activity.timestamps.start, anchor);
+});
+
+test("sampleAt refuses a sample instant from the future", () => {
+  assert.equal(sampleAt({ state: { at: BASE + 60_000 }, at: BASE }, BASE), BASE);
+  assert.equal(sampleAt({ state: { at: BASE - 1000 }, at: BASE }, BASE), BASE - 1000);
+  assert.equal(sampleAt({ state: {}, at: BASE }, BASE), BASE);
+  assert.equal(sampleAt({ state: {} }, BASE), BASE);
+});
+
+test("sampleAt takes the state's own stamp, else the report time", () => {
+  assert.equal(sampleAt({ state: { at: BASE - 250 }, at: BASE }, BASE), BASE - 250);
+  assert.equal(sampleAt({ state: {}, at: BASE }), BASE);
+  assert.equal(sampleAt({ state: { at: "junk" }, at: BASE }), BASE);
+  assert.equal(sampleAt({ state: { at: null }, at: BASE }), BASE);
+  assert.equal(sampleAt({ state: {} }, BASE - 1000), BASE - 1000);
+  assert.equal(sampleAt(null, BASE), BASE);
 });
 
 test("pickBestTab prefers playing, then the fresher report", () => {

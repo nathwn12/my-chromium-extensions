@@ -11,7 +11,7 @@ The extension's desktop IPC path is the only supported product transport.
 | 2026-11-11 | The activity is type 2 with static name `YouTube Music`, artist state and `status_display_type: 1`. | `activity.js`, activity/background tests, outgoing IPC payload test. |
 | 2026-11-11 | Playback timestamps derive from extracted media position and duration; absent values omit timestamps. They leave as integer RPC seconds, not milliseconds. | `extract-youtube.js`, `activity.js`, extractor/activity/background tests. |
 | 2026-11-11 | Track, artist and album links are extracted from the player-bar anchors; the activity carries them on `details_url`, `state_url` and `large_url` plus two URL-decided buttons. | `extract-youtube.js`, `activity.js`, extractor/activity tests. |
-| 2026-11-11 | The package version is 1.1.0. | `manifest.json`, `package.json`, root lockfile, root README and this package changelog. |
+| 2026-11-11 | The package version is 1.1.1. | `manifest.json`, `package.json`, root lockfile, root README and this package changelog. |
 
 The package check validates the emitted activity payload, not Discord's UI. No live observation in this seam establishes that Discord's member list actually renders `state` when `status_display_type: 1` is present.
 
