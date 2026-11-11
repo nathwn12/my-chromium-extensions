@@ -37,6 +37,13 @@
       suffixes: [" - YouTube Music", " - YouTube", " | YouTube"]
     },
 
+    // A byline segment is a view count only when the whole segment is one:
+    // `1.5M views`, `1,234 views`, `812 views`. `views 1.5M`, a lone `1.5M`
+    // and a bare `2024` never match.
+    views: {
+      segment: /^\d[\d.,]*\s*[KMB]?\s*views?$/i
+    },
+
     dom: {
       // live probe: the Music player is an audio element on song pages (video
       // on video pages); read whichever media element is present so timestamps
@@ -119,6 +126,11 @@
     var n = typeof value === "number" ? value : Number(value);
     if (!Number.isFinite(n) || n < 0) return null;
     return n;
+  }
+
+  /** True only for a whole segment that is a view count, never for a year. */
+  function isViewCount(text) {
+    return typeof text === "string" && RULES.views.segment.test(text);
   }
 
   function textOf(node) {
@@ -481,11 +493,12 @@
   }
 
   function readMusicDom(doc, base) {
-    // A byline without anchors still names the artist and album as text; it is
-    // the last fallback after the anchors and MediaSession.
+    // A byline without anchors still names the artist as text; it is the last
+    // fallback after the anchors and MediaSession. A view-count segment is
+    // never an artist and never an album: it is its own field.
     var byline = clean(textOf(queryOne(doc, RULES.dom.musicByline)));
     var segmentChannel = null;
-    var segmentAlbum = null;
+    var views = null;
     if (byline) {
       var parts = byline.split("•");
       var segments = [];
@@ -493,8 +506,10 @@
         var segment = clean(parts[i]);
         if (segment) segments.push(segment);
       }
-      if (segments.length) segmentChannel = segments[0];
-      if (segments.length >= 2 && !/^\d{4}$/.test(segments[1])) segmentAlbum = segments[1];
+      if (segments.length && !isViewCount(segments[0])) segmentChannel = segments[0];
+      for (var v = 0; v < segments.length && !views; v += 1) {
+        if (isViewCount(segments[v])) views = segments[v];
+      }
     }
 
     // Anchors are classified by their resolved path: /channel/ is an artist,
@@ -554,7 +569,7 @@
       channel: artistNames.length ? clean(artistNames.join("; ")) : null,
       segmentChannel: segmentChannel,
       album: albumAnchor ? clean(textOf(albumAnchor)) : null,
-      segmentAlbum: segmentAlbum,
+      views: views,
       artwork: httpsUrl(attrOf(firstMatch(doc, RULES.dom.musicArtwork), "src")),
       artistUrl: artistUrl,
       albumUrl: albumAnchor ? pageUrlFor(albumHref, "youtube-music") : null,
@@ -600,11 +615,13 @@
     // Music precedence: session first, then the player bar, JSON-LD, OG, title.
     var title = (session && session.title) || dom.title || (ld && ld.name) || ogTitle || documentTitle;
     // Artist anchors outrank the session; a byline without anchors falls back
-    // to MediaSession's artist, then to the byline's first segment.
+    // to MediaSession's artist, then to the byline's first segment (never a
+    // view count).
     var channel = dom.channel || (session && session.artist) || dom.segmentChannel || (ld && ld.author);
     // Album text and album URL come from the same matched anchor, so the
-    // tooltip can never name an album the link does not open.
-    var album = dom.album || (session && session.album) || dom.segmentAlbum;
+    // tooltip can never name an album the link does not open. MediaSession's
+    // album is the only other source: a byline segment is never an album.
+    var album = dom.album || (session && session.album);
     var artwork = (session && session.artwork) || dom.artwork || (ld && ld.artwork);
 
     // A resolved title is the proof that the persistent player is present;
@@ -624,6 +641,7 @@
       title: title || null,
       channel: channel || null,
       album: album || null,
+      views: dom.views || null,
       artworkUrl: artwork || null,
       trackUrl: trackUrl,
       artistUrl: dom.artistUrl,
