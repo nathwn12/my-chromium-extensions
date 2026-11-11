@@ -2,6 +2,10 @@
 
 Notable changes to this package. Dates are ISO 8601. This package is local-only and is not published to a registry.
 
+## [1.1.7] - 2026-11-11
+
+- The activity timer re-anchors every second while the playback rate is not 1×, so a sped-up or slowed-down track no longer drifts.
+
 ## [1.1.6] - 2026-11-11
 
 - A queued update is dropped when the port dies, and the pacing docs no longer promise more than the poll can detect.
