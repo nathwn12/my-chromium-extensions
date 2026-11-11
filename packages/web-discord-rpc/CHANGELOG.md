@@ -2,6 +2,12 @@
 
 Notable changes to this package. Dates are ISO 8601. This package is local-only and is not published to a registry.
 
+## [1.1.2] — 2026-11-11
+
+- The card carries no link fields and no underlined text: `details_url`, `state_url` and `large_url` are gone, so the track title, artist and album are plain text and the two buttons are the only click targets.
+- The cover tooltip falls back to the YouTube Music view count when the player bar reports one and no distinct album exists, and still never repeats the track title.
+- A view count is no longer mistaken for an album name.
+
 ## [1.1.1] - 2026-11-11
 
 - Timestamps are anchored to the instant the position was sampled, so the progress bar never jumps or lags after a watchdog tick or a Discord reconnect.
