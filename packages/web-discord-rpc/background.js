@@ -21,7 +21,7 @@ import {
   resolveEnabled,
   sourceForUrl,
 } from "./config.js";
-import { buildActivity, clampText } from "./activity.js";
+import { buildActivity, clampText, SAMPLE_SKEW_MS } from "./activity.js";
 import {
   AVAILABILITY,
   BRIDGE,
@@ -152,11 +152,17 @@ export function pickBestTab(entries) {
  * The instant a tab's state was sampled: the content script's own `state.at`
  * when it is a finite number, else the moment the worker received it. This is
  * the anchor handed to `buildActivity`, so a rebuild never moves `start`.
+ *
+ * A stamp more than `SAMPLE_SKEW_MS` ahead of `fallback` is junk, not a
+ * sample: returning it would hand `buildActivity` a future `now`, and Discord
+ * would render a bar that starts in the future. That case takes `fallback`.
  */
 export function sampleAt(entry, fallback = 0) {
   if (!entry || typeof entry !== "object") return fallback;
   const sampled = entry.state ? entry.state.at : undefined;
-  if (typeof sampled === "number" && Number.isFinite(sampled)) return sampled;
+  if (typeof sampled === "number" && Number.isFinite(sampled)) {
+    return sampled - fallback <= SAMPLE_SKEW_MS ? sampled : fallback;
+  }
   const reported = entry.at;
   if (typeof reported === "number" && Number.isFinite(reported)) return reported;
   return fallback;

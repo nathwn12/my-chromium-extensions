@@ -54,7 +54,7 @@ const MAX_BUTTON_LABEL = 32;
 const MAX_BUTTON_URL = 512;
 const MAX_LINK_URL = 256;
 /** A sample stamp this far ahead of `now` is still trusted, as clock skew. */
-const SAMPLE_SKEW_MS = 5000;
+export const SAMPLE_SKEW_MS = 5000;
 
 /** Member-list line: 1 = State (the artist). See header UNVERIFIED note. */
 export const STATUS_DISPLAY_STATE = 1;

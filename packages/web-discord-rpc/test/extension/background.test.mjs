@@ -592,8 +592,15 @@ test("a later report from a paused tab does not move the playing tab's anchor", 
   assert.equal(activities(port).at(-1).activity.timestamps.start, anchor);
 });
 
+test("sampleAt refuses a sample instant from the future", () => {
+  assert.equal(sampleAt({ state: { at: BASE + 60_000 }, at: BASE }, BASE), BASE);
+  assert.equal(sampleAt({ state: { at: BASE - 1000 }, at: BASE }, BASE), BASE - 1000);
+  assert.equal(sampleAt({ state: {}, at: BASE }, BASE), BASE);
+  assert.equal(sampleAt({ state: {} }, BASE), BASE);
+});
+
 test("sampleAt takes the state's own stamp, else the report time", () => {
-  assert.equal(sampleAt({ state: { at: BASE - 250 }, at: BASE }), BASE - 250);
+  assert.equal(sampleAt({ state: { at: BASE - 250 }, at: BASE }, BASE), BASE - 250);
   assert.equal(sampleAt({ state: {}, at: BASE }), BASE);
   assert.equal(sampleAt({ state: { at: "junk" }, at: BASE }), BASE);
   assert.equal(sampleAt({ state: { at: null }, at: BASE }), BASE);
