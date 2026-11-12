@@ -35,7 +35,7 @@ jobs:
           set -euo pipefail
           rm -rf dist && mkdir -p dist
           (cd packages/audio-normalizer && zip -r ../../dist/audio-normalizer.zip manifest.json background.js shared.js content-script.js page-hook.js audio/normalizer-worklet.js popup.html popup.css popup.js icons/icon16.png icons/icon24.png icons/icon32.png icons/icon48.png icons/icon128.png)
-          (cd packages/slowed-reverb && zip -r ../../dist/slowed-reverb.zip manifest.json background.js shared.js content-script.js page-hook.js dattorro-worklet.js popup.html popup.css popup.js icons/icon16.png icons/icon24.png icons/icon32.png icons/icon48.png icons/icon128.png)
+          (cd packages/slowed-reverb && zip -r ../../dist/slowed-reverb.zip manifest.json background.js shared.js player-actions.js content-script.js page-hook.js dattorro-worklet.js popup.html popup.css popup.js icons/icon16.png icons/icon24.png icons/icon32.png icons/icon48.png icons/icon128.png)
           (cd packages/crunchy-presence && zip -r ../../dist/crunchy-presence.zip manifest.json background.js bridge-status.js config.js extract.js content.js popup.html popup.css popup.js options.html options.css options.js icons/icon16.png icons/icon24.png icons/icon32.png icons/icon48.png icons/icon128.png)
           (cd packages/web-discord-rpc && zip -r ../../dist/web-discord-rpc.zip manifest.json background.js config.js activity.js bridge-status.js content.js extract-youtube.js popup.html popup.css popup.js options.html options.css options.js icons/icon16.png icons/icon24.png icons/icon32.png icons/icon48.png icons/icon128.png)
           for f in dist/*.zip; do echo "$f"; unzip -l "$f" | tail -n +4 | head -n -2 | awk '{print "  " $4}'; done
