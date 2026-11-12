@@ -74,6 +74,7 @@
       state.retired = true;
       clearSafetyPoll();
       stopRateWatchdog();
+      stopPlayerActions();
       if (recoveryTimer) {
         clearTimeout(recoveryTimer);
         recoveryTimer = null;
@@ -266,6 +267,16 @@
         if (data.token !== state.pageHookToken) return;
         state.pageHookReady = true;
       }
+
+      if (data.type === 'SLRA_VOLUME_STATE') {
+        if (typeof data.token !== 'string' || data.token.length === 0) return;
+        if (data.token !== state.pageHookToken) return;
+        resolvePageVolume(data.id, {
+          volume: data.volume,
+          applied: data.applied === true,
+          source: data.source || 'none',
+        });
+      }
     });
 
     ['yt-navigate-start', 'yt-navigate-finish', 'yt-page-data-updated', 'spfdone'].forEach((eventName) => {
@@ -438,6 +449,115 @@ function applyRuntimeState(runtime) {
   let recoveryTimer = null;
   let rateWatchdogTimer = null;
   let lastPageMessageRecovery = 0;
+
+  // Player actions (easy volume + section repeat): one controller for the tab,
+  // created only while the tab is eligible and not bypassed, torn down on
+  // bypass/retire. Volume writes go through the MAIN-world page hook so YTM's
+  // own slider stays truthful; a missing hook falls back to element volume.
+  const VOLUME_REPLY_TIMEOUT_MS = 500;
+  let playerActions = null;
+  let volumeRequestSeq = 0;
+  const pendingVolumeRequests = new Map();
+
+  function resolvePageVolume(id, reply) {
+    const pending = pendingVolumeRequests.get(id);
+    if (!pending) return;
+    pendingVolumeRequests.delete(id);
+    clearTimeout(pending.timer);
+    pending.resolve(reply);
+  }
+
+  function requestPageVolume(type, percent, keepMuted) {
+    const token = state.pageHookToken;
+    if (!token) return Promise.resolve({ volume: null, applied: false, source: 'none' });
+    return new Promise((resolve) => {
+      const id = ++volumeRequestSeq;
+      const timer = setTimeout(() => {
+        if (!pendingVolumeRequests.has(id)) return;
+        pendingVolumeRequests.delete(id);
+        resolve({ volume: null, applied: false, source: 'none' });
+      }, VOLUME_REPLY_TIMEOUT_MS);
+      pendingVolumeRequests.set(id, { resolve, timer });
+      const message = { __slra: true, type, id, token };
+      if (type === 'SLRA_SET_VOLUME') {
+        message.percent = percent;
+        message.keepMuted = Boolean(keepMuted);
+      }
+      try {
+        window.postMessage(message, '*');
+      } catch {
+        pendingVolumeRequests.delete(id);
+        clearTimeout(timer);
+        resolve({ volume: null, applied: false, source: 'none' });
+      }
+    });
+  }
+
+  function currentMediaForPlayerActions() {
+    for (const controller of state.media.values()) {
+      if (controller.attached && controller.media && controller.media.isConnected) return controller.media;
+    }
+    for (const media of state.media.keys()) {
+      if (media.isConnected) return media;
+    }
+    try {
+      const video = document.querySelector('video');
+      return video instanceof HTMLMediaElement ? video : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function ensurePlayerActions() {
+    if (playerActions || state.retired) return playerActions;
+    const api = globalThis.SlowedReverbPlayerActions;
+    if (!api || typeof api.createPlayerActions !== 'function') return null;
+    try {
+      playerActions = api.createPlayerActions({
+        window,
+        document,
+        mediaProvider: currentMediaForPlayerActions,
+        pageHook: {
+          getVolume: () => requestPageVolume('SLRA_GET_VOLUME'),
+          setVolume: (percent, keepMuted) => requestPageVolume('SLRA_SET_VOLUME', percent, keepMuted),
+        },
+        storage: {
+          get: (key) => chrome.storage.local.get(key),
+          set: (items) => chrome.storage.local.set(items),
+        },
+      });
+    } catch {
+      playerActions = null;
+      return null;
+    }
+    void playerActions.start();
+    return playerActions;
+  }
+
+  function stopPlayerActions() {
+    const current = playerActions;
+    playerActions = null;
+    for (const pending of pendingVolumeRequests.values()) {
+      clearTimeout(pending.timer);
+      pending.resolve({ volume: null, applied: false, source: 'none' });
+    }
+    pendingVolumeRequests.clear();
+    if (!current) return;
+    try {
+      current.stop();
+    } catch {
+      // Best effort: a dying instance must not throw.
+    }
+  }
+
+  function syncPlayerActions() {
+    if (state.retired || !state.eligible || state.bypass) {
+      stopPlayerActions();
+      return;
+    }
+    const current = ensurePlayerActions();
+    if (current) current.sync();
+  }
   const ATTACH_RETRY_MAX_ATTEMPTS = 20;
   const ATTACH_RETRY_MAX_DELAY_MS = 2000;
   // Mute enforcement is a correction loop against a page that may fight back.
@@ -703,6 +823,7 @@ function applyRuntimeState(runtime) {
     } else if (state.eligible && !state.bypass && state.safetyPollTimer === null) {
       ensureSafetyPoll();
     }
+    syncPlayerActions();
     maybeSuspendContext();
   }
 

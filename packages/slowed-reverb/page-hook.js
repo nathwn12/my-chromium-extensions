@@ -27,6 +27,93 @@
     emit('SLRA_PAGE_REVIVE', reason);
   }
 
+  // Volume is written through YouTube's own player API so its slider stays
+  // truthful and the content script's gain mirror keeps carrying media.volume.
+  // The reply is always posted, even when the API is missing: the content
+  // script then falls back to element volume itself.
+  function playerApi() {
+    try {
+      const player = document.querySelector('#movie_player');
+      if (!player) return null;
+      if (typeof player.setVolume !== 'function') return null;
+      if (typeof player.getVolume !== 'function') return null;
+      return player;
+    } catch {
+      return null;
+    }
+  }
+
+  function readPlayerVolume() {
+    const player = playerApi();
+    if (!player) return { volume: null, source: 'none' };
+    try {
+      const value = Number(player.getVolume());
+      if (!Number.isFinite(value)) return { volume: null, source: 'none' };
+      return { volume: Math.max(0, Math.min(100, value)), source: 'player' };
+    } catch {
+      return { volume: null, source: 'none' };
+    }
+  }
+
+  // The content script owns `muted` while the graph is attached; a volume write
+  // can flip it back, so the same task re-asserts the contract.
+  function keepElementMuted() {
+    try {
+      const video = document.querySelector('video');
+      if (video) video.muted = true;
+    } catch {
+      // No element to mute.
+    }
+  }
+
+  function replyVolume(data, volume, applied, source) {
+    emit('SLRA_VOLUME_STATE', '', {
+      id: data.id,
+      token: pageToken(),
+      volume,
+      applied,
+      source,
+    });
+  }
+
+  function handleVolumeRequest(data) {
+    const token = pageToken();
+    if (!token) return;
+    if (typeof data.token !== 'string' || data.token !== token) return;
+
+    if (data.type === 'SLRA_GET_VOLUME') {
+      const reading = readPlayerVolume();
+      replyVolume(data, reading.volume, reading.source === 'player', reading.source);
+      return;
+    }
+
+    const keepMuted = data.keepMuted === true;
+    const percent = Number(data.percent);
+    if (!Number.isFinite(percent)) {
+      const reading = readPlayerVolume();
+      replyVolume(data, reading.volume, false, reading.source);
+      return;
+    }
+
+    const target = Math.max(0, Math.min(100, Math.round(percent)));
+    const player = playerApi();
+    if (!player) {
+      if (keepMuted) keepElementMuted();
+      replyVolume(data, null, false, 'none');
+      return;
+    }
+    try {
+      player.setVolume(target);
+    } catch {
+      if (keepMuted) keepElementMuted();
+      replyVolume(data, null, false, 'none');
+      return;
+    }
+    if (keepMuted) keepElementMuted();
+    const reading = readPlayerVolume();
+    replyVolume(data, reading.volume === null ? target : reading.volume, true, 'player');
+  }
+
   if (existing?.revive) {
     existing.revive('reinject');
     return;
@@ -38,6 +125,16 @@
 
   function ensureListeners() {
     if (state.listenersReady) return;
+
+    // Volume requests arrive on the same window bus as the lifecycle signals;
+    // the token check keeps a page-injected message out.
+    window.addEventListener('message', (event) => {
+      if (event.source !== window) return;
+      const data = event.data;
+      if (!data || data.__slra !== true) return;
+      if (data.type !== 'SLRA_SET_VOLUME' && data.type !== 'SLRA_GET_VOLUME') return;
+      handleVolumeRequest(data);
+    }, false);
 
     const reviveNow = (reason) => revive(reason);
 

@@ -25,6 +25,7 @@
       ],
       "js": [
         "shared.js",
+        "player-actions.js",
         "content-script.js"
       ],
       "run_at": "document_start"
