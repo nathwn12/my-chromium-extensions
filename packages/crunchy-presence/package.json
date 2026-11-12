@@ -1,6 +1,6 @@
 {
   "name": "crunchy-presence",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "private": true,
   "type": "module",
   "description": "Local-only MV3 extension + native host that publishes Crunchyroll activity to Discord Canary over IPC.",

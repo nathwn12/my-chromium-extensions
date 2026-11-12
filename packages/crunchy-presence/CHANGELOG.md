@@ -4,6 +4,10 @@ Notable changes to this project. Dates are ISO 8601. This package is local-only 
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-11-12
+
+- The one-second watch check stops while presence is off and starts again the moment you turn it back on, so a disabled extension does no repeating work in the background.
+
 ## [1.2.0] - 2026-11-11
 
 - If the Discord desktop app is not running, presence now falls back to the local arRPC bridge (Discord Web via Vencord) instead of going silent, and switches back on its own — you do not need to change a setting. The desktop pipe stays the primary path and there is no third transport.

@@ -13,6 +13,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Feed-main-thread starvation on infinite scroll (e.g. TikTok freezing after 2–3 videos): the observer flush no longer blanket-walks every descendant with `querySelectorAll('*')` (new roots are already captured by the `attachShadow` patch, existing ones by the startup sweep; only the added node's own `shadowRoot` is observed, O(1)); a mutation storm is sliced into capped 200-mutation flushes with the remainder carried to the next tick instead of one unbounded synchronous loop. No audio, mute, capture or routing behaviour changed.
 - Feed churn silence on video switching (e.g. TikTok/Reddit/Facebook): the element→source map is now permanent for the document (WeakMap, never deleted) and removal no longer disconnects the source, so a re-inserted element reuses the same node with zero re-capture (one `createMediaElementSource` per element, ever); a context that captured anything is never closed — it suspends when idle and resumes on attach; an element owned by the page (throw with no cache) is skipped unmuted, and that latch never blocks a cached route.
 
+## [5.5.0] - 2026-11-12
+
+### Added
+
+- Per-site exclusion that is enforced when the content script is registered, not after it loads: a site you have not turned on has the script never registered at all. Until now the script was registered for every URL and each page decided for itself after it had already been injected.
+
+### Changed
+
+- The static `<all_urls>` content-script entry is gone. The script is registered dynamically for enabled sites only, so pages where normalization is off run none of this extension.
+
 ## [5.4.3] - 2026-11-03
 
 ### Fixed

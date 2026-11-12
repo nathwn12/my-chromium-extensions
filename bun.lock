@@ -5,7 +5,7 @@
     "": {},
     "packages/audio-normalizer": {
       "name": "audio-normalizer",
-      "version": "5.4.3",
+      "version": "5.5.0",
       "devDependencies": {
         "@types/chrome": "~0.0.332",
         "typescript": "^6.0.3",
@@ -13,7 +13,7 @@
     },
     "packages/crunchy-presence": {
       "name": "crunchy-presence",
-      "version": "1.2.0",
+      "version": "1.2.1",
     },
     "packages/slowed-reverb": {
       "name": "slowed-reverb",
@@ -25,7 +25,7 @@
     },
     "packages/web-discord-rpc": {
       "name": "web-discord-rpc",
-      "version": "1.1.7",
+      "version": "1.1.8",
     },
   },
   "packages": {

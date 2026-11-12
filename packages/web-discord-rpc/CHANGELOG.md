@@ -2,6 +2,10 @@
 
 Notable changes to this package. Dates are ISO 8601. This package is local-only and is not published to a registry.
 
+## [1.1.8] - 2026-11-12
+
+- The media poll stops entirely while the presence switch is off and starts again the moment you turn it back on, so a disabled extension does no repeating work in the background.
+
 ## [1.1.7] - 2026-11-11
 
 - While the playback rate is not 1×, the card re-anchors at most once every 2.5 s and biases its reference by half the interval's drift, so the displayed time crosses the truth instead of lagging behind it; whole-second timestamps put a floor of roughly two seconds on the error at 1.5× (about three at 2×), and it never accumulates.
