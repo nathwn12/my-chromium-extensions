@@ -15,6 +15,12 @@ on:
 permissions:
   contents: write
 
+# One release run at a time: a tag push rebuilds all four assets, so two runs
+# racing would clobber the same uploads. Queued, never cancelled.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
   release:
     runs-on: ubuntu-26.04
