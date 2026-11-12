@@ -4,7 +4,6 @@ import path from 'node:path';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import { test } from 'node:test';
-import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 
 import {
@@ -14,7 +13,22 @@ import {
   extensionIdFromKey,
 } from '../../scripts/extension-key.mjs';
 
-const execFileAsync = promisify(execFile);
+/* Node 26 dropped execFile[util.promisify.custom], so promisify(execFile)
+   resolves to a bare stdout string and `{ stdout }` destructures to undefined.
+   Wrap the callback ourselves so the test sees the documented shape. */
+function execFileAsync(file, args, options) {
+  return new Promise((resolve, reject) => {
+    execFile(file, args, options, (error, stdout, stderr) => {
+      if (error) {
+        error.stdout = stdout;
+        error.stderr = stderr;
+        reject(error);
+        return;
+      }
+      resolve({ stdout, stderr });
+    });
+  });
+}
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
 // A real 2048-bit SPKI public key and the ID Chrome derives from it.
