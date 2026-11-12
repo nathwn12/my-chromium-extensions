@@ -220,6 +220,12 @@ function loadContentFrame(href, storage, { excludedCache = null } = {}) {
   vm.createContext(sandbox);
   vm.runInContext(src('content-script.js'), sandbox, { filename: 'content-script.js' });
   const sendMessage = (message) => new Promise((resolve) => {
+    // No listener = no receiver: the platform rejects, and the product's
+    // fail-closed frames have exactly zero listeners.
+    if (typeof runtimeListeners[0] !== 'function') {
+      resolve({ ok: false, error: 'no receiver' });
+      return;
+    }
     const ret = runtimeListeners[0](message, {}, resolve);
     if (ret !== true) resolve(undefined);
   });
@@ -334,10 +340,30 @@ test('subdomain rule: isHostExcluded scans a cached key list', () => {
 });
 
 test('ancestorSiteKeys lists parents nearest-first, never itself', () => {
-  assert.deepEqual(sharedApi.ancestorSiteKeys('a.b.example.com'), ['b.example.com', 'example.com']);
-  assert.deepEqual(sharedApi.ancestorSiteKeys('www.tiktok.com'), ['tiktok.com']);
-  assert.deepEqual(sharedApi.ancestorSiteKeys('example.com'), []);
+  assert.deepEqual(sharedApi.ancestorSiteKeys('a.b.example.com'), ['b.example.com', 'example.com', 'com']);
+  assert.deepEqual(sharedApi.ancestorSiteKeys('www.tiktok.com'), ['tiktok.com', 'com']);
+  assert.deepEqual(sharedApi.ancestorSiteKeys('example.com'), ['com']);
   assert.deepEqual(sharedApi.ancestorSiteKeys('localhost'), []);
+});
+
+test('normalization: trailing dot before the port, unicode hosts, and bare-key ancestors', () => {
+  // Trailing dot BEFORE the port: the dot strip must happen after the port
+  // strip, or the key keeps a trailing dot.
+  assert.equal(sharedApi.getSiteKey('example.com.:443'), 'example.com');
+  assert.equal(sharedApi.getSiteKey('example.com.'), 'example.com');
+  assert.equal(sharedApi.hostMatchesSiteKey('example.com.:443', 'example.com'), true);
+  // IPv6 groups are not ports.
+  assert.equal(sharedApi.getSiteKey('[::1]:8080'), '::1');
+
+  // Unicode hosts canonicalize to punycode, like location.hostname does.
+  assert.equal(sharedApi.getSiteKey('bücher.example'), 'xn--bcher-kva.example');
+  assert.equal(sharedApi.hostMatchesSiteKey('www.bücher.example', 'xn--bcher-kva.example'), true);
+
+  // The suffix rule has no label floor for ancestors either.
+  assert.deepEqual(sharedApi.ancestorSiteKeys('foo.localhost'), ['localhost']);
+  assert.equal(sharedApi.isHostExcluded('foo.localhost', ['localhost']), true);
+  assert.equal(sharedApi.isHostExcluded('example.com', ['com']), true);
+  assert.equal(sharedApi.isHostExcluded('nottiktok.com', ['tiktok.com']), false);
 });
 
 test('excludeMatches pattern derivation', () => {
@@ -529,18 +555,57 @@ test('gate: a cached exclusion stops the content script before any listener or t
   assert.equal(frame.sandbox.__tabNormalizerContentScriptV5, undefined, 'nothing installed');
 });
 
-test('gate: no cached exclusion (the cold-document case) falls through to the read', async () => {
+// Replaces the old fail-open assertion: a FRESH document with no cache must
+// install NOTHING until storage has answered, and an excluded answer must keep
+// it that way. (The previous test asserted the opposite and was the defect.)
+test('gate: a fresh document installs nothing before the answer, and never for an excluded host', async () => {
   const storage = createFakeStorage({
     'site:tiktok.com': { enabled: true, gainDb: 0, seq: 1, mirror: true, excluded: false },
   });
-  const frame = loadContentFrame('https://www.tiktok.com/foryou', storage, {
+  // Nothing is installed synchronously: the storage answer has not arrived.
+  const pending = loadContentFrame('https://www.tiktok.com/foryou', storage, {
     excludedCache: { hosts: [] },
   });
+  assert.equal(pending.liveListeners().length, 0, 'no listener before the answer');
+  assert.equal(pending.timeouts.size, 0, 'no timer before the answer');
   await settle();
-  assert.ok(frame.liveListeners().length > 0, 'unknown-yet is not excluded');
+  assert.ok(pending.liveListeners().length > 0, 'a known, non-excluded host arms after the answer');
+
+  // Same cold start, but the stored truth says excluded: it stays inert.
+  const excludedStorage = createFakeStorage({
+    'site:tiktok.com': { enabled: true, gainDb: 0, seq: 1, mirror: true, excluded: true },
+  });
+  const inert = loadContentFrame('https://www.tiktok.com/foryou', excludedStorage, {
+    excludedCache: { hosts: [] },
+  });
+  await settle(60);
+  assert.equal(inert.liveListeners().length, 0, 'excluded host never arms, even on a cold document');
+  assert.equal(inert.timeouts.size, 0);
+  assert.equal(inert.posted.length, 0, 'and never talks to the page');
 });
 
-test('exclusion beats enablement in the content script (no hook, no START)', async () => {
+test('gate: a storage read error resolves to inactive, never to allowed', async () => {
+  const storage = createFakeStorage({
+    'site:example.com': { enabled: true, gainDb: 0, seq: 1, mirror: true, excluded: false },
+  });
+  storage.get = async () => { throw new Error('storage unavailable'); };
+  const frame = loadContentFrame('https://example.com/watch', storage, { excludedCache: { hosts: [] } });
+  await settle(60);
+  assert.equal(frame.liveListeners().length, 0, 'no listener on a read error');
+  assert.equal(frame.timeouts.size, 0, 'no timer on a read error');
+  assert.equal(frame.posted.length, 0, 'no page message on a read error');
+});
+
+test('gate: a host with no stored record at all stays inactive (unknown is not allowed)', async () => {
+  const storage = createFakeStorage({});
+  const frame = loadContentFrame('https://unvisited.example/watch', storage, { excludedCache: { hosts: [] } });
+  await settle(60);
+  assert.equal(frame.liveListeners().length, 0, 'unknown host installs nothing');
+  assert.equal(frame.intervals.size, 0);
+  assert.equal(frame.posted.length, 0);
+});
+
+test('exclusion beats enablement in the content script (no hook, no START, no listeners)', async () => {
   const storage = createFakeStorage({
     'site:tiktok.com': { enabled: true, gainDb: 3, seq: 1, mirror: true, excluded: true },
   });
@@ -550,9 +615,8 @@ test('exclusion beats enablement in the content script (no hook, no START)', asy
   await settle();
   assert.deepEqual(injected.filter((m) => m.type === 'INJECT_PAGE_HOOK'), [], 'never asks for the page hook');
   assert.deepEqual(frame.posted.filter((m) => m.type === 'START'), [], 'never starts the hook');
-  const status = await frame.sendMessage({ type: 'GET_DOCUMENT_STATUS' });
-  assert.equal(status.enabled, false, 'exclusion forces disabled');
-  assert.equal(status.excluded, true, 'status reports the exclusion');
+  assert.equal(frame.liveListeners().length, 0, 'an excluded frame has no listener to answer with');
+  assert.equal(frame.intervals.size, 0, 'and no timer');
 });
 
 test('exclusion also beats an excluded parent host for a subdomain tab', async () => {
@@ -572,13 +636,14 @@ test('exclusion beats the transient session override', async () => {
   });
   const frame = loadContentFrame('https://www.tiktok.com/foryou', storage);
   await settle();
+  // There is no listener to deliver the override to: the frame was never
+  // armed, which is the strongest form of "exclusion beats the transient".
   await frame.sendMessage({
     type: 'SET_DOCUMENT_STATE', siteKey: 'tiktok.com', enabled: true, gainDb: 3, transient: true,
   });
   await settle();
   assert.deepEqual(frame.posted.filter((m) => m.type === 'START'), [], 'transient enable cannot start an excluded site');
-  const status = await frame.sendMessage({ type: 'GET_DOCUMENT_STATUS' });
-  assert.equal(status.enabled, false);
+  assert.equal(frame.liveListeners().length, 0, 'and there is no listener that could receive it');
 });
 
 test('live teardown: excluding an open tab stops audio and releases every listener and timer', async () => {
@@ -619,6 +684,40 @@ test('live teardown also follows a PARENT-host exclusion through the storage bro
   assert.equal(frame.liveListeners().length, 0);
 });
 
+test('gate runs before reinject(): an excluded re-entry calls nothing', async () => {
+  const storage = createFakeStorage({
+    'site:www.tiktok.com': { enabled: true, gainDb: 0, seq: 1, mirror: true, excluded: true },
+  });
+  const frame = loadContentFrame('https://www.tiktok.com/foryou', storage, { excludedCache: { hosts: [] } });
+  await settle();
+  // Make the previous instance's reinject observable.
+  let reinjectCalls = 0;
+  frame.sandbox.__tabNormalizerContentScriptV5 = { reinject: () => { reinjectCalls += 1; } };
+
+  // Re-execute the same file in the same world with an excluded gate verdict.
+  const nodeVm = require('node:vm');
+  frame.sandbox.__tabNormalizerFrameGate = { host: 'www.tiktok.com', excluded: true };
+  nodeVm.runInContext(src('content-script.js'), frame.sandbox, { filename: 'content-script.js#reinject' });
+  await settle(40);
+  assert.equal(reinjectCalls, 0, 'the gate refused before reinject() was reached');
+});
+
+test('teardown: the popup probe listener and its timer are cancelled', async () => {
+  const storage = createFakeStorage({
+    'site:www.tiktok.com': { enabled: true, gainDb: 0, seq: 1, mirror: true, excluded: false },
+  });
+  const frame = loadContentFrame('https://www.tiktok.com/foryou', storage);
+  await settle(50);
+  // A popup status poll starts a probe: one window listener + a 1 s timeout.
+  await frame.sendMessage({ type: 'GET_DOCUMENT_STATUS' });
+  await settle(10);
+  assert.ok(frame.timeouts.size > 0, 'the probe timer is live');
+
+  await frame.sendMessage({ type: 'TOGGLE_CHANGED', siteKey: 'www.tiktok.com', enabled: true, excluded: true });
+  await settle(20);
+  assert.equal(frame.timeouts.size, 0, 'the probe timeout was cancelled by teardown');
+});
+
 test('teardown is message-driven from the popup path: TOGGLE_CHANGED carries excluded', async () => {
   const storage = createFakeStorage({
     'site:tiktok.com': { enabled: true, gainDb: 0, seq: 1, mirror: true, excluded: false },
@@ -629,7 +728,21 @@ test('teardown is message-driven from the popup path: TOGGLE_CHANGED carries exc
   const broadcast = bg.tabsSent.find((c) => c.msg?.type === 'TOGGLE_CHANGED');
   assert.ok(broadcast, 'the open tab is messaged');
   assert.equal(broadcast.msg.excluded, true, 'the message carries the exclusion');
-  assert.equal(broadcast.options?.frameId, 0);
+  // All frames, not just the top one: a cross-origin frame of the excluded host
+  // does not share the tab's top-level URL and must tear down too.
+  assert.equal(broadcast.options, undefined, 'an exclusion broadcast reaches every frame');
+});
+
+test('an ordinary (non-exclusion) broadcast still targets the top frame only', async () => {
+  const storage = createFakeStorage({
+    'site:tiktok.com': { enabled: true, gainDb: 0, seq: 1, mirror: true, excluded: false },
+  });
+  const bg = loadBackground(storage, { tabUrl: 'https://www.tiktok.com/foryou' });
+  await bg.sendMessage({ type: 'SET_SITE_STATE', siteKey: 'tiktok.com', tabId: 7, set: { gainDb: 3 } });
+  await settle();
+  const broadcast = bg.tabsSent.find((c) => c.msg?.type === 'TOGGLE_CHANGED');
+  assert.ok(broadcast);
+  assert.equal(broadcast.options?.frameId, 0, 'gain/toggle broadcasts stay top-frame-only');
 });
 
 // ============ popup control ============

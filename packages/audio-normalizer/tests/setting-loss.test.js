@@ -114,7 +114,7 @@ function loadBackground(storage, extra = {}) {
 }
 
 // ---------- content-script harness (one sandbox per frame) ----------
-function loadContentFrame(href, storage) {
+async function loadContentFrame(href, storage) {
   const runtimeListeners = [];
   const storageListeners = [];
   const postedToPage = [];
@@ -153,6 +153,9 @@ function loadContentFrame(href, storage) {
   sandbox.self = sandbox;
   vm.createContext(sandbox);
   vm.runInContext(src('content-script.js'), sandbox, { filename: 'content-script.js' });
+  // FAIL CLOSED: listeners are installed only after the storage answer, so the
+  // harness waits for the bootstrap before asserting that it happened.
+  await settle(40);
   if (runtimeListeners.length === 0) throw new Error(`content-script did not bootstrap for ${href}`);
   const sendMessage = (message) => new Promise((resolve) => {
     const ret = runtimeListeners[0](message, {}, resolve);
@@ -307,8 +310,8 @@ test('defect1c: disabling site A never disables embedded site B (content guard)'
     'site:youtube.com': { enabled: true, gainDb: 1, seq: 1, mirror: true },
     'site:example.com': { enabled: true, gainDb: 2, seq: 1, mirror: true },
   });
-  const frameA = loadContentFrame('https://www.youtube.com/watch?v=1', storage);
-  const frameB = loadContentFrame('https://example.com/embed', storage);
+  const frameA = await loadContentFrame('https://www.youtube.com/watch?v=1', storage);
+  const frameB = await loadContentFrame('https://example.com/embed', storage);
   await settle();
   const broadcast = { type: 'SET_DOCUMENT_STATE', siteKey: 'www.youtube.com', enabled: false };
   const [ra, rb] = await Promise.all([frameA.sendMessage(broadcast), frameB.sendMessage(broadcast)]);
@@ -732,7 +735,7 @@ test('legacy www-only siteSettings upgrade preserves gain', async () => {
   assert.equal(got.enabled, true, 'enabled survives normalisation');
   assert.equal(got.gainDb, 4, 'gain from www-only entry survives');
   // Content-script read path agrees (write-free).
-  const frame = loadContentFrame('https://music.youtube.com/watch', storage);
+  const frame = await loadContentFrame('https://music.youtube.com/watch', storage);
   await settle();
   const status = await frame.sendMessage({ type: 'GET_DOCUMENT_STATUS' });
   assert.equal(status.enabled, true);
@@ -830,7 +833,7 @@ test('delayed disable broadcast never stops a re-enabled tab (stale broadcast ig
     'site:youtube.com': { enabled: true, gainDb: 2, seq: 1, mirror: true },
   });
   const bg = loadBackground(storage);
-  const frame = loadContentFrame('https://youtube.com/watch', storage);
+  const frame = await loadContentFrame('https://youtube.com/watch', storage);
   await settle();
   // Stored truth says enabled:true. A delayed disable broadcast arriving now
   // is stale and must not stop the live hook: the receiver re-reads storage.
@@ -1122,7 +1125,7 @@ test('preserved: content script performs zero storage writes (background is the 
   let writes = 0;
   const origSet = storage.set.bind(storage);
   storage.set = async (...a) => { writes++; return origSet(...a); };
-  const frame = loadContentFrame('https://example.com/embed', storage);
+  const frame = await loadContentFrame('https://example.com/embed', storage);
   await settle();
   assert.equal(writes, 0, 'init sync with legacy keys present writes nothing');
   const res = await frame.sendMessage({ type: 'SET_DOCUMENT_STATE', siteKey: 'example.com', enabled: true, gainDb: 6 });
@@ -1145,7 +1148,7 @@ test('preserved: every message-type name still has a working read path', async (
     'site:youtube.com': { enabled: true, gainDb: 2, seq: 1, mirror: true },
   });
   const bg = loadBackground(storage);
-  const frame = loadContentFrame('https://youtube.com/watch', storage);
+  const frame = await loadContentFrame('https://youtube.com/watch', storage);
   await settle();
   for (const msg of [
     { type: 'GET_SITE_STATE', hostname: 'youtube.com' },
@@ -1266,7 +1269,7 @@ test('legacy-only store (siteSettings/siteToggles/activeSites, no per-site key) 
   let writes = 0;
   const origSet = storage.set.bind(storage);
   storage.set = async (...a) => { writes++; return origSet(...a); };
-  const frame = loadContentFrame('https://music.youtube.com/watch', storage);
+  const frame = await loadContentFrame('https://music.youtube.com/watch', storage);
   await settle();
   const status = await frame.sendMessage({ type: 'GET_DOCUMENT_STATUS' });
   assert.equal(status.enabled, false, 'content script applies the migrated truth');

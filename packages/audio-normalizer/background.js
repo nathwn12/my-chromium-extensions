@@ -149,24 +149,104 @@ async function writeSiteRecord(siteKey, record) {
  * `enabled`, browser site access, or a transient session override says.
  * The rule is the host's own record OR any parent host's (`h === key ||
  * h.endsWith('.' + key)`), so excluding `tiktok.com` also covers
- * `www.tiktok.com`.
+ * `www.tiktok.com`. Parents include the bare one (`com`, `localhost`).
+ *
+ * FAIL CLOSED: a storage read error, or a host that cannot be resolved at all,
+ * answers "blocked" — an unknown truth is never permission to inject.
  * @param {string} siteKey
- * @returns {Promise<boolean>}
+ * @returns {Promise<boolean>} true when the host must stay inactive
  */
-async function isSiteExcluded(siteKey) {
-  if (!siteKey) return false;
-  const keys = [siteKey].concat(backgroundShared.ancestorSiteKeys(siteKey));
-  for (const key of keys) {
-    try {
-      const { record } = await readSiteRecord(key);
-      if (record.excluded === true) return true;
-    } catch {
-      // Unknown truth is not exclusion: the content script's own read is the
-      // backstop, and failing closed here would break a working site on a
-      // storage hiccup.
-    }
+async function isSiteBlocked(siteKey) {
+  if (!siteKey) return true;
+  const keys = [siteKey]
+    .concat(backgroundShared.ancestorSiteKeys(siteKey))
+    .map((key) => backgroundShared.siteStorageKey(key))
+    .filter(Boolean);
+  let stored;
+  try {
+    stored = await chrome.storage.local.get(keys);
+  } catch {
+    return true;
   }
-  return false;
+  return keys.some((key) => {
+    const value = stored[key];
+    return Boolean(value && typeof value === 'object' && value.excluded === true);
+  });
+}
+
+/**
+ * The host keys that are currently excluded, as one read. `ok: false` means the
+ * read failed: callers must then inject nothing (fail closed).
+ * @returns {Promise<{ ok: boolean, hosts: string[] }>}
+ */
+async function readExcludedHosts() {
+  try {
+    const all = /** @type {Record<string, unknown>} */ (await chrome.storage.local.get(null));
+    const records = collectPerSiteRecords(all);
+    /** @type {string[]} */
+    const hosts = [];
+    for (const [siteKey, record] of records) {
+      if (record.excluded) hosts.push(siteKey);
+    }
+    return { ok: true, hosts };
+  } catch {
+    return { ok: false, hosts: [] };
+  }
+}
+
+/**
+ * The frame gate. Chrome serializes this function and runs it inside every
+ * target frame, in that frame's own world, BEFORE any product file. Its first
+ * statement resolves the frame's own hostname, so an excluded cross-origin
+ * iframe is decided by its OWN origin and never by its embedder's.
+ *
+ * It touches no DOM, listener or timer: it records the authoritative exclusion
+ * list in that world (the product file's gate reads it, and it replaces any
+ * stale cache after a re-injection) and reports the verdict to the worker.
+ * Must stay self-contained: no closure over background.js scope.
+ * @param {string[]} excludedHosts
+ */
+function installFrameGate(excludedHosts) {
+  const host = String((typeof location !== 'undefined' && location.hostname) || '')
+    .toLowerCase()
+    .replace(/\.+$/, '');
+  const hosts = Array.isArray(excludedHosts) ? excludedHosts.slice() : [];
+  const excluded = Boolean(host) && hosts.some(
+    (key) => key === host || host.endsWith('.' + key),
+  );
+  const report = { host, excluded };
+  try {
+    globalThis.__tabNormalizerExclusionCache = { hosts };
+    globalThis.__tabNormalizerFrameGate = report;
+  } catch {}
+  return report;
+}
+
+/**
+ * Run {@link installFrameGate} in the given frames.
+ * @param {chrome.scripting.InjectionTarget} target
+ * @param {'ISOLATED'|'MAIN'} world
+ * @returns {Promise<{ ok: boolean, error?: string, frames: Array<{ frameId?: number, host?: string, excluded?: boolean }> }>}
+ */
+async function injectFrameGate(target, world) {
+  const excluded = await readExcludedHosts();
+  if (!excluded.ok) {
+    return { ok: false, error: 'Exclusion state unavailable; injection refused.', frames: [] };
+  }
+  try {
+    const results = await chrome.scripting.executeScript({
+      target,
+      func: installFrameGate,
+      args: [excluded.hosts],
+      world,
+    });
+    const frames = (results || [])
+      .filter((entry) => entry && entry.result && typeof entry.result === 'object')
+      .map((entry) => ({ frameId: entry.frameId, ...entry.result }));
+    return { ok: true, frames };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e), frames: [] };
+  }
 }
 
 /**
@@ -342,24 +422,45 @@ function collectLegacyEnabledSiteKeys(all, records) {
 
 /**
  * The content-script registration implied by stored truth.
+ *
+ * `matches` and `excludeMatches` are disjoint by construction: a key is
+ * dropped from the active set when it IS an excluded key or a DESCENDANT of
+ * one (the suffix rule covers both). A legacy-only key contributes a wildcard
+ * match, which would overlap an excluded descendant — it falls back to its
+ * exact host in that case, leaving the descendant to `excludeMatches` alone.
  * @returns {Promise<{ matches: string[], excludeMatches: string[] }>}
  */
 async function deriveContentScriptRegistration() {
   const all = /** @type {Record<string, unknown>} */ (await chrome.storage.local.get(null));
   const records = collectPerSiteRecords(all);
   /** @type {string[]} */
-  const activeHosts = [];
-  /** @type {string[]} */
   const excludedHosts = [];
   for (const [siteKey, record] of records) {
-    if (record.excluded) {
-      excludedHosts.push(siteKey);
-      continue;
-    }
-    if (record.enabled) activeHosts.push(siteKey);
+    if (record.excluded) excludedHosts.push(siteKey);
   }
-  const matches = backgroundShared.siteHostMatchPatterns(activeHosts)
-    .concat(backgroundShared.siteExcludeMatchPatterns(Array.from(collectLegacyEnabledSiteKeys(all, records))));
+  const isCoveredByExclusion = (siteKey) => backgroundShared.isHostExcluded(siteKey, excludedHosts);
+
+  /** @type {string[]} */
+  const exactActive = [];
+  for (const [siteKey, record] of records) {
+    if (record.excluded || !record.enabled) continue;
+    if (isCoveredByExclusion(siteKey)) continue;
+    exactActive.push(siteKey);
+  }
+  /** @type {string[]} */
+  const legacyWildcard = [];
+  /** @type {string[]} */
+  const legacyExact = [];
+  for (const siteKey of collectLegacyEnabledSiteKeys(all, records)) {
+    if (isCoveredByExclusion(siteKey)) continue;
+    const wouldOverlap = excludedHosts.some((excludedKey) => (
+      excludedKey !== siteKey && backgroundShared.hostMatchesSiteKey(excludedKey, siteKey)
+    ));
+    (wouldOverlap ? legacyExact : legacyWildcard).push(siteKey);
+  }
+  const matches = backgroundShared.siteHostMatchPatterns(exactActive)
+    .concat(backgroundShared.siteHostMatchPatterns(legacyExact))
+    .concat(backgroundShared.siteExcludeMatchPatterns(legacyWildcard));
   return {
     matches,
     excludeMatches: backgroundShared.siteExcludeMatchPatterns(excludedHosts),
@@ -473,6 +574,12 @@ function flushSiteBroadcast(siteKey) {
       }
       tabs.forEach(tab => {
         if (tab.url && tab.id && tabMatchesSiteKey(tab.url, siteKey)) {
+          // An excluded record must reach EVERY frame of the tab: teardown
+          // belongs to each frame, and a cross-origin iframe of the excluded
+          // host does not share the tab's top-level URL. Ordinary broadcasts
+          // stay top-frame-only (a frame's own storage listener covers the
+          // rest without a cross-frame fan-out).
+          const options = current.excluded ? undefined : { frameId: 0 };
           chrome.tabs.sendMessage(tab.id, {
             type: 'TOGGLE_CHANGED',
             siteKey,
@@ -481,7 +588,7 @@ function flushSiteBroadcast(siteKey) {
             // Live teardown: the content script stops on this flag without a
             // storage read. Exclusion outranks `enabled` at the tab.
             excluded: current.excluded,
-          }, { frameId: 0 }).catch(() => {});
+          }, options).catch(() => {});
         }
       });
     })();
@@ -508,6 +615,15 @@ async function injectMainWorldScript(tabId, file, frameId) {
   const target = (typeof frameId === 'number' && Number.isFinite(frameId))
     ? { tabId, frameIds: [frameId] }
     : { tabId };
+  // Frame gate first, in the MAIN world of the target frame: its own hostname
+  // decides, not the embedder's. An excluded frame gets no hook written into it.
+  const gate = await injectFrameGate(target, 'MAIN');
+  if (!gate.ok) {
+    return { ok: false, error: gate.error || 'Frame gate failed.' };
+  }
+  if (gate.frames.length > 0 && gate.frames.every((frame) => frame.excluded)) {
+    return { ok: false, error: 'Frame is excluded; page hook not injected.' };
+  }
   try {
     await chrome.scripting.executeScript({
       target,
@@ -524,8 +640,16 @@ async function injectMainWorldScript(tabId, file, frameId) {
 }
 
 async function injectTabScripts(tabId) {
+  const target = { tabId, allFrames: true };
+  // Frame-level gate (layer 2a): the ISOLATED gate runs in EVERY frame and each
+  // frame's own hostname decides. The files below still run everywhere, but an
+  // excluded frame returns at its first statement, before any listener or timer.
+  const gate = await injectFrameGate(target, 'ISOLATED');
+  if (!gate.ok) {
+    throw new Error(gate.error || 'Frame gate failed.');
+  }
   await chrome.scripting.executeScript({
-    target: { tabId, allFrames: true },
+    target,
     files: INJECTABLE_FILES,
   });
 }
@@ -551,7 +675,7 @@ async function prepareCurrentTabActivation(tabId, siteKey) {
   }
 
   // Layer 3, enable path: an excluded host is never injected.
-  if (await isSiteExcluded(siteKey)) {
+  if (await isSiteBlocked(siteKey)) {
     return { state: 'idle' };
   }
 
@@ -597,7 +721,7 @@ async function tryApplyPendingSessionState(tabId, tab) {
   }
 
   // Exclusion outranks a transient session override.
-  if (await isSiteExcluded(entry.siteKey)) {
+  if (await isSiteBlocked(entry.siteKey)) {
     return false;
   }
 
@@ -644,7 +768,7 @@ async function softRecheckDocument(tabId, siteKey) {
   }
 
   // Exclusion beats a soft wake: nothing is injected, nothing runs.
-  if (await isSiteExcluded(siteKey || getTabSiteKey(tab))) {
+  if (await isSiteBlocked(siteKey || getTabSiteKey(tab))) {
     return { ok: true, activation: { state: 'idle' } };
   }
 
@@ -663,19 +787,32 @@ async function softRecheckDocument(tabId, siteKey) {
   }
 }
 
-async function syncExistingTabsForSite(siteKey) {
+/**
+ * Inject the ISOLATED pair into open tabs of a site.
+ * @param {string} siteKey
+ * @param {{ includeDescendants?: boolean }} [options] descendants of the key
+ *   count too — an undo at `example.com` must revive open `a.example.com` tabs,
+ *   which were torn down with their own (now stale) exclusion cache.
+ */
+async function syncExistingTabsForSite(siteKey, options = {}) {
   if (!siteKey) {
     return;
   }
 
   // Layer 3, batch path (enable, startup re-inject, un-exclude): an excluded
   // host is never injected, not even with the ISOLATED pair.
-  if (await isSiteExcluded(siteKey)) {
+  if (await isSiteBlocked(siteKey)) {
     return;
   }
 
+  const includeDescendants = options.includeDescendants === true;
   const tabs = await chrome.tabs.query({});
-  const matchingTabs = tabs.filter((tab) => tab.id && getTabSiteKey(tab) === siteKey);
+  const matchingTabs = tabs.filter((tab) => {
+    const tabSiteKey = getTabSiteKey(tab);
+    if (!tab.id || !tabSiteKey) return false;
+    if (tabSiteKey === siteKey) return true;
+    return includeDescendants && backgroundShared.hostMatchesSiteKey(tabSiteKey, siteKey);
+  });
 
   await Promise.all(matchingTabs.map(async (tab) => {
     if (!tab.id || !canAccessTabUrl(tab.url)) {
@@ -843,11 +980,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           await syncExistingTabsForSite(siteKey);
         }
         // Live teardown / revive for tabs that are already open. The storage
-        // broadcast (TOGGLE_CHANGED, carrying `excluded`) reaches frames whose
-        // listeners are still armed; an un-exclude must also re-inject, because
-        // the torn-down frames have no listeners left to hear it.
-        if (persist && applied.exclusionChanged && !applied.excluded && applied.enabled) {
-          await syncExistingTabsForSite(siteKey);
+        // broadcast (TOGGLE_CHANGED, carrying `excluded`) reaches every frame
+        // whose listeners are still armed; an un-exclude must also re-inject
+        // the key AND its open descendants, because the torn-down frames have
+        // no listeners left to hear it and their cached key is their own.
+        if (persist && applied.exclusionChanged && !applied.excluded) {
+          await syncExistingTabsForSite(siteKey, { includeDescendants: true });
         }
         console.log('[bg]', persist ? 'stored:' : 'transient:', siteKey, JSON.stringify(applied));
         return {
@@ -888,10 +1026,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         const tabId = _sender?.tab?.id;
         if (!tabId) throw new Error('No tab ID for page hook injection.');
         // Layer 3: the MAIN-world patch is never written into an excluded
-        // host. This is the last line for every injection path — enable,
-        // startup re-inject, activation retry and SPA revive all arrive here.
-        const hookSiteKey = getTabSiteKey(_sender?.tab);
-        if (hookSiteKey && await isSiteExcluded(hookSiteKey)) {
+        // frame. The SENDER FRAME's URL decides — not the tab's top-level URL,
+        // which belongs to the embedder and would let an excluded cross-origin
+        // iframe inherit the top host's permission. `injectMainWorldScript`
+        // then runs the MAIN-world frame gate for the frame's own verdict.
+        const senderUrl = String(_sender?.url || _sender?.tab?.url || '');
+        const hookSiteKey = backgroundShared.getSiteKey(backgroundShared.extractHostname(senderUrl));
+        if (await isSiteBlocked(hookSiteKey)) {
           return { ok: false, error: 'Site is excluded; page hook not injected.' };
         }
         // Sender-frame targeting: content scripts in iframes carry their

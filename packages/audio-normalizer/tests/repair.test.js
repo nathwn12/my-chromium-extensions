@@ -51,7 +51,7 @@ function createStore(initial = {}) {
 }
 
 // ---------- content-script harness ----------
-function loadContent(href, storage) {
+async function loadContent(href, storage) {
   const runtimeListeners = [];
   const windowListeners = {};
   const postedToPage = [];
@@ -94,14 +94,21 @@ function loadContent(href, storage) {
   sandbox.self = sandbox;
   vm.createContext(sandbox);
   vm.runInContext(read('content-script.js'), sandbox, { filename: 'content-script.js' });
+  // FAIL CLOSED: listeners appear only after the storage answer.
+  await sleep(40);
   const sendMessage = (message) => new Promise((resolve) => {
+    if (typeof runtimeListeners[0] !== 'function') {
+      resolve({ ok: false, error: 'no receiver' });
+      return;
+    }
     const ret = runtimeListeners[0](message, {}, resolve);
     if (ret !== true) resolve(undefined);
   });
+  const listenerCount = () => runtimeListeners.length;
   const dispatchPage = (data) => {
     for (const fn of (windowListeners.message || [])) fn({ source: sandbox.window, data });
   };
-  return { sandbox, sendMessage, postedToPage, dispatchPage };
+  return { sandbox, sendMessage, postedToPage, dispatchPage, listenerCount };
 }
 
 // ---------- background harness ----------
@@ -296,13 +303,15 @@ test('item6: github pages hosts get distinct toggles, legacy collapses read-only
   const storage = createStore({
     'site:alice.github.io': { enabled: true, gainDb: 1, seq: 1, mirror: true },
   });
-  const alice = loadContent('https://alice.github.io/app', storage);
-  const bob = loadContent('https://bob.github.io/app', storage);
+  const alice = await loadContent('https://alice.github.io/app', storage);
+  const bob = await loadContent('https://bob.github.io/app', storage);
   await sleep(60);
   const sa = await alice.sendMessage({ type: 'GET_DOCUMENT_STATUS' });
-  const sb = await bob.sendMessage({ type: 'GET_DOCUMENT_STATUS' });
   assert.equal(sa.enabled, true, 'alice enabled by its own full-key record');
-  assert.equal(sb.enabled, false, 'bob is NOT enabled by alice full-key record');
+  // bob has no record at all, so the fail-closed bootstrap installs nothing:
+  // there is no content script to ask, which is the strongest form of "not
+  // enabled by alice's full-key record".
+  assert.equal(bob.listenerCount(), 0, 'bob gets no content script at all (unknown host is inactive)');
 });
 
 test('item6: legacy collapsed record migrates to the full key on first write', async () => {
@@ -414,7 +423,7 @@ test('item3b: content corrects a drifted hook gain from stored truth', async () 
   const storage = createStore({
     'site:example.com': { enabled: true, gainDb: 3, seq: 1, mirror: true },
   });
-  const c = loadContent('https://example.com/watch', storage);
+  const c = await loadContent('https://example.com/watch', storage);
   await sleep(60);
   c.postedToPage.length = 0;
   c.dispatchPage({ channel: 'tab-normalizer-v5', type: 'HOOK_STATUS', active: true, gainDb: 99 });
@@ -485,7 +494,7 @@ test('item7: disabled tab posts STOP when an active hook reports in', async () =
   const storage = createStore({
     'site:example.com': { enabled: false, gainDb: 0, seq: 0, mirror: false },
   });
-  const c = loadContent('https://example.com/watch', storage);
+  const c = await loadContent('https://example.com/watch', storage);
   await sleep(60);
   c.postedToPage.length = 0;
   c.dispatchPage({ channel: 'tab-normalizer-v5', type: 'HOOK_STARTED', active: true });
@@ -544,7 +553,7 @@ test('item12: GET_DOCUMENT_STATUS answers from memory without storage reads', as
   const storage = createStore({
     'site:example.com': { enabled: true, gainDb: 2, seq: 1, mirror: true },
   });
-  const c = loadContent('https://example.com/watch', storage);
+  const c = await loadContent('https://example.com/watch', storage);
   await sleep(60);
   const baseline = storage.getCalls();
   await c.sendMessage({ type: 'GET_DOCUMENT_STATUS' });

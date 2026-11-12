@@ -20,22 +20,40 @@
     }
   }
 
+  // One canonical host form, shared by every key helper. Order matters:
+  // punycode first (the browser punycodes `location.hostname`, but a stored or
+  // legacy key may not be), then port, then trailing dots — `example.com.:443`
+  // must collapse to `example.com`, which fails if the dot is stripped before
+  // the port.
+  function normalizeHostname(hostname) {
+    let normalized = String(hostname || '').trim().toLowerCase();
+    if (!normalized) return '';
+
+    if (/[^\x00-\x7F]/.test(normalized)) {
+      try {
+        normalized = new URL(`http://${normalized}`).hostname;
+      } catch {}
+    }
+
+    const bracketedIpv6 = normalized.match(/^\[(.+)\](?::\d+)?$/);
+    if (bracketedIpv6) {
+      return bracketedIpv6[1].replace(/\.+$/, '');
+    }
+
+    // A port strip must not eat an IPv6 group: only a single-colon authority
+    // has a port.
+    const portless = /^[^:]+:\d+$/.test(normalized)
+      ? normalized.replace(/:\d+$/, '')
+      : normalized;
+    return portless.replace(/\.+$/, '');
+  }
+
   // Canonical site key: the FULL normalized hostname. `alice.github.io`
   // and `bob.github.io` are different sites and must never share a toggle.
   // The old collapsed (eTLD+1) form survives ONLY as a read-only legacy
   // fallback (`getLegacySiteKey`) for data written before full keys existed.
   function getSiteKey(hostname) {
-    let normalized = String(hostname || '').trim().toLowerCase().replace(/\.+$/, '');
-    if (!normalized) return '';
-
-    const bracketedIpv6 = normalized.match(/^\[(.+)\](?::\d+)?$/);
-    if (bracketedIpv6) {
-      normalized = bracketedIpv6[1];
-    } else if (/^[^:]+:\d+$/.test(normalized)) {
-      normalized = normalized.replace(/:\d+$/, '');
-    }
-
-    return normalized;
+    return normalizeHostname(hostname);
   }
 
   // Read-only legacy fallback: the pre-full-key collapse (sibling subdomains
@@ -44,15 +62,8 @@
   // key. `alice.github.io` collapses to `github.io` here — that is the bug
   // being retired, kept solely to find old rows.
   function getLegacySiteKey(hostname) {
-    let normalized = String(hostname || '').trim().toLowerCase().replace(/\.+$/, '');
+    const normalized = normalizeHostname(hostname);
     if (!normalized) return '';
-
-    const bracketedIpv6 = normalized.match(/^\[(.+)\](?::\d+)?$/);
-    if (bracketedIpv6) {
-      normalized = bracketedIpv6[1];
-    } else if (/^[^:]+:\d+$/.test(normalized)) {
-      normalized = normalized.replace(/:\d+$/, '');
-    }
 
     if (normalized === 'localhost' || /^[\d.:]+$/.test(normalized)) {
       return normalized;
@@ -155,14 +166,15 @@
     return false;
   }
 
-  // Parent hosts, nearest first, self excluded. Only ancestors with at least
-  // two labels: `com` is never a site key.
+  // Parent hosts, nearest first, self excluded. The contract's suffix rule has
+  // no label floor: `localhost` covers `foo.localhost` and `com` covers
+  // `example.com`, so every parent is listed. A single-label host has none.
   function ancestorSiteKeys(hostname) {
     const host = getSiteKey(hostname);
     if (!host || /^[\d.:]+$/.test(host)) return [];
     const parts = host.split('.').filter(Boolean);
     const out = [];
-    for (let i = 1; i < parts.length - 1; i += 1) {
+    for (let i = 1; i < parts.length; i += 1) {
       out.push(parts.slice(i).join('.'));
     }
     return out;

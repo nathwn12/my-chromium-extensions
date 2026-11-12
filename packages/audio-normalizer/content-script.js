@@ -1,10 +1,4 @@
 (() => {
-  const existing = globalThis.__tabNormalizerContentScriptV5;
-  if (existing?.reinject) {
-    existing.reinject();
-    return;
-  }
-
   const CHANNEL = 'tab-normalizer-v5';
   const HOOK_TIMEOUT_MS = 1000;
   const HOOK_FRESH_MS = 3000;
@@ -14,6 +8,11 @@
   const PENDING_ATTR = 'data-tab-normalizer-pending';
 
   const contentShared = globalThis.TabNormalizerShared;
+
+  // A previous instance in this world, if any. Its reinject() is called only
+  // AFTER the gate below has accepted this entry (finding: the old code called
+  // it before any gate, so a re-injection could bypass exclusion).
+  const existing = globalThis.__tabNormalizerContentScriptV5;
 
   // ---------------------------------------------------------------------------
   // Backstop gate (layer 2).
@@ -52,6 +51,16 @@
     const hosts = exclusionCache.hosts.filter((entry) => entry !== key);
     if (excluded) hosts.push(key);
     exclusionCache.hosts = hosts;
+  }
+
+  // The frame gate the background ran in THIS world is authoritative: it was
+  // computed from this frame's own hostname against a list read from storage
+  // moments ago, and it also repopulated the cache (so a stale entry from a
+  // previous teardown cannot outlive a re-injection).
+  function frameGateExcluded() {
+    const gate = globalThis.__tabNormalizerFrameGate;
+    if (gate && typeof gate.excluded === 'boolean') return gate.excluded === true;
+    return isExcludedByCache();
   }
 
   if (isExcludedByCache()) {
@@ -109,18 +118,69 @@
   // excluded frame must leave nothing behind that could do work).
   /** @type {Array<() => void>} */
   let listenerRemovers = [];
+  // Canceller for the popup probe's own window listener + 1 s timeout, which
+  // live outside the bootstrap listener set.
+  /** @type {(() => void) | null} */
+  let popupProbeCancel = null;
+
+  // THE GATE. It runs on every entry, before the re-injection hook is called
+  // and before anything is created, so a re-injection can never bypass it.
+  // Order of authority: the frame gate the background just ran in THIS world
+  // (its own hostname, fresh list), then the cache the storage broadcast
+  // maintains.
+  if (frameGateExcluded()) {
+    console.log('[cs] host gated before any listener:', currentHost());
+    return;
+  }
+
+  if (existing?.reinject) {
+    existing.reinject();
+    return;
+  }
 
   globalThis.__tabNormalizerContentScriptV5 = {
     reinject: handleReinject,
   };
+  // FAIL CLOSED: nothing is installed until storage has answered, and a read
+  // error installs nothing at all.
+  void bootstrap('init');
 
-  refreshLocationState();
-  console.log('[cs] loaded on:', state.hostname, location.href);
-  ensureBootstrapListeners();
-  if (state.siteKey) {
-    scheduleSync('init');
-  } else {
-    console.log('[cs] no hostname, skipping');
+  /**
+   * Resolve this frame's stored truth, then install. No listener, observer or
+   * timer exists before the answer arrives; an excluded host, an unreadable
+   * store and a host with no stored record at all all stay inactive.
+   * @param {string} reason
+   */
+  async function bootstrap(reason) {
+    refreshLocationState();
+    console.log('[cs] bootstrapping on:', state.hostname, location.href);
+    if (!state.siteKey) {
+      console.log('[cs] no hostname, skipping');
+      return;
+    }
+    let config;
+    try {
+      config = await readStoredConfig();
+    } catch (error) {
+      console.log('[cs] storage read failed, staying inactive:', String(error));
+      return;
+    }
+    if (config.excluded) {
+      state.excluded = true;
+      rememberExclusion(state.siteKey, true);
+      console.log('[cs] excluded, staying inactive');
+      return;
+    }
+    if (!config.known) {
+      // No record for this host (or any parent): unknown is inactive.
+      console.log('[cs] no stored record for', state.siteKey, '- inactive');
+      return;
+    }
+    rememberExclusion(state.siteKey, false);
+    state.excluded = false;
+    if (!ensureBootstrapListeners()) return;
+    state.initialSyncDone = false;
+    scheduleSync(reason);
   }
 
   function refreshLocationState() {
@@ -128,8 +188,11 @@
     state.siteKey = contentShared.getSiteKey(state.hostname);
   }
 
+  /**
+   * @returns {boolean} true when the listener set is armed for this frame
+   */
   function ensureBootstrapListeners() {
-    if (state.bootstrapped || !state.siteKey || state.detached) return;
+    if (state.bootstrapped || !state.siteKey || state.detached) return state.bootstrapped;
 
     const onStorageChanged = (changes, area) => {
       if (area !== 'local') return;
@@ -284,6 +347,7 @@
     listenerRemovers.push(() => window.removeEventListener('hashchange', onHashChange));
 
     state.bootstrapped = true;
+    return true;
   }
 
   /**
@@ -346,7 +410,7 @@
    * (the same `h === key || h.endsWith('.' + key)` rule), so one `get` with a
    * handful of keys resolves a parent-level exclusion without scanning
    * storage.
-   * @returns {Promise<{ enabled: boolean, gainDb: number, excluded: boolean }>}
+   * @returns {Promise<{ enabled: boolean, gainDb: number, excluded: boolean, known: boolean }>}
    */
   async function readStoredConfig() {
     const perKey = contentShared.siteStorageKey(state.siteKey);
@@ -375,17 +439,20 @@
       rememberExclusion(state.siteKey, true);
     }
 
-    const withExcluded = (rec) => ({
+    const withExcluded = (rec, known) => ({
       enabled: ancestorExcluded ? false : rec.enabled,
       gainDb: rec.gainDb,
       excluded: ancestorExcluded || rec.excluded,
+      // `known` = storage actually holds a record for this host (or a parent).
+      // A host with no record at all is unknown, and unknown is inactive.
+      known: Boolean(known) || ancestorExcluded,
     });
 
     const perValue = perKey ? stored[perKey] : undefined;
     if (perValue && typeof perValue === 'object') {
       const rec = contentShared.normalizeSiteRecord(perValue);
       rememberExclusion(state.siteKey, rec.excluded);
-      return withExcluded(rec);
+      return withExcluded(rec, true);
     }
     // Pre-full-key fallback (read-only here; the background migrates on its
     // next write): a collapsed per-site record (`site:github.io`) still
@@ -407,7 +474,7 @@
       if (legacyValue && typeof legacyValue === 'object') {
         const rec = contentShared.normalizeSiteRecord(legacyValue);
         rememberExclusion(state.siteKey, rec.excluded);
-        return withExcluded(rec);
+        return withExcluded(rec, true);
       }
     }
     // Lossless legacy fallback: normalise every legacy shape (settings,
@@ -418,10 +485,10 @@
       stored.siteSettings, stored.activeSites, stored.siteToggles, state.siteKey,
     );
     if (migrated) {
-      return withExcluded(migrated);
+      return withExcluded(migrated, true);
     }
     const config = contentShared.getSiteConfig(stored.siteSettings, stored.activeSites, state.siteKey);
-    return withExcluded({ enabled: config.enabled, gainDb: config.gainDb, excluded: false });
+    return withExcluded({ enabled: config.enabled, gainDb: config.gainDb, excluded: false }, false);
   }
 
   function startSpaWatch() {
@@ -445,17 +512,15 @@
   function handleReinject() {
     refreshLocationState();
     console.log('[cs] reinjected on:', state.hostname, location.href);
-    // A re-injection is the background's decision (it refuses excluded hosts),
-    // so re-arm rather than trust a possibly stale cache: drop the detached
-    // state, re-install listeners and let the async read decide.
+    // A re-injection is the background's decision (it refuses excluded frames
+    // and rewrites the frame gate first), so re-arm rather than trust a
+    // possibly stale cache: drop the detached state and re-decide from storage.
     if (state.detached) {
       state.detached = false;
       state.bootstrapped = false;
       state.initialSyncDone = false;
     }
-    ensureBootstrapListeners();
-    if (!state.siteKey) return;
-    scheduleSync('reinject');
+    void bootstrap('reinject');
   }
 
   function isActivationPending() {
@@ -585,6 +650,9 @@
       gainDb = contentShared.clampGainDb(message.gainDb);
     } else {
       const base = await readStoredConfig();
+      // The read above may have resolved after a teardown: never install a
+      // transient override or schedule work on a detached frame.
+      if (state.detached || state.excluded) return { ok: false, error: 'frame inactive' };
       enabled = hasEnabled ? Boolean(message.enabled) : base.enabled;
       gainDb = hasGain ? contentShared.clampGainDb(message.gainDb) : base.gainDb;
     }
@@ -595,6 +663,7 @@
     console.log('[cs] document-state (transient):', state.siteKey, 'enabled:', enabled, 'gainDb:', gainDb);
 
     const hookAlive = await evaluateHookHealth();
+    if (state.detached || state.excluded) return { ok: false, error: 'frame inactive' };
     const action = contentShared.getContentAction({ enabled, injected: state.injected, hookAlive });
 
     if (action === 'inject') {
@@ -678,6 +747,11 @@
       state.pendingProbe.resolve(false);
       state.pendingProbe = null;
     }
+    // The popup probe owns its own message listener and timeout; both go.
+    if (popupProbeCancel) {
+      popupProbeCancel();
+      popupProbeCancel = null;
+    }
     state.popupProbe = null;
 
     postToPage('STOP', { reason });
@@ -738,6 +812,18 @@
       // persistence belongs to the background's single writer; this context
       // only reads.
       const config = await readStoredConfig();
+      // The read may have resolved after a teardown (live exclusion, popup
+      // close): a detached frame must not schedule anything on a stale answer.
+      if (state.detached) return;
+      if (!config.known && !state.transient) {
+        // Unknown host: inactive, and it arms nothing.
+        state.enabled = false;
+        state.hookAlive = false;
+        state.hookActive = false;
+        clearActivationRetry();
+        stopSpaWatch();
+        return;
+      }
       // Exclusion outranks the transient session override AND stored
       // enablement: nothing runs on an excluded site, on any path.
       state.excluded = config.excluded === true;
@@ -763,6 +849,9 @@
       console.log('[cs] sync:', state.siteKey, 'enabled:', enabled, 'gainDb:', gainDb, 'injected:', state.injected, 'hookAlive:', state.hookAlive, 'reason:', reason);
 
       const hookAlive = enabled ? await evaluateHookHealth() : state.hookAlive;
+      // The probe awaited above can outlive a teardown: re-check before any
+      // activation, page message or SPA timer is scheduled.
+      if (state.detached) return;
       const action = contentShared.getContentAction({ enabled, injected: state.injected, hookAlive });
 
       if (action === 'inject') {
@@ -974,30 +1063,41 @@
       const requestId = `popup-${Date.now()}-${Math.random().toString(16).slice(2)}`;
       let settled = false;
 
+      const settle = (alive, data) => {
+        if (settled) return;
+        settled = true;
+        window.removeEventListener('message', handler);
+        clearTimeout(timeoutId);
+        popupProbeCancel = null;
+        if (alive) {
+          state.hookAlive = true;
+          state.hookActive = Boolean(data && data.active);
+          state.lastError = state.enabled ? String((data && data.error) || '') : '';
+          state.lastStatusAt = Date.now();
+        } else {
+          state.hookAlive = false;
+          state.hookActive = false;
+        }
+        resolve(alive);
+      };
+
       const handler = (event) => {
         if (settled) return;
         if (event.source !== window || event.data?.channel !== CHANNEL) return;
         if (event.data.requestId !== requestId) return;
-        settled = true;
-        window.removeEventListener('message', handler);
-        clearTimeout(timeoutId);
-        state.hookAlive = true;
-        state.hookActive = Boolean(event.data.active);
-        state.lastError = state.enabled ? String(event.data.error || '') : '';
-        state.lastStatusAt = Date.now();
-        resolve(true);
+        settle(true, event.data);
       };
 
       const timeoutId = setTimeout(() => {
-        if (settled) return;
-        settled = true;
-        window.removeEventListener('message', handler);
-        state.hookAlive = false;
-        state.hookActive = false;
-        resolve(false);
+        settle(false, null);
         // Liveness: injected but dead — re-sync via capped retry, no busy loop.
+        if (state.detached) return;
         if (state.injected && !state.hookAlive) scheduleLivenessResync('popup-probe-timeout');
       }, HOOK_TIMEOUT_MS);
+
+      // Tracked: a teardown must cancel this probe's own listener AND timer,
+      // which live outside the bootstrap listener set.
+      popupProbeCancel = () => settle(false, null);
 
       window.addEventListener('message', handler);
       postToPage('STATUS_REQUEST', { requestId });

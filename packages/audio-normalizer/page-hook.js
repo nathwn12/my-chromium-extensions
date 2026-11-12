@@ -15,6 +15,117 @@
   const RECOVERY_BURST_COUNT = 6;
   const HOOK_GUARD_TIMEOUT_MS = 1500;
   const RESUME_TIMEOUT_MS = 400;
+  // -------------------------------------------------------------------------
+  // Tracked teardown collection.
+  //
+  // Every listener and timer this hook owns is registered through these four
+  // helpers, so STOP releases them from ONE place instead of relying on each
+  // subsystem remembering to clean up. The `message` listener is the single
+  // deliberate survivor: it is the hook's only channel for a later START, and
+  // removing it would make re-enabling a page impossible without a reload.
+  // -------------------------------------------------------------------------
+  /** @type {Array<{ target: any, type: string, fn: any, options: any }>} */
+  let trackedListeners = [];
+  /** @type {Set<any>} */
+  const trackedTimers = new Set();
+
+  function trackListener(target, type, fn, options) {
+    if (!target || typeof target.addEventListener !== 'function') return false;
+    try {
+      target.addEventListener(type, fn, options);
+    } catch {
+      return false;
+    }
+    trackedListeners.push({ target, type, fn, options });
+    return true;
+  }
+
+  /** @param {(entry: { target: any, type: string, fn: any, options: any }) => boolean} keep */
+  function untrackListeners(keep) {
+    const survivors = [];
+    for (const entry of trackedListeners) {
+      if (keep && keep(entry)) {
+        survivors.push(entry);
+        continue;
+      }
+      try {
+        entry.target.removeEventListener(entry.type, entry.fn, entry.options);
+      } catch {}
+    }
+    trackedListeners = survivors;
+  }
+
+  function trackTimeout(fn, ms) {
+    let id = null;
+    id = setTimeout(() => {
+      trackedTimers.delete(id);
+      try {
+        fn();
+      } catch {}
+    }, ms);
+    trackedTimers.add(id);
+    return id;
+  }
+
+  function untrackTimeout(id) {
+    if (id === null || id === undefined) return;
+    trackedTimers.delete(id);
+    try {
+      clearTimeout(id);
+    } catch {}
+  }
+
+  function untrackListener(target, type, fn, options) {
+    untrackListeners((entry) => !(entry.target === target
+      && entry.type === type && entry.fn === fn && entry.options === options));
+    trackedElementListeners = trackedElementListeners.filter((entry) => {
+      if (entry.el !== target || entry.type !== type || entry.fn !== fn) return true;
+      try {
+        entry.el.removeEventListener(entry.type, entry.fn);
+      } catch {}
+      return false;
+    });
+  }
+
+  function untrackAllTimers() {
+    for (const id of Array.from(trackedTimers)) {
+      try {
+        clearTimeout(id);
+      } catch {}
+    }
+    trackedTimers.clear();
+  }
+
+  /**
+   * Per-element listeners, tracked for the same reason: STOP detaches every
+   * one of them and clears the `__tnProgramWatched` latch so a later START
+   * re-arms the element instead of finding a stale guard.
+   * @type {Array<{ el: any, type: string, fn: any }>}
+   */
+  let trackedElementListeners = [];
+
+  function trackElementListener(el, type, fn) {
+    if (!el || typeof el.addEventListener !== 'function') return;
+    try {
+      el.addEventListener(type, fn);
+    } catch {
+      return;
+    }
+    trackedElementListeners.push({ el, type, fn });
+  }
+
+  function teardownElementListeners() {
+    for (const entry of trackedElementListeners) {
+      try {
+        entry.el.removeEventListener(entry.type, entry.fn);
+      } catch {}
+      try {
+        entry.el.__tnProgramWatched = false;
+      } catch {}
+    }
+    trackedElementListeners = [];
+  }
+
   /**
    * Race context.resume() against a short timer so an autoplay-blocked
    * context never wedges session creation or media attach. Resolves on
@@ -58,10 +169,8 @@
   function ensureAttachedResumeListeners() {
     if (attachedResumeArmed) return;
     attachedResumeArmed = true;
-    try {
-      document.addEventListener('play', resumeAttachedSessions, true);
-      document.addEventListener('playing', resumeAttachedSessions, true);
-    } catch {}
+    trackListener(document, 'play', resumeAttachedSessions, true);
+    trackListener(document, 'playing', resumeAttachedSessions, true);
   }
   function maybeDisarmAttachedResume() {
     if (!attachedResumeArmed) return;
@@ -73,10 +182,8 @@
     } catch {}
     if (held) return;
     attachedResumeArmed = false;
-    try {
-      document.removeEventListener('play', resumeAttachedSessions, true);
-      document.removeEventListener('playing', resumeAttachedSessions, true);
-    } catch {}
+    untrackListener(document, 'play', resumeAttachedSessions, true);
+    untrackListener(document, 'playing', resumeAttachedSessions, true);
   }
   // Worklet URL contract: the ONLY trusted source is the START message from
   // the ISOLATED content script (which knows chrome.runtime.getURL). The
@@ -202,13 +309,33 @@
     revive,
   };
 
+  // The frame gate (written by the background in the MAIN world just before
+  // this file, from the frame's OWN hostname) is the first thing consulted: an
+  // excluded frame gets no listener, no observer and no patch. `undefined`
+  // (no gate ran, e.g. a stale re-entry) falls through to the pending-start
+  // path exactly as before.
+  if (globalThis.__tabNormalizerFrameGate?.excluded === true) {
+    return;
+  }
+
+  // The control channel is permanent by design: START after a STOP arrives
+  // here, and removing it would make re-enabling a page require a reload.
   window.addEventListener('message', handleMessage);
-  document.addEventListener('visibilitychange', handleLifecycleEvent);
-  window.addEventListener('focus', handleLifecycleEvent);
-  window.addEventListener('pageshow', handleLifecycleEvent);
 
   if (readPendingStart()) {
     start();
+  }
+
+  function bindLifecycleListeners() {
+    trackListener(document, 'visibilitychange', handleLifecycleEvent);
+    trackListener(window, 'focus', handleLifecycleEvent);
+    trackListener(window, 'pageshow', handleLifecycleEvent);
+  }
+
+  function unbindLifecycleListeners() {
+    untrackListener(document, 'visibilitychange', handleLifecycleEvent);
+    untrackListener(window, 'focus', handleLifecycleEvent);
+    untrackListener(window, 'pageshow', handleLifecycleEvent);
   }
 
   function handleMessage(event) {
@@ -239,7 +366,7 @@
   function handleLifecycleEvent() {
     if (!state.active) return;
     if (lifecycleTimer) return;
-    lifecycleTimer = setTimeout(() => {
+    lifecycleTimer = trackTimeout(() => {
       lifecycleTimer = null;
       scheduleRecoveryBurst();
     }, 200);
@@ -266,6 +393,7 @@
     state.active = true;
     state.gainDb = normalizeGainDb(state.gainDb);
     state.lastError = '';
+    bindLifecycleListeners();
 
     // Owner-directed seamless start: pre-warm the media session (AudioContext +
     // AudioWorklet module + node) so it is ready before the first media element
@@ -290,6 +418,7 @@
       setError(`Bootstrap failed: ${e.message || e}`);
     }
     attachExistingMediaElements();
+    rewatchAttachedMediaElements();
     routeSessions();
     updateSessionGains();
     notifySessionStarts();
@@ -343,6 +472,23 @@
       deferredCaptureElements.clear();
     } catch {}
     maybeDisarmAttachedResume();
+
+    // Complete teardown: every tracked listener except the control channel,
+    // every tracked timer, every per-element listener. The patch itself stays
+    // (it cannot be removed without a reload); this makes it inert.
+    unbindLifecycleListeners();
+    untrackTimeout(lifecycleTimer);
+    lifecycleTimer = null;
+    teardownElementListeners();
+    untrackListeners((entry) => entry.target === window && entry.type === 'message');
+    // The armed flag must follow the sweep, or the next START would not re-add
+    // the document-level resume pair.
+    if (attachedResumeArmed) {
+      attachedResumeArmed = false;
+      untrackListener(document, 'play', resumeAttachedSessions, true);
+      untrackListener(document, 'playing', resumeAttachedSessions, true);
+    }
+    untrackAllTimers();
 
     reportStatus('HOOK_STOPPED');
   }
@@ -638,7 +784,7 @@
         }
       }
       if (pendingBatches.length > 0) {
-        observerTimer = setTimeout(flushMutations, 0);
+        observerTimer = trackTimeout(flushMutations, 0);
       }
     }
 
@@ -649,7 +795,7 @@
       for (const m of mutations ?? []) pendingBatches.push(m);
       if (observerTimer) return;
 
-      observerTimer = setTimeout(flushMutations, 100);
+      observerTimer = trackTimeout(flushMutations, 100);
     });
 
     state.observer.observe(document.documentElement || document, {
@@ -849,7 +995,7 @@
       pendingResetGeneration: null,
     };
 
-    context.addEventListener?.('statechange', () => {
+    const onContextStateChange = () => {
       if (!state.active) return;
       if (context.state === 'closed') {
         setError('Audio context closed. Reconnecting…');
@@ -858,7 +1004,8 @@
         return;
       }
       reportStatus('HOOK_STATUS');
-    });
+    };
+    trackListener(context, 'statechange', onContextStateChange);
 
     session.ready = context.audioWorklet
       .addModule(WORKLET_URL || '')
@@ -918,7 +1065,7 @@
         if (!state.recovering) {
           state.recovering = true;
           const delay = session.processorFailures > 2 ? 2000 : 500;
-          setTimeout(() => {
+          trackTimeout(() => {
             state.recovering = false;
             try {
               if (session.processorFailures > 4) return;
@@ -1026,25 +1173,39 @@
     if (!mediaElement || mediaElement.__tnProgramWatched) return;
     mediaElement.__tnProgramWatched = true;
     try {
-      mediaElement.addEventListener('loadstart', () => markProgramDirty(mediaElement));
-      mediaElement.addEventListener('emptied', () => {
+      trackElementListener(mediaElement, 'loadstart', () => markProgramDirty(mediaElement));
+      trackElementListener(mediaElement, 'emptied', () => {
         markProgramDirty(mediaElement);
         // The program is spent: leave the present set so a replay
         // re-attaches (reusing the cached source). The source stays
         // connected and the cache entry is kept.
         detachMediaElement(mediaElement);
       });
-      mediaElement.addEventListener('ended', () => {
+      trackElementListener(mediaElement, 'ended', () => {
         markProgramDirty(mediaElement);
         try { mediaElement.__tnPlaying = false; } catch {}
         detachMediaElement(mediaElement);
       });
-      mediaElement.addEventListener('pause', () => {
+      trackElementListener(mediaElement, 'pause', () => {
         try { mediaElement.__tnPlaying = false; } catch {}
       });
-      mediaElement.addEventListener('play', () => handlePlaybackSignal(mediaElement));
-      mediaElement.addEventListener('playing', () => handlePlaybackSignal(mediaElement));
+      trackElementListener(mediaElement, 'play', () => handlePlaybackSignal(mediaElement));
+      trackElementListener(mediaElement, 'playing', () => handlePlaybackSignal(mediaElement));
     } catch {}
+  }
+
+  // Re-arm the per-element program listeners after a STOP cleared them. The
+  // element keeps its captured source and __tnAttached flag across a stop, so
+  // attachMediaElement alone would not re-watch it.
+  function rewatchAttachedMediaElements() {
+    for (const session of sessions) {
+      for (const mediaElement of session.mediaElements) {
+        try {
+          mediaElement.__tnProgramWatched = false;
+        } catch {}
+        watchProgramBoundaries(mediaElement);
+      }
+    }
   }
 
   // The only gate on the listener path: while ANY play() attempt for the
@@ -1156,14 +1317,14 @@
     mediaElement.__tnGuardPrevMuted = mediaElement.muted;
     mediaElement.muted = true;
     mediaElement.__tnGuarding = true;
-    mediaElement.__tnGuardTimer = setTimeout(() => restoreHookGuard(mediaElement), HOOK_GUARD_TIMEOUT_MS);
+    mediaElement.__tnGuardTimer = trackTimeout(() => restoreHookGuard(mediaElement), HOOK_GUARD_TIMEOUT_MS);
   }
 
   /** @param {any} mediaElement */
   function restoreHookGuard(mediaElement) {
     if (!mediaElement || !mediaElement.__tnGuarding) return;
     if (mediaElement.__tnGuardTimer) {
-      clearTimeout(mediaElement.__tnGuardTimer);
+      untrackTimeout(mediaElement.__tnGuardTimer);
       mediaElement.__tnGuardTimer = null;
     }
     // Guard-window race: restore the pre-guard muted value ONLY while the
@@ -1231,40 +1392,32 @@
     const retry = () => {
       if (!deferredCaptureElements.has(mediaElement)) return;
       deferredCaptureElements.delete(mediaElement);
-      try {
-        mediaElement.removeEventListener?.('play', retry);
-        mediaElement.removeEventListener?.('playing', retry);
-      } catch {}
+      untrackListener(mediaElement, 'play', retry);
+      untrackListener(mediaElement, 'playing', retry);
       if (!state.active) return;
       void attachMediaElement(mediaElement);
     };
-    try {
-      mediaElement.addEventListener?.('play', retry);
-      mediaElement.addEventListener?.('playing', retry);
-    } catch {}
+    trackElementListener(mediaElement, 'play', retry);
+    trackElementListener(mediaElement, 'playing', retry);
     const gestureRetry = () => {
       if (!deferredCaptureElements.has(mediaElement)) {
-        try { document.removeEventListener('click', gestureRetry); } catch {}
-        try { document.removeEventListener('pointerdown', gestureRetry); } catch {}
-        try { document.removeEventListener('keydown', gestureRetry); } catch {}
+        untrackListener(document, 'click', gestureRetry);
+        untrackListener(document, 'pointerdown', gestureRetry);
+        untrackListener(document, 'keydown', gestureRetry);
         return;
       }
       deferredCaptureElements.delete(mediaElement);
-      try { document.removeEventListener('click', gestureRetry); } catch {}
-      try { document.removeEventListener('pointerdown', gestureRetry); } catch {}
-      try { document.removeEventListener('keydown', gestureRetry); } catch {}
-      try {
-        mediaElement.removeEventListener?.('play', retry);
-        mediaElement.removeEventListener?.('playing', retry);
-      } catch {}
+      untrackListener(document, 'click', gestureRetry);
+      untrackListener(document, 'pointerdown', gestureRetry);
+      untrackListener(document, 'keydown', gestureRetry);
+      untrackListener(mediaElement, 'play', retry);
+      untrackListener(mediaElement, 'playing', retry);
       if (!state.active) return;
       void attachMediaElement(mediaElement);
     };
-    try {
-      document.addEventListener('click', gestureRetry);
-      document.addEventListener('pointerdown', gestureRetry);
-      document.addEventListener('keydown', gestureRetry);
-    } catch {}
+    trackListener(document, 'click', gestureRetry);
+    trackListener(document, 'pointerdown', gestureRetry);
+    trackListener(document, 'keydown', gestureRetry);
   }
 
   /** @param {any} mediaElement */
@@ -1426,13 +1579,13 @@
 
       recoveryBurstRemaining -= 1;
       if (state.active && recoveryBurstRemaining > 0) {
-        recoveryBurstTimer = setTimeout(tick, RECOVERY_BURST_MS);
+        recoveryBurstTimer = trackTimeout(tick, RECOVERY_BURST_MS);
       } else {
         recoveryBurstRemaining = 0;
       }
     };
 
-    recoveryBurstTimer = setTimeout(tick, 0);
+    recoveryBurstTimer = trackTimeout(tick, 0);
   }
 
   function clearRecoveryBurst() {
