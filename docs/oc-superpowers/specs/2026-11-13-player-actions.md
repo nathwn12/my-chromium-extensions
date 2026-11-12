@@ -59,6 +59,8 @@ as shipped.
 
 - Popup keeps exactly four controls: speed, reverb, Active, reset. No new popup UI.
 - No new permissions; `host_permissions` stays `https://music.youtube.com/*`.
+- `media.muted` has exactly one writer (`content-script.js`); the page hook writes volume
+  only.
 - `media.muted === controller.attached` invariant is untouched. Player actions never
   write `muted`.
 - Volume is 0–100 %, no software boost. The graph's gain carries `media.volume` once.
@@ -76,7 +78,7 @@ as shipped.
 |---|---|
 | `player-actions.js` | **new**. UMD module like `shared.js`: pure engine + a DOM controller factory. Exports under `globalThis.SlowedReverbPlayerActions` and `module.exports` for tests. |
 | `content-script.js` | minimal wiring: create the player-actions controller when eligible, feed it the media element(s), tear it down on retire/bypass; no refactor of the audio pipeline. |
-| `page-hook.js` | add token-verified `SLRA_SET_VOLUME` (and `SLRA_GET_VOLUME`) handling: call `#movie_player.setVolume(percent)` / `getVolume()`, re-assert `video.muted = true` when the content script says the graph is attached, reply with the applied value. |
+| `page-hook.js` | add token-verified `SLRA_SET_VOLUME` handling: call `#movie_player.setVolume(percent)`, read `getVolume()` back, reply with the applied value. Volume only - this hook never writes `muted` (see "Single writer"). |
 | `manifest.json` | add `player-actions.js` to `content_scripts[0].js` between `shared.js` and `content-script.js`. Nothing else. |
 | `test/player-actions.test.js` | **new**. Engine, saved, wheel arbitration, controller lifecycle, storage. Port pear's cases; add the 15 guards. |
 | `popup.html/js/css` | **untouched**. |
@@ -103,9 +105,17 @@ wheel / future hotkey
 - Volume is owned by YouTube (it persists its own player volume). The extension does
   not store or re-apply volume on load. This avoids clobbering a volume the owner set
   while the extension was off.
-- If a volume write ever flips `muted` to false, the existing enforcement corrects it;
-  the page hook also re-asserts `muted = true` in the same task when told the graph is
-  attached, so a wheel burst cannot burn the mute-correction budget.
+- **Single writer.** `content-script.js` is the only writer of `media.muted`
+  (`media.muted = controller.attached`). `page-hook.js` writes volume and nothing else:
+  it has no `muted` assignment, no attach-state channel, and no mute intent travels with
+  a wheel write. If `#movie_player.setVolume()` ever flips `muted`, the existing
+  `volumechange` enforcement corrects it, spending the same mute-correction budget as any
+  other page-side flip. A wheel burst degrading through that budget is acceptable; a
+  second mute writer is not, because an in-flight write could re-mute a graph that has
+  already detached.
+- The page token on `SLRA_SET_VOLUME` is an **anti-collision marker, not
+  authentication**: a page script can read it and forge a volume message, which can only
+  change the page's own volume. No security claim is made for it.
 
 ### Wheel predicate (order matters)
 
