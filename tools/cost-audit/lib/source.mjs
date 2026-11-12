@@ -4,17 +4,44 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 
+/** Manifest match patterns for a package: what it can ever touch. */
+export function manifestPatterns(dir) {
+  try {
+    const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8"));
+    const content = (manifest.content_scripts ?? []).flatMap((entry) => entry.matches ?? []);
+    return { content, hostPermissions: manifest.host_permissions ?? [] };
+  } catch {
+    return { content: [], hostPermissions: [] };
+  }
+}
+
 /** True when any top-level .js file in the package mentions the token. */
 export function packageMentions(dir, token, { depth = 1 } = {}) {
+  return sourceGrep(dir, token, { depth }).matches.length > 0;
+}
+/**
+ * Where a token appears, with file and line, so a claim about the source can be
+ * checked instead of believed.
+ * @returns {{token: string, filesScanned: number, matches: Array<{file: string, line: number, text: string}>}}
+ */
+export function sourceGrep(dir, token, { depth = 1, max = 50 } = {}) {
   const files = depth > 0 ? listScripts(dir, depth) : [];
+  const matches = [];
   for (const file of files) {
+    let text;
     try {
-      if (readFileSync(file, "utf8").includes(token)) return true;
+      text = readFileSync(file, "utf8");
     } catch {
-      /* an unreadable file cannot vouch for the token */
+      continue;
+    }
+    if (!text.includes(token)) continue;
+    const lines = text.split(/\r?\n/);
+    for (let i = 0; i < lines.length && matches.length < max; i++) {
+      if (!lines[i].includes(token)) continue;
+      matches.push({ file: file.split(/[\\/]/).pop(), line: i + 1, text: lines[i].trim().slice(0, 160) });
     }
   }
-  return false;
+  return { token, filesScanned: files.length, matches };
 }
 
 function listScripts(dir, depth) {

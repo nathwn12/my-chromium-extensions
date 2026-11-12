@@ -1,5 +1,15 @@
 // Pure report layer: assertions, verdict text, the per-extension table, exit
 // codes. No browser, no clock, no I/O — so it is unit-testable on its own.
+//
+// Three verdicts:
+//   pass   - measured and true
+//   fail   - measured and false, OR a precondition was empty (vacuous)
+//   limit  - the environment cannot reach the question; carries the probe used
+// A vacuous assertion is a failure, never a pass and never a limit: a zero that
+// was satisfied by an empty registration or by an extension that never injected
+// proves nothing, and must say so.
+
+import { patternsCoverHost } from "./source.mjs";
 
 export const EXIT_OK = 0;
 export const EXIT_FAILED = 1;
@@ -27,14 +37,240 @@ function extensionScriptElements(probe) {
   return (probe?.scriptElements ?? []).filter((script) => /^chrome-extension:\/\//.test(script.src ?? ""));
 }
 
+/** `source grep "token": file:line (+n more)` — or the count of files searched. */
+export function grepEvidence(source) {
+  if (!source) return "no source grep was run";
+  const files = source.filesScanned ?? 0;
+  const matches = source.matches ?? [];
+  if (!matches.length) {
+    return `source grep "${source.token}": 0 matches in ${files} file(s)`;
+  }
+  const head = matches[0];
+  const more = matches.length > 1 ? ` (+${matches.length - 1} more)` : "";
+  return `source grep "${source.token}": ${head.file}:${head.line}${more}`;
+}
+
+function vacuous(base, why) {
+  return {
+    ...base,
+    expected: base.expected ?? "measured",
+    actual: base.actual ?? "precondition empty",
+    verdict: "fail",
+    vacuous: true,
+    message: `FAIL (vacuous: ${why})`,
+  };
+}
+
+function limit(base, why) {
+  return {
+    ...base,
+    expected: base.expected ?? "measured",
+    actual: base.actual ?? "not reachable",
+    verdict: "limit",
+    message: `LIMIT: ${why}`,
+  };
+}
+
+/** Packages that demonstrably injected somewhere in this run. */
+function signalMap(report) {
+  const map = new Map();
+  for (const signal of report.signals ?? []) {
+    map.set(signal.package, Math.max(map.get(signal.package) ?? 0, Number(signal.scripts) || 0));
+  }
+  return map;
+}
+
+/**
+ * Registration assertions, built from snapshot phases taken between storage
+ * writes. The sequence is causal on one host: enabled -> excluded -> restored,
+ * with a second host that was never configured as the negative control.
+ */
+export function registrationAssertions(report) {
+  const registration = report.registration;
+  if (!registration?.phases?.length) return [];
+  const out = [];
+  const evidence = grepEvidence(registration.source);
+  const registeredEntries = (phase) => phase.registered ?? [];
+  const anythingRegistered = () => registration.phases.some((phase) => registeredEntries(phase).length > 0);
+  const base = (phase, extra) => ({
+    scenario: `registration:${phase.id}`,
+    extension: registration.name ?? registration.package,
+    host: phase.host,
+    ...extra,
+  });
+
+  for (const phase of registration.phases) {
+    const entries = registeredEntries(phase);
+    const arrays = { registered: entries };
+
+    if (phase.expect === "covers-host") {
+      const covered = entries.some((entry) => patternsCoverHost(entry.matches, phase.host));
+      const id = `registration-covers/${phase.id}`;
+      const common = base(phase, { id, metric: "matches", expected: `${phase.host} covered by matches`, actual: arrays });
+      if (!entries.length) {
+        out.push(
+          vacuous(
+            common,
+            `${phase.id}: getRegisteredContentScripts() returned 0 entries while ${phase.host} ran ${phase.scripts} content script(s); ${evidence}`,
+          ),
+        );
+        continue;
+      }
+      out.push({
+        ...common,
+        verdict: covered ? "pass" : "fail",
+        message: covered
+          ? `${phase.host} is registered in matches, and injects ${phase.scripts} content script(s)`
+          : `${phase.host} injects ${phase.scripts} content script(s) but is in no registered matches: ${JSON.stringify(entries.map((e) => e.matches))}`,
+      });
+      continue;
+    }
+
+    if (phase.expect === "host-excluded") {
+      const inMatches = entries.some((entry) => patternsCoverHost(entry.matches, phase.host));
+      const inExclude = entries.some((entry) => (entry.excludeMatches ?? []).some((pattern) => patternsCoverHost([pattern], phase.host)));
+      const ids = {
+        notInMatches: base(phase, {
+          id: `registration-not-in-matches/${phase.id}`,
+          metric: "matches",
+          expected: `${phase.host} absent from every matches`,
+          actual: arrays,
+        }),
+        inExclude: base(phase, {
+          id: `registration-in-exclude/${phase.id}`,
+          metric: "excludeMatches",
+          expected: `${phase.host} in some excludeMatches, or the registration torn down entirely`,
+          actual: arrays,
+        }),
+      };
+      if (!entries.length) {
+        // An extension may answer exclusion by registering nothing at all. That
+        // is stronger than an excludeMatches entry, but it is only evidence if
+        // an earlier phase in the same run saw a registration and this phase saw
+        // no injection.
+        const provenEarlier = registration.phases.some(
+          (other) =>
+            other !== phase &&
+            other.expect === "covers-host" &&
+            (other.registered ?? []).some((entry) => patternsCoverHost(entry.matches, other.host)),
+        );
+        if (provenEarlier && phase.scripts === 0) {
+          out.push({
+            ...ids.notInMatches,
+            verdict: "pass",
+            message: `${phase.host} is in no matches: while it is excluded the extension holds no registration at all (0 entries) and injects nothing`,
+          });
+          out.push({
+            ...ids.inExclude,
+            verdict: "pass",
+            message: `no excludeMatches is needed for ${phase.host}: the registration is torn down entirely (0 entries) while it is excluded, which excludes it harder than a pattern would`,
+          });
+          continue;
+        }
+        out.push(
+          vacuous(
+            ids.notInMatches,
+            `${phase.id}: getRegisteredContentScripts() returned 0 entries, so "absent from matches" is unfalsifiable; ${evidence}`,
+          ),
+        );
+        out.push(
+          vacuous(
+            ids.inExclude,
+            `${phase.id}: getRegisteredContentScripts() returned 0 entries, so there is no excludeMatches to inspect; ${evidence}`,
+          ),
+        );
+        continue;
+      }
+      out.push({
+        ...ids.notInMatches,
+        verdict: inMatches ? "fail" : "pass",
+        message: inMatches
+          ? `${phase.host} is still covered by a registered matches list after exclusion: ${JSON.stringify(entries.map((e) => e.matches))}`
+          : `${phase.host} is absent from every registered matches list`,
+      });
+      out.push({
+        ...ids.inExclude,
+        verdict: inExclude ? "pass" : "fail",
+        message: inExclude
+          ? `${phase.host} is registered in excludeMatches`
+          : `${phase.host} is in no registered excludeMatches: ${JSON.stringify(entries.map((e) => e.excludeMatches ?? []))}`,
+      });
+      continue;
+    }
+
+    if (phase.expect === "host-unknown") {
+      const mentioned = entries.some(
+        (entry) =>
+          patternsCoverHost(entry.matches, phase.host) ||
+          (entry.excludeMatches ?? []).some((pattern) => patternsCoverHost([pattern], phase.host)),
+      );
+      const id = `registration-negative/${phase.id}`;
+      const common = base(phase, {
+        id,
+        metric: "matches+excludeMatches",
+        expected: `${phase.host} in no registration at all`,
+        actual: arrays,
+      });
+      if (!anythingRegistered()) {
+        out.push(
+          vacuous(
+            common,
+            `${phase.id}: no phase in this run ever saw a registered script, so "never configured host is not registered" is unfalsifiable; ${evidence}`,
+          ),
+        );
+        continue;
+      }
+      out.push({
+        ...common,
+        verdict: mentioned || phase.scripts !== 0 ? "fail" : "pass",
+        message:
+          mentioned || phase.scripts !== 0
+            ? `${phase.host} was never configured but appears in a registration (scripts=${phase.scripts}): ${JSON.stringify(entries.map((e) => ({ matches: e.matches, excludeMatches: e.excludeMatches ?? [] })))}`
+            : `${phase.host} was never configured: no registration mentions it and it injects nothing (while other hosts are registered)`,
+      });
+      continue;
+    }
+
+    if (phase.expect === "no-registration") {
+      const id = `registration-empty/${phase.id}`;
+      const common = base(phase, {
+        id,
+        metric: "getRegisteredContentScripts",
+        expected: "0 entries when nothing is enabled",
+        actual: arrays,
+      });
+      if (!anythingRegistered()) {
+        out.push(
+          vacuous(
+            common,
+            `${phase.id}: registration never appeared in this run, so "it is torn down" cannot be distinguished from "it never existed"; ${evidence}`,
+          ),
+        );
+        continue;
+      }
+      out.push({
+        ...common,
+        verdict: entries.length === 0 ? "pass" : "fail",
+        message:
+          entries.length === 0
+            ? `with no host enabled the extension leaves no registration behind (0 entries), so no page can be reached by it`
+            : `with no host enabled the extension still holds ${entries.length} registration(s): ${JSON.stringify(entries.map((e) => e.matches))}`,
+      });
+    }
+  }
+
+  return out;
+}
+
 /**
  * Turn a report into a flat list of assertions.
  * @param {object} report
- * @param {{skips?: Array<{id: string, reason: string}>, requireSignal?: string[], coexistenceExpected?: string[]}} [options]
+ * @param {{limits?: Array<{id: string, scenario: string, extension?: string, host?: string, reason: string}>}} [options]
  */
 export function buildAssertions(report, options = {}) {
-  const { skips = [], requireSignal = [] } = options;
+  const { limits = [] } = options;
   const byPackage = new Map(report.extensions.map((e) => [e.package, e]));
+  const signals = signalMap(report);
   const assertions = [];
 
   for (const scenario of report.scenarios) {
@@ -42,13 +278,12 @@ export function buildAssertions(report, options = {}) {
       const ext = byPackage.get(pkg);
       const name = ext?.name ?? pkg;
 
-      if (scenario.id === "coexistence") {
+      if (scenario.kind === "coexistence") {
         const expectsGraph = (scenario.graphExpected ?? []).includes(pkg);
         const graphs = Number(value.workletNodes ?? 0);
         const contexts = Number(value.audioContexts ?? 0);
+
         if (!expectsGraph) {
-          // Presence-only extensions must not cost the page anything at all.
-          // A content script of its own is expected here: this host is opted in.
           const violations = violationsOf(value, PAGE_COST_KEYS);
           const ok = violations.length === 0;
           assertions.push({
@@ -66,25 +301,10 @@ export function buildAssertions(report, options = {}) {
           });
           continue;
         }
-        if (graphs === 0) {
-          assertions.push({
-            id: `coexistence-graph/${pkg}`,
-            scenario: scenario.id,
-            extension: name,
-            host: scenario.host,
-            metric: "workletNodes",
-            expected: 1,
-            actual: graphs,
-            verdict: "skip",
-            message: `SKIP (not reachable here): ${name} built no audio graph on ${scenario.host} (workletNodes=0, audioContexts=${contexts}) — its own eligibility handshake did not complete against the synthetic page; its page cost is measured and shown above`,
-          });
-          continue;
-        }
-        const ok = graphs <= 1;
+
         const running = Number(value.audioContextsRunning ?? 0);
         const times = (value.audioContextTimes ?? []).join(", ") || "none";
-        const runningEvidence = graphs === 0 || running >= 1;
-        assertions.push({
+        const base = {
           id: `coexistence-graph/${pkg}`,
           scenario: scenario.id,
           extension: name,
@@ -92,23 +312,39 @@ export function buildAssertions(report, options = {}) {
           metric: "workletNodes",
           expected: "at most 1, with a running context",
           actual: graphs,
-          verdict: ok && runningEvidence ? "pass" : "fail",
+        };
+        if (graphs === 0) {
+          assertions.push(
+            limit(
+              base,
+              `${name} built no audio graph on ${scenario.host} (workletNodes=0, audioContexts=${contexts}); probe: ${scenario.extensionProbes?.[pkg] ?? "none"} — its page cost is measured and shown above`,
+            ),
+          );
+          continue;
+        }
+        if (graphs > 1) {
+          assertions.push({
+            ...base,
+            verdict: "fail",
+            message: `${name} built a doubled audio graph on ${scenario.host}: workletNodes=${graphs} (expected at most 1), audioContexts=${contexts}, states: ${times}`,
+          });
+          continue;
+        }
+        assertions.push({
+          ...base,
+          verdict: running >= 1 ? "pass" : "fail",
           message:
-            ok && runningEvidence
+            running >= 1
               ? `${name}: ${graphs} audio graph(s) on ${scenario.host}, context ${times}`
-              : ok
-                ? `${name} built a graph on ${scenario.host} but no running AudioContext (states: ${times}) — that is silence, not processing`
-                : `${name} built a doubled audio graph on ${scenario.host}: workletNodes=${graphs} (expected at most 1), audioContexts=${contexts}, states: ${times}`,
+              : `${name} built a graph on ${scenario.host} but no running AudioContext (states: ${times}) — that is silence, not processing`,
         });
         continue;
       }
 
       if (!scenario.expectInert) continue;
-      if ((scenario.exempt ?? []).includes(pkg)) continue;
 
       const violations = violationsOf(value);
-      const ok = violations.length === 0;
-      assertions.push({
+      const base = {
         id: `${scenario.id}-zero/${pkg}`,
         scenario: scenario.id,
         extension: name,
@@ -116,10 +352,35 @@ export function buildAssertions(report, options = {}) {
         metric: "footprint",
         expected: "0 everywhere",
         actual: Object.fromEntries(FOOTPRINT_KEYS.map((k) => [k, value[k] ?? 0])),
+      };
+      // A zero is only evidence when this extension was seen injecting somewhere
+      // in the run. Without a signal the zero is either unfalsifiable (it could
+      // have run here) or unreachable (its manifest never matches this host).
+      if ((signals.get(pkg) ?? 0) === 0) {
+        const reach = report.reach?.[pkg];
+        const reachable = reach?.patterns?.length ? patternsCoverHost(reach.patterns, scenario.host) : false;
+        if (!reachable) {
+          assertions.push(
+            limit(
+              base,
+              `${name} never ran in this run and its manifest (${JSON.stringify(reach?.patterns ?? [])}) cannot match ${scenario.host}, so its zero there is untested — not a pass`,
+            ),
+          );
+        } else {
+          assertions.push(
+            vacuous(
+              base,
+              `${name} injected nothing anywhere in this run although its manifest matches ${scenario.host}, so "${scenario.id} is inert on ${scenario.host}" cannot be distinguished from "the extension never ran"`,
+            ),
+          );
+        }
+        continue;
+      }
+      const ok = violations.length === 0;
+      assertions.push({
+        ...base,
         verdict: ok ? "pass" : "fail",
-        message: ok
-          ? `${name} is inert on ${scenario.host}`
-          : describeViolations(name, scenario.host, violations),
+        message: ok ? `${name} is inert on ${scenario.host}` : describeViolations(name, scenario.host, violations),
       });
     }
 
@@ -174,7 +435,7 @@ export function buildAssertions(report, options = {}) {
       });
     }
 
-    if (scenario.id === "coexistence") {
+    if (scenario.kind === "coexistence") {
       const probe = scenario.probe ?? {};
       const advanced = Number(probe.mediaElementCurrentTime ?? 0) > 0;
       assertions.push({
@@ -209,41 +470,54 @@ export function buildAssertions(report, options = {}) {
     }
   }
 
-  if (requireSignal.length) {
-    const control = report.scenarios.find((s) => s.kind === "signal");
-    for (const pkg of requireSignal) {
+  for (const scenario of report.scenarios) {
+    if (scenario.kind !== "signal") continue;
+    const injected = Object.entries(scenario.extensions).filter(([, value]) => (value.scripts ?? 0) > 0);
+    for (const [pkg, value] of injected) {
       const ext = byPackage.get(pkg);
-      const name = ext?.name ?? pkg;
-      const scripts = Number(control?.extensions?.[pkg]?.scripts ?? 0);
       assertions.push({
-        id: `signal/${pkg}`,
-        scenario: control?.id ?? "(none)",
-        extension: name,
-        host: control?.host ?? "(none)",
+        id: `signal/${scenario.id}/${pkg}`,
+        scenario: scenario.id,
+        extension: ext?.name ?? pkg,
+        host: scenario.host,
         metric: "scripts",
         expected: ">= 1",
-        actual: scripts,
-        verdict: scripts >= 1 ? "pass" : "fail",
-        message:
-          scripts >= 1
-            ? `${name} injects ${scripts} content script(s) on the opted-in host ${control?.host} — the audit has signal`
-            : `${name}: no signal — 0 content scripts on the opted-in host ${control?.host ?? "(no signal scenario ran)"}, so its zero assertions would pass vacuously`,
+        actual: value.scripts,
+        verdict: "pass",
+        message: `${ext?.name ?? pkg} injects ${value.scripts} content script(s) on ${scenario.host} — this is what makes the zeros elsewhere evidence`,
+      });
+    }
+    if (scenario.expectInject && !injected.some(([pkg]) => pkg === scenario.expectInject)) {
+      const ext = byPackage.get(scenario.expectInject);
+      assertions.push({
+        id: `signal/${scenario.id}/${scenario.expectInject}`,
+        scenario: scenario.id,
+        extension: ext?.name ?? scenario.expectInject,
+        host: scenario.host,
+        metric: "scripts",
+        expected: ">= 1",
+        actual: 0,
+        verdict: "fail",
+        message: `${ext?.name ?? scenario.expectInject}: no signal — 0 content scripts on ${scenario.host}, which was opted in, so no zero in this report is evidence`,
       });
     }
   }
 
-  for (const skip of skips) {
-    assertions.push({
-      id: skip.id,
-      scenario: skip.scenario ?? "-",
-      extension: skip.extension ?? "-",
-      host: skip.host ?? "-",
-      metric: skip.metric ?? "-",
-      expected: "-",
-      actual: "-",
-      verdict: "skip",
-      message: `${skip.kind === "not-reachable" ? "SKIP (not reachable here)" : "SKIP (not implemented yet)"}: ${skip.reason}`,
-    });
+  assertions.push(...registrationAssertions(report));
+
+  for (const entry of limits) {
+    assertions.push(
+      limit(
+        {
+          id: entry.id,
+          scenario: entry.scenario,
+          extension: entry.extension ?? "-",
+          host: entry.host ?? "-",
+          metric: entry.metric ?? "-",
+        },
+        entry.reason,
+      ),
+    );
   }
 
   return assertions;
@@ -264,7 +538,7 @@ export function renderTable(report, assertions) {
   const headers = ["scenario", "extension", "scripts", "listeners", "timers", "observers", "patches", "verdict"];
   const rows = [];
   const failed = new Set(assertions.filter((a) => a.verdict === "fail").map((a) => `${a.scenario}|${a.extension}`));
-  const skipped = new Set(assertions.filter((a) => a.verdict === "skip").map((a) => `${a.scenario}|${a.extension}`));
+  const limited = new Set(assertions.filter((a) => a.verdict === "limit").map((a) => `${a.scenario}|${a.extension}`));
 
   for (const scenario of report.scenarios) {
     for (const [pkg, value] of Object.entries(scenario.extensions)) {
@@ -279,7 +553,7 @@ export function renderTable(report, assertions) {
         value.timers ?? 0,
         value.observers ?? 0,
         value.patches ?? 0,
-        failed.has(key) ? "FAIL" : skipped.has(key) ? "SKIP" : "ok",
+        failed.has(key) ? "FAIL" : limited.has(key) ? "LIMIT" : "ok",
       ]);
     }
   }
@@ -299,21 +573,40 @@ export function renderTable(report, assertions) {
     lines.push(...noteLines);
   }
 
-  const skips = assertions.filter((a) => a.verdict === "skip");
-  if (skips.length) {
+  const registration = report.registration;
+  if (registration?.phases?.length) {
     lines.push("");
-    lines.push("skips");
-    for (const skip of skips) lines.push(`  ${skip.message}`);
+    lines.push(`registration: ${registration.name ?? registration.package} (${grepEvidence(registration.source)})`);
+    for (const phase of registration.phases) {
+      const entries = phase.registered ?? [];
+      lines.push(
+        `  ${pad(phase.id, 26)} host=${pad(phase.host, 22)} scripts=${phase.scripts} entries=${entries.length} matches=${JSON.stringify(entries.flatMap((e) => e.matches ?? []))} excludeMatches=${JSON.stringify(entries.flatMap((e) => e.excludeMatches ?? []))}`,
+      );
+    }
+  }
+
+  const vacuousOnes = assertions.filter((a) => a.vacuous);
+  if (vacuousOnes.length) {
+    lines.push("");
+    lines.push("vacuous (counted as failures)");
+    for (const entry of vacuousOnes) lines.push(`  ${entry.message}`);
+  }
+
+  const limitedOnes = assertions.filter((a) => a.verdict === "limit");
+  if (limitedOnes.length) {
+    lines.push("");
+    lines.push("limits (not passes)");
+    for (const entry of limitedOnes) lines.push(`  ${entry.message}`);
   }
 
   const counts = tally(assertions);
   lines.push("");
-  lines.push(`pass ${counts.pass}  fail ${counts.fail}  skip ${counts.skip}`);
+  lines.push(`pass ${counts.pass}  fail ${counts.fail}  limit ${counts.limit}`);
   return lines.join("\n");
 }
 
 export function tally(assertions) {
-  const counts = { pass: 0, fail: 0, skip: 0 };
+  const counts = { pass: 0, fail: 0, limit: 0 };
   for (const a of assertions) counts[a.verdict] += 1;
   return counts;
 }

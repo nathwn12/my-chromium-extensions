@@ -30,9 +30,18 @@ import {
   REQUIRED_SILENT_FLAGS,
 } from "./lib/browser.mjs";
 import { startFixtureServers } from "./lib/server.mjs";
-import { openTab, visit, readProbe, evaluateInWorker, findWorker, aggregate, isolatedWorlds } from "./lib/measure.mjs";
+import {
+  openTab,
+  visit,
+  readProbe,
+  evaluateInWorker,
+  evaluateInContext,
+  findWorker,
+  aggregate,
+  isolatedWorlds,
+} from "./lib/measure.mjs";
 import { buildAssertions, renderTable, tally, EXIT_FAILED } from "./lib/report.mjs";
-import { packageMentions, patternsCoverHost } from "./lib/source.mjs";
+import { sourceGrep, manifestPatterns } from "./lib/source.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, "..", "..");
@@ -54,6 +63,32 @@ const MARKERS = {
 const LOCAL_HOST = "127.0.0.1";
 const EXCLUDED_KEY = "excluded.test";
 const EXCLUDED_SUB_HOST = `sub.${EXCLUDED_KEY}`;
+const NEVER_CONFIGURED_HOST = "never-configured.test";
+// Kept opted in throughout so a registration stays alive while A is excluded;
+// without it the extension unregisters entirely and excludeMatches is invisible.
+const OTHER_ENABLED_HOST = "elsewhere.test";
+
+/**
+ * Read Slowed Reverb's own live state from its isolated world, so a missing
+ * audio graph is reported with a reason instead of a guess.
+ */
+const SLOWED_REVERB_PROBE = `(() => {
+  try {
+    var api = globalThis.__slowedReverbAudioContent || null;
+    var media = document.querySelector("audio,video");
+    return JSON.stringify({
+      api: Boolean(api),
+      hookReady: api && typeof api.__testIsHookReady === "function" ? Boolean(api.__testIsHookReady()) : null,
+      hookToken: api && typeof api.__testGetHookToken === "function" ? Boolean(api.__testGetHookToken()) : null,
+      retired: api && typeof api.__testIsRetired === "function" ? Boolean(api.__testIsRetired()) : null,
+      captureStream: typeof HTMLMediaElement.prototype.captureStream,
+      mediaElements: document.querySelectorAll("audio,video").length,
+      mediaPaused: media ? Boolean(media.paused) : null
+    });
+  } catch (error) {
+    return "probe threw: " + String(error);
+  }
+})()`;
 
 function parseArgs(argv) {
   const options = { json: null, assert: false, packages: null, settleMs: 1400, help: false, silentCheck: false };
@@ -96,7 +131,8 @@ function seedItems(pkg, { host, excluded = false }) {
   if (pkg === "slowed-reverb") {
     return {
       siteToggles: { [host]: true },
-      siteSettings: { [host]: { slow: 1.2, reverbIntensity: 30 } },
+      // reverbIntensity is 0..1, not a percentage: 30 clamps to 0 (neutral).
+      siteSettings: { [host]: { slow: 1.2, reverbIntensity: 0.3 } },
     };
   }
   if (pkg === "web-discord-rpc") return { enabled: true };
@@ -198,11 +234,13 @@ async function main() {
     ...(servers.httpsPort ? [{ host: "music.youtube.com", ip: "127.0.0.1", port: servers.httpsPort }] : []),
     { host: EXCLUDED_KEY, ip: "127.0.0.1" },
     { host: EXCLUDED_SUB_HOST, ip: "127.0.0.1" },
+    { host: NEVER_CONFIGURED_HOST, ip: "127.0.0.1" },
+    { host: OTHER_ENABLED_HOST, ip: "127.0.0.1" },
   ];
 
   let session = null;
   const notes = [];
-  const skips = [];
+  const limits = [];
   const report = {
     schema: "cost-audit/1",
     generatedAt: new Date().toISOString(),
@@ -304,28 +342,27 @@ async function main() {
       name: ext.name,
       version: ext.version,
     }));
+    // What each package is even allowed to touch, so a zero on a host it can
+    // never match is reported as a limit instead of a pass.
+    report.reach = Object.fromEntries(
+      report.extensions.map((ext) => {
+        const patterns = manifestPatterns(ext.dir);
+        return [ext.package, { patterns: [...new Set([...patterns.content, ...patterns.hostPermissions])], content: patterns.content }];
+      }),
+    );
 
-    // A contract feature that is not in the package yet is a skip, never a pass
-    // and never a fail: the harness reads the source to tell the two apart.
-    const exclusionImplemented = audio ? packageMentions(audio.dir, "excluded") : false;
-    const exclusionExempt = exclusionImplemented ? [] : ["audio-normalizer"];
-    if (audio && !exclusionImplemented) {
-      for (const [id, host] of [
-        ["control-excluded", LOCAL_HOST],
-        ["excluded-subdomain", EXCLUDED_SUB_HOST],
-      ]) {
-        skips.push({
-          id: `excluded-host/${id}`,
-          scenario: id,
-          extension: "Audio Normalizer",
-          host,
-          reason: `the package never mentions the contract field \`excluded\`, so exclusion is not implemented yet (measured ${host} anyway; its row is shown, not asserted)`,
-        });
-      }
-    }
-
-    // ---- scenario: control, nothing opted in -------------------------------
-    const runScenario = async ({ id, label, url, host, expectInert = true, kind = "footprint", exempt = [], graphExpected = [] }) => {
+    // ---- scenario runner ---------------------------------------------------
+    const runScenario = async ({
+      id,
+      label,
+      url,
+      host,
+      expectInert = true,
+      kind = "footprint",
+      graphExpected = [],
+      inspect = null,
+      expectInject = null,
+    }) => {
       const tab = await openTab(client);
       try {
         await visit(client, tab.sessionId, url, { settleMs: options.settleMs });
@@ -343,8 +380,8 @@ async function main() {
           url,
           host,
           expectInert,
-          exempt,
           graphExpected,
+          expectInject,
           extensions: perExtension,
           probe,
           foreignIsolatedWorlds: foreign.map((context) => ({ origin: context.origin, name: context.name })),
@@ -357,104 +394,135 @@ async function main() {
             `foreign isolated world(s) from extensions outside this repo: ${foreign.map((f) => f.name || f.origin).join(", ")}`,
           );
         }
+        if (inspect) scenario.extensionProbes = await inspect({ client, tab, scenario });
         report.scenarios.push(scenario);
-        return { scenario, probe };
+        return { scenario, probe, contexts };
       } finally {
         await tab.close();
       }
     };
 
-    const controlUrl = `${servers.httpUrl}/control`;
-    await runScenario({ id: "control", label: "control host, nothing opted in", url: controlUrl, host: LOCAL_HOST });
+    // The claim under test is causal, so it runs as one sequence on named
+    // hosts with registration snapshots taken between the storage writes:
+    //   A = the key that gets excluded, S = its subdomain, B = never configured.
+    // S stays opted in throughout, which keeps a registration alive while A is
+    // excluded — otherwise the extension unregisters entirely and "A is absent
+    // from matches" would be satisfied by an empty array.
+    const A = EXCLUDED_KEY;
+    const S = EXCLUDED_SUB_HOST;
+    const B = NEVER_CONFIGURED_HOST;
+    const urlFor = (host) => `http://${host}:${servers.httpPort}/control`;
 
-    // ---- scenario: positive control, audio-normalizer opted in -------------
+    const snapshotRegistration = async (id, host, expect, afterScenario, scripts) => {
+      const raw = await readRegistration(client, audio);
+      const registered = raw.ok && raw.supported ? (raw.scripts ?? []) : [];
+      return {
+        id,
+        host,
+        expect,
+        afterScenario,
+        scripts: Number.isFinite(scripts) ? scripts : -1,
+        entries: registered.length,
+        registered: registered.map((entry) => ({
+          id: entry.id ?? null,
+          matches: entry.matches ?? [],
+          excludeMatches: entry.excludeMatches ?? [],
+        })),
+        readable: Boolean(raw.ok && raw.supported),
+        error: raw.ok ? null : (raw.error ?? "registration unreadable"),
+      };
+    };
+    const scriptsOn = (scenarioId) =>
+      Number(report.scenarios.find((s) => s.id === scenarioId)?.extensions?.["audio-normalizer"]?.scripts ?? -1);
+
+    await runScenario({ id: "control", label: "control host, never opted in", url: urlFor(LOCAL_HOST), host: LOCAL_HOST });
+
     if (audio) {
-      const seeded = await seed(client, audio, "audio-normalizer", seedItems("audio-normalizer", { host: LOCAL_HOST }));
-      if (!seeded.ok) notes.push(seeded.error ?? "seeding failed");
+      const phases = [];
+
+      // ---- 1. both hosts opted in ------------------------------------------
+      await seed(client, audio, "audio-normalizer", {
+        ...seedItems("audio-normalizer", { host: A }),
+        ...seedItems("audio-normalizer", { host: S }),
+        ...seedItems("audio-normalizer", { host: OTHER_ENABLED_HOST }),
+      });
       await runScenario({
         id: "enabled",
         kind: "signal",
-        label: "same host opted in (positive control)",
-        url: controlUrl,
-        host: LOCAL_HOST,
+        expectInject: "audio-normalizer",
+        label: `${A} opted in (positive control)`,
+        url: urlFor(A),
+        host: A,
         expectInert: false,
       });
-    }
-
-    // ---- scenario: exclusion on the same host ------------------------------
-    if (audio) {
-      await seed(client, audio, "audio-normalizer", seedItems("audio-normalizer", { host: LOCAL_HOST, excluded: true }));
       await runScenario({
-        id: "control-excluded",
-        label: "same host, excluded in the extension's own storage",
-        url: controlUrl,
-        host: LOCAL_HOST,
-        exempt: exclusionExempt,
+        id: "subdomain-enabled",
+        kind: "signal",
+        expectInject: "audio-normalizer",
+        label: `${S} opted in (so the parent key's exclusion has a live subject)`,
+        url: urlFor(S),
+        host: S,
+        expectInert: false,
       });
-    }
+      phases.push(await snapshotRegistration("A-enabled", A, "covers-host", "enabled", scriptsOn("enabled")));
 
-    // ---- scenario: exclusion of a key must cover its subdomains ------------
-    if (audio) {
-      await seed(client, audio, "audio-normalizer", seedItems("audio-normalizer", { host: EXCLUDED_KEY, excluded: true }));
+      // ---- 2. the key is excluded, the subdomain stays opted in ------------
+      await seed(client, audio, "audio-normalizer", seedItems("audio-normalizer", { host: A, excluded: true }));
       await runScenario({
-        id: "excluded-subdomain",
-        label: `subdomain of the excluded key ${EXCLUDED_KEY}`,
-        url: `http://${EXCLUDED_SUB_HOST}:${servers.httpPort}/control`,
-        host: EXCLUDED_SUB_HOST,
-        exempt: exclusionExempt,
+        id: "A-excluded",
+        label: `${A} excluded while still enabled`,
+        url: urlFor(A),
+        host: A,
       });
-    }
+      await runScenario({
+        id: "S-excluded-by-parent",
+        label: `${S} enabled, but its parent key ${A} is excluded`,
+        url: urlFor(S),
+        host: S,
+      });
+      phases.push(await snapshotRegistration("A-excluded", A, "host-excluded", "A-excluded", scriptsOn("A-excluded")));
 
-    // ---- registration inspection -------------------------------------------
-    if (audio) {
-      const registration = await readRegistration(client, audio);
-      report.registration = { package: "audio-normalizer", ...registration };
-      const registrationSkips = [];
-      const implemented = registration.ok && registration.supported
-        ? registration.scripts.length > 0
-        : packageMentions(audio.dir, "registerContentScripts");
+      // ---- 3. undo restores it --------------------------------------------
+      await seed(client, audio, "audio-normalizer", {
+        [`site:${A}`]: { enabled: true, gainDb: 0, seq: 2, mirror: true, excluded: false },
+      });
+      await runScenario({
+        id: "A-restored",
+        kind: "signal",
+        label: `${A} un-excluded again`,
+        url: urlFor(A),
+        host: A,
+        expectInert: false,
+      });
+      phases.push(await snapshotRegistration("A-restored", A, "covers-host", "A-restored", scriptsOn("A-restored")));
 
-      if (!implemented) {
-        registrationSkips.push({
-          id: "registration-exclusion",
-          scenario: "registration",
-          extension: "Audio Normalizer",
-          host: EXCLUDED_KEY,
-          reason:
-            registration.ok && registration.supported
-              ? `chrome.scripting.getRegisteredContentScripts() returned ${registration.scripts.length} script(s) and the package never mentions registerContentScripts — dynamic registration is not implemented yet`
-              : `registration inspection unavailable: ${registration.error ?? "chrome.scripting.getRegisteredContentScripts missing"}`,
-        });
-      } else {
-        const scripts = registration.scripts ?? [];
-        const excludedFromAll = scripts.every((script) => !patternsCoverHost(script.matches, EXCLUDED_KEY));
-        const someExcludeMatch = scripts.some((script) =>
-          (script.excludeMatches ?? []).some((pattern) => patternsCoverHost([pattern], EXCLUDED_KEY)),
-        );
-        const superscript = { id: "registration-exclusion", scenario: "registration", extension: "Audio Normalizer", host: EXCLUDED_KEY };
-        report.assertions.push({
-          ...superscript,
-          metric: "excludeMatches",
-          expected: `${EXCLUDED_KEY} present in excludeMatches`,
-          actual: scripts.map((s) => ({ id: s.id, matches: s.matches, excludeMatches: s.excludeMatches ?? [] })),
-          verdict: someExcludeMatch ? "pass" : "fail",
-          message: someExcludeMatch
-            ? `${EXCLUDED_KEY} is excluded by a registered content script`
-            : `${EXCLUDED_KEY} is in no registered script's excludeMatches: ${JSON.stringify(scripts.map((s) => ({ id: s.id, excludeMatches: s.excludeMatches ?? [] })))}`,
-        });
-        report.assertions.push({
-          ...superscript,
-          id: "registration-not-in-matches",
-          metric: "matches",
-          expected: `${EXCLUDED_KEY} absent from every matches`,
-          actual: scripts.map((s) => s.matches),
-          verdict: excludedFromAll ? "pass" : "fail",
-          message: excludedFromAll
-            ? `${EXCLUDED_KEY} is absent from every registered matches list`
-            : `${EXCLUDED_KEY} is still covered by a registered matches list: ${JSON.stringify(scripts.map((s) => s.matches))}`,
-        });
-      }
-      report.registration.skips = registrationSkips;
+      // ---- 4. a host that was never configured ----------------------------
+      await runScenario({
+        id: "B-never-configured",
+        label: `${B} never configured`,
+        url: urlFor(B),
+        host: B,
+      });
+      phases.push(
+        await snapshotRegistration("B-never-configured", B, "host-unknown", "B-never-configured", scriptsOn("B-never-configured")),
+      );
+
+      // ---- 5. nothing enabled: no registration may survive ----------------
+      await seed(client, audio, "audio-normalizer", {
+        [`site:${A}`]: { enabled: false, gainDb: 0, seq: 3, mirror: false },
+        [`site:${S}`]: { enabled: false, gainDb: 0, seq: 2, mirror: false },
+        [`site:${OTHER_ENABLED_HOST}`]: { enabled: false, gainDb: 0, seq: 2, mirror: false },
+      });
+      phases.push(await snapshotRegistration("nothing-enabled", A, "no-registration", "(no page load)", 0));
+
+      report.registration = {
+        package: "audio-normalizer",
+        name: audio.name,
+        source: sourceGrep(audio.dir, "registerContentScripts"),
+        derived: sourceGrep(audio.dir, "deriveContentScriptRegistration"),
+        hostAccess: report.hostAccess,
+        phases,
+      };
     }
 
     // ---- scenario: coexistence on one host --------------------------------
@@ -467,6 +535,7 @@ async function main() {
       }
       await runScenario({
         id: "coexistence",
+        kind: "coexistence",
         label: "three extensions active on one host",
         url: `${servers.httpsUrl}/watch`,
         host: "music.youtube.com",
@@ -474,6 +543,22 @@ async function main() {
         // Only the two audio engines build a graph; the presence extension must
         // cost the page nothing at all.
         graphExpected: ["audio-normalizer", "slowed-reverb"].filter((pkg) => byName.has(pkg)),
+        inspect: async ({ client: cdp, tab, scenario }) => {
+          const out = {};
+          const slowed = byName.get("slowed-reverb");
+          if (!slowed) return out;
+          const context = tab.contexts.find(
+            (entry) => entry.type === "isolated" && entry.origin === `chrome-extension://${slowed.id}`,
+          );
+          if (!context) {
+            out["slowed-reverb"] = "no isolated world for Slowed Reverb on this page";
+            return out;
+          }
+          const isolated = await evaluateInContext(cdp, tab.sessionId, context.id, SLOWED_REVERB_PROBE);
+          const markers = (tab.probe?.markers ?? scenario?.probe?.markers ?? []).join(",") || "none";
+          out["slowed-reverb"] = `${isolated} pageWorldMarkers=[${markers}]`;
+          return out;
+        },
       });
     } else {
       notes.push(
@@ -508,18 +593,32 @@ async function main() {
     report.silent.browsersAliveAfter = profiles.flatMap((dir) => strayPids(dir));
   }
 
-  skips.push(...(report.registration?.skips ?? []));
   if (!servers.httpsPort) {
-    skips.push({
+    limits.push({
       id: "coexistence",
       scenario: "coexistence",
-      reason: `no https origin for music.youtube.com (${servers.problems.join("; ") || "unknown"})`,
+      reason: `no https origin for music.youtube.com (${servers.problems.join("; ") || "unknown"}), so the two host-pinned extensions cannot be loaded here`,
     });
   }
   const loadedNames = new Set(report.extensions.map((ext) => ext.package));
-  const requireSignal = loadedNames.has("audio-normalizer") ? ["audio-normalizer"] : [];
+  // Any injection anywhere in the run is evidence the package can run at all.
+  report.signals = report.scenarios.flatMap((scenario) =>
+    Object.entries(scenario.extensions)
+      .filter(([, value]) => (value.scripts ?? 0) > 0)
+      .map(([pkg, value]) => ({ package: pkg, scenario: scenario.id, host: scenario.host, scripts: value.scripts })),
+  );
 
-  const assertions = [...report.assertions, ...buildAssertions(report, { skips, requireSignal })];
+  const assertions = [...report.assertions, ...buildAssertions(report, { limits })];
+  // A scenario that yields no assertion silently measures nothing. That is a
+  // harness bug: every scenario must be judged by at least one assertion.
+  for (const scenario of report.scenarios) {
+    if (!assertions.some((entry) => entry.scenario === scenario.id)) {
+      throw Object.assign(
+        new Error(`harness bug: scenario "${scenario.id}" produced no assertion (kind=${scenario.kind}, expectInert=${scenario.expectInert})`),
+        { exitCode: 2 },
+      );
+    }
+  }
   report.assertions = assertions;
   report.counts = tally(assertions);
   report.notes = notes;

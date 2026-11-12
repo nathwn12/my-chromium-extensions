@@ -92,6 +92,19 @@ export async function evaluateInWorker(client, workerTargetId, expression, { awa
   return result.result?.value;
 }
 
+/** Evaluate an expression inside a specific execution context (an isolated world). */
+export async function evaluateInContext(client, sessionId, contextId, expression) {
+  const result = await client.send(
+    "Runtime.evaluate",
+    { expression, returnByValue: true, contextId },
+    sessionId,
+  );
+  if (result.exceptionDetails) {
+    return `probe threw: ${result.exceptionDetails.exception?.description ?? result.exceptionDetails.text ?? "unknown"}`;
+  }
+  return String(result.result?.value ?? "");
+}
+
 /** The extension's own service worker target, waking it through its extension page if lazy. */
 export async function findWorker(client, extensionId) {
   const wanted = `chrome-extension://${extensionId}/background.js`;

@@ -9,7 +9,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { buildArgs, findBrowser, parseDevToolsActivePort, wsUrlFor, BROWSER_CANDIDATES, silentArgvProblems, silentCheck } from "../lib/browser.mjs";
-import { patternHost, patternsCoverHost, hostCovers, packageMentions } from "../lib/source.mjs";
+import { patternHost, patternsCoverHost, hostCovers, packageMentions, sourceGrep } from "../lib/source.mjs";
 import { PROBE_SOURCE, sineWavDataUri } from "../lib/probe.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -99,6 +99,21 @@ test("package source scanning finds and misses tokens", () => {
   assert.equal(packageMentions(join(harness, "lib"), "PROBE_SOURCE"), true);
   assert.equal(packageMentions(join(harness, "lib"), "this token never appears in the package"), false);
   assert.equal(packageMentions(join(harness, "does-not-exist"), "anything"), false);
+});
+
+test("sourceGrep reports file and line, and counts the files it read", () => {
+  const lib = join(HERE, "..", "lib");
+  const hit = sourceGrep(lib, "PROBE_SOURCE");
+  assert.ok(hit.matches.length > 0);
+  assert.ok(hit.filesScanned > 0);
+  for (const match of hit.matches) {
+    assert.match(match.file, /\.mjs$/);
+    assert.ok(Number.isInteger(match.line) && match.line >= 1);
+  }
+  const miss = sourceGrep(lib, "this token never appears in the package");
+  assert.deepEqual(miss.matches, []);
+  assert.ok(miss.filesScanned > 0);
+  assert.equal(packageMentions(lib, "this token never appears in the package"), false);
 });
 
 test("the generated WAV is a decodable RIFF header with real samples", () => {
