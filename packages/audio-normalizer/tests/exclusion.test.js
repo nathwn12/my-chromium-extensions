@@ -361,7 +361,7 @@ function loadPopup({ tabUrl, runtimeSendMessage, tabsSendMessage }) {
 
 // ============ contract: the stored record carries `excluded` ============
 test('record round-trip: excluded survives normalize and defaults to false', () => {
-  const record = { enabled: true, gainDb: 3, seq: 4, mirror: true, excluded: true };
+  const record = { enabled: true, gainDb: 3, seq: 4, mirror: true, excluded: true, seen: true };
   assert.deepEqual(sharedApi.normalizeSiteRecord(record), record, 'excluded round-trips');
   assert.equal(sharedApi.normalizeSiteRecord({ enabled: true }).excluded, false, 'missing = false');
   assert.equal(sharedApi.normalizeSiteRecord({ enabled: true, excluded: 0 }).excluded, false);
@@ -438,7 +438,7 @@ test('exclude-then-undo keeps enabled and gainDb untouched', async () => {
   assert.equal(excluded.enabled, true, 'enablement is preserved, not rewritten');
   assert.equal(excluded.gainDb, 4.5, 'gain is preserved');
   assert.deepEqual(storage._store()['site:tiktok.com'], {
-    enabled: true, gainDb: 4.5, seq: 3, mirror: true, excluded: true,
+    enabled: true, gainDb: 4.5, seq: 3, mirror: true, excluded: true, seen: true,
   }, 'one write, whole record, excluded added');
 
   const state = await bg.sendMessage({ type: 'GET_SITE_STATE', siteKey: 'tiktok.com' });
@@ -1111,6 +1111,153 @@ test('an ordinary (non-exclusion) broadcast also reaches every frame, and the si
 });
 
 // ============ popup control ============
+test('popup: a first-ever enable shows the automatic reload, not an instruction', async () => {
+  const popup = loadPopup({
+    tabUrl: 'https://fresh.example/watch',
+    runtimeSendMessage: async (msg) => {
+      if (msg.type === 'GET_SITE_STATE') {
+        return { ok: true, enabled: false, gainDb: 0, excluded: false, siteKey: 'fresh.example', seq: 1 };
+      }
+      if (msg.type === 'SET_SITE_STATE') {
+        return {
+          ok: true, enabled: true, gainDb: 0, excluded: false, seen: true,
+          siteKey: 'fresh.example', seq: 2,
+          activation: { state: 'reloading', message: 'Reloading to activate…' },
+        };
+      }
+      return { ok: true };
+    },
+    // The tab is going away: the document cannot answer.
+    tabsSendMessage: async () => { throw new Error('Receiving end does not exist.'); },
+  });
+  await settle(60);
+  popup.els.toggle.checked = true;
+  await popup.els.toggle.fire('change');
+  await settle(160);
+  const text = String(popup.els['status-text'].textContent);
+  assert.match(text, /reloading to activate/i, 'the automatic reload is announced');
+  assert.doesNotMatch(text, /reload applies this/i, 'the user is never told to reload');
+  assert.equal(popup.els['status-pill'].textContent, 'Reloading', 'the pill says what is happening');
+});
+
+test('popup: a live enable says Active without a reload notice; a first-ever enable keeps the notice', async () => {
+  // A seen host: the background answers activation "live" and the tab reports
+  // an armed, processing document with the hook present.
+  const live = loadPopup({
+    tabUrl: 'https://example.com/watch',
+    runtimeSendMessage: async (msg) => {
+      if (msg.type === 'GET_SITE_STATE') {
+        return { ok: true, enabled: false, gainDb: 0, excluded: false, siteKey: 'example.com', seq: 1 };
+      }
+      if (msg.type === 'SET_SITE_STATE') {
+        return {
+          ok: true, enabled: true, gainDb: 0, excluded: false, seen: true,
+          siteKey: 'example.com', seq: 2, activation: { state: 'live' },
+        };
+      }
+      return { ok: true };
+    },
+    tabsSendMessage: async (_tabId, msg) => {
+      if (msg.type === 'GET_DOCUMENT_STATUS') {
+        return {
+          ok: true, siteKey: 'example.com', enabled: true, gainDb: 0,
+          hookAlive: true, hookActive: true, hookPresent: true, indicator: 'green',
+        };
+      }
+      return { ok: true };
+    },
+  });
+  await settle(60);
+  live.els.toggle.checked = true;
+  await live.els.toggle.fire('change');
+  await settle(120);
+  const liveText = String(live.els['status-text'].textContent);
+  assert.doesNotMatch(liveText, /reload/i, 'no reload claim for a live enable');
+  assert.match(liveText, /normalizer active/i, 'the honest state is shown');
+  assert.equal(live.els['status-pill'].textContent, 'Active', 'and the pill is Active');
+
+  // A first-ever enable: no hook in the document yet, so the background says
+  // "reload" and the popup says so once.
+  const first = loadPopup({
+    tabUrl: 'https://fresh.example/watch',
+    runtimeSendMessage: async (msg) => {
+      if (msg.type === 'GET_SITE_STATE') {
+        return { ok: true, enabled: false, gainDb: 0, excluded: false, siteKey: 'fresh.example', seq: 1 };
+      }
+      if (msg.type === 'SET_SITE_STATE') {
+        return {
+          ok: true, enabled: true, gainDb: 0, excluded: false, seen: true,
+          siteKey: 'fresh.example', seq: 2,
+          activation: { state: 'reload', message: 'Enabled. Reload applies this.' },
+        };
+      }
+      return { ok: true };
+    },
+    tabsSendMessage: async () => ({ ok: false, error: 'no receiver' }),
+  });
+  await settle(60);
+  first.els.toggle.checked = true;
+  await first.els.toggle.fire('change');
+  await settle(120);
+  const firstText = String(first.els['status-text'].textContent);
+  assert.match(firstText, /reload applies this/i, 'the one residual case still says so');
+  assert.equal((firstText.match(/reload/gi) || []).length, 1, 'said once');
+});
+
+test('popup: a page-owned graph gets a visible verdict, not a false Active', async () => {
+  const popup = loadPopup({
+    tabUrl: 'https://example.com/watch',
+    runtimeSendMessage: async (msg) => {
+      if (msg.type === 'GET_SITE_STATE') {
+        return { ok: true, enabled: true, gainDb: 0, excluded: false, siteKey: 'example.com', seq: 1 };
+      }
+      return { ok: true };
+    },
+    tabsSendMessage: async (_tabId, msg) => {
+      if (msg.type === 'GET_DOCUMENT_STATUS') {
+        return {
+          ok: true, siteKey: 'example.com', enabled: true, gainDb: 0,
+          hookAlive: true, hookActive: false, hookPresent: true, unprocessed: 1,
+          indicator: 'gray',
+        };
+      }
+      return { ok: true };
+    },
+  });
+  await settle(80);
+  const text = String(popup.els['status-text'].textContent);
+  assert.match(text, /own graph/i, 'the reason is stated');
+  assert.match(text, /cannot be normalized/i, 'and so is the consequence');
+  assert.equal(popup.els['status-pill'].textContent, 'Limited', 'the pill does not claim Active');
+});
+
+test('popup: cross-origin protected audio is named, not claimed as normalized', async () => {
+  const popup = loadPopup({
+    tabUrl: 'https://example.com/watch',
+    runtimeSendMessage: async (msg) => {
+      if (msg.type === 'GET_SITE_STATE') {
+        return { ok: true, enabled: true, gainDb: 0, excluded: false, siteKey: 'example.com', seq: 1 };
+      }
+      return { ok: true };
+    },
+    tabsSendMessage: async (_tabId, msg) => {
+      if (msg.type === 'GET_DOCUMENT_STATUS') {
+        return {
+          ok: true, siteKey: 'example.com', enabled: true, gainDb: 0,
+          hookAlive: true, hookActive: false, hookPresent: true, protectedCount: 1,
+          indicator: 'gray',
+        };
+      }
+      return { ok: true };
+    },
+  });
+  await settle(80);
+  const text = String(popup.els['status-text'].textContent);
+  assert.match(text, /cross-origin protected/i, 'the reason is stated');
+  assert.match(text, /plays unprocessed/i, 'and the consequence');
+  assert.equal(popup.els['status-pill'].textContent, 'Limited', 'still not an Active claim');
+});
+
 test('popup: exclusion and the re-enable both say a reload restores the page, once and quietly', async () => {
   const popup = loadPopup({
     tabUrl: 'https://www.tiktok.com/foryou',

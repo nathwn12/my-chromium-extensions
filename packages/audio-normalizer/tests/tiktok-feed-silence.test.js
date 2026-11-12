@@ -257,7 +257,7 @@ test('throwing connect in routeSession still leaves audible path', async () => {
   assert.equal(isAudible(h.edges, workEids), true, 'bypass input->output survives a throwing connect');
 });
 
-test('site off RELEASES the captured graph instead of keeping a route for it', async () => {
+test('site off KEEPS the captured graph and routes it at unity (live re-enable)', async () => {
   const h = loadHook();
   await sleep(200);
   const A = new h.FakeMediaElement();
@@ -271,14 +271,26 @@ test('site off RELEASES the captured graph instead of keeping a route for it', a
   h.stop();
   await sleep(150);
   const workEids = new Set(h.workletInstances.map((x) => x._eid));
-  // Design cut: stop releases the context and its sources for good, so nothing
-  // of ours routes this element any more (a reload rebuilds it).
-  assert.equal(isAudible(h.edges, workEids), false, 'no route of ours survives');
-  assert.equal(A.__tnAttached !== true, true, 'the element is released from our registry');
+  // A disable is a BYPASS: the worklet is out of the path and input -> output
+  // stays wired at unity, so the page keeps playing unprocessed and the element
+  // is still ours for the next enable (a released capture could never be taken
+  // again on this document).
+  assert.equal(isRoutedThroughWorklet(h.edges, workEids), false, 'the worklet is disconnected');
+  assert.equal(isAudible(h.edges, workEids), true, 'and the element still reaches the destination at unity');
+  assert.equal(A.__tnAttached, true, 'the element stays owned, so a re-enable needs no re-capture');
   assert.equal(A.muted, false, 'and is never left muted by us');
+
+  // Re-enable in place: the same session, one capture, the worklet back in.
+  h.start();
+  await waitFor(
+    () => isRoutedThroughWorklet(h.edges, new Set(h.workletInstances.map((x) => x._eid))),
+    10000,
+    'the re-enabled hook re-routes through a worklet',
+  );
+  assert.equal(h.counts().createCalls, 1, 'no second createMediaElementSource, ever');
 });
 
-test('a captured context closes on stop even after the element ended', async () => {
+test('a captured context survives a stop and is closed only by destroy', async () => {
   const h = loadHook();
   await sleep(200);
   const A = new h.FakeMediaElement();
@@ -289,7 +301,13 @@ test('a captured context closes on stop even after the element ended', async () 
   await sleep(50);
   h.stop();
   await sleep(150);
-  assert.equal(h.contexts[0].state, 'closed', 'stop closes the captured context');
+  assert.notEqual(h.contexts[0].state, 'closed', 'stop keeps the captured context');
+  assert.equal(A.__tnSource !== undefined, true, 'and the element keeps its source handle');
+  // Exclusion/uninstall destroy it: that is the one-way door, and the only path
+  // that needs a reload to restore the page.
+  h.control('destroy', {});
+  await sleep(150);
+  assert.equal(h.contexts[0].state, 'closed', 'destroy closes the captured context');
   assert.equal(A.__tnAttached !== true, true, 'and drops the element from the registry');
 });
 
@@ -312,10 +330,11 @@ test('removal inside the debounce window is still detached', async () => {
   assert.equal(B.__tnAttached, false, 'debounced removal still detached');
 });
 
-// Design cut (round 5): a released capture cannot be re-taken on a live
-// document. The element is left alone until the page is reloaded; the popup
-// carries the reload notice (see exclusion.test.js).
-test('exclude -> enable on a live document leaves the element unprocessed; a reload normalizes it', async () => {
+// A destroyed capture cannot be re-taken on a live document. The element is left
+// alone until the page is reloaded; the popup carries the reload notice (see
+// exclusion.test.js). Exclusion is the only path that destroys — a plain disable
+// is a STOP and re-enables live.
+test('exclude (destroy) -> enable on a live document leaves the element unprocessed; a reload normalizes it', async () => {
   const h = loadHook();
   await sleep(200);
   const A = new h.FakeMediaElement();
@@ -325,7 +344,7 @@ test('exclude -> enable on a live document leaves the element unprocessed; a rel
   assert.equal(A.__tnAttached, true, 'the element is normalized while enabled');
   assert.equal(isRoutedThroughWorklet(h.edges, routeOf(h)), true, 'routed through the worklet');
 
-  h.stop();                       // exclude/disable: releases everything for good
+  h.control('destroy', {});       // exclusion/uninstall: releases everything for good
   await sleep(250);
   assert.equal(A.__tnAttached !== true, true, 'released from our registry');
 

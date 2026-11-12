@@ -517,8 +517,12 @@ test('item7: no DOM pending marker can re-arm a stopped hook', async () => {
   h.control('stop', {});
   await sleep(30);
   const stopped = h.control('status', {});
-  assert.equal(stopped.alive, false, 'stopped: the dispatcher that answered is gone');
-  assert.equal(typeof h.sandbox.__tnHookV6, 'undefined', 'STOP deleted the dispatcher');
+  // A STOP is a bypass and keeps the dispatcher alive on purpose (a later
+  // enable revives this instance); it must still report inactive, and it must
+  // never be re-armed by anything the PAGE does.
+  assert.equal(stopped.alive, true, 'the dispatcher survives a stop for a live re-enable');
+  assert.equal(stopped.active, false, 'and stops processing');
+  assert.equal(typeof h.sandbox.__tnHookV6, 'function', 'the worker can still control it');
   // The page can still write the old pending-start marker; nothing consumes it,
   // because the file reads it once at load and there is no listener left.
   const before = h.addedModuleUrls.length;
@@ -526,7 +530,12 @@ test('item7: no DOM pending marker can re-arm a stopped hook', async () => {
   h.documentElementStub.setAttribute('data-tn-worklet-url', 'chrome-extension://test-id/audio/normalizer-worklet.js');
   await sleep(150);
   assert.equal(h.addedModuleUrls.length, before, 'no worklet module was loaded after stop');
-  assert.equal(typeof h.sandbox.__tnHookV6, 'undefined', 'and nothing re-installed the dispatcher');
+  assert.equal(h.control('status', {}).active, false, 'and the page marker started nothing');
+
+  // DESTROY is the path that removes the dispatcher outright.
+  h.control('destroy', {});
+  await sleep(30);
+  assert.equal(typeof h.sandbox.__tnHookV6, 'undefined', 'destroy deleted the dispatcher');
 });
 
 test('item7: disabled tab posts STOP when an active hook reports in', async () => {
@@ -554,6 +563,41 @@ test('item7: disabled tab posts STOP when an active hook reports in', async () =
     [],
     'and a disabled tab never asks for a start',
   );
+});
+
+test('item7: an off tab asks the worker for exactly one STOP across repeated resyncs', async () => {
+  const storage = createStore({
+    'site:example.com': { enabled: true, gainDb: 0, seq: 1, mirror: true },
+  });
+  const c = await loadContent('https://example.com/watch', storage);
+  await sleep(60);
+  c.postedToPage.length = 0;
+  const disable = () => c.sendMessage({
+    type: 'SET_DOCUMENT_STATE',
+    siteKey: 'example.com',
+    enabled: false,
+    gainDb: 0,
+    transient: true,
+  });
+  await disable();
+  await sleep(40);
+  await disable();
+  await sleep(60);
+  const stops = c.postedToPage.filter((m) => m.type === 'STOP');
+  assert.equal(stops.length, 1, 'one STOP per disable, not one per resync');
+  // Re-enabling resets the latch so the NEXT disable can stop again.
+  await c.sendMessage({
+    type: 'SET_DOCUMENT_STATE',
+    siteKey: 'example.com',
+    enabled: true,
+    gainDb: 0,
+    transient: true,
+  });
+  await sleep(80);
+  c.postedToPage.length = 0;
+  await disable();
+  await sleep(60);
+  assert.equal(c.postedToPage.filter((m) => m.type === 'STOP').length, 1, 'and a later disable stops again');
 });
 
 // ============ item 11: prune on emptied/ended/removal ============

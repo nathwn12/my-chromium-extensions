@@ -72,7 +72,7 @@ const SITE_SEQ_KEY = 'siteSeq';
  * (the pre-fix historical diverge repair). Afterwards the per-site key
  * exists and is preferred, so a stale legacy mirror can never resurrect.
  * @param {string} siteKey normalized site key
- * @returns {Promise<{ record: { enabled: boolean, gainDb: number, seq: number, mirror: boolean, excluded: boolean }, fromLegacy: boolean }>}
+ * @returns {Promise<{ record: { enabled: boolean, gainDb: number, seq: number, mirror: boolean, excluded: boolean, seen: boolean }, fromLegacy: boolean }>}
  */
 async function readSiteRecord(siteKey) {
   const perKey = backgroundShared.siteStorageKey(siteKey);
@@ -142,6 +142,34 @@ async function writeSiteRecord(siteKey, record) {
   await chrome.storage.local.set({
     [perKey]: backgroundShared.normalizeSiteRecord(record),
   });
+}
+
+// Automatic reload on the one enable that has no hook to start (the first-ever
+// enable of a host on an already-loaded document). The delay lets the popup
+// paint its "Reloading to activate…" state before the document goes away; the
+// reload itself is the ONLY navigation this extension ever performs, and it
+// happens once per host, ever.
+const FIRST_ENABLE_RELOAD_DELAY_MS = 500;
+const RELOAD_NOTICE_MESSAGE = 'Enabled. Reload applies this.';
+const RELOADING_MESSAGE = 'Reloading to activate…';
+
+/**
+ * Reload one tab, once. Answers false — never throws — when there is no tab to
+ * reload or the platform refuses, so the caller can fall back to the notice.
+ * @param {unknown} tabId
+ * @returns {Promise<boolean>}
+ */
+async function reloadTabOnce(tabId) {
+  if (typeof tabId !== 'number' || !Number.isFinite(tabId)) return false;
+  if (!chrome.tabs || typeof chrome.tabs.reload !== 'function') return false;
+  await new Promise((resolve) => setTimeout(resolve, FIRST_ENABLE_RELOAD_DELAY_MS));
+  try {
+    await Promise.resolve(chrome.tabs.reload(tabId));
+    return true;
+  } catch (e) {
+    console.warn('[bg] first-enable reload failed, falling back to the notice:', String(e));
+    return false;
+  }
 }
 
 /**
@@ -476,7 +504,7 @@ function canAccessTabUrl(url) {
  * @param {Record<string, unknown>} all
  */
 function collectPerSiteRecords(all) {
-  /** @type {Map<string, { enabled: boolean, gainDb: number, seq: number, mirror: boolean, excluded: boolean }>} */
+  /** @type {Map<string, { enabled: boolean, gainDb: number, seq: number, mirror: boolean, excluded: boolean, seen: boolean }>} */
   const records = new Map();
   for (const [key, value] of Object.entries(all || {})) {
     if (!backgroundShared.isSiteStorageKey(key) || !value || typeof value !== 'object') continue;
@@ -549,7 +577,10 @@ async function deriveContentScriptRegistration() {
   /** @type {string[]} */
   const exactActive = [];
   for (const [siteKey, record] of records) {
-    if (record.excluded || !record.enabled) continue;
+    // `seen || enabled`: a host the user has enabled at least once keeps the
+    // document_start pair so a later enable is live on the already-loaded page.
+    // A never-seen host keeps the zero-cost path (no registration at all).
+    if (record.excluded || !(record.enabled || record.seen)) continue;
     if (isCoveredByExclusion(siteKey)) continue;
     exactActive.push(siteKey);
   }
@@ -972,13 +1003,15 @@ async function softRecheckDocument(tabId, siteKey) {
     return { ok: true, activation: { state: 'idle' } };
   }
 
-  // FINAL RULE: this never injects. It asks a document that already has the
-  // content script to re-read its truth (stop or adjust); a document without
-  // one is reported as "enabled, applies on reload" instead of being armed.
+  // This never injects. It asks a document that already has the content script
+  // to re-read its truth (stop or adjust); a document without one is reported
+  // as "enabled, applies on reload" instead of being armed. No reload is
+  // triggered from here: a slider soft-wake is not an enable, so the notice is
+  // the honest answer (the automatic reload belongs to a first-ever enable).
   try {
     return await chrome.tabs.sendMessage(tabId, { type: 'SOFT_RECHECK_DOCUMENT' }, { frameId: 0 });
   } catch {
-    return { ok: true, activation: { state: 'reload', message: 'Enabled. Reload applies this.' } };
+    return { ok: true, activation: { state: 'reload', message: RELOAD_NOTICE_MESSAGE } };
   }
 }
 
@@ -1063,14 +1096,17 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             // A toggle never clears an exclusion: exclusion is only changed by
             // an explicit `excluded` intent.
             excluded: storedRec.excluded,
+            // "Enabled once" is durable: a disable keeps it, which is what lets
+            // the next enable land live on an already-loaded page.
+            seen: storedRec.seen || nextEnabled,
           });
           // Single top-level key, single set: settings + mirror + sequence
           // can never diverge.
           await writeSiteRecord(siteKey, next);
           return { seq: nextSeq, nextEnabled, gainDb: next.gainDb, excluded: next.excluded };
         });
-        // FINAL RULE: the toggle is recorded and applies on the next navigation;
-        // no open document is armed by it.
+        // This legacy toggle only records state. Live application is the
+        // per-site broadcast, which the storage change below emits.
         console.log('[bg] stored toggle:', siteKey, outcome.nextEnabled);
         return {
           ok: true,
@@ -1092,7 +1128,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         // sibling popup can never overwrite an unrelated newer field.
         const intent = extractIntentSet(/** @type {Record<string, unknown>} */ (message));
 
-        /** @type {{ seq: number, enabled: boolean, gainDb: number, enabledApplied: boolean, excluded: boolean, exclusionChanged: boolean, previousExcluded: boolean }} */
+        /** @type {{ seq: number, enabled: boolean, gainDb: number, enabledApplied: boolean, excluded: boolean, exclusionChanged: boolean, previousExcluded: boolean, wasSeen: boolean, seen: boolean }} */
         const applied = await withStorageWrite(async () => {
           const { record: storedRec } = await readSiteRecord(siteKey);
           // Last-accepted-write-wins: every intent field applies to the live
@@ -1126,6 +1162,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             // gain-only patch leaves it untouched.
             mirror: requestedEnabledChange ? enabled : storedRec.mirror,
             excluded,
+            // First enable of this host is always remembered: from then on the
+            // host loads with the passive hook and every later enable is live.
+            seen: storedRec.seen || enabled,
           });
 
           if (persist) {
@@ -1146,13 +1185,19 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             excluded: next.excluded,
             exclusionChanged,
             previousExcluded: storedRec.excluded,
+            // Was this host already seen BEFORE this write? That is the one fact
+            // that decides live vs reload for the enable.
+            wasSeen: storedRec.seen,
+            seen: next.seen,
           };
         });
 
-        // FINAL RULE: enabling a site never starts work in an already-loaded
-        // document. The enable is recorded and applied by registration on the
-        // next navigation; this tab, and every other open tab of the site, is
-        // left exactly as it is. The popup says so ("Reload applies this.").
+        // Enabling a SEEN host is live: the document already holds the passive
+        // page hook, and the broadcast below flips it on in place with no
+        // navigation. The one residual reload case is the FIRST-ever enable of a
+        // host, where no hook exists to start — that case reloads the tab once,
+        // automatically, because a reload the user has to perform is not
+        // acceptable. Disabling is live on both paths (STOP keeps the graph).
         if (!persist && message.tabId) {
           await setPendingSessionState(
             message.tabId,
@@ -1166,16 +1211,38 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         // Exclusion is immediate and worker-driven: the hook in every affected
         // frame of every affected tab is destroyed before the popup hears back,
         // so a mid-read or hung content script cannot delay it. Un-excluding is
-        // the mirror of an enable: it applies on the next navigation only.
+        // the one-way door: the captures are gone, so it applies on the next
+        // navigation only.
         if (persist && applied.exclusionChanged && applied.excluded) {
           await teardownHooksForSite(siteKey, { includeDescendants: true, mode: 'destroy' });
         }
-        // A persisted disable stops the hook but keeps its dispatcher, so a
-        // re-enable revives it with one control call.
+        // A persisted disable stops the worklet and keeps its dispatcher,
+        // sessions and captured sources, so a re-enable revives it with one
+        // control call instead of a reload.
         if (persist && applied.enabledApplied && !applied.enabled) {
           await teardownHooksForSite(siteKey, { mode: 'stop' });
         }
         console.log('[bg]', persist ? 'stored:' : 'transient:', siteKey, JSON.stringify(applied));
+        // Exclusion beats enablement: nothing runs on this host, now or after a
+        // reload. A seen host enables live (its document holds the passive
+        // hook). The FIRST-ever enable of a host is the one case with no hook to
+        // start, and it reloads this tab once, automatically.
+        const firstEnable = persist
+          && applied.enabledApplied
+          && applied.enabled
+          && !applied.excluded
+          && !applied.wasSeen;
+        let activation = applied.excluded
+          ? { state: 'idle' }
+          : (!applied.enabled
+            ? { state: 'stop' }
+            : (applied.wasSeen
+              ? { state: 'live' }
+              : { state: 'reload', message: RELOAD_NOTICE_MESSAGE }));
+        if (firstEnable) {
+          const reloading = await reloadTabOnce(message.tabId);
+          if (reloading) activation = { state: 'reloading', message: RELOADING_MESSAGE };
+        }
         return {
           ok: true,
           enabled: applied.enabled,
@@ -1183,12 +1250,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           excluded: applied.excluded,
           siteKey,
           seq: applied.seq,
-          // Exclusion beats enablement: nothing runs on this host, now or after
-          // a reload. Otherwise nothing is activated in the live document - the
-          // enable applies on the next navigation.
-          activation: applied.excluded
-            ? { state: 'idle' }
-            : { state: 'navigation', message: 'Enabled. Reload applies this.' },
+          seen: applied.seen,
+          activation,
         };
       }
       case 'GET_SITE_STATE': {
@@ -1418,11 +1481,12 @@ chrome.storage.onChanged.addListener((changes, area) => {
       ? backgroundShared.normalizeSiteRecord(change.newValue)
       : null;
     if (!newRec) continue;
-    // `enabled` and `excluded` both move the injection surface, so both
-    // re-register; a gain-only change never does.
+    // `enabled`, `excluded` and `seen` all move the injection surface, so all
+    // three re-register; a gain-only change never does.
     if (!oldRec
       || oldRec.enabled !== newRec.enabled
-      || oldRec.excluded !== newRec.excluded) {
+      || oldRec.excluded !== newRec.excluded
+      || oldRec.seen !== newRec.seen) {
       scheduleRegistrationSync();
     }
     // Worker-driven exclusion teardown: the storage change is authoritative and

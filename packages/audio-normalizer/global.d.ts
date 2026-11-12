@@ -34,6 +34,7 @@ interface TabNormalizerSharedApi {
     enabled: boolean;
     injected: boolean;
     hookAlive: boolean;
+    seen?: boolean;
   }) => string;
   getPopupIndicator: (state: {
     enabled: boolean;
@@ -47,13 +48,13 @@ interface TabNormalizerSharedApi {
   siteStorageKey: (siteKey: string) => string;
   isSiteStorageKey: (key: string) => boolean;
   siteKeyFromStorageKey: (key: string) => string;
-  normalizeSiteRecord: (value: unknown) => { siteKey?: string; enabled: boolean; gainDb: number; seq: number; mirror: boolean; excluded: boolean };
+  normalizeSiteRecord: (value: unknown) => { siteKey?: string; enabled: boolean; gainDb: number; seq: number; mirror: boolean; excluded: boolean; seen: boolean };
   migrateLegacyToRecord: (
     siteSettings: Record<string, unknown>,
     activeSites: Record<string, unknown>,
     siteToggles: Record<string, unknown>,
     hostnameOrSiteKey: string
-  ) => { enabled: boolean; gainDb: number; seq: number; mirror: boolean; excluded: boolean } | null;
+  ) => { enabled: boolean; gainDb: number; seq: number; mirror: boolean; excluded: boolean; seen: boolean } | null;
   hostMatchesSiteKey: (hostname: string, siteKey: string) => boolean;
   isHostExcluded: (hostname: string, excludedKeys: string[] | null | undefined) => boolean;
   ancestorSiteKeys: (hostname: string) => string[];

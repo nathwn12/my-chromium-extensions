@@ -33,8 +33,13 @@ function loadHook({ startHook = true, gate = null } = {}) {
     constructor() {
       this.tagName = 'VIDEO';
       this.muted = false;
+      // The page's own playing video: the sweep only routes elements that are
+      // actually playing, so the harness must say so.
       this.paused = false;
+      this.ended = false;
+      this.readyState = 4;
       this.src = '';
+      this.currentSrc = 'https://example.com/video.mp4';
       this.addListener = addListener(this);
       this.removeListener = removeListener(this);
     }
@@ -57,8 +62,10 @@ function loadHook({ startHook = true, gate = null } = {}) {
     disconnect() {}
   }
   const captured = new WeakSet();
+  const contexts = [];
   class FakeAudioContext {
     constructor() {
+      contexts.push(this);
       this.state = 'running';
       this.sampleRate = 48000;
       this.destination = {};
@@ -169,6 +176,8 @@ function loadHook({ startHook = true, gate = null } = {}) {
     control,
     start,
     stop,
+    destroy: () => control('destroy', {}),
+    contexts,
     reinject,
     countFor,
     FakeMediaElement,
@@ -176,6 +185,7 @@ function loadHook({ startHook = true, gate = null } = {}) {
       windowListeners: countFor('window'),
       documentListeners: countFor('document'),
       mediaListeners: countFor(media),
+      contextListeners: contexts.reduce((sum, ctx) => sum + countFor(ctx), 0),
       timers: timers.size,
       total: listeners.length,
     }),
@@ -200,10 +210,16 @@ test('teardown: STOP releases every tracked listener and timer', async () => {
 
   const stopped = hook.counts();
   assert.equal(stopped.mediaListeners, 0, 'every per-element listener is gone');
-  assert.equal(stopped.windowListeners, 0, 'no window listener survives (re-enable is a fresh injection)');
+  assert.equal(stopped.windowListeners, 0, 'no window listener survives');
   assert.equal(stopped.documentListeners, 0, 'no document listener survives');
   assert.equal(stopped.timers, 0, 'no timer survives');
-  assert.equal(stopped.total, 0, 'not one listener remains in the whole hook');
+  // A STOP keeps only the session-context watchers: the sessions themselves
+  // survive it (that is what makes a re-enable live), so their `statechange`
+  // listeners stay. They are not page listeners and cost nothing when silent.
+  assert.equal(stopped.contextListeners, hook.contexts.length, 'one watcher per surviving session');
+  assert.equal(stopped.total, stopped.contextListeners, 'nothing else remains');
+  assert.equal(hook.control('status', {}).alive, true, 'the dispatcher answers after a stop');
+  assert.equal(hook.control('status', {}).active, false, 'and reports the bypass');
 
   const messagesBefore = hook.posted.length;
   hook.media.dispatch('play');
@@ -215,22 +231,42 @@ test('teardown: STOP releases every tracked listener and timer', async () => {
   assert.equal(hook.counts().timers, 0, 'and schedules nothing');
 });
 
-test('teardown: STOP deletes the dispatcher; a fresh injection re-arms', async () => {
+test('teardown: STOP keeps the dispatcher for a live re-enable; DESTROY deletes it', async () => {
   const hook = loadHook();
   await settle(40);
   hook.stop();
   await settle(60);
-  assert.equal(hook.counts().mediaListeners, 0, 'torn down');
-  // The page-reachable control surface is gone: STOP removed the dispatcher, so
-  // nothing in the document can make this hook do work again.
-  assert.equal(typeof hook.sandbox.__tnHookV6, 'undefined', 'the dispatcher is deleted');
+  assert.equal(hook.counts().mediaListeners, 0, 'the worklet path is torn down');
+  // The control surface survives a STOP on purpose: the same instance is what a
+  // later enable revives, and a fresh injection would have to re-capture every
+  // element — impossible for an already-captured one.
+  assert.equal(typeof hook.sandbox.__tnHookV6, 'function', 'the dispatcher survives a stop');
+  assert.equal(hook.control('start', { gainDb: 0 }).ok, true, 'and can start again in place');
+  await settle(80);
+  assert.equal(hook.control('status', {}).active, true, 'the same instance is live again');
+  assert.ok(hook.counts().windowListeners >= 1, 'lifecycle listeners are re-bound on start');
+  assert.ok(hook.counts().mediaListeners >= 6, 'the surviving element is watched again');
+  assert.equal(hook.media.muted, false, 'nothing is left muted by us');
+
+  // A newly appearing element is taken over after the re-enable.
+  const second = new hook.FakeMediaElement();
+  assert.ok(hook.countFor(second) === 0, 'nothing watches the new element before it plays');
+  await second.play();
+  await settle(120);
+  assert.ok(hook.countFor(second) >= 6, `the re-enabled hook watches the new element (got ${hook.countFor(second)})`);
+  assert.equal(second.__tnAttached, true, 'and routes it through the live session');
+
+  // DESTROY (exclusion, uninstall) is the only thing that removes the surface.
+  hook.destroy();
+  await settle(60);
+  assert.equal(typeof hook.sandbox.__tnHookV6, 'undefined', 'destroy deletes the dispatcher');
   assert.equal(typeof hook.sandbox.__tnDisposeV6, 'function', 'the inert teardown-only marker survives');
   assert.equal(hook.control('start', { gainDb: 0 }).ok, false, 'calling the removed dispatcher does nothing');
+  assert.equal(hook.counts().total, 0, 'and no listener survives a destroy');
   await settle(60);
-  assert.equal(hook.counts().mediaListeners, 0, 'and cannot re-arm it');
 
-  // Re-enable: the worker injects the file again (same world), which disposes
-  // the old instance and installs a fresh dispatcher the worker can start.
+  // Re-enable after a destroy: the worker injects the file again (same world),
+  // which disposes the old instance and installs a fresh dispatcher.
   hook.reinject();
   assert.equal(typeof hook.sandbox.__tnHookV6, 'function', 'a fresh injection installs a dispatcher');
   hook.start();
@@ -241,13 +277,10 @@ test('teardown: STOP deletes the dispatcher; a fresh injection re-arms', async (
   // second time (Web Audio allows one source per element), so it keeps the
   // audible route the old instance left it on and is never muted by us.
   assert.equal(hook.media.muted, false, 'a previously captured element is left audible, not muted');
-  // A newly appearing element is what the re-enabled hook takes over.
-  const second = new hook.FakeMediaElement();
-  assert.ok(hook.countFor(second) === 0, 'nothing watches the new element before it plays');
-  await second.play();
+  const third = new hook.FakeMediaElement();
+  await third.play();
   await settle(120);
-  assert.ok(hook.countFor(second) >= 6, `the re-enabled hook watches the new element (got ${hook.countFor(second)})`);
-  assert.equal(second.__tnAttached, true, 'and routes it through the fresh session');
+  assert.equal(third.__tnAttached, true, 'a new element is routed by the fresh instance');
 });
 
 test('teardown: a frame-gate refusal installs nothing at all', async () => {

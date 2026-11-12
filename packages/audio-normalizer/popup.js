@@ -51,10 +51,19 @@ let statusPollStarted = false;
 // document is not armed, so the notice replaces the ordinary status line.
 let reloadNoticePending = false;
 const EXCLUDED_TEXT = 'Excluded. Nothing runs on this site. Reload restores this page.';
-// FINAL RULE (gate G3): enabling never starts work in an already-loaded
-// document. The popup says so once, quietly — text only, no new control, and it
-// never reloads a page the user did not ask to reload.
+// One residual reload case, stated once and quietly: the FIRST-ever enable of a
+// host, where no page hook exists in the loaded document to start. A host that
+// has been enabled before is applied live, and the popup must not say this.
 const RELOAD_NOTICE_TEXT = 'Enabled. Reload applies this.';
+// The first-ever enable of a host reloads its tab automatically; this is what
+// the popup says while that happens (no control, one line plus the pill).
+const RELOADING_TEXT = 'Reloading to activate…';
+// A verdict, not silence: the page plays this audio through its own Web Audio
+// graph, so the one source per element rule means we can never route it.
+const PAGE_OWNED_TEXT = 'This page plays its audio through its own graph, so it cannot be normalized.';
+// Same verdict, different reason: cross-origin media the page has not approved
+// for CORS cannot be routed without silence, so it stays native and audible.
+const PROTECTED_TEXT = "This page's audio is cross-origin protected, so it plays unprocessed.";
 const ACTIVE_STALE_MS = 3000;
 
 // Single owner: the background owns persisted state and applies intents.
@@ -371,12 +380,33 @@ async function toggleSite() {
     applyControlState({ enabled: res.enabled, gainDb: res.gainDb });
 
     if (res.enabled) {
-      // FINAL RULE: the enable applies on the next navigation. Nothing is armed
-      // in this document, so say so instead of promising activation.
-      reloadNoticePending = true;
-      runtimeActivationState = 'reload';
-      runtimeActivationMessage = RELOAD_NOTICE_TEXT;
-      renderStatus({ indicator: 'gray', text: RELOAD_NOTICE_TEXT });
+      // The background decides: a host that has been enabled before loads with
+      // the page hook in place, so this enable is live and the popup must not
+      // claim otherwise. The one residual reload case is the FIRST-ever enable
+      // of a host (no hook in the document to start). A response with no
+      // activation field is treated as the conservative case.
+      const activation = res.activation && typeof res.activation === 'object'
+        ? /** @type {Record<string, unknown>} */ (res.activation)
+        : null;
+      const activationState = activation ? String(activation.state || '') : '';
+      if (activationState === 'reloading') {
+        // The background already reloaded (or is about to): say so, once, and
+        // never ask the user for an action they do not have to take.
+        reloadNoticePending = false;
+        runtimeActivationState = 'reloading';
+        runtimeActivationMessage = String(activation?.message || RELOADING_TEXT);
+        renderStatus({ indicator: 'gray', text: runtimeActivationMessage });
+      } else if (activationState !== 'live' && activationState !== 'pending') {
+        reloadNoticePending = true;
+        runtimeActivationState = 'reload';
+        runtimeActivationMessage = RELOAD_NOTICE_TEXT;
+        renderStatus({ indicator: 'gray', text: RELOAD_NOTICE_TEXT });
+      } else {
+        reloadNoticePending = false;
+        runtimeActivationState = 'pending';
+        runtimeActivationMessage = 'Enabling on this tab…';
+        renderStatus({ indicator: 'gray', text: runtimeActivationMessage });
+      }
     } else {
       // Immediate apply for the current tab's TOP FRAME ONLY (frameId 0:
       // RESEARCH §5.3). The named siteKey keeps every other frame from
@@ -625,6 +655,11 @@ async function refreshDocumentStatus() {
     const enabled = Boolean(doc?.enabled);
     const hookAlive = Boolean(doc?.hookAlive);
     const hookActive = Boolean(doc?.hookActive);
+    // Explicitly reported only: an older document that does not answer the
+    // field must not be described as needing a reload.
+    const hookPresent = doc?.hookPresent === false ? false : true;
+    const unprocessed = Number(doc?.unprocessed) || 0;
+    const protectedCount = Number(doc?.protectedCount) || 0;
     const activating = Boolean(doc?.activating);
     const lastError = String(doc?.lastError || '');
 
@@ -676,6 +711,9 @@ async function refreshDocumentStatus() {
         hookActive: recentlyActive,
         activating,
         lastError,
+        hookPresent,
+        unprocessed,
+        protectedCount,
       }),
     });
   } catch {
@@ -684,8 +722,13 @@ async function refreshDocumentStatus() {
       renderStatus({ indicator: 'gray', text: runtimeActivationMessage || 'Enabled. Reload on a supported page.' });
       return;
     }
-    // No content script in this document: the enable (or un-exclude) is
-    // recorded and applies on the next navigation.
+    // No content script in this document: either the tab is reloading right now
+    // (a first-ever enable), or there was no hook to start and the notice is
+    // the honest answer.
+    if (toggle.checked && runtimeActivationState === 'reloading') {
+      renderStatus({ indicator: 'gray', text: runtimeActivationMessage || RELOADING_TEXT });
+      return;
+    }
     if (toggle.checked && runtimeActivationState === 'reload') {
       renderStatus({ indicator: 'gray', text: RELOAD_NOTICE_TEXT });
       return;
@@ -700,11 +743,17 @@ async function refreshDocumentStatus() {
   }
 }
 
-function getStatusText({ enabled, hookActive, activating, lastError }) {
+/**
+ * @param {{ enabled: boolean, hookActive: boolean, activating: boolean, lastError: string, hookPresent?: boolean, unprocessed?: number, protectedCount?: number }} state
+ */
+function getStatusText({ enabled, hookActive, activating, lastError, hookPresent, unprocessed, protectedCount }) {
   if (enabled && lastError) return lastError;
   if (enabled && hookActive) return 'Normalizer active.';
   if (enabled && runtimeActivationState === 'restricted') {
     return runtimeActivationMessage || 'Enabled. Reload on a supported page.';
+  }
+  if (enabled && runtimeActivationState === 'reloading') {
+    return runtimeActivationMessage || RELOADING_TEXT;
   }
   if (enabled && runtimeActivationState === 'reload') {
     return RELOAD_NOTICE_TEXT;
@@ -712,6 +761,16 @@ function getStatusText({ enabled, hookActive, activating, lastError }) {
   if (enabled && (activating || runtimeActivationState === 'pending')) {
     return runtimeActivationMessage || 'Enabling on this tab…';
   }
+  // The document answered and says it has no page hook: this tab loaded before
+  // the hook existed, so this is the one case that really needs a reload.
+  if (enabled && hookPresent === false) return RELOAD_NOTICE_TEXT;
+  // The page wires this audio through its own Web Audio graph. We can never
+  // take it over (one MediaElementSource per element), so say so instead of
+  // claiming the page is normalized or forcing silence.
+  if (enabled && Number(unprocessed) > 0) return PAGE_OWNED_TEXT;
+  // Cross-origin protected media: the tap carries no accessible audio, so it is
+  // left native — audible, unnormalized, and named.
+  if (enabled && Number(protectedCount) > 0) return PROTECTED_TEXT;
   if (enabled) return 'Enabled. Waiting for audio.';
   return 'Off for this site.';
 }
@@ -732,6 +791,21 @@ function renderStatus({ indicator, text, excluded: isExcluded }) {
   }
   if (shown === RELOAD_NOTICE_TEXT) {
     statusPillEl.textContent = 'Reload';
+    statusPillEl.dataset.state = 'off';
+    return;
+  }
+  if (shown === RELOADING_TEXT) {
+    statusPillEl.textContent = 'Reloading';
+    statusPillEl.dataset.state = 'off';
+    return;
+  }
+  if (shown === PAGE_OWNED_TEXT) {
+    statusPillEl.textContent = 'Limited';
+    statusPillEl.dataset.state = 'off';
+    return;
+  }
+  if (shown === PROTECTED_TEXT) {
+    statusPillEl.textContent = 'Limited';
     statusPillEl.dataset.state = 'off';
     return;
   }

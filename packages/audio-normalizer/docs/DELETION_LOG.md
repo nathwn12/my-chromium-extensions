@@ -1,6 +1,47 @@
 # Code Deletion Log
 
-## [2026-05-04] Refactor Session — Dead Code Cleanup
+## [2026-11-13] Hotfix — the stealing route is demoted, bulk capture removed
+
+### Behavior removed
+- `page-hook.js` `attachMediaElement`: `createMediaElementSource` is no longer the default route. It is reached only when `captureStream` is unavailable, and never for cross-origin no-CORS, `mediaKeys`, `srcObject` or `__tnWebAudio` media. A `MediaElementSource` permanently steals the element's output, so a stop into a suspended context was silence until reload.
+- `attachExistingMediaElements`: the unconditional `querySelectorAll('audio, video')` capture loop. It now routes only playing elements (`!paused && !ended && readyState >= 2`), at most `MAX_ROUTED_MEDIA` (4), and the whole scan is rate-limited to one per 5 s so the recovery burst cannot re-walk a feed.
+- `detachMediaElement`: the "never disconnect, never delete" rule for the cached source now applies to ELEMENT-SOURCE routes only. Stream taps are disconnected, their tracks stopped, their `elementSources` entry deleted and the element unmuted (see `detachStreamRoute`).
+- `scanShadowRoots`: the unbounded `querySelectorAll('*')` walk. Hosts are capped, each root is visited once, and roots per pass are capped.
+- The silent-unity off state: `stop()` now releases stream taps first and unmutes, instead of leaving sources routed into a possibly suspended context.
+
+### Not removed
+- The `captureStream` fallback path itself (`createMediaElementSource` for engines without the API), the frame gates, `releaseSessions()`, the program-boundary/reset contract and every zero-cost assertion.
+
+### Impact
+- Files modified: 5 tracked (`page-hook.js`, `content-script.js`, `popup.js`, `docs/ARCHITECTURE.md`, `CHANGELOG.md`) plus tests.
+- Replacement: the stream tap, the playing-only cap, the analyser probe and the `protected` verdict.
+
+### Verification
+- `node ../../scripts/run-tests.mjs tests` — 178/178.
+- `bun run --filter audio-normalizer typecheck` — clean.
+- Audio Safety: no browser launched, no audio playback.
+
+## [2026-11-13] Live toggle — the stop-is-a-teardown design cut is removed
+
+### Behavior removed
+- `page-hook.js` `tnDispatch`: `'stop'` no longer maps to `dispose()`. The old mapping existed because "a live document can never be re-normalized after its graph is released", so a disable released everything and the popup asked for a reload. Live toggling needs the opposite: `stop()` (bypass to 0 dB, sessions/sources/dispatcher kept) and `destroy()` (full teardown) are now distinct verbs.
+- `content-script.js`: the post-STOP `state.hookAlive = false` writes in `sync`, `handleSetDocumentState`, `cleanupAndReset` and the deferred-enable branch. They existed to remember "the dispatcher is gone"; it is not gone any more, and clearing the flag made the next enable re-inject (which would dispose the sessions it needed).
+- `background.js`: the unconditional `activation: { state: 'navigation' }` answer for every enable, replaced by `live` / `reload` decided from `seen`.
+
+### Not removed
+- Exclusion teardown, the frame gates, `releaseSessions()`, `restorePatchedPrototypes()` and every zero-cost assertion are untouched: `destroy` calls exactly the path the old `stop` did.
+
+### Impact
+- Files modified: 6 tracked (`shared.js`, `background.js`, `content-script.js`, `page-hook.js`, `popup.js`, `global.d.ts`).
+- Replacement: `seen` on the site record, a `reserve` content action, `stop`/`destroy` split.
+
+### Verification
+- `node ../../scripts/run-tests.mjs tests` — 163/163.
+- `node --test tools/cost-audit/test` — 34/34 (the browser harness was not run).
+- `bun run typecheck` (`tsc --noEmit`) — clean.
+- Audio Safety: no browser launched, no audio playback.
+
+## [2026-05-04] Refactor Session - Dead Code Cleanup
 
 ### Unused Exports Removed
 - `shared.js`: `MIN_GAIN_DB`, `MAX_GAIN_DB`, `GAIN_STEP_DB` — exported but never imported by any runtime file (content-script, background, popup) or test. Values are still used internally by `clampGainDb()` — only the public export was removed.

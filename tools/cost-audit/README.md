@@ -49,6 +49,7 @@ assertion reads a sound device: audio is judged from instrumented node graphs,
 | `S-excluded-by-parent` | `sub.excluded.test` | still `enabled:true`, but its parent key is excluded: all zeros |
 | `A-restored` | `excluded.test` | `excluded:false`: injection returns |
 | `B-never-configured` | `never-configured.test` | never seeded: no injection and no mention in any registration |
+| `seen-off` | `seen-off.test` | record `{enabled:false, seen:true}`: the content script runs and the page hook is present, with **0** page listeners, timers, observers, patched globals and **0** audio graphs — the reservation that makes a later enable live |
 | `coexistence` | `https://music.youtube.com/watch` | one audio graph per engine, a `running` AudioContext when there is a graph, no element wired twice, the page's own `<audio>` still advances |
 
 "Content-script executions" is counted at the source: CDP
@@ -86,14 +87,16 @@ configured), plus one unrelated opted-in host so a registration stays alive whil
 | A-excluded | A excluded, rest enabled | other only | `*://*.excluded.test/*` | 0 |
 | A-restored | A un-excluded | A, S, other | — | 1 |
 | B-never-configured | B never seeded | A, S, other | — | 0 on B |
-| nothing-enabled | all disabled | — (0 entries) | — | — |
+| seen-off | `{enabled:false, seen:true}` on `seen-off.test` | includes `seen-off.test` | — | 1, with 0 audio graphs |
+| nothing-enabled | all disabled, `seen` cleared | — (0 entries) | — | — |
 
 Assertions built from it: the excluded host must be absent from every `matches`
 and present in some `excludeMatches`; the never-configured host must appear in no
-registration at all while another host *is* registered; with nothing enabled the
-extension must leave no registration behind. Any of these that would be satisfied
-by an empty registration is reported as `FAIL (vacuous: …)` with the source grep
-that proves the code exists.
+registration at all while another host *is* registered; a seen-but-off host must
+be registered while its page pays zero and builds no audio graph; with nothing
+enabled and nothing seen the extension must leave no registration behind. Any of
+these that would be satisfied by an empty registration is reported as
+`FAIL (vacuous: …)` with the source grep that proves the code exists.
 
 The report prints the actual arrays for every phase, not just a verdict.
 

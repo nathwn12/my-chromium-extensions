@@ -13,6 +13,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Feed-main-thread starvation on infinite scroll (e.g. TikTok freezing after 2–3 videos): the observer flush no longer blanket-walks every descendant with `querySelectorAll('*')` (new roots are already captured by the `attachShadow` patch, existing ones by the startup sweep; only the added node's own `shadowRoot` is observed, O(1)); a mutation storm is sliced into capped 200-mutation flushes with the remainder carried to the next tick instead of one unbounded synchronous loop. No audio, mute, capture or routing behaviour changed.
 - Feed churn silence on video switching (e.g. TikTok/Reddit/Facebook): the element→source map is now permanent for the document (WeakMap, never deleted) and removal no longer disconnects the source, so a re-inserted element reuses the same node with zero re-capture (one `createMediaElementSource` per element, ever); a context that captured anything is never closed — it suspends when idle and resumes on attach; an element owned by the page (throw with no cache) is skipped unmuted, and that latch never blocks a cached route.
 
+## [Unreleased]
+
+### Added
+
+- Live enable/disable on the page you are already on. A site you have enabled before now loads a passive page hook: present and idle, creating no audio context, no worklet and no listener, and capturing nothing, so the page plays natively at zero graph cost. Turning the switch on starts that hook in place — the playing element is captured once, the session routes through the worklet, and one program generation is minted — with no navigation and the playback position untouched. Turning it off is a bypass to 0 dB that keeps the session, the sources and the dispatcher, so turning it on again is equally instant. The first-ever enable of a host is the one case with no hook to start, and it reloads that tab automatically, once, about half a second after the switch flips (`Reloading to activate…`); only a reload the platform refuses falls back to the one-time notice. Exclusion is unchanged and remains the zero-cost kill switch: no registration, no hook, full teardown, native audio.
+
+### Changed
+
+- `STOP` from the worker hands the page back to native. Media is routed through
+  a `captureStream()` tap, which does not steal the element's output, so a
+  disable disconnects the tap, stops its tracks and unmutes the element in the
+  same tick; a re-enable captures a fresh stream. `createMediaElementSource` is
+  now only a fallback for engines without `captureStream` (and never for
+  cross-origin no-CORS, DRM, `srcObject` or page-owned media). `destroy`
+  (exclusion, uninstall) releases everything and unmutes.
+
+### Fixed
+
+- A disabled or excluded page could be left silent: an element captured into a
+  suspended context has no native output left, so "bypass at 0 dB" was silence
+  until a reload. The non-stealing tap ends that — off is always native audio.
+- Infinite feeds froze and muted: every `<video>` on the page used to be
+  captured, including paused/preloaded items. Only `!paused && !ended &&
+  readyState >= 2` elements are routed now, at most four per document, and the
+  recovery burst no longer re-walks the document on every tick.
+- Cross-origin media without `crossOrigin` could be captured into a Web Audio
+  graph that outputs silence. The tap is now measured before the element is
+  muted; a silent tap leaves the page native and reports a verdict.
+
 ## [5.5.0] - 2026-11-12
 
 ### Added
