@@ -21,7 +21,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- `STOP` from the worker is now a bypass, not a teardown. `destroy` (exclusion, uninstall) is the only path that releases a captured element or closes its context, because a captured element can never be captured a second time in the same document.
+- `STOP` from the worker hands the page back to native. Media is routed through
+  a `captureStream()` tap, which does not steal the element's output, so a
+  disable disconnects the tap, stops its tracks and unmutes the element in the
+  same tick; a re-enable captures a fresh stream. `createMediaElementSource` is
+  now only a fallback for engines without `captureStream` (and never for
+  cross-origin no-CORS, DRM, `srcObject` or page-owned media). `destroy`
+  (exclusion, uninstall) releases everything and unmutes.
+
+### Fixed
+
+- A disabled or excluded page could be left silent: an element captured into a
+  suspended context has no native output left, so "bypass at 0 dB" was silence
+  until a reload. The non-stealing tap ends that — off is always native audio.
+- Infinite feeds froze and muted: every `<video>` on the page used to be
+  captured, including paused/preloaded items. Only `!paused && !ended &&
+  readyState >= 2` elements are routed now, at most four per document, and the
+  recovery burst no longer re-walks the document on every tick.
+- Cross-origin media without `crossOrigin` could be captured into a Web Audio
+  graph that outputs silence. The tap is now measured before the element is
+  muted; a silent tap leaves the page native and reports a verdict.
 
 ## [5.5.0] - 2026-11-12
 

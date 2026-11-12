@@ -61,6 +61,9 @@ const RELOADING_TEXT = 'Reloading to activate…';
 // A verdict, not silence: the page plays this audio through its own Web Audio
 // graph, so the one source per element rule means we can never route it.
 const PAGE_OWNED_TEXT = 'This page plays its audio through its own graph, so it cannot be normalized.';
+// Same verdict, different reason: cross-origin media the page has not approved
+// for CORS cannot be routed without silence, so it stays native and audible.
+const PROTECTED_TEXT = "This page's audio is cross-origin protected, so it plays unprocessed.";
 const ACTIVE_STALE_MS = 3000;
 
 // Single owner: the background owns persisted state and applies intents.
@@ -656,6 +659,7 @@ async function refreshDocumentStatus() {
     // field must not be described as needing a reload.
     const hookPresent = doc?.hookPresent === false ? false : true;
     const unprocessed = Number(doc?.unprocessed) || 0;
+    const protectedCount = Number(doc?.protectedCount) || 0;
     const activating = Boolean(doc?.activating);
     const lastError = String(doc?.lastError || '');
 
@@ -709,6 +713,7 @@ async function refreshDocumentStatus() {
         lastError,
         hookPresent,
         unprocessed,
+        protectedCount,
       }),
     });
   } catch {
@@ -739,9 +744,9 @@ async function refreshDocumentStatus() {
 }
 
 /**
- * @param {{ enabled: boolean, hookActive: boolean, activating: boolean, lastError: string, hookPresent?: boolean, unprocessed?: number }} state
+ * @param {{ enabled: boolean, hookActive: boolean, activating: boolean, lastError: string, hookPresent?: boolean, unprocessed?: number, protectedCount?: number }} state
  */
-function getStatusText({ enabled, hookActive, activating, lastError, hookPresent, unprocessed }) {
+function getStatusText({ enabled, hookActive, activating, lastError, hookPresent, unprocessed, protectedCount }) {
   if (enabled && lastError) return lastError;
   if (enabled && hookActive) return 'Normalizer active.';
   if (enabled && runtimeActivationState === 'restricted') {
@@ -763,6 +768,9 @@ function getStatusText({ enabled, hookActive, activating, lastError, hookPresent
   // take it over (one MediaElementSource per element), so say so instead of
   // claiming the page is normalized or forcing silence.
   if (enabled && Number(unprocessed) > 0) return PAGE_OWNED_TEXT;
+  // Cross-origin protected media: the tap carries no accessible audio, so it is
+  // left native — audible, unnormalized, and named.
+  if (enabled && Number(protectedCount) > 0) return PROTECTED_TEXT;
   if (enabled) return 'Enabled. Waiting for audio.';
   return 'Off for this site.';
 }
@@ -792,6 +800,11 @@ function renderStatus({ indicator, text, excluded: isExcluded }) {
     return;
   }
   if (shown === PAGE_OWNED_TEXT) {
+    statusPillEl.textContent = 'Limited';
+    statusPillEl.dataset.state = 'off';
+    return;
+  }
+  if (shown === PROTECTED_TEXT) {
     statusPillEl.textContent = 'Limited';
     statusPillEl.dataset.state = 'off';
     return;

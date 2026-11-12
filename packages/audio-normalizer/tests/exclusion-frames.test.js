@@ -9,6 +9,15 @@ function src(name) { return fs.readFileSync(path.join(ROOT, name), 'utf8'); }
 const sharedApi = require(path.join(ROOT, 'shared.js'));
 
 async function settle(ms = 50) { await new Promise((r) => setTimeout(r, ms)); }
+// Bounded poll: the hook wires its session on real timers (bounded resume,
+// worklet load, recovery burst), so a fixed sleep races it under load.
+async function waitFor(cond, timeoutMs, label) {
+  const started = Date.now();
+  while (!cond()) {
+    if (Date.now() - started > timeoutMs) throw new Error(`timed out waiting for: ${label}`);
+    await settle(20);
+  }
+}
 function clone(v) { return v === undefined ? undefined : JSON.parse(JSON.stringify(v)); }
 function hostOf(url) { return sharedApi.getSiteKey(sharedApi.extractHostname(url)); }
 
@@ -113,8 +122,13 @@ function createTabWorld(frames) {
         super();
         this.muted = false;
         this.paused = true;
+        this.ended = false;
+        // A parked element the test plays is "ready"; the hook only routes
+        // elements that report playing.
+        this.readyState = 4;
         this.tagName = 'VIDEO';
         this.src = '';
+        this.currentSrc = 'https://top.test/video.mp4';
         // Playback position, so a toggle can be proved not to lose it.
         this.currentTime = 42.5;
       }
@@ -1133,7 +1147,7 @@ test('seen host loaded off with a playing element: enable starts live, no naviga
   const shotBefore = frame.sandbox;
 
   const res = await bg.sendMessage({ type: 'SET_SITE_STATE', siteKey: 'top.test', tabId: 7, set: { enabled: true } });
-  await settle(400);
+  await waitFor(() => frame.mediaSourceCalls === 1, 10000, 'the playing element is captured');
 
   assert.equal(res.ok, true);
   assert.deepEqual(clone(res.activation), { state: 'live' }, 'the enable is live, not deferred');
@@ -1180,8 +1194,7 @@ test('off/on/off on a seen host: bypass, no teardown, no reload, one source per 
   media.currentTime = 61;
   await media.play();
   frame.mediaElements.push(media);
-  await settle(300);
-  assert.equal(media.__tnAttached, true, 'element captured while enabled');
+  await waitFor(() => media.__tnAttached === true, 10000, 'element captured while enabled');
   assert.equal(frame.mediaSourceCalls, 1);
   const positionBefore = media.currentTime;
   const resetsBeforeDisable = frame.workletMessages.filter((m) => m && m.type === 'reset-program').length;
@@ -1236,7 +1249,7 @@ test('a page-claimed element gets a verdict: no second capture, never muted, no 
   frame.mediaSourceByElement.set(claimed, 1);
   frame.mediaElements.push(claimed);
   await claimed.play();
-  await settle(400);
+  await waitFor(() => frame.mediaSourceCalls === 1, 10000, 'the claimed element is attempted once');
 
   assert.equal(frame.mediaSourceCalls, 1, 'exactly one capture attempt for the claimed element');
   assert.equal(claimed.__tnAttached !== true, true, 'it is left unmanaged, never adopted');
