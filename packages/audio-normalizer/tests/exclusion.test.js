@@ -361,7 +361,7 @@ function loadPopup({ tabUrl, runtimeSendMessage, tabsSendMessage }) {
 
 // ============ contract: the stored record carries `excluded` ============
 test('record round-trip: excluded survives normalize and defaults to false', () => {
-  const record = { enabled: true, gainDb: 3, seq: 4, mirror: true, excluded: true };
+  const record = { enabled: true, gainDb: 3, seq: 4, mirror: true, excluded: true, seen: true };
   assert.deepEqual(sharedApi.normalizeSiteRecord(record), record, 'excluded round-trips');
   assert.equal(sharedApi.normalizeSiteRecord({ enabled: true }).excluded, false, 'missing = false');
   assert.equal(sharedApi.normalizeSiteRecord({ enabled: true, excluded: 0 }).excluded, false);
@@ -438,7 +438,7 @@ test('exclude-then-undo keeps enabled and gainDb untouched', async () => {
   assert.equal(excluded.enabled, true, 'enablement is preserved, not rewritten');
   assert.equal(excluded.gainDb, 4.5, 'gain is preserved');
   assert.deepEqual(storage._store()['site:tiktok.com'], {
-    enabled: true, gainDb: 4.5, seq: 3, mirror: true, excluded: true,
+    enabled: true, gainDb: 4.5, seq: 3, mirror: true, excluded: true, seen: true,
   }, 'one write, whole record, excluded added');
 
   const state = await bg.sendMessage({ type: 'GET_SITE_STATE', siteKey: 'tiktok.com' });

@@ -220,6 +220,8 @@ test('normalizeSiteRecord ignores an unknown legacy field on a stored record', (
     seq: 0,
     mirror: true,
     excluded: false,
+    // Derived, not stored before this version: enabled implies seen.
+    seen: true,
   });
 });
 
@@ -228,4 +230,32 @@ test('getContentAction and getPopupIndicator reflect hook state', () => {
   assert.equal(getContentAction({ enabled: true, injected: false, hookAlive: false }), 'inject');
   assert.equal(getPopupIndicator({ enabled: true, hookAlive: true, hookActive: true, lastError: '' }), 'green');
   assert.equal(getPopupIndicator({ enabled: true, hookAlive: false, hookActive: false, lastError: 'boom' }), 'red');
+});
+
+test('seen is derived, never lost: an enabled record is seen, a disabled seen record stays seen', () => {
+  // Missing `seen` on an existing record: enabled implies the host was used
+  // once, so the upgrade needs no data migration and no extra reload.
+  assert.equal(normalizeSiteRecord({ enabled: true, gainDb: 2, seq: 1, mirror: true }).seen, true);
+  // A disabled record written before `seen` existed is NOT seen: it keeps the
+  // zero-cost path until the user enables it once.
+  assert.equal(normalizeSiteRecord({ enabled: false, gainDb: 2, seq: 1, mirror: false }).seen, false);
+  // Disabling never forgets that the host was seen.
+  assert.equal(normalizeSiteRecord({ enabled: false, seen: true }).seen, true);
+  // Hostile input is normalised to a boolean.
+  assert.equal(normalizeSiteRecord({ seen: 'yes' }).seen, true);
+});
+
+test('getContentAction reserves the passive hook for a seen host that is off', () => {
+  // Seen but off, no hook yet: load the hook passively, start nothing.
+  assert.equal(getContentAction({ enabled: false, injected: false, hookAlive: false, seen: true }), 'reserve');
+  // Never seen and off: nothing at all.
+  assert.equal(getContentAction({ enabled: false, injected: false, hookAlive: false, seen: false }), 'idle');
+  // Seen but off with the hook already loaded: keep it (STOP is idempotent and
+  // re-asserts the bypass), never re-inject — a second MediaElementSource
+  // capture on the same element is impossible.
+  assert.equal(getContentAction({ enabled: false, injected: true, hookAlive: true, seen: true }), 'stop');
+  // Enabled with the hook present after a STOP: live re-start, no injection.
+  assert.equal(getContentAction({ enabled: true, injected: true, hookAlive: true, seen: true }), 'start');
+  // Enabled with no hook in this document: the single residual reload case.
+  assert.equal(getContentAction({ enabled: true, injected: false, hookAlive: false, seen: true }), 'inject');
 });

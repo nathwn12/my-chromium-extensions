@@ -267,6 +267,13 @@
       // Missing field = not excluded: every record written before exclusion
       // existed reads as `excluded: false`, so no migration is needed.
       excluded: Boolean(raw.excluded),
+      // `seen` = this host has been enabled at least once, and that fact is
+      // never forgotten by a later disable. It is what makes enabling live on
+      // an already-loaded page: a seen host loads with the page hook present
+      // (passive) so a later enable needs no navigation. Derived on read, so
+      // no migration is needed: a record that predates the field is seen
+      // exactly when it is enabled (it was enabled once by definition).
+      seen: Boolean(raw.seen) || enabled,
     };
   }
 
@@ -358,6 +365,9 @@
       gainDb: base.gainDb,
       seq: 0,
       mirror: enabled,
+      // Legacy data only ever recorded enables, so an enabled legacy entry was
+      // used once and is seen; a legacy disabled entry is not.
+      seen: enabled,
     });
   }
 
@@ -455,9 +465,20 @@
     return next;
   }
 
-  function getContentAction({ enabled, injected, hookAlive }) {
+  /**
+   * What this frame should do now.
+   *
+   * `reserve` is the live-toggle path's only new verb: a host the user has
+   * enabled before (`seen`) loads the MAIN-world hook at `document_start` even
+   * while it is off, so a later enable can start in place. It starts nothing —
+   * the hook is loaded, patched and idle, which is why the page plays
+   * unprocessed and pays no audio-graph cost.
+   * @param {{ enabled: boolean, injected: boolean, hookAlive: boolean, seen?: boolean }} state
+   */
+  function getContentAction({ enabled, injected, hookAlive, seen }) {
     if (!enabled) {
-      return injected ? 'stop' : 'idle';
+      if (injected) return 'stop';
+      return seen ? 'reserve' : 'idle';
     }
 
     if (!injected || !hookAlive) {
