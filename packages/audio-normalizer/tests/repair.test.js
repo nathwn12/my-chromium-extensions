@@ -517,8 +517,12 @@ test('item7: no DOM pending marker can re-arm a stopped hook', async () => {
   h.control('stop', {});
   await sleep(30);
   const stopped = h.control('status', {});
-  assert.equal(stopped.alive, false, 'stopped: the dispatcher that answered is gone');
-  assert.equal(typeof h.sandbox.__tnHookV6, 'undefined', 'STOP deleted the dispatcher');
+  // A STOP is a bypass and keeps the dispatcher alive on purpose (a later
+  // enable revives this instance); it must still report inactive, and it must
+  // never be re-armed by anything the PAGE does.
+  assert.equal(stopped.alive, true, 'the dispatcher survives a stop for a live re-enable');
+  assert.equal(stopped.active, false, 'and stops processing');
+  assert.equal(typeof h.sandbox.__tnHookV6, 'function', 'the worker can still control it');
   // The page can still write the old pending-start marker; nothing consumes it,
   // because the file reads it once at load and there is no listener left.
   const before = h.addedModuleUrls.length;
@@ -526,7 +530,12 @@ test('item7: no DOM pending marker can re-arm a stopped hook', async () => {
   h.documentElementStub.setAttribute('data-tn-worklet-url', 'chrome-extension://test-id/audio/normalizer-worklet.js');
   await sleep(150);
   assert.equal(h.addedModuleUrls.length, before, 'no worklet module was loaded after stop');
-  assert.equal(typeof h.sandbox.__tnHookV6, 'undefined', 'and nothing re-installed the dispatcher');
+  assert.equal(h.control('status', {}).active, false, 'and the page marker started nothing');
+
+  // DESTROY is the path that removes the dispatcher outright.
+  h.control('destroy', {});
+  await sleep(30);
+  assert.equal(typeof h.sandbox.__tnHookV6, 'undefined', 'destroy deleted the dispatcher');
 });
 
 test('item7: disabled tab posts STOP when an active hook reports in', async () => {

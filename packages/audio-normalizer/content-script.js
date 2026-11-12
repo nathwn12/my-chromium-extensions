@@ -76,8 +76,8 @@
 
   /** @type {{
    *   hostname: string, siteKey: string, enabled: boolean, gainDb: number,
-   *   excluded: boolean,
-   *   injected: boolean, hookAlive: boolean,
+   *   excluded: boolean, seen: boolean,
+   *   injected: boolean, hookAlive: boolean, hookPresent: boolean,
    *   hookActive: boolean, injecting: boolean, injectStartedAt: number,
    *   lastError: string, lastStatusAt: number,
    *   transient: ({ enabled: boolean, gainDb: number } | null),
@@ -94,8 +94,13 @@
     enabled: false,
     gainDb: contentShared.DEFAULT_GAIN_DB,
     excluded: false,
+    seen: false,
     injected: false,
     hookAlive: false,
+    // The MAIN-world hook is in this frame (injected here, whether or not it is
+    // processing). A seen host loads with it in place, which is what makes a
+    // later enable live; `injected` below is this frame's own "we asked" flag.
+    hookPresent: false,
     hookActive: false,
     injecting: false,
     injectStartedAt: 0,
@@ -126,17 +131,18 @@
   let storageSignalArmed = false;
 
   // ---------------------------------------------------------------------------
-  // FINAL RULE (gate G3): enabling a site never starts work in an already-loaded
-  // document. A live document is only ever torn down, never re-armed; work
-  // begins on the next navigation, via registration.
+  // Arm gate (gate G3, narrowed for live toggling).
   //
   // Two facts decide it, both fixed at load:
   //  - `arrivedAtDocumentStart`: this instance was injected while the document
   //    was still parsing (`runAt: document_start`). An instance injected into a
   //    finished document may stop things but never start them.
   //  - `armDecision`: what the LOAD-TIME record said. 'allowed' means this
-  //    document loaded with the site enabled; 'denied' means it did not, and no
-  //    later message or storage change may change that for this document.
+  //    document loaded with the page hook in place — either because the site was
+  //    enabled, or because it has been enabled before (`seen`) and therefore
+  //    loads the hook passively. 'denied' means neither, and no later message or
+  //    storage change may change that for this document: the first-ever enable
+  //    of a host is the one case that needs one navigation.
   //    'pending' only exists while the load-time read has not answered (a hung
   //    store); its bounded retry may still decide, because that is still the
   //    load-time question, not a state change.
@@ -207,9 +213,11 @@
     const config = outcome.config;
     // The load-time decision, taken once. A later bootstrap (re-injection, a
     // retry after a hung read) may only resolve 'pending'; it can never turn a
-    // document that loaded disabled or excluded into an armed one.
+    // document that loaded disabled into an armed one. A `seen` host counts as
+    // armed because its document loads the passive hook — that is the whole
+    // point of `seen`, and it is why a later enable needs no navigation.
     if (armDecision === 'pending') {
-      armDecision = config.enabled && !config.excluded ? 'allowed' : 'denied';
+      armDecision = (config.enabled || config.seen) && !config.excluded ? 'allowed' : 'denied';
     }
     if (config.excluded) {
       state.excluded = true;
@@ -222,13 +230,25 @@
       console.log('[cs] no stored record for', state.siteKey, '- inactive');
       return;
     }
+    state.seen = config.seen === true;
     if (!config.enabled) {
-      // FINAL RULE: a document that loaded with the site OFF does no work at
-      // all — no listener, no timer, no observer. Enabling it later applies on
-      // the next navigation, so there is nothing to arm here.
+      // A host that has never been enabled does no work at all — no listener,
+      // no timer, no observer, no hook. Enabling it for the first time applies
+      // on the next navigation, so there is nothing to arm here.
+      if (!state.seen) {
+        rememberExclusion(state.siteKey, false);
+        state.excluded = false;
+        console.log('[cs] site off at load, staying idle');
+        return;
+      }
+      // Seen-but-off: the document loads the page hook in reservation mode —
+      // patched and idle, owning nothing — so a later enable starts in place.
+      // Nothing is started and no audio graph is created while it is off.
       rememberExclusion(state.siteKey, false);
       state.excluded = false;
-      console.log('[cs] site off at load, staying idle');
+      if (!ensureBootstrapListeners()) return;
+      state.initialSyncDone = false;
+      scheduleSync(reason);
       return;
     }
     rememberExclusion(state.siteKey, false);
@@ -366,10 +386,10 @@
         teardown('excluded-storage');
         return;
       }
-      // Rule 2/6 + FINAL RULE: this listener may ONLY tear down. A live
-      // document is never armed from a storage change — not on un-exclude, not
-      // on enable, not on a gain write. Nothing is scheduled here, ever, so a
-      // torn-down or idle frame pays no timer, no observer and no re-read.
+      // Rule 2/6: this listener may ONLY tear down. It never arms anything: the
+      // live enable path is the runtime broadcast (`TOGGLE_CHANGED`), not a
+      // storage write. Nothing is scheduled here, ever, so a torn-down or idle
+      // frame pays no timer, no observer and no re-read.
     };
     chrome.storage.onChanged.addListener(onStorageChanged);
     // Deliberately NOT pushed into `listenerRemovers`: teardown releases
@@ -485,6 +505,8 @@
       // `known` = storage actually holds a record for this host (or a parent).
       // A host with no record at all is unknown, and unknown is inactive.
       known: Boolean(known) || ancestorExcluded,
+      // An excluded frame is not seen: no hook, no registration, nothing.
+      seen: ancestorExcluded ? false : Boolean(rec.seen) || Boolean(rec.enabled),
     });
 
     const perValue = perKey ? stored[perKey] : undefined;
@@ -633,9 +655,11 @@
   }
 
   /**
-   * May this document start work at all? Only a document that LOADED with the
-   * site enabled may (FINAL RULE, gate G3). Everything else in this file stays
-   * available for teardown and status, and never arms.
+   * May this document start work at all? Only a document that LOADED with a
+   * hook decision — enabled, or seen and therefore loading the hook passively —
+   * may. The first-ever enable of a host lands on a document with neither, and
+   * that one case still needs a navigation. Everything else in this file stays
+   * available for teardown and status.
    */
   function mayStartWork() {
     return armDecision === 'allowed' && !state.detached && !state.excluded;
@@ -778,10 +802,26 @@
 
     const hookAlive = await evaluateHookHealth();
     if (state.detached || state.excluded) return { ok: false, error: 'frame inactive' };
-    const action = contentShared.getContentAction({ enabled, injected: state.injected, hookAlive });
+    const action = contentShared.getContentAction({
+      enabled,
+      injected: state.injected,
+      hookAlive,
+      seen: state.seen,
+    });
 
-    // FINAL RULE: a message may stop or adjust an armed document; it may never
-    // arm one. See `mayStartWork`.
+    // Seen-but-off on the document-state path: keep the hook loaded and idle so
+    // the next enable is live.
+    if (action === 'reserve') {
+      clearPendingStart();
+      clearActivationRetry();
+      stopSpaWatch();
+      inject();
+      return { ok: true, reserved: true };
+    }
+
+    // A message may stop or adjust an armed document; it arms one only when
+    // this document already carries a hook (enabled at load, or seen). See
+    // `mayStartWork`.
     if ((action === 'inject' || action === 'start') && !mayStartWork()) {
       clearPendingStart();
       clearActivationRetry();
@@ -811,9 +851,9 @@
       clearPendingStart();
       clearActivationRetry();
       stopSpaWatch();
+      // Bypass, not teardown: the hook stays loaded for a later live enable.
       postToPage('STOP', { reason: 'document-state' });
       state.hookActive = false;
-      state.hookAlive = false;
       state.lastError = '';
       return { ok: true };
     }
@@ -831,9 +871,11 @@
     clearPendingStart();
     clearActivationRetry();
     stopSpaWatch();
+    // STOP bypasses and keeps the hook loaded (dispatcher, sessions, captured
+    // sources), so a later enable in this document is live. Only exclusion or
+    // uninstall destroy it.
     postToPage('STOP', { reason: 'toggle-changed' });
     state.hookActive = false;
-    state.hookAlive = false;
     state.lastError = '';
   }
 
@@ -940,6 +982,7 @@
       // Exclusion outranks the transient session override AND stored
       // enablement: nothing runs on an excluded site, on any path.
       state.excluded = config.excluded === true;
+      state.seen = config.seen === true;
       const enabled = config.excluded
         ? false
         : (state.transient ? state.transient.enabled : config.enabled);
@@ -966,19 +1009,35 @@
       // The probe awaited above can outlive a teardown: re-check before any
       // activation, page message or SPA timer is scheduled.
       if (state.detached) return;
-      const action = contentShared.getContentAction({ enabled, injected: state.injected, hookAlive });
+      const action = contentShared.getContentAction({
+        enabled,
+        injected: state.injected,
+        hookAlive,
+        seen: state.seen,
+      });
 
-      // FINAL RULE: a live document is never armed. Enabling while this document
-      // is loaded leaves it exactly as it is; the next navigation arms it
-      // through registration. Nothing below may start work unless this document
-      // loaded with the site enabled.
+      // Seen-but-off: load the page hook in reservation mode — patched, idle,
+      // owning nothing, creating no audio graph — so a later enable starts in
+      // place. This is the one action that loads a hook without starting it.
+      if (action === 'reserve') {
+        clearPendingStart();
+        clearActivationRetry();
+        stopSpaWatch();
+        state.hookActive = false;
+        state.lastError = '';
+        inject();
+        return;
+      }
+
+      // The arm gate: a document that loaded with neither an enable nor a
+      // passive hook is never armed by a live message. Enabling it for the
+      // first time is the one residual navigation.
       if ((action === 'inject' || action === 'start') && !mayStartWork()) {
         console.log('[cs] enable deferred to the next navigation:', state.siteKey);
         clearPendingStart();
         clearActivationRetry();
         stopSpaWatch();
         state.hookActive = false;
-        state.hookAlive = false;
         state.lastError = '';
         return;
       }
@@ -1005,9 +1064,12 @@
         clearPendingStart();
         clearActivationRetry();
         stopSpaWatch();
+        // STOP is a bypass, not a teardown: the hook keeps its dispatcher,
+        // sessions and captured sources so the next enable is live. The
+        // response confirms the hook is still alive; `hookAlive` is left to
+        // applyHookStatus instead of being cleared here.
         postToPage('STOP', { reason });
         state.hookActive = false;
-        state.hookAlive = false;
         state.lastError = '';
         return;
       }
@@ -1063,10 +1125,14 @@
         if (!response?.ok) {
           console.error('[cs] page-hook injection failed:', response?.error || 'unknown');
           state.injected = false;
+          state.hookPresent = false;
           state.lastError = 'Failed to inject page hook.';
           return;
         }
+        state.hookPresent = true;
         console.log('[cs] page-hook.js injected via background');
+        // Only a document that loaded ARMED starts here. A seen-but-off frame
+        // loads the hook and stops; its START comes later, live.
         if (state.enabled) {
           postToPage('START', { reason: 'inject-onload', gainDb: state.gainDb, workletUrl: getWorkletUrl() });
           postToPage('SET_GAIN', { gainDb: state.gainDb });
@@ -1077,6 +1143,7 @@
         // A rejected injection must not stall later attempts until
         // INJECT_TIMEOUT_MS expires: release the flag and surface the error.
         state.injecting = false;
+        state.hookPresent = false;
         state.lastError = 'Failed to inject page hook.';
         console.error('[cs] page-hook injection failed:', error);
       });
@@ -1177,6 +1244,7 @@
     }
     const config = await readStoredConfig();
     state.excluded = config.excluded === true;
+    state.seen = config.seen === true;
     const enabled = config.excluded ? false : config.enabled;
     state.enabled = enabled;
     state.gainDb = config.gainDb;
@@ -1220,11 +1288,15 @@
       ok: true,
       enabled,
       excluded: state.excluded === true,
+      seen: state.seen === true,
       hostname: state.hostname,
       siteKey: state.siteKey,
       gainDb: state.gainDb,
       hookAlive: state.hookAlive,
       hookActive: state.hookActive,
+      // Whether this document carries the page hook at all: the popup's one
+      // honest signal for "this tab can apply the enable without a reload".
+      hookPresent: state.hookPresent,
       activating: isActivationPending(),
       lastError: enabled ? state.lastError : '',
       // Why this frame is inert when it never got an answer: the bounded

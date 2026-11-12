@@ -549,7 +549,10 @@ async function deriveContentScriptRegistration() {
   /** @type {string[]} */
   const exactActive = [];
   for (const [siteKey, record] of records) {
-    if (record.excluded || !record.enabled) continue;
+    // `seen || enabled`: a host the user has enabled at least once keeps the
+    // document_start pair so a later enable is live on the already-loaded page.
+    // A never-seen host keeps the zero-cost path (no registration at all).
+    if (record.excluded || !(record.enabled || record.seen)) continue;
     if (isCoveredByExclusion(siteKey)) continue;
     exactActive.push(siteKey);
   }
@@ -1063,6 +1066,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             // A toggle never clears an exclusion: exclusion is only changed by
             // an explicit `excluded` intent.
             excluded: storedRec.excluded,
+            // "Enabled once" is durable: a disable keeps it, which is what lets
+            // the next enable land live on an already-loaded page.
+            seen: storedRec.seen || nextEnabled,
           });
           // Single top-level key, single set: settings + mirror + sequence
           // can never diverge.
@@ -1092,7 +1098,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         // sibling popup can never overwrite an unrelated newer field.
         const intent = extractIntentSet(/** @type {Record<string, unknown>} */ (message));
 
-        /** @type {{ seq: number, enabled: boolean, gainDb: number, enabledApplied: boolean, excluded: boolean, exclusionChanged: boolean, previousExcluded: boolean }} */
+        /** @type {{ seq: number, enabled: boolean, gainDb: number, enabledApplied: boolean, excluded: boolean, exclusionChanged: boolean, previousExcluded: boolean, wasSeen: boolean, seen: boolean }} */
         const applied = await withStorageWrite(async () => {
           const { record: storedRec } = await readSiteRecord(siteKey);
           // Last-accepted-write-wins: every intent field applies to the live
@@ -1126,6 +1132,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             // gain-only patch leaves it untouched.
             mirror: requestedEnabledChange ? enabled : storedRec.mirror,
             excluded,
+            // First enable of this host is always remembered: from then on the
+            // host loads with the passive hook and every later enable is live.
+            seen: storedRec.seen || enabled,
           });
 
           if (persist) {
@@ -1146,13 +1155,18 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             excluded: next.excluded,
             exclusionChanged,
             previousExcluded: storedRec.excluded,
+            // Was this host already seen BEFORE this write? That is the one fact
+            // that decides live vs reload for the enable.
+            wasSeen: storedRec.seen,
+            seen: next.seen,
           };
         });
 
-        // FINAL RULE: enabling a site never starts work in an already-loaded
-        // document. The enable is recorded and applied by registration on the
-        // next navigation; this tab, and every other open tab of the site, is
-        // left exactly as it is. The popup says so ("Reload applies this.").
+        // Enabling a SEEN host is live: the document already holds the passive
+        // page hook, and the broadcast below flips it on in place with no
+        // navigation. The one residual reload case is the FIRST-ever enable of a
+        // host, where no hook exists to start — say so instead of claiming
+        // activation. Disabling is live on both paths (STOP keeps the graph).
         if (!persist && message.tabId) {
           await setPendingSessionState(
             message.tabId,
@@ -1170,8 +1184,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         if (persist && applied.exclusionChanged && applied.excluded) {
           await teardownHooksForSite(siteKey, { includeDescendants: true, mode: 'destroy' });
         }
-        // A persisted disable stops the hook but keeps its dispatcher, so a
-        // re-enable revives it with one control call.
+        // A persisted disable stops the worklet and keeps its dispatcher,
+        // sessions and captured sources, so a re-enable revives it with one
+        // control call instead of a reload.
         if (persist && applied.enabledApplied && !applied.enabled) {
           await teardownHooksForSite(siteKey, { mode: 'stop' });
         }
@@ -1183,12 +1198,18 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           excluded: applied.excluded,
           siteKey,
           seq: applied.seq,
+          seen: applied.seen,
           // Exclusion beats enablement: nothing runs on this host, now or after
-          // a reload. Otherwise nothing is activated in the live document - the
-          // enable applies on the next navigation.
+          // a reload. Otherwise the enable path is live for a host that has been
+          // enabled before (its document holds the passive hook) and deferred to
+          // one navigation exactly once per host.
           activation: applied.excluded
             ? { state: 'idle' }
-            : { state: 'navigation', message: 'Enabled. Reload applies this.' },
+            : (!applied.enabled
+              ? { state: 'stop' }
+              : (applied.wasSeen
+                ? { state: 'live' }
+                : { state: 'reload', message: 'Enabled. Reload applies this.' })),
         };
       }
       case 'GET_SITE_STATE': {
@@ -1418,11 +1439,12 @@ chrome.storage.onChanged.addListener((changes, area) => {
       ? backgroundShared.normalizeSiteRecord(change.newValue)
       : null;
     if (!newRec) continue;
-    // `enabled` and `excluded` both move the injection surface, so both
-    // re-register; a gain-only change never does.
+    // `enabled`, `excluded` and `seen` all move the injection surface, so all
+    // three re-register; a gain-only change never does.
     if (!oldRec
       || oldRec.enabled !== newRec.enabled
-      || oldRec.excluded !== newRec.excluded) {
+      || oldRec.excluded !== newRec.excluded
+      || oldRec.seen !== newRec.seen) {
       scheduleRegistrationSync();
     }
     // Worker-driven exclusion teardown: the storage change is authoritative and

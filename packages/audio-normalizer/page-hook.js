@@ -22,19 +22,19 @@
   // deliberate survivor: it is the hook's only channel for a later START, and
   // removing it would make re-enabling a page impossible without a reload.
   // -------------------------------------------------------------------------
-  /** @type {Array<{ target: any, type: string, fn: any, options: any }>} */
+  /** @type {Array<{ target: any, type: string, fn: any, options: any, keepOnStop?: boolean }>} */
   let trackedListeners = [];
   /** @type {Set<any>} */
   const trackedTimers = new Set();
 
-  function trackListener(target, type, fn, options) {
+  function trackListener(target, type, fn, options, keepOnStop) {
     if (!target || typeof target.addEventListener !== 'function') return false;
     try {
       target.addEventListener(type, fn, options);
     } catch {
       return false;
     }
-    trackedListeners.push({ target, type, fn, options });
+    trackedListeners.push({ target, type, fn, options, keepOnStop: keepOnStop === true });
     return true;
   }
 
@@ -328,9 +328,10 @@
   // There is NO page -> extension control channel. Nothing here listens on
   // `window`: a page posting START/STATUS_REQUEST/SET_GAIN reaches nothing.
   // Control arrives only through the background's `executeScript({func})`,
-  // which calls the dispatcher below. STOP removes that dispatcher, so after
-  // STOP there is no page-reachable way to make this hook do work; the only
-  // way back is a fresh injection from the worker.
+  // which calls the dispatcher below. `stop` leaves the dispatcher in place on
+  // purpose (a later enable must revive this instance, not a fresh one), and
+  // `destroy` removes it — after that the only way back is a fresh injection
+  // from the worker.
   //
   // `__tnDisposeV6` is the one inert marker left behind: it can only tear the
   // hook down (never start it), and it exists so a re-injection does not stack
@@ -352,9 +353,18 @@
       return status();
     }
     if (action === 'status') return status();
-    // 'stop' and 'destroy' are the same thing now: stop the work, put the page
-    // back, and remove the only page-reachable entrypoint.
-    if (action === 'stop' || action === 'destroy') {
+    // 'stop' is a BYPASS, not a teardown: the worklet is disconnected and the
+    // page plays unprocessed at 0 dB, while the dispatcher, the sessions and
+    // every captured source stay alive. That is what makes a later enable live
+    // (a captured element can never be re-captured, so releasing it here would
+    // make re-enable impossible without a reload).
+    if (action === 'stop') {
+      stop();
+      return status();
+    }
+    // 'destroy' is the exclusion/uninstall path: full teardown, dispatcher
+    // removed, sessions released. Nothing survives it by design.
+    if (action === 'destroy') {
       dispose();
       return { ok: true, alive: false, active: false, error: '' };
     }
@@ -372,6 +382,11 @@
     } catch {}
     try {
       releaseSessions();
+    } catch {}
+    // stop() keeps the session-context watchers (the sessions survive it); a
+    // destroy releases the sessions, so their listeners go with them.
+    try {
+      untrackListeners();
     } catch {}
     try {
       restorePatchedPrototypes();
@@ -584,7 +599,8 @@
     untrackTimeout(lifecycleTimer);
     lifecycleTimer = null;
     teardownElementListeners();
-    untrackListeners();
+    // Session context watchers survive: the sessions do (see watchSessionContext).
+    untrackListeners((entry) => entry.keepOnStop === true);
     // The armed flag must follow the sweep, or the next START would not re-add
     // the document-level resume pair.
     if (attachedResumeArmed) {
@@ -1084,6 +1100,9 @@
   function watchSessionContext(session) {
     const context = session && session.context;
     if (!context) return;
+    // `keepOnStop`: a session survives a STOP, so its context watcher must
+    // survive it too. Without this a re-enabled hook would stop noticing a
+    // closed or interrupted context until the next recovery pass.
     trackListener(context, 'statechange', () => {
       if (!state.active) return;
       if (context.state === 'closed') {
@@ -1093,7 +1112,7 @@
         return;
       }
       reportStatus('HOOK_STATUS');
-    });
+    }, undefined, true);
   }
 
   function createSession(context, kind) {
