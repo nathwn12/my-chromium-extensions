@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Wheel volume over the player bar and the watch-page player panel, snapped to YouTube Music's 5% slider grid and mirrored into the real slider and tooltip; no HUD, the site's own control is the feedback.
+- Section repeat (A-B): From/To with Now capture, live loop, and per-song save/restore keyed by the player's own video id, so a section saved from Home playback survives a refresh; the saved list is cache-backed and kept in sync across tabs.
+- Player-sourced identity, a volume-only page hook and a single mute writer: the page hook never touches `muted`, and volume writes cannot silence or double the page.
+
 ## [1.1.0] - 2026-11-10
 
 - Repair lane: page-message origin+token hardening, mute-budget fail-open to dry bypass with honest status, corrupt-setting fallback to defaults, storage-failure eligible fallback, rehydrate flag only after success, idle context suspend/resume, worklet dry fast-path with hoisted invariants, safety-poll pagehide/teardown clear, and visibility/playing watchdog gating.
