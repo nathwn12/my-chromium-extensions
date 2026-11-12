@@ -369,7 +369,7 @@
 
   /**
    * Ordered ladder: native scroll always wins over a volume step. The caller
-   * must not preventDefault unless the verdict is `handle` and a step lands.
+   * must not preventDefault unless the verdict is `handle`; a handled player surface always blocks the wheel, even before a step lands.
    */
   function shouldHandleWheel(event, target, doc, getStyle) {
     if (!event || event.defaultPrevented) return { handle: false, reason: 'default-prevented' };
@@ -901,9 +901,11 @@
       const target = event.target || (doc && doc.documentElement);
       const verdict = shouldHandleWheel(event, target, doc, getStyle);
       if (!verdict.handle) return;
+      // The player surfaces own the wheel: never let it scroll the page, even
+      // at a rail or while a trackpad delta is still banking toward a step.
+      if (typeof event.preventDefault === 'function') event.preventDefault();
       const step = stepVolumeFromWheel(accumulator, event, volume);
       if (!step.applied) return;
-      if (typeof event.preventDefault === 'function') event.preventDefault();
       volume = step.volume;
       applyVolume(step.volume);
     }

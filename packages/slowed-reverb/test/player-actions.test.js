@@ -1250,13 +1250,13 @@ test('controller: a wheel over the player bar writes the page volume', async () 
   assert.equal(harness.dom.hasHud(), false);
 });
 
-test('controller: preventDefault only fires when a volume step lands', async () => {
+test('controller: a player-surface wheel never scrolls the page', async () => {
   const harness = createHarness();
   await harness.start();
   const modifier = harness.wheel(-100, { ctrlKey: true });
   assert.equal(modifier.defaultPrevented, false);
   const short = harness.wheel(-10);
-  assert.equal(short.defaultPrevented, false);
+  assert.equal(short.defaultPrevented, true);
   await settle();
   assert.equal(harness.pageHook.calls.length, 0);
 
@@ -1265,7 +1265,7 @@ test('controller: preventDefault only fires when a volume step lands', async () 
   railHarness.media().volume = 1;
   railHarness.controller.sync();
   const atRail = railHarness.wheel(-100);
-  assert.equal(atRail.defaultPrevented, false);
+  assert.equal(atRail.defaultPrevented, true);
   assert.equal(railHarness.pageHook.calls.length, 0);
 });
 
