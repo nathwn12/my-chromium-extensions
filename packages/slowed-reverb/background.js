@@ -1,4 +1,4 @@
-importScripts('shared.js');
+importScripts('shared.js', 'player-actions.js');
 
 const {
   extractHostname,
@@ -6,13 +6,60 @@ const {
   normalizeSettings,
 } = self.SlowedReverbShared;
 
+const {
+  capSaved,
+  sanitizeSaved,
+  upsertSaved,
+} = self.SlowedReverbPlayerActions;
+
 const TAB_BYPASS_KEY = 'tabBypassById';
 const SITE_SETTINGS_KEY = 'siteSettings';
 const SITE_TOGGLES_KEY = 'siteToggles';
 const TAB_SESSION_KEY = 'tabSessionById';
+const PLAYER_ACTIONS_KEY = 'playerActions';
+const PLAYER_SECTIONS_LIMIT = 100;
 
 const tabBypassById = new Map();
 const tabSessionById = new Map();
+
+// One writer for the saved section list across every tab. Each save is a full
+// read-modify-write, so running two of them concurrently would let the second
+// overwrite the first; the chain makes the pair sequential and lossless.
+let playerSectionSaveChain = Promise.resolve();
+
+function normalizeSectionTime(value) {
+  if (value === null) return null;
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return undefined;
+  return value;
+}
+
+/** Mirrors the engine's sanitizer but keeps both-null: that is a forget. */
+function normalizeSectionEntry(entry) {
+  if (!entry || typeof entry !== 'object') return null;
+  if (typeof entry.videoId !== 'string' || entry.videoId === '') return null;
+  const startSeconds = normalizeSectionTime(entry.startSeconds);
+  const endSeconds = normalizeSectionTime(entry.endSeconds);
+  if (startSeconds === undefined || endSeconds === undefined) return null;
+  return { videoId: entry.videoId, startSeconds, endSeconds };
+}
+
+function queuePlayerSectionSave(entry) {
+  const normalized = normalizeSectionEntry(entry);
+  if (normalized === null) return Promise.reject(new Error('Invalid section entry.'));
+  playerSectionSaveChain = playerSectionSaveChain
+    .catch(() => [])
+    .then(async () => {
+      const stored = await chrome.storage.local.get(PLAYER_ACTIONS_KEY);
+      const raw = stored ? stored[PLAYER_ACTIONS_KEY] : null;
+      const current = sanitizeSaved(raw ? raw.sections : undefined);
+      const next = capSaved(upsertSaved(current, normalized), PLAYER_SECTIONS_LIMIT);
+      const write = {};
+      write[PLAYER_ACTIONS_KEY] = { sections: next };
+      await chrome.storage.local.set(write);
+      return next;
+    });
+  return playerSectionSaveChain;
+}
 
 function getEligibleTab(tabId) {
   if (tabId == null) return null;
@@ -329,6 +376,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         const push = await pushTabState(tabId);
         const state = await buildTabState(tabId);
         return { ...state, pushed: push.ok, pushError: push.error || '' };
+      }
+      case 'SAVE_PLAYER_SECTION': {
+        const sections = await queuePlayerSectionSave(message.entry);
+        return { ok: true, sections };
       }
       case 'ENSURE_TAB_HOOKS': {
         const tabId = Number(message.tabId || sender.tab?.id);

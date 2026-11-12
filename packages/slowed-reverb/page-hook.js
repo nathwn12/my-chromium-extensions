@@ -56,14 +56,31 @@
   }
 
   // The content script owns `muted` while the graph is attached; a volume write
-  // can flip it back, so the same task re-asserts the contract.
-  function keepElementMuted() {
+  // can flip it back, so the same task re-asserts the contract. Unmuting is
+  // reserved for a detach of a session that had attached (we muted it).
+  function setVideoMuted(muted) {
     try {
       const video = document.querySelector('video');
-      if (video) video.muted = true;
+      if (video) video.muted = muted;
     } catch {
-      // No element to mute.
+      // No element to touch.
     }
+  }
+
+  /**
+   * Ordered attach state, posted by the content script on every attach and
+   * before every teardown unmute. A SET_VOLUME may still be in flight when the
+   * graph detaches, so `keepMuted` is honored only for the session that is
+   * attached right now. When a detach arrives first, the late set sees
+   * `attached: false` and skips the mute; when the set arrives first, this
+   * handler unmutes after it. Both orders end unmuted.
+   */
+  function handleAttachState(data) {
+    const previous = state.attach;
+    const session = typeof data.session === 'string' ? data.session : '';
+    const attached = data.attached === true;
+    state.attach = { session: session, attached: attached };
+    if (!attached && previous.attached) setVideoMuted(false);
   }
 
   function replyVolume(data, volume, applied, source) {
@@ -87,7 +104,9 @@
       return;
     }
 
-    const keepMuted = data.keepMuted === true;
+    const keepMuted = data.keepMuted === true
+      && state.attach.attached === true
+      && state.attach.session === String(data.session || '');
     const percent = Number(data.percent);
     if (!Number.isFinite(percent)) {
       const reading = readPlayerVolume();
@@ -98,18 +117,18 @@
     const target = Math.max(0, Math.min(100, Math.round(percent)));
     const player = playerApi();
     if (!player) {
-      if (keepMuted) keepElementMuted();
+      if (keepMuted) setVideoMuted(true);
       replyVolume(data, null, false, 'none');
       return;
     }
     try {
       player.setVolume(target);
     } catch {
-      if (keepMuted) keepElementMuted();
+      if (keepMuted) setVideoMuted(true);
       replyVolume(data, null, false, 'none');
       return;
     }
-    if (keepMuted) keepElementMuted();
+    if (keepMuted) setVideoMuted(true);
     const reading = readPlayerVolume();
     replyVolume(data, reading.volume === null ? target : reading.volume, true, 'player');
   }
@@ -121,17 +140,24 @@
 
   const state = {
     listenersReady: false,
+    attach: { session: '', attached: false },
   };
 
   function ensureListeners() {
     if (state.listenersReady) return;
 
-    // Volume requests arrive on the same window bus as the lifecycle signals;
-    // the token check keeps a page-injected message out.
+    // Volume and attach-state messages arrive on the same window bus as the
+    // lifecycle signals; the token check keeps a page-injected message out.
     window.addEventListener('message', (event) => {
       if (event.source !== window) return;
       const data = event.data;
       if (!data || data.__slra !== true) return;
+      if (typeof data.token !== 'string' || data.token.length === 0) return;
+      if (data.token !== pageToken()) return;
+      if (data.type === 'SLRA_ATTACH_STATE') {
+        handleAttachState(data);
+        return;
+      }
       if (data.type !== 'SLRA_SET_VOLUME' && data.type !== 'SLRA_GET_VOLUME') return;
       handleVolumeRequest(data);
     }, false);

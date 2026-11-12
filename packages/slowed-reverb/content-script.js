@@ -44,6 +44,7 @@
     lifecycleListenersReady: false,
     pageHookReady: false,
     pageHookToken: '',
+    attachSession: '',
     lastError: '',
     workletLoaded: false,
     workletRetryCount: 0,
@@ -95,6 +96,7 @@
         }
       }
       state.media.clear();
+      postAttachState(false);
       if (state.context) {
         try {
           void state.context.close();
@@ -111,6 +113,7 @@
 
   async function bootstrap(ensureHooks) {
     mintPageHookToken();
+    mintAttachSession();
     ensureGlobalListeners();
     ensureLifecycleListeners();
     ensureObserver();
@@ -459,6 +462,42 @@ function applyRuntimeState(runtime) {
   let volumeRequestSeq = 0;
   const pendingVolumeRequests = new Map();
 
+  function mintAttachSession() {
+    state.attachSession = Math.random().toString(36).slice(2) + Date.now().toString(36);
+    return state.attachSession;
+  }
+
+  /**
+   * Ordered attach state for the MAIN-world hook. Posted on every attach and
+   * BEFORE the teardown that unmutes the element, so a SET_VOLUME still in
+   * flight cannot re-mute a graph that is gone (postMessage is FIFO).
+   */
+  function postAttachState(attached) {
+    const token = state.pageHookToken;
+    if (!token) return;
+    try {
+      window.postMessage({
+        __slra: true,
+        type: 'SLRA_ATTACH_STATE',
+        token,
+        session: state.attachSession,
+        attached: Boolean(attached),
+      }, '*');
+    } catch {
+      // Best effort: the page may be tearing down.
+    }
+  }
+
+  function postCurrentAttachState() {
+    for (const controller of state.media.values()) {
+      if (controller.attached) {
+        postAttachState(true);
+        return;
+      }
+    }
+    postAttachState(false);
+  }
+
   function resolvePageVolume(id, reply) {
     const pending = pendingVolumeRequests.get(id);
     if (!pending) return;
@@ -478,7 +517,7 @@ function applyRuntimeState(runtime) {
         resolve({ volume: null, applied: false, source: 'none' });
       }, VOLUME_REPLY_TIMEOUT_MS);
       pendingVolumeRequests.set(id, { resolve, timer });
-      const message = { __slra: true, type, id, token };
+      const message = { __slra: true, type, id, token, session: state.attachSession };
       if (type === 'SLRA_SET_VOLUME') {
         message.percent = percent;
         message.keepMuted = Boolean(keepMuted);
@@ -523,7 +562,8 @@ function applyRuntimeState(runtime) {
         },
         storage: {
           get: (key) => chrome.storage.local.get(key),
-          set: (items) => chrome.storage.local.set(items),
+          // One ordered writer for the section list, across every tab.
+          saveSection: (entry) => chrome.runtime.sendMessage({ type: 'SAVE_PLAYER_SECTION', entry }),
         },
       });
     } catch {
@@ -669,6 +709,8 @@ function applyRuntimeState(runtime) {
       });
       if (result && result.ok !== false) {
         state.pageHookReady = true;
+        // A reinjected hook starts with no attach state: re-state ours.
+        postCurrentAttachState();
       }
     } catch {
       // Best effort only.
@@ -1036,6 +1078,7 @@ function applyRuntimeState(runtime) {
       controller.attached = true;
       controller.attachedSrc = controller.media.currentSrc;
       controller.sourceStale = false;
+      postAttachState(true);
       resetMuteDampener(controller);
       controller.lastPostedParams = JSON.stringify(initialParams);
       controller.attachError = '';
@@ -1464,6 +1507,8 @@ function applyRuntimeState(runtime) {
     // attached and changed it. While bypassed (or before a first attach) the
     // extension must not clear the page's own mute/rate on every sync.
     if (controller.attached) {
+      // Before the unmute below: the hook must learn the graph is gone first.
+      postAttachState(false);
       disconnectNode(controller.source);
       disconnectNode(controller.dryGain);
       disconnectNode(controller.masterGain);
