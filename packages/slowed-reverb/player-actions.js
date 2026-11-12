@@ -907,11 +907,21 @@
     }
 
     function writeMediaVolume(percent) {
-      if (!media) return;
-      try {
-        media.volume = Math.min(1, Math.max(0, percent / 100));
-      } catch {
-        // A detached element cannot be written.
+      if (media) {
+        try {
+          media.volume = Math.min(1, Math.max(0, percent / 100));
+        } catch {
+          // A detached element cannot be written.
+        }
+      }
+      // The page player API was unavailable, so the hook did not touch YTM's
+      // control: ask it for the same UI sync with the value we just wrote.
+      if (pageHook && typeof pageHook.syncVolumeUi === 'function') {
+        try {
+          pageHook.syncVolumeUi(percent);
+        } catch {
+          // Failure to paint the slider is not a failed volume write.
+        }
       }
     }
 

@@ -94,6 +94,81 @@
     emit('SLRA_SONG', reason, { token: pageToken(), videoId, title: song ? song.title : '' });
   }
 
+  // --- YTM's own slider, tooltip and hover state -------------------------
+  // setVolume() changes playback but not the rendered control; without this the
+  // slider sits where the user left it while the audio moves. Mirrors pear's
+  // precise-volume (updateVolumeSlider / setTooltip / showVolumeSlider).
+
+  const VOLUME_SLIDER = '#volume-slider';
+  const EXPAND_VOLUME_SLIDER = '#expand-volume-slider';
+  const VOLUME_TOOLTIPS = [
+    '#volume-slider',
+    'tp-yt-paper-icon-button.volume',
+    '#expand-volume-slider',
+    '#expand-volume',
+  ];
+  const VOLUME_SLIDER_HIDE_MS = 2500;
+
+  function setSliderValue(selector, percent) {
+    try {
+      const slider = document.querySelector(selector);
+      if (!slider) return;
+      slider.value = String(percent);
+      if (typeof slider.setAttribute === 'function') slider.setAttribute('value', String(percent));
+    } catch {
+      // A slider that rejects writes is not worth a failure.
+    }
+  }
+
+  function setVolumeTooltip(percent) {
+    for (const selector of VOLUME_TOOLTIPS) {
+      try {
+        const target = document.querySelector(selector);
+        if (target) target.title = percent + '%';
+      } catch {
+        // Ignore a hostile node.
+      }
+    }
+  }
+
+  function showVolumeSlider() {
+    let slider = null;
+    try {
+      slider = document.querySelector(VOLUME_SLIDER);
+    } catch {
+      slider = null;
+    }
+    if (!slider) return;
+    try {
+      slider.classList.add('on-hover');
+    } catch {
+      return;
+    }
+    if (state.sliderHideTimer !== null) clearTimeout(state.sliderHideTimer);
+    state.sliderHideTimer = setTimeout(() => {
+      state.sliderHideTimer = null;
+      try {
+        slider.classList.remove('on-hover');
+      } catch {
+        // Detached.
+      }
+    }, VOLUME_SLIDER_HIDE_MS);
+  }
+
+  /**
+   * Mirrors the applied percentage into YouTube Music's control. No input/change
+   * event is dispatched: that could loop back into YTM's own volume write.
+   */
+  function syncVolumeUi(percent) {
+    const value = Number(percent);
+    if (!Number.isFinite(value)) return;
+    const applied = Math.max(0, Math.min(100, Math.round(value)));
+    setSliderValue(VOLUME_SLIDER, applied);
+    setSliderValue(EXPAND_VOLUME_SLIDER, applied);
+    setVolumeTooltip(applied);
+    showVolumeSlider();
+  }
+
   function replyVolume(data, volume, applied, source) {
     emit('SLRA_VOLUME_STATE', '', {
       id: data.id,
@@ -124,8 +199,11 @@
       replyVolume(data, null, false, 'none');
       return;
     }
+    // The read-back is the truth: the page may land on its own value.
     const reading = readPlayerVolume();
-    replyVolume(data, reading.volume === null ? target : reading.volume, true, 'player');
+    const applied = reading.volume === null ? target : Math.round(reading.volume);
+    syncVolumeUi(applied);
+    replyVolume(data, applied, true, 'player');
   }
 
   if (existing?.revive) {
@@ -137,6 +215,7 @@
     listenersReady: false,
     lastSongId: null,
     songPosted: false,
+    sliderHideTimer: null,
   };
 
   function ensureListeners() {
@@ -150,9 +229,15 @@
       if (event.source !== window) return;
       const data = event.data;
       if (!data || data.__slra !== true) return;
-      if (data.type !== 'SLRA_SET_VOLUME') return;
+      if (data.type !== 'SLRA_SET_VOLUME' && data.type !== 'SLRA_SYNC_VOLUME_UI') return;
       if (typeof data.token !== 'string' || data.token.length === 0) return;
       if (data.token !== pageToken()) return;
+      // The content script asks for the UI sync when it wrote media.volume
+      // itself (no page player API available).
+      if (data.type === 'SLRA_SYNC_VOLUME_UI') {
+        syncVolumeUi(Number(data.percent));
+        return;
+      }
       handleVolumeRequest(data);
     }, false);
 

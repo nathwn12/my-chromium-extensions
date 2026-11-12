@@ -469,6 +469,16 @@ function applyRuntimeState(runtime) {
   let volumeRequestSeq = 0;
   const pendingVolumeRequests = new Map();
 
+  function requestVolumeUiSync(percent) {
+    const token = state.pageHookToken;
+    if (!token) return;
+    try {
+      window.postMessage({ __slra: true, type: 'SLRA_SYNC_VOLUME_UI', token, percent }, '*');
+    } catch {
+      // Best effort: the page may be tearing down.
+    }
+  }
+
   function resolvePageVolume(id, reply) {
     const pending = pendingVolumeRequests.get(id);
     if (!pending) return;
@@ -527,6 +537,9 @@ function applyRuntimeState(runtime) {
         mediaProvider: currentMediaForPlayerActions,
         pageHook: {
           setVolume: (percent) => requestPageVolume(percent),
+          // Used when the page player API is missing and the controller writes
+          // media.volume itself: YTM's slider still has to follow.
+          syncVolumeUi: (percent) => requestVolumeUiSync(percent),
         },
         storage: {
           get: (key) => chrome.storage.local.get(key),

@@ -435,8 +435,12 @@ function createPageHook(volume, options) {
 
   return {
     calls,
+    uiSyncs: [],
     volume() {
       return state.volume;
+    },
+    syncVolumeUi(percent) {
+      this.uiSyncs.push(percent);
     },
     async setVolume(percent) {
       calls.push({ percent });
@@ -1254,13 +1258,15 @@ test('controller: preventDefault only fires when a volume step lands', async () 
   assert.equal(railHarness.pageHook.calls.length, 0);
 });
 
-test('controller: a page hook without a player API falls back to media.volume', async () => {
+test('controller: a page hook without a player API falls back to media.volume and syncs the UI', async () => {
   const pageHook = createPageHook(50, { source: 'none' });
   const harness = createHarness({ pageHook });
   await harness.start();
   harness.wheel(-100);
   await settle();
   assert.equal(harness.media().volume, 0.55);
+  // The hook could not paint the slider itself, so it is asked to.
+  assert.deepEqual(harness.pageHook.uiSyncs, [55]);
 });
 
 test('controller: guard - a stale volume reply cannot overwrite a newer write', async () => {
@@ -2412,8 +2418,9 @@ function createPageHookSandbox(options) {
     volume: settings.volume === undefined ? 40 : settings.volume,
     setVolumeCalls: [],
     setVolume(value) {
-      this.volume = value;
       this.setVolumeCalls.push(value);
+      // `appliedVolume` models the page landing on its own value.
+      this.volume = settings.appliedVolume === undefined ? value : settings.appliedVolume;
     },
     getVolume() {
       return this.volume;
@@ -2435,6 +2442,7 @@ function createPageHookSandbox(options) {
     },
   };
 
+  const sliders = settings.sliders || null;
   const document = {
     documentElement: { dataset: { slraToken: settings.token === undefined ? 'tok-1' : settings.token } },
     addEventListener() {},
@@ -2442,15 +2450,28 @@ function createPageHookSandbox(options) {
     querySelector(selector) {
       if (selector === '#movie_player') return settings.noPlayer ? null : player;
       if (selector === 'video') return settings.video || null;
+      if (sliders && selector in sliders) return sliders[selector];
       return null;
     },
   };
+
+  const timers = [];
+  let timerId = 1;
 
   const sandbox = {
     window: win,
     document,
     location: { href: 'https://music.youtube.com/watch?v=song-a' },
     console,
+    setTimeout(fn, ms) {
+      const id = timerId++;
+      timers.push({ id, fn, ms });
+      return id;
+    },
+    clearTimeout(id) {
+      const index = timers.findIndex((timer) => timer.id === id);
+      if (index >= 0) timers.splice(index, 1);
+    },
   };
   sandbox.globalThis = sandbox;
   vm.createContext(sandbox);
@@ -2460,6 +2481,12 @@ function createPageHookSandbox(options) {
     player,
     posted() {
       return posted;
+    },
+    timers,
+    flushTimers() {
+      const pending = [...timers];
+      timers.length = 0;
+      for (const timer of pending) timer.fn();
     },
     replies() {
       return posted.filter((message) => message && message.type === 'SLRA_VOLUME_STATE');
@@ -2500,6 +2527,95 @@ test('page-hook: a missing player API replies source none', () => {
   assert.equal(reply.applied, false);
   assert.equal(reply.source, 'none');
   assert.equal(reply.volume, null);
+});
+
+function createSlider() {
+  const names = new Set();
+  return {
+    value: '',
+    title: '',
+    attributes: {},
+    classList: {
+      add(name) {
+        names.add(name);
+      },
+      remove(name) {
+        names.delete(name);
+      },
+      contains(name) {
+        return names.has(name);
+      },
+    },
+    setAttribute(name, value) {
+      this.attributes[name] = String(value);
+    },
+  };
+}
+
+function createSliderSet() {
+  return {
+    '#volume-slider': createSlider(),
+    '#expand-volume-slider': createSlider(),
+    'tp-yt-paper-icon-button.volume': createSlider(),
+    '#expand-volume': createSlider(),
+  };
+}
+
+test('page-hook: a successful SET syncs the slider, tooltips and hover state', () => {
+  const sliders = createSliderSet();
+  const hook = createPageHookSandbox({ sliders });
+  hook.fire({ __slra: true, type: 'SLRA_SET_VOLUME', id: 31, token: 'tok-1', percent: 40 });
+
+  assert.equal(sliders['#volume-slider'].value, '40');
+  assert.equal(sliders['#volume-slider'].attributes.value, '40');
+  assert.equal(sliders['#expand-volume-slider'].value, '40');
+  assert.equal(sliders['#expand-volume-slider'].attributes.value, '40');
+  assert.equal(sliders['#volume-slider'].title, '40%');
+  assert.equal(sliders['tp-yt-paper-icon-button.volume'].title, '40%');
+  assert.equal(sliders['#expand-volume-slider'].title, '40%');
+  assert.equal(sliders['#expand-volume'].title, '40%');
+  assert.equal(sliders['#volume-slider'].classList.contains('on-hover'), true);
+
+  // The hover state is transient: one 2500 ms timer, then it is gone.
+  assert.equal(hook.timers.length, 1);
+  assert.equal(hook.timers[0].ms, 2500);
+  hook.flushTimers();
+  assert.equal(sliders['#volume-slider'].classList.contains('on-hover'), false);
+});
+
+test('page-hook: the UI follows the value the page applied, not the request', () => {
+  const sliders = createSliderSet();
+  const hook = createPageHookSandbox({ sliders, appliedVolume: 39 });
+  hook.fire({ __slra: true, type: 'SLRA_SET_VOLUME', id: 32, token: 'tok-1', percent: 40 });
+
+  assert.equal(hook.player.setVolumeCalls[0], 40);
+  assert.equal(sliders['#volume-slider'].value, '39');
+  assert.equal(sliders['#volume-slider'].title, '39%');
+  const [reply] = hook.replies();
+  assert.equal(reply.volume, 39);
+});
+
+test('page-hook: missing slider elements are a no-op', () => {
+  const hook = createPageHookSandbox();
+  hook.fire({ __slra: true, type: 'SLRA_SET_VOLUME', id: 33, token: 'tok-1', percent: 40 });
+  assert.deepEqual(hook.player.setVolumeCalls, [40]);
+  assert.equal(hook.replies().length, 1);
+});
+
+test('page-hook: SLRA_SYNC_VOLUME_UI syncs the UI after a media fallback', () => {
+  const sliders = createSliderSet();
+  const hook = createPageHookSandbox({ sliders, noPlayer: true });
+  hook.fire({ __slra: true, type: 'SLRA_SYNC_VOLUME_UI', token: 'tok-1', percent: 40 });
+  assert.equal(sliders['#volume-slider'].value, '40');
+  assert.equal(sliders['#volume-slider'].title, '40%');
+  assert.equal(sliders['#volume-slider'].classList.contains('on-hover'), true);
+});
+
+test('page-hook: SLRA_SYNC_VOLUME_UI with a wrong token is ignored', () => {
+  const sliders = createSliderSet();
+  const hook = createPageHookSandbox({ sliders });
+  hook.fire({ __slra: true, type: 'SLRA_SYNC_VOLUME_UI', token: 'stale', percent: 40 });
+  assert.equal(sliders['#volume-slider'].value, '');
 });
 
 test('page-hook: SLRA_SONG pushes the player video id on install', () => {
