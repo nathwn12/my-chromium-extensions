@@ -1193,6 +1193,7 @@ test('a page-claimed element gets a verdict: no second capture, never muted, no 
   assert.equal(claimed.muted, false, 'and never muted by us — the page keeps its audio');
   assert.equal(claimed.__tnWebAudio, true, 'the verdict is recorded instead of retried in a loop');
   assert.equal(claimed.currentTime >= 42.5, true, 'the page still plays it');
+  assert.equal(frame.sandbox.__tnHookV6('status', {}).unprocessed, 1, 'and the verdict reaches the popup');
 
   // A toggle does not retry the impossible capture, and does not build a second
   // graph for it.

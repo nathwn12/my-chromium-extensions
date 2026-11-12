@@ -284,6 +284,10 @@
   const mediaSessions = new WeakMap();
   let mediaSessionPromise = null;
   const guardedMediaElements = new Set();
+  // Elements the page wired into its own Web Audio graph. They cannot be
+  // captured by us (one MediaElementSource per element, ever) and are left
+  // playing untouched; the set is what turns that into a visible verdict.
+  const unmanagedMediaElements = new Set();
   let recoveryBurstTimer = null;
   let recoveryBurstRemaining = 0;
 
@@ -439,6 +443,9 @@
     try {
       guardedMediaElements.clear();
     } catch {}
+    try {
+      unmanagedMediaElements.clear();
+    } catch {}
   }
 
   function status() {
@@ -448,6 +455,10 @@
       active: isHookActive(),
       gainDb: state.gainDb,
       error: state.lastError,
+      // Elements the page owns (it created its own MediaElementSource) can never
+      // be captured by us: reported so the popup can show a verdict instead of
+      // pretending the page is normalized.
+      unprocessed: unmanagedMediaElements.size,
     };
   }
 
@@ -1667,6 +1678,7 @@
         // this element. Record it and leave it alone — unmuted, untouched, and
         // unprocessed until a reload rebuilds the page.
         mediaElement.__tnWebAudio = true;
+        unmanagedMediaElements.add(mediaElement);
         console.log('[hook] media element already connected to another source, left unprocessed until reload');
       } else {
         console.error('[hook] attachMediaElement failed:', e.message || e);

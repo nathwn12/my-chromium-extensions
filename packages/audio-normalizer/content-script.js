@@ -78,7 +78,7 @@
    *   hostname: string, siteKey: string, enabled: boolean, gainDb: number,
    *   excluded: boolean, seen: boolean,
    *   injected: boolean, hookAlive: boolean, hookPresent: boolean,
-   *   hookActive: boolean, injecting: boolean, injectStartedAt: number,
+   *   hookActive: boolean, unprocessed: number, injecting: boolean, injectStartedAt: number,
    *   lastError: string, lastStatusAt: number,
    *   transient: ({ enabled: boolean, gainDb: number } | null),
    *   syncInFlight: boolean, queuedSyncReason: string,
@@ -101,6 +101,8 @@
     // processing). A seen host loads with it in place, which is what makes a
     // later enable live; `injected` below is this frame's own "we asked" flag.
     hookPresent: false,
+    // Elements the page owns, which we could never capture (verdict, not silence).
+    unprocessed: 0,
     hookActive: false,
     injecting: false,
     injectStartedAt: 0,
@@ -1190,6 +1192,7 @@
       state.injected = true;
       state.hookAlive = true;
       state.hookActive = Boolean(response.active);
+      state.unprocessed = Number(response.unprocessed) || 0;
       state.lastError = state.enabled ? String(response.error || '') : '';
       state.lastStatusAt = Date.now();
       if (response.active && !state.enabled && !state.stopSent) {
@@ -1297,6 +1300,9 @@
       // Whether this document carries the page hook at all: the popup's one
       // honest signal for "this tab can apply the enable without a reload".
       hookPresent: state.hookPresent,
+      // Elements the page owns and we could never route: a verdict the popup
+      // shows instead of claiming the page is normalized.
+      unprocessed: state.unprocessed,
       activating: isActivationPending(),
       lastError: enabled ? state.lastError : '',
       // Why this frame is inert when it never got an answer: the bounded

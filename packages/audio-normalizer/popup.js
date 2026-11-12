@@ -55,6 +55,9 @@ const EXCLUDED_TEXT = 'Excluded. Nothing runs on this site. Reload restores this
 // document. The popup says so once, quietly — text only, no new control, and it
 // never reloads a page the user did not ask to reload.
 const RELOAD_NOTICE_TEXT = 'Enabled. Reload applies this.';
+// A verdict, not silence: the page plays this audio through its own Web Audio
+// graph, so the one source per element rule means we can never route it.
+const PAGE_OWNED_TEXT = 'This page plays its audio through its own graph, so it cannot be normalized.';
 const ACTIVE_STALE_MS = 3000;
 
 // Single owner: the background owns persisted state and applies intents.
@@ -642,6 +645,7 @@ async function refreshDocumentStatus() {
     // Explicitly reported only: an older document that does not answer the
     // field must not be described as needing a reload.
     const hookPresent = doc?.hookPresent === false ? false : true;
+    const unprocessed = Number(doc?.unprocessed) || 0;
     const activating = Boolean(doc?.activating);
     const lastError = String(doc?.lastError || '');
 
@@ -694,6 +698,7 @@ async function refreshDocumentStatus() {
         activating,
         lastError,
         hookPresent,
+        unprocessed,
       }),
     });
   } catch {
@@ -719,9 +724,9 @@ async function refreshDocumentStatus() {
 }
 
 /**
- * @param {{ enabled: boolean, hookActive: boolean, activating: boolean, lastError: string, hookPresent?: boolean }} state
+ * @param {{ enabled: boolean, hookActive: boolean, activating: boolean, lastError: string, hookPresent?: boolean, unprocessed?: number }} state
  */
-function getStatusText({ enabled, hookActive, activating, lastError, hookPresent }) {
+function getStatusText({ enabled, hookActive, activating, lastError, hookPresent, unprocessed }) {
   if (enabled && lastError) return lastError;
   if (enabled && hookActive) return 'Normalizer active.';
   if (enabled && runtimeActivationState === 'restricted') {
@@ -736,6 +741,10 @@ function getStatusText({ enabled, hookActive, activating, lastError, hookPresent
   // The document answered and says it has no page hook: this tab loaded before
   // the hook existed, so this is the one case that really needs a reload.
   if (enabled && hookPresent === false) return RELOAD_NOTICE_TEXT;
+  // The page wires this audio through its own Web Audio graph. We can never
+  // take it over (one MediaElementSource per element), so say so instead of
+  // claiming the page is normalized or forcing silence.
+  if (enabled && Number(unprocessed) > 0) return PAGE_OWNED_TEXT;
   if (enabled) return 'Enabled. Waiting for audio.';
   return 'Off for this site.';
 }
@@ -756,6 +765,11 @@ function renderStatus({ indicator, text, excluded: isExcluded }) {
   }
   if (shown === RELOAD_NOTICE_TEXT) {
     statusPillEl.textContent = 'Reload';
+    statusPillEl.dataset.state = 'off';
+    return;
+  }
+  if (shown === PAGE_OWNED_TEXT) {
+    statusPillEl.textContent = 'Limited';
     statusPillEl.dataset.state = 'off';
     return;
   }
