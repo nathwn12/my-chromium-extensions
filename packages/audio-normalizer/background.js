@@ -72,7 +72,7 @@ const SITE_SEQ_KEY = 'siteSeq';
  * (the pre-fix historical diverge repair). Afterwards the per-site key
  * exists and is preferred, so a stale legacy mirror can never resurrect.
  * @param {string} siteKey normalized site key
- * @returns {Promise<{ record: { enabled: boolean, gainDb: number, seq: number, mirror: boolean, excluded: boolean }, fromLegacy: boolean }>}
+ * @returns {Promise<{ record: { enabled: boolean, gainDb: number, seq: number, mirror: boolean, excluded: boolean, seen: boolean }, fromLegacy: boolean }>}
  */
 async function readSiteRecord(siteKey) {
   const perKey = backgroundShared.siteStorageKey(siteKey);
@@ -476,7 +476,7 @@ function canAccessTabUrl(url) {
  * @param {Record<string, unknown>} all
  */
 function collectPerSiteRecords(all) {
-  /** @type {Map<string, { enabled: boolean, gainDb: number, seq: number, mirror: boolean, excluded: boolean }>} */
+  /** @type {Map<string, { enabled: boolean, gainDb: number, seq: number, mirror: boolean, excluded: boolean, seen: boolean }>} */
   const records = new Map();
   for (const [key, value] of Object.entries(all || {})) {
     if (!backgroundShared.isSiteStorageKey(key) || !value || typeof value !== 'object') continue;

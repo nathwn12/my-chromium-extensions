@@ -38,7 +38,7 @@
     return true;
   }
 
-  /** @param {((entry: { target: any, type: string, fn: any, options: any }) => boolean) | undefined} [keep] */
+  /** @param {((entry: { target: any, type: string, fn: any, options: any, keepOnStop?: boolean }) => boolean) | undefined} [keep] */
   function untrackListeners(keep) {
     const survivors = [];
     for (const entry of trackedListeners) {

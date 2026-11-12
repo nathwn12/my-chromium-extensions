@@ -469,7 +469,7 @@
    * (the same `h === key || h.endsWith('.' + key)` rule), so one `get` with a
    * handful of keys resolves a parent-level exclusion without scanning
    * storage.
-   * @returns {Promise<{ enabled: boolean, gainDb: number, excluded: boolean, known: boolean }>}
+   * @returns {Promise<{ enabled: boolean, gainDb: number, excluded: boolean, known: boolean, seen: boolean }>}
    */
   async function readStoredConfig() {
     const perKey = contentShared.siteStorageKey(state.siteKey);
@@ -596,7 +596,7 @@
    * Without this, a `chrome.storage.local.get` that never settles disabled the
    * frame forever — nothing was installed, no timer was running, and no
    * listener existed to retry with, so only a reload could recover it.
-   * @returns {Promise<{ ok: true, config: { enabled: boolean, gainDb: number, excluded: boolean, known: boolean }, error: '', timedOut: boolean }
+   * @returns {Promise<{ ok: true, config: { enabled: boolean, gainDb: number, excluded: boolean, known: boolean, seen: boolean }, error: '', timedOut: boolean }
    *   | { ok: false, config: null, error: string, timedOut: boolean }>}
    */
   async function readStoredConfigBounded() {
