@@ -75,6 +75,11 @@ function createTabWorld(frames) {
     observers: 0,
     hookInstalled: false,
     listenerSet: [],
+    // Media the page holds, and how many times one element was captured.
+    mediaElements: [],
+    mediaSourceCalls: 0,
+    mediaSourceByElement: new WeakMap(),
+    workletMessages: [],
   }));
 
   const scriptingCalls = [];
@@ -104,10 +109,18 @@ function createTabWorld(frames) {
       disconnect() {}
     }
     class PageMediaElement extends PageAudioNode {
-      constructor() { super(); this.muted = false; this.paused = true; this.tagName = 'VIDEO'; this.src = ''; }
+      constructor() {
+        super();
+        this.muted = false;
+        this.paused = true;
+        this.tagName = 'VIDEO';
+        this.src = '';
+        // Playback position, so a toggle can be proved not to lose it.
+        this.currentTime = 42.5;
+      }
       addEventListener(type, fn) { pageListener(type, fn); }
       removeEventListener() {}
-      play() { return Promise.resolve(); }
+      play() { this.paused = false; this.currentTime += 0.5; return Promise.resolve(); }
       querySelectorAll() { return []; }
     }
     class PageAudioContext {
@@ -122,12 +135,27 @@ function createTabWorld(frames) {
       async suspend() {}
       close() { this.state = 'closed'; return Promise.resolve(); }
       createGain() { const node = new PageAudioNode(); node.context = this; return node; }
-      createMediaElementSource() { return { connect() {}, disconnect() {}, _eid: 1 }; }
+      createMediaElementSource(el) {
+        // The platform rule the whole design turns on: one source per element,
+        // ever. A second attempt throws, exactly like Chromium.
+        frame.mediaSourceCalls += 1;
+        const before = frame.mediaSourceByElement.get(el) || 0;
+        frame.mediaSourceByElement.set(el, before + 1);
+        if (before > 0) {
+          const err = new Error('HTMLMediaElement already connected previously');
+          err.name = 'InvalidStateError';
+          throw err;
+        }
+        return { connect() {}, disconnect() {}, _eid: 1 };
+      }
       addEventListener(type, fn) { pageListener(type, fn); }
       removeEventListener(type, fn) { pageUnlistener(type, fn); }
     }
     class PageWorkletNode {
-      constructor() { frame.worklets += 1; this.port = { postMessage() {} }; }
+      constructor() {
+        frame.worklets += 1;
+        this.port = { postMessage: (msg) => frame.workletMessages.push(msg) };
+      }
       connect() { return undefined; }
       disconnect() {}
       set onprocessorerror(value) { this._ope = value; }
@@ -216,7 +244,11 @@ function createTabWorld(frames) {
         readyState: 'loading',
         documentElement,
         querySelector: () => null,
-        querySelectorAll: () => [],
+        // The page's own media, in insertion order, as querySelectorAll would
+        // return it. Empty unless a test parks elements on the frame.
+        querySelectorAll: (selector) => (String(selector).includes('audio')
+          ? frame.mediaElements.slice()
+          : []),
         addEventListener: (type, fn) => { pageListener(type, fn); },
         removeEventListener: (type, fn) => { pageUnlistener(type, fn); },
       },
@@ -312,10 +344,11 @@ function createTabWorld(frames) {
 
   /**
    * Model a NAVIGATION: a brand-new document in the same frame. Registration is
-   * what injects at document_start, and registration EXCLUDES the host, so an
-   * excluded host gets no content script at all — exactly what the browser does.
-   * Everything after injection (page hook, start) still runs through the real
-   * worker, so "then navigate: normal" is the product path.
+   * what injects at document_start, and it now covers `seen || enabled` minus
+   * `excluded` — so an excluded host and a never-seen off host get no content
+   * script at all, while a seen-but-off host gets the pair and loads the hook
+   * passively. Everything after injection (page hook, start) still runs through
+   * the real worker, so "then navigate: normal" is the product path.
    */
   async function navigate(frameId) {
     const frame = world.find((entry) => entry.frameId === frameId);
@@ -338,6 +371,11 @@ function createTabWorld(frames) {
     frame.observers = 0;
     frame.listenerSet = [];
     frame.hookInstalled = false;
+    // The document's own media, and the one-source counters, start fresh.
+    frame.mediaElements = [];
+    frame.mediaSourceCalls = 0;
+    frame.mediaSourceByElement = new WeakMap();
+    frame.workletMessages = [];
 
     const host = hostOf(frame.url);
     const all = await storageApi.get(null);
@@ -349,6 +387,12 @@ function createTabWorld(frames) {
       return frame;
     }
     frame.gate = { host, excluded: false };
+    const perKey = sharedApi.siteStorageKey(host);
+    const stored = perKey ? all[perKey] : null;
+    const record = stored && typeof stored === 'object' ? sharedApi.normalizeSiteRecord(stored) : null;
+    // Registration matches `seen || enabled`. No record at all, or a record that
+    // is neither, means the browser injects nothing on this document.
+    if (!record || !(record.seen || record.enabled)) return frame;
     const sandbox = ensureSandbox(frame);
     for (const file of ['shared.js', 'content-script.js']) {
       vm.runInContext(src(file), sandbox, { filename: `${file}#${frameId}@navigation` });
@@ -382,7 +426,16 @@ function loadBackground(tabWorld, storage, tabUrl) {
         sendMessage: async () => ({ ok: true }),
       },
       tabs: {
-        query: async () => [tab],
+        // Both API shapes: the promise form (teardown/query) and the callback
+        // form (flushSiteBroadcast), exactly like the extension API supports.
+        query: (query, callback) => {
+          const tabs = [tab];
+          if (typeof callback === 'function') {
+            callback(tabs);
+            return undefined;
+          }
+          return Promise.resolve(tabs);
+        },
         get: async () => ({ ...tab }),
         sendMessage: async (id, msg, options) => {
           tabsSent.push({ tabId: id, msg, options });
@@ -928,7 +981,7 @@ test('exclude -> enable on a live document leaves it torn down; a navigation arm
   assert.ok(frame.pageListeners > 0, 'and binds its listeners');
 });
 
-test('first-time enable on a live document arms nothing; a navigation arms it', async () => {
+test('first-ever enable on a live document arms nothing; a navigation arms it', async () => {
   const storage = createFakeStorage({
     'site:top.test': { enabled: false, gainDb: 0, seq: 1, mirror: false, excluded: false },
   });
@@ -936,30 +989,247 @@ test('first-time enable on a live document arms nothing; a navigation arms it', 
   const bg = loadBackground(tab, storage, 'https://top.test/');
   const frame = tab.world[0];
 
-  // The document loaded while the site was off.
+  // The document loaded while the site was off and had NEVER been enabled:
+  // registration does not match, so not even the ISOLATED pair runs.
   await tab.navigate(0);
   await settle(200);
-  assert.equal(frame.hookInstalled, false, 'nothing ran while the site was off');
+  assert.equal(frame.sandbox, null, 'a never-seen off host gets no content script at all');
   assert.deepEqual(LIVE_COST(frame), {
     pageListeners: 0,
     liveObservers: 0,
     liveAudioContexts: 0,
     timers: 0,
     runtimeListeners: 0,
-    storageListeners: 1,
-  }, 'a site that loads off does no work at all');
+    storageListeners: 0,
+  }, 'a host that loads off does no work at all');
 
-  await bg.sendMessage({ type: 'SET_SITE_STATE', siteKey: 'top.test', tabId: 7, set: { enabled: true } });
+  // The first-ever enable is the ONE case with no hook to start: the background
+  // says so instead of claiming activation, and remembers `seen` for next time.
+  const first = await bg.sendMessage({ type: 'SET_SITE_STATE', siteKey: 'top.test', tabId: 7, set: { enabled: true } });
   await settle(250);
-  assert.deepEqual(LIVE_COST(frame), NOTHING_RUNS, 'enabling a live document starts nothing');
-  assert.equal(frame.hookInstalled, false, 'and injects no hook');
-  assert.equal(frame.contexts.length, 0, 'and creates no audio session');
+  assert.equal(first.ok, true);
+  assert.equal(first.seen, true, 'the first enable is remembered');
+  assert.deepEqual(clone(first.activation), { state: 'reload', message: 'Enabled. Reload applies this.' },
+    'one deferred notice, never a live claim');
+  assert.equal(frame.sandbox, null, 'and nothing is injected into the already-loaded document');
 
   await tab.navigate(0);
   await settle(250);
   assert.equal(frame.hookInstalled, true, 'the next navigation arms it');
   assert.equal(frame.contexts.length, 1);
   assert.ok(frame.pageListeners > 0);
+});
+
+// ============ live toggle on a seen host ============
+const ACTIVE_COST = (frame) => ({
+  pageListeners: frame.pageListeners,
+  liveObservers: frame.liveObservers,
+  liveAudioContexts: frame.contexts.filter((context) => context.state !== 'closed').length,
+  worklets: frame.worklets,
+  mediaSourceCalls: frame.mediaSourceCalls,
+});
+
+test('seen host loaded off: the page hook is present and passive, nothing is processing', async () => {
+  const storage = createFakeStorage({
+    'site:top.test': { enabled: false, seen: true, gainDb: 0, seq: 2, mirror: false, excluded: false },
+  });
+  const tab = createTabWorld([{ frameId: 0, url: 'https://top.test/' }]);
+  const bg = loadBackground(tab, storage, 'https://top.test/');
+  const frame = tab.world[0];
+
+  await tab.navigate(0);
+  await settle(300);
+
+  assert.equal(frame.hookInstalled, true, 'the MAIN hook is injected at document_start');
+  assert.equal(typeof frame.sandbox.__tnHookV6, 'function', 'and answers the worker');
+  assert.equal(frame.sandbox.__tnHookV6('status', {}).active, false, 'in reservation mode: not processing');
+  assert.equal(frame.contexts.length, 0, 'no AudioContext is created while the site is off');
+  assert.equal(frame.worklets, 0, 'no worklet node, so no normalizer work');
+  assert.equal(frame.liveObservers, 0, 'no DOM observer while off');
+  assert.equal(frame.mediaSourceCalls, 0, 'and no element is captured');
+
+  // A host that was never seen still pays nothing (positive control for the
+  // difference the reservation makes).
+  const other = createFakeStorage({
+    'site:quiet.test': { enabled: false, gainDb: 0, seq: 1, mirror: false, excluded: false },
+  });
+  const quietTab = createTabWorld([{ frameId: 0, url: 'https://quiet.test/' }]);
+  loadBackground(quietTab, other, 'https://quiet.test/');
+  await quietTab.navigate(0);
+  await settle(200);
+  assert.equal(quietTab.world[0].sandbox, null, 'a never-seen off host loads no hook and no content script');
+  void bg;
+});
+
+test('seen host loaded off with a playing element: enable starts live, no navigation, position kept', async () => {
+  const storage = createFakeStorage({
+    'site:top.test': { enabled: false, seen: true, gainDb: 0, seq: 2, mirror: false, excluded: false },
+  });
+  const tab = createTabWorld([{ frameId: 0, url: 'https://top.test/' }]);
+  const bg = loadBackground(tab, storage, 'https://top.test/');
+  const frame = tab.world[0];
+
+  await tab.navigate(0);
+  await settle(200);
+  assert.equal(frame.hookInstalled, true, 'passive hook present before the enable');
+
+  // The page's own player, already playing, with a position to protect.
+  const sandbox = frame.sandbox;
+  const Media = vm.runInContext('HTMLMediaElement', sandbox);
+  const media = new Media();
+  media.currentTime = 137.25;
+  media.paused = false;
+  frame.mediaElements.push(media);
+  const positionBefore = media.currentTime;
+  const injectionsBefore = tab.scriptingCalls.filter((c) => c.files && c.files.includes('content-script.js')).length;
+  const shotBefore = frame.sandbox;
+
+  const res = await bg.sendMessage({ type: 'SET_SITE_STATE', siteKey: 'top.test', tabId: 7, set: { enabled: true } });
+  await settle(400);
+
+  assert.equal(res.ok, true);
+  assert.deepEqual(clone(res.activation), { state: 'live' }, 'the enable is live, not deferred');
+  assert.equal(frame.sandbox, shotBefore, 'the same document: no navigation, no re-injection');
+  assert.equal(
+    tab.scriptingCalls.filter((c) => c.files && c.files.includes('content-script.js')).length,
+    injectionsBefore,
+    'no content script was re-injected',
+  );
+  assert.equal(res.seen, true, 'the host is seen');
+
+  // Started: one session, one capture, the worklet in the path.
+  assert.equal(frame.contexts.filter((c) => c.state !== 'closed').length, 1, 'one audio session');
+  assert.equal(frame.worklets, 1, 'one worklet node');
+  assert.ok(frame.liveObservers >= 1, 'the DOM observer runs');
+  assert.equal(frame.mediaSourceCalls, 1, 'the playing element was captured exactly once');
+  assert.equal(media.__tnAttached, true, 'and is routed by us');
+  assert.equal(media.muted, false, 'never left muted');
+  assert.equal(media.currentTime, positionBefore, 'playback position untouched');
+  assert.equal(frame.sandbox.__tnHookV6('status', {}).active, true, 'the hook reports Active');
+  // Cold first start: no prior program exists, so no reset-program is minted
+  // (a reset is only for a re-enabled program; resetting at attach is forbidden).
+  assert.equal(
+    frame.workletMessages.filter((m) => m && m.type === 'reset-program').length,
+    0,
+    'no program reset on a cold first start',
+  );
+});
+
+test('off/on/off on a seen host: bypass, no teardown, no reload, one source per element', async () => {
+  const storage = createFakeStorage({
+    'site:top.test': { enabled: true, seen: true, gainDb: 0, seq: 1, mirror: true, excluded: false },
+  });
+  const tab = createTabWorld([{ frameId: 0, url: 'https://top.test/' }]);
+  const bg = loadBackground(tab, storage, 'https://top.test/');
+  const frame = tab.world[0];
+
+  await tab.navigate(0);
+  await settle(400);
+  const sandbox = frame.sandbox;
+  const Media = vm.runInContext('HTMLMediaElement', sandbox);
+  const media = new Media();
+  media.currentTime = 61;
+  await media.play();
+  frame.mediaElements.push(media);
+  await settle(300);
+  assert.equal(media.__tnAttached, true, 'element captured while enabled');
+  assert.equal(frame.mediaSourceCalls, 1);
+  const positionBefore = media.currentTime;
+  const resetsBeforeDisable = frame.workletMessages.filter((m) => m && m.type === 'reset-program').length;
+
+  // DISABLE: bypass, not teardown.
+  await bg.sendMessage({ type: 'SET_SITE_STATE', siteKey: 'top.test', tabId: 7, set: { enabled: false } });
+  await settle(300);
+  assert.equal(frame.sandbox, sandbox, 'same document');
+  assert.equal(typeof frame.sandbox.__tnHookV6, 'function', 'the hook is kept, not destroyed');
+  assert.equal(frame.sandbox.__tnHookV6('status', {}).active, false, 'nothing is processing');
+  assert.equal(frame.contexts.filter((c) => c.state !== 'closed').length, 1, 'the session is kept');
+  assert.equal(frame.mediaSourceCalls, 1, 'nothing was released or re-captured');
+  assert.equal(frame.liveObservers, 0, 'the DOM observer is disconnected while off');
+  assert.equal(frame.sandbox.__tnHookV6('status', {}).alive, true, 'the dispatcher outlives the disable');
+  assert.equal(media.muted, false, 'the element is audible and unprocessed');
+  assert.equal(media.currentTime, positionBefore, 'position untouched');
+
+  // ENABLE AGAIN: live, on the same session.
+  const injectionsBefore = tab.scriptingCalls.filter((c) => c.files && c.files.includes('content-script.js')).length;
+  const again = await bg.sendMessage({ type: 'SET_SITE_STATE', siteKey: 'top.test', tabId: 7, set: { enabled: true } });
+  await settle(400);
+  assert.deepEqual(clone(again.activation), { state: 'live' });
+  assert.equal(
+    tab.scriptingCalls.filter((c) => c.files && c.files.includes('content-script.js')).length,
+    injectionsBefore,
+    'no re-injection on a live re-enable',
+  );
+  assert.equal(frame.contexts.filter((c) => c.state !== 'closed').length, 1, 'still one session, never a second');
+  assert.equal(frame.mediaSourceCalls, 1, 'still one source for the element');
+  assert.equal(frame.sandbox.__tnHookV6('status', {}).active, true, 'processing resumed');
+  const resetsAfter = frame.workletMessages.filter((m) => m && m.type === 'reset-program').length;
+  assert.equal(resetsAfter - resetsBeforeDisable, 1, 'exactly one reset-program generation for the re-enable');
+  assert.equal(media.currentTime, positionBefore, 'and the position never moved');
+});
+
+test('a page-claimed element gets a verdict: no second capture, never muted, no double audio', async () => {
+  const storage = createFakeStorage({
+    'site:top.test': { enabled: true, seen: true, gainDb: 0, seq: 1, mirror: true, excluded: false },
+  });
+  const tab = createTabWorld([{ frameId: 0, url: 'https://top.test/' }]);
+  const bg = loadBackground(tab, storage, 'https://top.test/');
+  const frame = tab.world[0];
+
+  await tab.navigate(0);
+  await settle(400);
+  const sandbox = frame.sandbox;
+  const Media = vm.runInContext('HTMLMediaElement', sandbox);
+  const claimed = new Media();
+  // The page wired this element into its own graph before we could: the one
+  // source is spent, and a second attempt throws InvalidStateError.
+  frame.mediaSourceByElement.set(claimed, 1);
+  frame.mediaElements.push(claimed);
+  await claimed.play();
+  await settle(400);
+
+  assert.equal(frame.mediaSourceCalls, 1, 'exactly one capture attempt for the claimed element');
+  assert.equal(claimed.__tnAttached !== true, true, 'it is left unmanaged, never adopted');
+  assert.equal(claimed.muted, false, 'and never muted by us — the page keeps its audio');
+  assert.equal(claimed.__tnWebAudio, true, 'the verdict is recorded instead of retried in a loop');
+  assert.equal(claimed.currentTime >= 42.5, true, 'the page still plays it');
+
+  // A toggle does not retry the impossible capture, and does not build a second
+  // graph for it.
+  await bg.sendMessage({ type: 'SET_SITE_STATE', siteKey: 'top.test', tabId: 7, set: { enabled: false } });
+  await settle(200);
+  await bg.sendMessage({ type: 'SET_SITE_STATE', siteKey: 'top.test', tabId: 7, set: { enabled: true } });
+  await settle(400);
+  assert.equal(frame.mediaSourceCalls, 1, 'no second createMediaElementSource, ever');
+  assert.equal(frame.contexts.filter((c) => c.state !== 'closed').length, 1, 'one audio graph, not two');
+});
+
+test('registration: a seen host is registered while off, and exclusion still wins over seen', async () => {
+  const storage = createFakeStorage({
+    'site:seen-off.test': { enabled: false, seen: true, gainDb: 0, seq: 2, mirror: false, excluded: false },
+    'site:seen-excluded.test': { enabled: false, seen: true, gainDb: 0, seq: 3, mirror: false, excluded: true },
+    'site:never.test': { enabled: false, gainDb: 0, seq: 1, mirror: false, excluded: false },
+  });
+  const registered = new Map();
+  const tab = createTabWorld([{ frameId: 0, url: 'https://elsewhere.test/' }]);
+  const scripting = {
+    ...tab.scripting,
+    getRegisteredContentScripts: async () => Array.from(registered.values()),
+    registerContentScripts: async (scripts) => { for (const s of scripts) registered.set(s.id, clone(s)); },
+    updateContentScripts: async (scripts) => { for (const s of scripts) registered.set(s.id, clone(s)); },
+    unregisterContentScripts: async () => registered.clear(),
+  };
+  loadBackground({ ...tab, scripting }, storage, 'https://elsewhere.test/');
+  await storage.set({ 'site:churn.test': { enabled: true, gainDb: 0, seq: 1, mirror: true, excluded: false } });
+  await settle(80);
+
+  const [registration] = Array.from(registered.values());
+  assert.ok(registration, 'a registration exists');
+  assert.ok(registration.matches.includes('*://seen-off.test/*'), 'the seen-but-off host is registered');
+  assert.ok(registration.matches.includes('*://churn.test/*'), 'the enabled host is registered');
+  assert.ok(!registration.matches.includes('*://never.test/*'), 'a never-seen off host is not');
+  assert.ok(!registration.matches.includes('*://seen-excluded.test/*'), 'exclusion beats seen');
+  assert.ok(registration.excludeMatches.includes('*://*.seen-excluded.test/*'), 'and it is in excludeMatches');
 });
 
 test('exclude on a live document still tears down within the task', async () => {

@@ -371,12 +371,26 @@ async function toggleSite() {
     applyControlState({ enabled: res.enabled, gainDb: res.gainDb });
 
     if (res.enabled) {
-      // FINAL RULE: the enable applies on the next navigation. Nothing is armed
-      // in this document, so say so instead of promising activation.
-      reloadNoticePending = true;
-      runtimeActivationState = 'reload';
-      runtimeActivationMessage = RELOAD_NOTICE_TEXT;
-      renderStatus({ indicator: 'gray', text: RELOAD_NOTICE_TEXT });
+      // The background decides: a host that has been enabled before loads with
+      // the page hook in place, so this enable is live and the popup must not
+      // claim otherwise. The one residual reload case is the FIRST-ever enable
+      // of a host (no hook in the document to start). A response with no
+      // activation field is treated as the conservative case.
+      const activation = res.activation && typeof res.activation === 'object'
+        ? /** @type {Record<string, unknown>} */ (res.activation)
+        : null;
+      const activationState = activation ? String(activation.state || '') : '';
+      if (activationState !== 'live' && activationState !== 'pending') {
+        reloadNoticePending = true;
+        runtimeActivationState = 'reload';
+        runtimeActivationMessage = RELOAD_NOTICE_TEXT;
+        renderStatus({ indicator: 'gray', text: RELOAD_NOTICE_TEXT });
+      } else {
+        reloadNoticePending = false;
+        runtimeActivationState = 'pending';
+        runtimeActivationMessage = 'Enabling on this tab…';
+        renderStatus({ indicator: 'gray', text: runtimeActivationMessage });
+      }
     } else {
       // Immediate apply for the current tab's TOP FRAME ONLY (frameId 0:
       // RESEARCH §5.3). The named siteKey keeps every other frame from
@@ -625,6 +639,9 @@ async function refreshDocumentStatus() {
     const enabled = Boolean(doc?.enabled);
     const hookAlive = Boolean(doc?.hookAlive);
     const hookActive = Boolean(doc?.hookActive);
+    // Explicitly reported only: an older document that does not answer the
+    // field must not be described as needing a reload.
+    const hookPresent = doc?.hookPresent === false ? false : true;
     const activating = Boolean(doc?.activating);
     const lastError = String(doc?.lastError || '');
 
@@ -676,6 +693,7 @@ async function refreshDocumentStatus() {
         hookActive: recentlyActive,
         activating,
         lastError,
+        hookPresent,
       }),
     });
   } catch {
@@ -700,7 +718,10 @@ async function refreshDocumentStatus() {
   }
 }
 
-function getStatusText({ enabled, hookActive, activating, lastError }) {
+/**
+ * @param {{ enabled: boolean, hookActive: boolean, activating: boolean, lastError: string, hookPresent?: boolean }} state
+ */
+function getStatusText({ enabled, hookActive, activating, lastError, hookPresent }) {
   if (enabled && lastError) return lastError;
   if (enabled && hookActive) return 'Normalizer active.';
   if (enabled && runtimeActivationState === 'restricted') {
@@ -712,6 +733,9 @@ function getStatusText({ enabled, hookActive, activating, lastError }) {
   if (enabled && (activating || runtimeActivationState === 'pending')) {
     return runtimeActivationMessage || 'Enabling on this tab…';
   }
+  // The document answered and says it has no page hook: this tab loaded before
+  // the hook existed, so this is the one case that really needs a reload.
+  if (enabled && hookPresent === false) return RELOAD_NOTICE_TEXT;
   if (enabled) return 'Enabled. Waiting for audio.';
   return 'Off for this site.';
 }

@@ -1111,6 +1111,70 @@ test('an ordinary (non-exclusion) broadcast also reaches every frame, and the si
 });
 
 // ============ popup control ============
+test('popup: a live enable says Active without a reload notice; a first-ever enable keeps the notice', async () => {
+  // A seen host: the background answers activation "live" and the tab reports
+  // an armed, processing document with the hook present.
+  const live = loadPopup({
+    tabUrl: 'https://example.com/watch',
+    runtimeSendMessage: async (msg) => {
+      if (msg.type === 'GET_SITE_STATE') {
+        return { ok: true, enabled: false, gainDb: 0, excluded: false, siteKey: 'example.com', seq: 1 };
+      }
+      if (msg.type === 'SET_SITE_STATE') {
+        return {
+          ok: true, enabled: true, gainDb: 0, excluded: false, seen: true,
+          siteKey: 'example.com', seq: 2, activation: { state: 'live' },
+        };
+      }
+      return { ok: true };
+    },
+    tabsSendMessage: async (_tabId, msg) => {
+      if (msg.type === 'GET_DOCUMENT_STATUS') {
+        return {
+          ok: true, siteKey: 'example.com', enabled: true, gainDb: 0,
+          hookAlive: true, hookActive: true, hookPresent: true, indicator: 'green',
+        };
+      }
+      return { ok: true };
+    },
+  });
+  await settle(60);
+  live.els.toggle.checked = true;
+  await live.els.toggle.fire('change');
+  await settle(120);
+  const liveText = String(live.els['status-text'].textContent);
+  assert.doesNotMatch(liveText, /reload/i, 'no reload claim for a live enable');
+  assert.match(liveText, /normalizer active/i, 'the honest state is shown');
+  assert.equal(live.els['status-pill'].textContent, 'Active', 'and the pill is Active');
+
+  // A first-ever enable: no hook in the document yet, so the background says
+  // "reload" and the popup says so once.
+  const first = loadPopup({
+    tabUrl: 'https://fresh.example/watch',
+    runtimeSendMessage: async (msg) => {
+      if (msg.type === 'GET_SITE_STATE') {
+        return { ok: true, enabled: false, gainDb: 0, excluded: false, siteKey: 'fresh.example', seq: 1 };
+      }
+      if (msg.type === 'SET_SITE_STATE') {
+        return {
+          ok: true, enabled: true, gainDb: 0, excluded: false, seen: true,
+          siteKey: 'fresh.example', seq: 2,
+          activation: { state: 'reload', message: 'Enabled. Reload applies this.' },
+        };
+      }
+      return { ok: true };
+    },
+    tabsSendMessage: async () => ({ ok: false, error: 'no receiver' }),
+  });
+  await settle(60);
+  first.els.toggle.checked = true;
+  await first.els.toggle.fire('change');
+  await settle(120);
+  const firstText = String(first.els['status-text'].textContent);
+  assert.match(firstText, /reload applies this/i, 'the one residual case still says so');
+  assert.equal((firstText.match(/reload/gi) || []).length, 1, 'said once');
+});
+
 test('popup: exclusion and the re-enable both say a reload restores the page, once and quietly', async () => {
   const popup = loadPopup({
     tabUrl: 'https://www.tiktok.com/foryou',
