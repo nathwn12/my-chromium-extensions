@@ -1,10 +1,20 @@
 name: release
+
+# One release per extension, overwritten in place. Never a new release per
+# version: the four tags below are stable identities, and every run replaces the
+# asset on the existing release with --clobber.
 on:
   push:
     tags:
-      - "v*"
+      - audio-normalizer
+      - slowed-reverb
+      - crunchy-presence
+      - web-discord-rpc
+  workflow_dispatch:
+
 permissions:
   contents: write
+
 jobs:
   release:
     runs-on: ubuntu-26.04
@@ -13,18 +23,46 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version-file: .nvmrc
+
       - name: Zip loadable extensions
         run: |
           set -euo pipefail
           rm -rf dist && mkdir -p dist
-          (cd packages/audio-normalizer && zip -r ../../dist/audio-normalizer.zip manifest.json background.js shared.js content-script.js page-hook.js audio/normalizer-worklet.js popup.html popup.css popup.js icons/icon16.png icons/icon24.png icons/icon32.png icons/icon48.png icons/icon128.png)
-          (cd packages/slowed-reverb && zip -r ../../dist/slowed-reverb.zip manifest.json background.js shared.js content-script.js page-hook.js dattorro-worklet.js popup.html popup.css popup.js icons/icon16.png icons/icon24.png icons/icon32.png icons/icon48.png icons/icon128.png)
-          (cd packages/crunchy-presence && zip -r ../../dist/crunchy-presence.zip manifest.json background.js config.js extract.js content.js popup.html popup.css popup.js options.html options.css options.js icons/icon16.png icons/icon24.png icons/icon32.png icons/icon48.png icons/icon128.png)
-          (cd packages/web-discord-rpc && zip -r ../../dist/web-discord-rpc.zip manifest.json background.js config.js activity.js bridge-status.js content.js extract-youtube.js popup.html popup.css popup.js options.html options.css options.js icons/icon16.png icons/icon24.png icons/icon32.png icons/icon48.png icons/icon128.png)
-          ls -la dist
-      - name: Create GitHub release
+          (cd packages/audio-normalizer && zip -qr ../../dist/audio-normalizer.zip manifest.json background.js shared.js content-script.js page-hook.js audio popup.html popup.css popup.js icons)
+          (cd packages/slowed-reverb && zip -qr ../../dist/slowed-reverb.zip manifest.json background.js shared.js content-script.js page-hook.js dattorro-worklet.js popup.html popup.css popup.js icons)
+          (cd packages/crunchy-presence && zip -qr ../../dist/crunchy-presence.zip manifest.json background.js bridge-status.js config.js extract.js content.js popup.html popup.css popup.js options.html options.css options.js icons)
+          (cd packages/web-discord-rpc && zip -qr ../../dist/web-discord-rpc.zip manifest.json background.js config.js activity.js bridge-status.js content.js extract-youtube.js popup.html popup.css popup.js options.html options.css options.js icons)
+          for f in dist/*.zip; do echo "$f"; unzip -l "$f" | tail -n +4 | head -n -2 | awk '{print "  " $4}'; done
+
+      - name: Overwrite the four releases
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          gh release create "${{ github.ref_name }}" --title "${{ github.ref_name }}" --generate-notes dist/audio-normalizer.zip dist/slowed-reverb.zip dist/crunchy-presence.zip dist/web-discord-rpc.zip
+
+          version() { node -p "require('./packages/$1/manifest.json').version"; }
+          name() { node -p "require('./packages/$1/manifest.json').name"; }
+          desc() { node -p "require('./packages/$1/manifest.json').description"; }
+
+          publish() { # $1 package dir = $2 tag
+            local pkg="$1" tag="$2" title body
+            title="$(name "$pkg") $(version "$pkg")"
+            body="$(desc "$pkg")
+
+          **Version:** $(version "$pkg")
+          **Install:** download the zip, unzip it anywhere, then Load unpacked in \`chrome://extensions\` with Developer mode on.
+          **Source:** \`packages/$pkg\` in this repository.
+
+          This release is replaced in place on every update — the link never changes."
+            if gh release view "$tag" >/dev/null 2>&1; then
+              gh release edit "$tag" --title "$title" --notes "$body"
+            else
+              gh release create "$tag" --title "$title" --notes "$body"
+            fi
+            gh release upload "$tag" "dist/$pkg.zip" --clobber
+          }
+
+          publish audio-normalizer audio-normalizer
+          publish slowed-reverb slowed-reverb
+          publish crunchy-presence crunchy-presence
+          publish web-discord-rpc web-discord-rpc
