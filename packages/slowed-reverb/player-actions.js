@@ -26,6 +26,11 @@
   const SAVE_DEBOUNCE_MS = 250;
   const RESTORE_RETRY_BUDGET_MS = 3000;
   const SAVED_LIMIT = 100;
+  const SEEK_RETRY_MS = 120;
+  const SEEK_RETRY_ATTEMPTS = 3;
+  const SEEK_TOLERANCE_SECONDS = 0.25;
+  const SETTLE_MS = 1200;
+  const SETTLE_NEAR_ZERO_SECONDS = 1;
   const STORAGE_KEY = 'playerActions';
   const HOST_ATTR = 'data-slra-player-actions';
 
@@ -188,6 +193,21 @@
   // Song identity and the restore latches
   // -------------------------------------------------------------------------
 
+  /**
+   * Folds a media source into a short stable key. Blob/track URLs are long,
+   * signed and transient, so the URL itself is never stored as a song id.
+   */
+  function sourceKey(mediaSrc) {
+    const src = typeof mediaSrc === 'string' ? mediaSrc : '';
+    if (src === '') return null;
+    let hash = 0x811c9dc5;
+    for (let index = 0; index < src.length; index += 1) {
+      hash ^= src.charCodeAt(index);
+      hash = Math.imul(hash, 0x01000193) >>> 0;
+    }
+    return 'src:' + hash.toString(16).padStart(8, '0');
+  }
+
   /** The URL's `v` param is the song id; the media source is the fallback. */
   function songKeyFrom(href, mediaSrc) {
     try {
@@ -197,8 +217,7 @@
     } catch {
       // Fall through to the media source.
     }
-    const src = typeof mediaSrc === 'string' ? mediaSrc : '';
-    return src === '' ? null : src;
+    return sourceKey(mediaSrc);
   }
 
   function createSectionSession() {
@@ -388,7 +407,7 @@
       if (!SCROLL_OVERFLOW.has(computedOverflowY(style, node))) continue;
       const scrollHeight = Number(node.scrollHeight);
       const clientHeight = Number(node.clientHeight);
-      const overflows = scrollHeight > clientHeight + 1 || scrollHeight > viewport + 1;
+      const overflows = scrollHeight > clientHeight + 1;
       if (!overflows) continue;
       if (node === documentElement || (doc && node === doc.body)) {
         if (scrollHeight > viewport + 1) return { handle: false, reason: 'document-scroller' };
@@ -467,6 +486,13 @@
     let ui = null;
     let fromDirty = false;
     let toDirty = false;
+    let everBound = false;
+    let seekRetryTimer = null;
+    let seekRetryCount = 0;
+    let seekToken = 0;
+    let settleTimer = null;
+    let saveChain = Promise.resolve();
+    let volumeSeq = 0;
 
     function currentState() {
       return {
@@ -512,6 +538,9 @@
       if (started) return;
       started = true;
       const mine = ++generation;
+      cancelSeekRetry();
+      clearSettleCheck();
+      volumeSeq = 0;
       installWheel();
       installUi();
       installSongListeners();
@@ -537,6 +566,8 @@
       generation += 1;
       started = false;
       stopTick();
+      cancelSeekRetry();
+      clearSettleCheck();
       if (hudTimer !== null) {
         timers.clearTimeout(hudTimer);
         hudTimer = null;
@@ -561,6 +592,8 @@
       accumulator = createWheelAccumulator();
       fromDirty = false;
       toDirty = false;
+      everBound = false;
+      saveChain = Promise.resolve();
     }
 
     /** Re-reads what the page currently shows and re-syncs every derived bit. */
@@ -584,12 +617,17 @@
     function bindMedia() {
       const next = mediaProvider();
       if (next === media) return;
-      const replaced = media !== null;
+      // Any element after a previous one is a new song context, even when a scan
+      // saw no media in between: stale points must never fire on the new one.
+      const replaced = everBound;
       detachMedia();
       media = next || null;
       if (!media) return;
+      everBound = true;
 
       if (replaced) {
+        cancelSeekRetry();
+        clearSettleCheck();
         // Element replacement is a new song context: stale points must not fire.
         session.songKey = null;
         session.restoredSongKey = null;
@@ -651,6 +689,8 @@
         return;
       }
       if (beginSong(session, key)) {
+        cancelSeekRetry();
+        clearSettleCheck();
         fromDirty = false;
         toDirty = false;
         syncTick();
@@ -662,7 +702,11 @@
       }
       // One restore per song visit; a repeat event must not re-seek.
       if (!songRestorePending(session, key)) return;
+      restoreForSong(key);
+    }
 
+    /** Applies the saved section for one song visit and arms its start seek. */
+    function restoreForSong(key) {
       const entry = lookupSaved(saved, key);
       if (entry === null) {
         markSongRestored(session, key);
@@ -674,21 +718,19 @@
 
       session.startSeconds = entry.startSeconds;
       session.endSeconds = entry.endSeconds;
+      // A saved section comes back armed: Repeat off must not mute its range.
+      active = true;
       fromDirty = false;
       toDirty = false;
       syncTick();
       syncPanel();
 
-      const target = resolveEndSeekTarget(currentState(), media ? media.duration : NaN);
-      if (media && target !== null) {
-        try {
-          media.currentTime = target;
-          markSongRestored(session, key);
-          clearPendingRestore(session);
-          return;
-        } catch {
-          // Fall through to the retry budget.
-        }
+      const start = entry.startSeconds === null ? 0 : entry.startSeconds;
+      if (media && requestSeek(start)) {
+        markSongRestored(session, key);
+        clearPendingRestore(session);
+        armSettleCheck(key, entry.startSeconds);
+        return;
       }
       deferRestore(session, now());
     }
@@ -702,7 +744,9 @@
     }
 
     function syncTick() {
-      const wanted = started && isLoopEngaged(currentState()) && isVisible();
+      // A pending restore needs the tick even while disarmed: the song id can
+      // arrive with no named event, and this is the only retry that sees it.
+      const wanted = started && (isLoopEngaged(currentState()) || session.pendingRestore) && isVisible();
       if (wanted) {
         if (tickTimer === null) tickTimer = timers.setInterval(handleTick, TICK_MS);
         return;
@@ -723,23 +767,19 @@
         syncPanel();
       }
 
-      if (session.pendingRestore && session.songKey !== null) {
-        const restoreTarget = resolveEndSeekTarget(currentState(), media.duration);
-        if (restoreTarget !== null) {
-          try {
-            media.currentTime = restoreTarget;
-            markSongRestored(session, session.songKey);
-            clearPendingRestore(session);
-            return;
-          } catch {
-            // Keep retrying inside the budget.
-          }
-        }
-        if (restoreDeadlineReached(session, now())) {
-          markSongRestored(session, session.songKey);
-          clearPendingRestore(session);
-          syncPanel();
-        }
+      // A song visit that never restored is retried here: the id can arrive
+      // with no named event, and a swallowed restore seek needs another try.
+      if (savedLoaded && session.songKey !== null && songRestorePending(session, session.songKey)) {
+        restoreForSong(session.songKey);
+      }
+      if (session.pendingRestore && restoreDeadlineReached(session, now())) {
+        // Out of budget: stop retrying, cancel the seek ladder and stop the tick
+        // unless a loop is armed.
+        if (session.songKey !== null) markSongRestored(session, session.songKey);
+        clearPendingRestore(session);
+        cancelSeekRetry();
+        syncTick();
+        syncPanel();
       }
 
       const target = resolveSeekTarget(currentState(), {
@@ -783,6 +823,9 @@
     }
 
     function applyVolume(percent) {
+      // One sequence per write: a late reply, timeout or fallback from an older
+      // request must never overwrite the newest wheel action.
+      const seq = ++volumeSeq;
       showHud(percent);
       if (!pageHook || typeof pageHook.setVolume !== 'function') {
         writeMediaVolume(percent);
@@ -799,7 +842,7 @@
         return;
       }
       pending.then((reply) => {
-        if (!started) return;
+        if (!started || seq !== volumeSeq) return;
         if (!reply || reply.applied === false || reply.source === 'none') {
           writeMediaVolume(percent);
           return;
@@ -810,7 +853,7 @@
           showHud(volume);
         }
       }).catch(() => {
-        if (!started) return;
+        if (!started || seq !== volumeSeq) return;
         writeMediaVolume(percent);
       });
     }
@@ -1086,21 +1129,82 @@
       ui.from.value = live.startSeconds === null ? '' : formatTime(live.startSeconds);
       ui.to.value = live.endSeconds === null ? '' : formatTime(live.endSeconds);
 
-      // A committed From jumps playback there at once; To/clear never seek.
-      if (source === 'from') seekToLoopStart();
+      // A committed From jumps playback there at once, armed or not and without
+      // a known duration; To/clear never seek.
+      if (source === 'from') {
+        clearSettleCheck();
+        requestSeek(live.startSeconds === null ? 0 : live.startSeconds);
+      }
       syncTick();
       syncPanel();
     }
 
-    function seekToLoopStart() {
-      if (!media) return;
-      const target = resolveEndSeekTarget(currentState(), media.duration);
-      if (target === null) return;
+    // -- seeking -----------------------------------------------------------
+
+    function cancelSeekRetry() {
+      seekToken += 1;
+      seekRetryCount = 0;
+      if (seekRetryTimer !== null) {
+        timers.clearTimeout(seekRetryTimer);
+        seekRetryTimer = null;
+      }
+    }
+
+    /**
+     * Writes a position and retries a bounded number of times while the player
+     * ignores the write (a <video> that drops currentTime until metadata is
+     * ready). A newer seek, a song change or stop cancels the retry.
+     */
+    function requestSeek(target) {
+      if (!media) return false;
+      const value = Number(target);
+      if (!Number.isFinite(value) || value < 0) return false;
+      cancelSeekRetry();
+      return writeSeek(value, seekToken);
+    }
+
+    function writeSeek(target, token) {
+      if (!started || token !== seekToken || !media) return false;
+      let wrote = false;
       try {
         media.currentTime = target;
+        wrote = true;
       } catch {
-        // Detached element.
+        wrote = false;
       }
+      const actual = Number(media.currentTime);
+      if (wrote && Number.isFinite(actual) && Math.abs(actual - target) <= SEEK_TOLERANCE_SECONDS) return true;
+      if (seekRetryCount >= SEEK_RETRY_ATTEMPTS) return false;
+      seekRetryCount += 1;
+      seekRetryTimer = timers.setTimeout(() => {
+        seekRetryTimer = null;
+        writeSeek(target, token);
+      }, SEEK_RETRY_MS);
+      return false;
+    }
+
+    function clearSettleCheck() {
+      if (settleTimer === null) return;
+      timers.clearTimeout(settleTimer);
+      settleTimer = null;
+    }
+
+    /**
+     * One late correction after a restore seek: YTM can apply its own startup
+     * position after ours lands. Re-apply the saved start once, and only when
+     * the same song is current and the player reset to the top.
+     */
+    function armSettleCheck(key, startSeconds) {
+      clearSettleCheck();
+      if (!Number.isFinite(startSeconds) || startSeconds <= SETTLE_NEAR_ZERO_SECONDS) return;
+      settleTimer = timers.setTimeout(() => {
+        settleTimer = null;
+        if (!started || !media) return;
+        if (session.songKey !== key) return;
+        const at = Number(media.currentTime);
+        if (!Number.isFinite(at) || at > SETTLE_NEAR_ZERO_SECONDS) return;
+        requestSeek(startSeconds);
+      }, SETTLE_MS);
     }
 
     // -- storage -----------------------------------------------------------
@@ -1122,8 +1226,33 @@
       }, SAVE_DEBOUNCE_MS);
     }
 
+    /**
+     * Hands the write to the one ordered writer: the service worker when the
+     * content script supplies it (across every tab), else a local promise chain.
+     * Both compose from fresh storage, so no entry is lost.
+     */
+    function requestSectionSave(entry, mine) {
+      if (storage && typeof storage.saveSection === 'function') {
+        return Promise.resolve(storage.saveSection(entry));
+      }
+      saveChain = saveChain.catch(() => ({ ok: false, sections: [] })).then(async () => {
+        if (!started || mine !== generation) return { ok: false, sections: null };
+        const current = await readSaved();
+        if (!started || mine !== generation) return { ok: false, sections: null };
+        const next = capSaved(upsertSaved(current, entry), SAVED_LIMIT);
+        if (storage && typeof storage.set === 'function') {
+          const write = {};
+          write[STORAGE_KEY] = { sections: next };
+          await storage.set(write);
+        }
+        return { ok: true, sections: next };
+      });
+      return saveChain;
+    }
+
     async function save() {
       if (!started || session.songKey === null) return;
+      const mine = generation;
       const videoId = session.songKey;
       const entry = {
         videoId: videoId,
@@ -1132,18 +1261,13 @@
       };
       const removed = entry.startSeconds === null && entry.endSeconds === null;
       try {
-        // Compose from fresh storage so two consecutive song saves cannot
-        // discard each other's entries.
-        const current = await readSaved();
-        const next = capSaved(upsertSaved(current, entry), SAVED_LIMIT);
-        saved = next;
-        if (storage && typeof storage.set === 'function') {
-          const write = {};
-          write[STORAGE_KEY] = { sections: next };
-          await storage.set(write);
-        }
-        // A song change (or a changed range) owns the state now; the notice for
-        // the old compose would be stale.
+        const reply = await requestSectionSave(entry, mine);
+        // A stop (or a new session) owns the state now: mutate nothing.
+        if (!started || mine !== generation) return;
+        if (reply && Array.isArray(reply.sections)) saved = sanitizeSaved(reply.sections);
+
+        // A song change (or a changed range) also owns the state now; the
+        // notice for the old compose would be stale.
         if (
           session.songKey === videoId &&
           session.startSeconds === entry.startSeconds &&
@@ -1159,6 +1283,7 @@
           }, HUD_VISIBLE_MS);
         }
       } catch {
+        if (!started || mine !== generation) return;
         notice = 'failed';
         syncPanel();
       }
@@ -1219,6 +1344,7 @@
     upsertSaved: upsertSaved,
     capSaved: capSaved,
     songKeyFrom: songKeyFrom,
+    sourceKey: sourceKey,
     createSectionSession: createSectionSession,
     beginSong: beginSong,
     songRestorePending: songRestorePending,
