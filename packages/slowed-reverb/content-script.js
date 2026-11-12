@@ -281,6 +281,11 @@
       if (data.type === 'SLRA_VOLUME_STATE') {
         if (typeof data.token !== 'string' || data.token.length === 0) return;
         if (data.token !== state.pageHookToken) return;
+        // `#movie_player.setVolume()` writes a different scale into
+        // video.volume, unmutes the element and fires NO volumechange, so the
+        // gain ramp and the mute enforcement - both volumechange-driven - would
+        // never see it. Settle them from the reply itself.
+        if (data.applied === true) settleAttachedVolume();
         resolvePageVolume(data.id, {
           volume: data.volume,
           applied: data.applied === true,
@@ -1414,6 +1419,35 @@ function applyRuntimeState(runtime) {
     }
     corrections.push(now);
     return true;
+  }
+
+  // A page volume write bypasses `volumechange` entirely (see the
+  // SLRA_VOLUME_STATE handler), so it needs its own settle: the element value is
+  // what the player actually applied, the graph must ramp to it, and the mute
+  // contract must be re-asserted. The unmute here is our own volume write's side
+  // effect, not a page fight, so it never draws on the mute-correction budget.
+  function settleAttachedVolume() {
+    for (const controller of state.media.values()) {
+      if (!controller.attached || !controller.media) continue;
+      const media = controller.media;
+      if (media.muted === false) {
+        controller.internalMuteWrite = true;
+        try {
+          media.muted = true;
+        } finally {
+          queueMicrotask(() => {
+            controller.internalMuteWrite = false;
+          });
+        }
+        // We own the mute again: the graph may carry audio.
+        controller.budgetBypassed = false;
+        controller.budgetBypassedUntil = 0;
+      }
+      // `sourceStale` keeps the existing hard-zero until the new tap connects.
+      if (controller.masterGain && !controller.sourceStale) {
+        rampGain(controller.masterGain.gain, media.volume);
+      }
+    }
   }
 
   // `media.muted` mirrors `controller.attached` while the graph plays the

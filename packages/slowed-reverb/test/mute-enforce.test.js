@@ -391,6 +391,71 @@ async function main() {
   console.log('ok   attach mutes the element and slows playback');
   const rateAtAttach = media.playbackRate;
 
+  // --- owner bug (1.2.1): a page volume write unmutes and fires nothing -----
+  // `#movie_player.setVolume(20)` sets video.volume on the player's own scale
+  // (20 -> 0.148), sets muted=false, and fires NO volumechange. Both the graph
+  // ramp and the mute enforcement hang off volumechange, so the reply itself
+  // must settle them.
+  const hookSource = fs.readFileSync(path.join(__dirname, '..', 'page-hook.js'), 'utf8');
+  check(
+    'page-hook.js still has no muted assignment (volume only)',
+    !/\.muted\s*=/.test(hookSource),
+    'page-hook.js writes muted'
+  );
+
+  const applyPageVolume = (applied) => {
+    env.fireWin('message', {
+      source: globalThis.window,
+      origin: 'https://music.youtube.com',
+      data: {
+        __slra: true,
+        type: 'SLRA_VOLUME_STATE',
+        id: 900,
+        token: globalThis.__slowedReverbAudioContent.__testGetHookToken(),
+        volume: 20,
+        applied,
+        source: applied ? 'player' : 'none',
+      },
+    });
+  };
+
+
+  // The player API's side effect: new element volume, unmuted, no event.
+  media.volume = 0.148;
+  media.muted = false;
+  const rampsBeforeReply = env.stats.rampedValues.length;
+  applyPageVolume(true);
+
+  check(
+    'a page volume reply re-mutes the element synchronously',
+    media.muted === true,
+    'expected muted=true right after the reply, got ' + media.muted
+  );
+  check(
+    'a page volume reply ramps the graph to the new element volume',
+    env.stats.rampedValues.slice(rampsBeforeReply).includes(0.148),
+    'ramps=' + JSON.stringify(env.stats.rampedValues.slice(rampsBeforeReply))
+  );
+  check(
+    'the reply ramps the new volume once, never the stale one',
+    JSON.stringify(env.stats.rampedValues.slice(rampsBeforeReply)) === JSON.stringify([0.148]),
+    'ramps=' + JSON.stringify(env.stats.rampedValues.slice(rampsBeforeReply))
+  );
+
+  // A reply that did not apply (the content script wrote media.volume itself)
+  // must not settle anything here: that path already fires volumechange.
+  media.volume = 0.3;
+  media.muted = false;
+  const rampsBeforeMiss = env.stats.rampedValues.length;
+  applyPageVolume(false);
+  check(
+    'a non-applied reply leaves the graph and the mute alone',
+    media.muted === false && env.stats.rampedValues.length === rampsBeforeMiss,
+    'muted=' + media.muted + ' newRamps=' + (env.stats.rampedValues.length - rampsBeforeMiss)
+  );
+  // Let the settle's internal-write microtask clear before the next scenario.
+  await env.settle(2);
+
   // --- attached: the page unmutes itself, then fires volumechange ---
   media.muted = false;
   check('setup: page wrote muted=false on an attached element', media.muted === false);
