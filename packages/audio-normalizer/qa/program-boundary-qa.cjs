@@ -178,6 +178,13 @@ async function main() {
   vm.createContext(sandbox);
   vm.runInContext(hookSrc, sandbox, { filename: 'page-hook.js' });
 
+  // Control arrives only from the worker, through executeScript: drive the same
+  // entrypoint the background calls. There is no page message path any more.
+  sandbox.__tnHookV6('start', {
+    gainDb: 0,
+    workletUrl: 'chrome-extension://test-id/audio/normalizer-worklet.js',
+  });
+
   // Await pre-warm: media session + worklet node ready.
   const deadline = Date.now() + 3000;
   while (FakeWorkletNode.instances.length === 0 && Date.now() < deadline) {
