@@ -72,6 +72,9 @@ function createDom() {
       this.isConnected = true;
       this.scrollHeight = 0;
       this.clientHeight = 0;
+      this.computedOverflow = 'visible';
+      this.computedVisibility = 'visible';
+      this.computedDisplay = 'block';
       this.currentTime = 0;
       this.duration = NaN;
       this.paused = false;
@@ -182,6 +185,12 @@ function createDom() {
   documentElement.clientHeight = 800;
   const body = new Element('body');
   documentElement.appendChild(body);
+  // The two real player surfaces, always present on music.youtube.com.
+  const bar = new Element('ytmusic-player-bar');
+  documentElement.appendChild(bar);
+  const mainPanel = new Element('div');
+  mainPanel.setAttribute('id', 'main-panel');
+  documentElement.appendChild(mainPanel);
 
   const docListeners = new Map();
   const winListeners = new Map();
@@ -226,7 +235,11 @@ function createDom() {
     document,
     location: { href: 'https://music.youtube.com/watch?v=song-a' },
     innerHeight: 800,
-    getComputedStyle: () => ({ overflowY: 'hidden' }),
+    getComputedStyle: (node) => ({
+      overflowY: (node && node.computedOverflow) || 'visible',
+      visibility: (node && node.computedVisibility) || 'visible',
+      display: (node && node.computedDisplay) || 'block',
+    }),
     addEventListener(type, fn) {
       const list = winListeners.get(type) || [];
       list.push(fn);
@@ -301,29 +314,22 @@ function createDom() {
     return nodes(current.shadowRoot).find((node) => node.getAttribute('aria-label') === label) || null;
   }
 
-  function hudText() {
-    const current = host();
-    if (!current || !current.shadowRoot) return '';
-    const hud = nodes(current.shadowRoot).find((node) => node.classList.contains('slra-hud'));
-    return hud ? hud.textContent : '';
-  }
-
-  function hudVisible() {
+  function hasHud() {
     const current = host();
     if (!current || !current.shadowRoot) return false;
-    const hud = nodes(current.shadowRoot).find((node) => node.classList.contains('slra-hud'));
-    return Boolean(hud && hud.classList.contains('visible'));
+    return nodes(current.shadowRoot).some((node) => node.classList.contains('slra-hud'));
   }
 
   return {
     win,
     document,
     documentElement,
+    bar,
+    mainPanel,
     makeMedia,
     host,
     panel,
-    hudText,
-    hudVisible,
+    hasHud,
   };
 }
 
@@ -486,19 +492,16 @@ function createHarness(options) {
       return dom.win.listenerCount('wheel');
     },
     wheel(deltaY, props) {
-      return dom.win.dispatch('wheel', { deltaY, target: dom.documentElement, ...(props || {}) });
+      return dom.win.dispatch('wheel', { deltaY, target: dom.bar, ...(props || {}) });
+    },
+    pushSong(id) {
+      controller.setSongId(id);
     },
     host() {
       return dom.host();
     },
     panel(label) {
       return dom.panel(label);
-    },
-    hudText() {
-      return dom.hudText();
-    },
-    hudVisible() {
-      return dom.hudVisible();
     },
     status() {
       const node = dom.panel('Section status');
@@ -1021,6 +1024,8 @@ function fakeNode(tagName, options) {
     parentElement: settings.parent || null,
     isContentEditable: Boolean(settings.editable),
     computedOverflow: settings.overflow || 'visible',
+    computedVisibility: settings.visibility || 'visible',
+    computedDisplay: settings.display || 'block',
     scrollHeight: settings.scrollHeight === undefined ? 0 : settings.scrollHeight,
     clientHeight: settings.clientHeight === undefined ? 0 : settings.clientHeight,
     getAttribute(name) {
@@ -1032,20 +1037,32 @@ function fakeNode(tagName, options) {
   };
 }
 
-function predicateDoc(options) {
-  const settings = options || {};
-  const documentElement = fakeNode('html', {
-    overflow: settings.htmlOverflow || 'hidden',
-    scrollHeight: settings.htmlScrollHeight === undefined ? 800 : settings.htmlScrollHeight,
-    clientHeight: 800,
-  });
-  return {
-    documentElement,
-    defaultView: { innerHeight: settings.innerHeight === undefined ? 800 : settings.innerHeight },
-  };
+function predicateDoc() {
+  return { documentElement: fakeNode('html') };
 }
 
-const getStyle = (node) => ({ overflowY: node.computedOverflow || 'visible' });
+const getStyle = (node) => ({
+  overflowY: node.computedOverflow || 'visible',
+  visibility: node.computedVisibility || 'visible',
+  display: node.computedDisplay || 'block',
+});
+
+/** Puts the node inside the persistent player bar. */
+function inBar(node) {
+  node.parentElement = fakeNode('ytmusic-player-bar');
+  return node;
+}
+
+/** Puts the node inside the player panel; `hidden` models an inactive player. */
+function inPanel(node, options) {
+  const settings = options || {};
+  node.parentElement = fakeNode('div', {
+    attributes: { id: 'main-panel' },
+    visibility: settings.visibility || 'visible',
+    display: settings.display || 'block',
+  });
+  return node;
+}
 
 function wheelEvent(overrides) {
   return {
@@ -1059,15 +1076,64 @@ function wheelEvent(overrides) {
   };
 }
 
-test('wheel guard: a handled event on plain player chrome', () => {
-  const playerBar = fakeNode('div', { overflow: 'hidden' });
-  const verdict = actions.shouldHandleWheel(wheelEvent(), playerBar, predicateDoc(), getStyle);
-  assert.deepEqual(verdict, { handle: true, reason: 'handle' });
-});
-
 test('wheel guard: defaultPrevented events belong to someone else', () => {
   const target = fakeNode('div');
   assert.equal(actions.shouldHandleWheel(wheelEvent({ defaultPrevented: true }), target, predicateDoc(), getStyle).handle, false);
+});
+
+test('wheel guard: the player bar handles the wheel (collapsed mode)', () => {
+  const target = inBar(fakeNode('div'));
+  assert.deepEqual(actions.shouldHandleWheel(wheelEvent(), target, predicateDoc(), getStyle), {
+    handle: true,
+    reason: 'handle',
+  });
+});
+
+test('wheel guard: song-mode artwork in the visible player panel handles the wheel', () => {
+  const artwork = inPanel(fakeNode('img'));
+  assert.deepEqual(actions.shouldHandleWheel(wheelEvent(), artwork, predicateDoc(), getStyle), {
+    handle: true,
+    reason: 'handle',
+  });
+});
+
+test('wheel guard: video-mode media in the visible player panel handles the wheel', () => {
+  const video = inPanel(fakeNode('video'));
+  assert.deepEqual(actions.shouldHandleWheel(wheelEvent(), video, predicateDoc(), getStyle), {
+    handle: true,
+    reason: 'handle',
+  });
+});
+
+test('wheel guard: a hidden player panel does not handle (inactive player)', () => {
+  const artwork = inPanel(fakeNode('img'), { visibility: 'hidden' });
+  const verdict = actions.shouldHandleWheel(wheelEvent(), artwork, predicateDoc(), getStyle);
+  assert.equal(verdict.handle, false);
+  assert.equal(verdict.reason, 'not-player-surface');
+});
+
+test('wheel guard: browse content keeps native scrolling', () => {
+  for (const tagName of ['div', 'ytmusic-carousel-shelf-renderer', 'img', 'span']) {
+    const verdict = actions.shouldHandleWheel(wheelEvent(), fakeNode(tagName), predicateDoc(), getStyle);
+    assert.equal(verdict.handle, false, tagName);
+    assert.equal(verdict.reason, 'not-player-surface');
+  }
+});
+
+test('wheel guard: the guide, queue, lyrics and nav bar keep native scrolling', () => {
+  for (const tagName of ['ytmusic-guide-renderer', 'ytmusic-queue', 'ytmusic-lyrics', 'ytmusic-nav-bar']) {
+    const verdict = actions.shouldHandleWheel(wheelEvent(), fakeNode(tagName), predicateDoc(), getStyle);
+    assert.equal(verdict.handle, false, tagName);
+  }
+});
+
+test('wheel guard: a scrollable descendant inside the bar keeps native scrolling', () => {
+  const bar = fakeNode('ytmusic-player-bar');
+  const scroller = fakeNode('div', { parent: bar, overflow: 'auto', scrollHeight: 400, clientHeight: 200 });
+  const child = fakeNode('span', { parent: scroller });
+  const verdict = actions.shouldHandleWheel(wheelEvent(), child, predicateDoc(), getStyle);
+  assert.equal(verdict.handle, false);
+  assert.equal(verdict.reason, 'scrollable-ancestor');
 });
 
 test('wheel guard: modifier wheels pass through (zoom/back/alt-scroll)', () => {
@@ -1105,35 +1171,6 @@ test('wheel guard: an open dialog or a modal keeps the wheel', () => {
   assert.equal(actions.shouldHandleWheel(wheelEvent(), fakeNode('span', { parent: dialog }), predicateDoc(), getStyle).handle, false);
   const modal = fakeNode('div', { attributes: { 'aria-modal': 'true' } });
   assert.equal(actions.shouldHandleWheel(wheelEvent(), fakeNode('span', { parent: modal }), predicateDoc(), getStyle).handle, false);
-});
-
-test('wheel guard: a scrollable ancestor keeps native scrolling', () => {
-  const scroller = fakeNode('div', { overflow: 'auto', scrollHeight: 400, clientHeight: 200 });
-  assert.equal(actions.shouldHandleWheel(wheelEvent(), scroller, predicateDoc(), getStyle).handle, false);
-  const child = fakeNode('span', { parent: scroller });
-  const verdict = actions.shouldHandleWheel(wheelEvent(), child, predicateDoc(), getStyle);
-  assert.equal(verdict.handle, false);
-  assert.equal(verdict.reason, 'scrollable-ancestor');
-});
-
-test('wheel guard: a scrolling document keeps native scrolling', () => {
-  const doc = predicateDoc({ htmlOverflow: 'auto', htmlScrollHeight: 4000, innerHeight: 800 });
-  const verdict = actions.shouldHandleWheel(wheelEvent(), fakeNode('div', { parent: doc.documentElement }), doc, getStyle);
-  assert.equal(verdict.handle, false);
-  assert.equal(verdict.reason, 'document-scroller');
-});
-
-test('wheel guard: a tall non-scrolling auto container does not block the wheel', () => {
-  const doc = predicateDoc({ innerHeight: 800 });
-  const container = fakeNode('div', { overflow: 'auto', scrollHeight: 2000, clientHeight: 2000, parent: doc.documentElement });
-  const verdict = actions.shouldHandleWheel(wheelEvent(), fakeNode('span', { parent: container }), doc, getStyle);
-  assert.equal(verdict.handle, true);
-});
-
-test('wheel guard: a non-scrolling document over the player bar handles the wheel', () => {
-  const doc = predicateDoc({ htmlOverflow: 'auto', htmlScrollHeight: 800, innerHeight: 800 });
-  const verdict = actions.shouldHandleWheel(wheelEvent(), fakeNode('div', { parent: doc.documentElement }), doc, getStyle);
-  assert.equal(verdict.handle, true);
 });
 
 // ---------------------------------------------------------------------------
@@ -1188,17 +1225,14 @@ test('controller: re-enabling after stop owns exactly one registration set', asy
   assert.equal(harness.pageHook.volume(), 55);
 });
 
-test('controller: a wheel over the player bar writes the page volume and shows the HUD', async () => {
+test('controller: a wheel over the player bar writes the page volume', async () => {
   const harness = createHarness();
   await harness.start();
   const event = harness.wheel(-100);
   assert.equal(event.defaultPrevented, true);
   await settle();
   assert.deepEqual(harness.pageHook.calls.at(-1), { percent: 55 });
-  assert.equal(harness.hudText(), '55 %');
-  assert.equal(harness.hudVisible(), true);
-  harness.timers.flushTimeouts();
-  assert.equal(harness.hudVisible(), false);
+  assert.equal(harness.dom.hasHud(), false);
 });
 
 test('controller: preventDefault only fires when a volume step lands', async () => {
@@ -1227,15 +1261,11 @@ test('controller: a page hook without a player API falls back to media.volume', 
   harness.wheel(-100);
   await settle();
   assert.equal(harness.media().volume, 0.55);
-  assert.equal(harness.hudText(), '55 %');
 });
 
 test('controller: guard - a stale volume reply cannot overwrite a newer write', async () => {
   const pendingReplies = [];
   const pageHook = {
-    async getVolume() {
-      return { volume: 50, applied: true, source: 'player' };
-    },
     setVolume(percent) {
       return new Promise((resolve) => {
         pendingReplies.push({ percent, resolve });
@@ -1248,29 +1278,29 @@ test('controller: guard - a stale volume reply cannot overwrite a newer write', 
   harness.wheel(-100);
   harness.wheel(-100);
   assert.equal(pendingReplies.length, 2);
+  assert.equal(pendingReplies[1].percent, 60);
 
   pendingReplies[1].resolve({ volume: 60, applied: true, source: 'player' });
   await settle();
-  assert.equal(harness.hudText(), '60 %');
-
-  // The older request answers late, both as a value and as a failure.
   pendingReplies[0].resolve({ volume: 55, applied: true, source: 'player' });
   await settle();
-  assert.equal(harness.hudText(), '60 %');
 
+  // The next step starts from 60, not from the stale 55.
+  harness.wheel(-100);
+  assert.equal(pendingReplies[2].percent, 65);
+
+  // A late failure from the oldest request must not rewrite media volume.
   pendingReplies[0].resolve({ volume: null, applied: false, source: 'none' });
   await settle();
   assert.equal(harness.media().volume, 0.5);
-  assert.equal(harness.hudText(), '60 %');
 });
 
-test('controller: the wheel writes the snapped value and shows it', async () => {
+test('controller: the wheel writes the snapped value', async () => {
   const harness = createHarness({ pageHook: createPageHook(37), mediaOptions: { volume: 0.37 } });
   await harness.start();
   harness.wheel(-100);
   await settle();
   assert.deepEqual(harness.pageHook.calls.at(-1), { percent: 40 });
-  assert.equal(harness.hudText(), '40 %');
 });
 
 test('controller: the fallback path ends on the snapped value too', async () => {
@@ -1282,7 +1312,6 @@ test('controller: the fallback path ends on the snapped value too', async () => 
   harness.wheel(-100);
   await settle();
   assert.equal(harness.media().volume, 0.4);
-  assert.equal(harness.hudText(), '40 %');
 });
 
 test('controller: the 100 ms tick exists only while a loop is engaged', async () => {
@@ -1984,7 +2013,7 @@ test('controller: guard - Save without a song id asks for a song and writes noth
   harness.click('Save section');
   await settle();
   assert.deepEqual(writes, []);
-  assert.equal(harness.status(), 'Play a song to save');
+  assert.equal(harness.status(), 'Play a track to save');
 });
 
 test('controller: guard - an onChanged save from another tab restores on the next visit', async () => {
@@ -2059,11 +2088,12 @@ test('controller: guard - a reply from before a restart cannot overwrite the new
 
   pending[1].resolve({ volume: 55, applied: true, source: 'player' });
   await settle();
-  assert.equal(harness.hudText(), '55 %');
-
   pending[0].resolve({ volume: 10, applied: true, source: 'player' });
   await settle();
-  assert.equal(harness.hudText(), '55 %');
+
+  // The new session's next step is based on 55, not on the old session's 10.
+  harness.wheel(-100);
+  assert.equal(pending[2].percent, 60);
 });
 
 // ---------------------------------------------------------------------------
@@ -2093,6 +2123,206 @@ test('controller: guard - Clear cancels an outstanding From retry and never seek
   harness.timers.flushTimeouts();
   assert.equal(writes, afterFrom);
   assert.equal(harness.fromValue(), '');
+});
+
+// ---------------------------------------------------------------------------
+// Round 6: player identity, playback modes, surfaces, loop timing, zero HUD
+// ---------------------------------------------------------------------------
+
+test('identity: a pushed id arms the loop from Home with no ?v=', async () => {
+  const storage = createStorage({
+    playerActions: { sections: [{ videoId: 'home-id', startSeconds: 30, endSeconds: 60 }] },
+  });
+  const harness = createHarness({ storage });
+  harness.setHref('https://music.youtube.com/');
+  await harness.start();
+  harness.pushSong('home-id');
+  await settle();
+
+  assert.equal(harness.fromValue(), '0:30');
+  assert.equal(harness.media().currentTime, 30);
+  assert.equal(harness.timers.intervalDelays().includes(100), true);
+});
+
+test('identity: a different id clears the points', async () => {
+  const storage = createStorage({
+    playerActions: { sections: [{ videoId: 'id-a', startSeconds: 30, endSeconds: null }] },
+  });
+  const harness = createHarness({ storage });
+  await harness.start();
+  harness.pushSong('id-a');
+  await settle();
+  assert.equal(harness.fromValue(), '0:30');
+
+  harness.pushSong('id-b');
+  await settle();
+  assert.equal(harness.fromValue(), '');
+  assert.equal(harness.timers.intervalDelays().includes(100), false);
+});
+
+test('identity: a null id stops the tick and keeps the points', async () => {
+  const storage = createStorage({
+    playerActions: { sections: [{ videoId: 'id-a', startSeconds: 30, endSeconds: null }] },
+  });
+  const harness = createHarness({ storage });
+  await harness.start();
+  harness.pushSong('id-a');
+  await settle();
+  assert.equal(harness.timers.intervalDelays().includes(100), true);
+
+  harness.pushSong(null);
+  await settle();
+  assert.equal(harness.timers.intervalDelays().includes(100), false);
+  assert.equal(harness.fromValue(), '0:30');
+});
+
+test('identity: the same id returns and the loop resumes', async () => {
+  const storage = createStorage({
+    playerActions: { sections: [{ videoId: 'id-a', startSeconds: 30, endSeconds: null }] },
+  });
+  const harness = createHarness({ storage });
+  await harness.start();
+  harness.pushSong('id-a');
+  await settle();
+  harness.pushSong(null);
+  await settle();
+  assert.equal(harness.timers.intervalDelays().includes(100), false);
+
+  harness.pushSong('id-a');
+  await settle();
+  assert.equal(harness.timers.intervalDelays().includes(100), true);
+  assert.equal(harness.fromValue(), '0:30');
+  assert.equal(harness.media().currentTime, 30);
+});
+
+test('identity: the URL ?v= is the fallback until the player pushes an id', async () => {
+  const storage = createStorage({
+    playerActions: { sections: [{ videoId: 'url-id', startSeconds: 10, endSeconds: null }] },
+  });
+  const harness = createHarness({ storage });
+  harness.setHref('https://music.youtube.com/watch?v=url-id');
+  await harness.start();
+  assert.equal(harness.fromValue(), '0:10');
+
+  // Once the player speaks, the URL no longer decides.
+  harness.pushSong('player-id');
+  await settle();
+  assert.equal(harness.fromValue(), '');
+});
+
+test('identity: a save under the pushed id survives a fresh controller', async () => {
+  const storage = createStorage();
+  const first = createHarness({ storage });
+  await first.start();
+  first.pushSong('stable-id');
+  await settle();
+  first.commit('From', '0:10');
+  first.commit('To', '0:20');
+  first.click('Save section');
+  await settle();
+  assert.equal(first.status(), 'Saved');
+
+  const second = createHarness({ storage });
+  await second.start();
+  second.pushSong('stable-id');
+  await settle();
+  assert.equal(second.fromValue(), '0:10');
+  assert.equal(second.media().currentTime, 10);
+});
+
+test('identity: the same id on Home and on a watch URL is one section', async () => {
+  const storage = createStorage();
+  const home = createHarness({ storage });
+  home.setHref('https://music.youtube.com/');
+  await home.start();
+  home.pushSong('id-x');
+  await settle();
+  home.commit('From', '0:10');
+  home.click('Save section');
+  await settle();
+
+  // A watch URL whose `v` names something else: the player id still wins.
+  const watch = createHarness({ storage });
+  watch.setHref('https://music.youtube.com/watch?v=other-url-id');
+  await watch.start();
+  watch.pushSong('id-x');
+  await settle();
+  assert.equal(watch.fromValue(), '0:10');
+});
+
+test('modes: song mode - a hidden 0x0 video still supplies the loop timing', async () => {
+  const harness = createHarness({
+    mediaOptions: { width: 0, height: 0, computedVisibility: 'hidden', duration: 300 },
+  });
+  await harness.start();
+  harness.commit('From', '0:30');
+  harness.media().currentTime = 299.75;
+  harness.timers.tickIntervals();
+  assert.equal(harness.media().currentTime, 30);
+});
+
+test('modes: video mode - the visible video loops identically', async () => {
+  const harness = createHarness({ mediaOptions: { computedVisibility: 'visible', duration: 300 } });
+  await harness.start();
+  harness.commit('From', '0:30');
+  harness.media().currentTime = 299.75;
+  harness.timers.tickIntervals();
+  assert.equal(harness.media().currentTime, 30);
+});
+
+test('modes: collapsed mode - the bar drives the wheel and the same element loops', async () => {
+  const harness = createHarness();
+  await harness.start();
+  harness.commit('From', '0:30');
+
+  const event = harness.wheel(-100);
+  assert.equal(event.defaultPrevented, true);
+
+  harness.media().currentTime = 299.75;
+  harness.timers.tickIntervals();
+  assert.equal(harness.media().currentTime, 30);
+});
+
+test('loop: a To already passed seeks back on the next tick', async () => {
+  const harness = createHarness();
+  await harness.start();
+  harness.commit('From', '0:30');
+  harness.commit('To', '1:00');
+  harness.media().currentTime = 65;
+  harness.timers.tickIntervals();
+  assert.equal(harness.media().currentTime, 30);
+});
+
+test('loop: an explicit end loops without a known duration', async () => {
+  const harness = createHarness({ mediaOptions: { duration: NaN } });
+  await harness.start();
+  harness.commit('From', '0:30');
+  harness.commit('To', '1:00');
+  harness.media().currentTime = 60;
+  harness.timers.tickIntervals();
+  assert.equal(harness.media().currentTime, 30);
+});
+
+test('ui: the volume HUD is gone and the status follows a pushed id', async () => {
+  const harness = createHarness();
+  await harness.start();
+  assert.equal(harness.dom.hasHud(), false);
+
+  harness.pushSong('ui-id');
+  await settle();
+  harness.commit('From', '0:10');
+  harness.commit('To', '0:20');
+  assert.equal(harness.status(), '0:10 → 0:20');
+  assert.equal(harness.dom.hasHud(), false);
+});
+
+test('ui: without an id the status is medium-neutral', async () => {
+  const harness = createHarness();
+  harness.setHref('https://music.youtube.com/');
+  await harness.start();
+  harness.pushSong(null);
+  await settle();
+  assert.equal(harness.status(), 'Play a track to repeat');
 });
 
 // ---------------------------------------------------------------------------
@@ -2188,6 +2418,10 @@ function createPageHookSandbox(options) {
     getVolume() {
       return this.volume;
     },
+    getVideoData() {
+      if (!settings.videoId) return {};
+      return { video_id: settings.videoId, title: settings.title || '', author: 'artist' };
+    },
   };
 
   const win = {
@@ -2203,6 +2437,8 @@ function createPageHookSandbox(options) {
 
   const document = {
     documentElement: { dataset: { slraToken: settings.token === undefined ? 'tok-1' : settings.token } },
+    addEventListener() {},
+    removeEventListener() {},
     querySelector(selector) {
       if (selector === '#movie_player') return settings.noPlayer ? null : player;
       if (selector === 'video') return settings.video || null;
@@ -2222,6 +2458,9 @@ function createPageHookSandbox(options) {
 
   return {
     player,
+    posted() {
+      return posted;
+    },
     replies() {
       return posted.filter((message) => message && message.type === 'SLRA_VOLUME_STATE');
     },
@@ -2261,6 +2500,22 @@ test('page-hook: a missing player API replies source none', () => {
   assert.equal(reply.applied, false);
   assert.equal(reply.source, 'none');
   assert.equal(reply.volume, null);
+});
+
+test('page-hook: SLRA_SONG pushes the player video id on install', () => {
+  const hook = createPageHookSandbox({ videoId: 'abc123', title: 'A song' });
+  const songs = hook.posted().filter((message) => message.type === 'SLRA_SONG');
+  assert.ok(songs.length >= 1);
+  assert.equal(songs[0].videoId, 'abc123');
+  assert.equal(songs[0].title, 'A song');
+  assert.equal(songs[0].token, 'tok-1');
+});
+
+test('page-hook: SLRA_SONG pushes null when the player has no id', () => {
+  const hook = createPageHookSandbox();
+  const songs = hook.posted().filter((message) => message.type === 'SLRA_SONG');
+  assert.ok(songs.length >= 1);
+  assert.equal(songs[0].videoId, null);
 });
 
 test('page-hook: no GET_VOLUME surface and no mute write survive', () => {

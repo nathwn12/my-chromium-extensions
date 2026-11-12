@@ -25,6 +25,9 @@
 
   function revive(reason) {
     emit('SLRA_PAGE_REVIVE', reason);
+    // A re-bind is the normal case here (element replacement, SPA navigation):
+    // re-state the id on every revive; deduped when it has not changed.
+    postSong('revive:' + String(reason || ''), false);
   }
 
   // Volume only. This hook never writes `muted`: the content script is the only
@@ -55,6 +58,40 @@
     } catch {
       return { volume: null, source: 'none' };
     }
+  }
+
+  /**
+   * The real song id. The URL alone is not identity: YouTube Music Home plays
+   * from `/` with no `?v=`, and the player can swap tracks without the URL
+   * naming one. `getVideoData().video_id` is the player's own answer for the
+   * media that is loaded, in song mode and video mode alike.
+   */
+  function playerSong() {
+    try {
+      const player = document.querySelector('#movie_player');
+      if (!player || typeof player.getVideoData !== 'function') return null;
+      const data = player.getVideoData();
+      if (!data || typeof data !== 'object') return null;
+      const videoId = typeof data.video_id === 'string' && data.video_id !== '' ? data.video_id : null;
+      if (videoId === null) return null;
+      return { videoId: videoId, title: typeof data.title === 'string' ? data.title : '' };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Pushes the current id (or null) so the content script never depends on the
+   * URL. Forced on song events; deduped on soft signals so a revive storm does
+   * not re-post the same id.
+   */
+  function postSong(reason, force) {
+    const song = playerSong();
+    const videoId = song ? song.videoId : null;
+    if (!force && state.songPosted && state.lastSongId === videoId) return;
+    state.songPosted = true;
+    state.lastSongId = videoId;
+    emit('SLRA_SONG', reason, { token: pageToken(), videoId, title: song ? song.title : '' });
   }
 
   function replyVolume(data, volume, applied, source) {
@@ -98,6 +135,8 @@
 
   const state = {
     listenersReady: false,
+    lastSongId: null,
+    songPosted: false,
   };
 
   function ensureListeners() {
@@ -131,6 +170,13 @@
       window.addEventListener(eventName, () => reviveNow(eventName), true);
     });
 
+    // `videodatachange` is dispatched on document and may not bubble; capture
+    // catches both. `loadedmetadata` fires on the replaced <video> and does not
+    // bubble, but capture still traverses it.
+    document.addEventListener('videodatachange', () => postSong('videodatachange', true), true);
+    document.addEventListener('loadedmetadata', () => postSong('loadedmetadata', true), true);
+    window.addEventListener('yt-navigate-finish', () => postSong('yt-navigate-finish', true), true);
+
     state.listenersReady = true;
   }
 
@@ -142,5 +188,6 @@
 
   ensureListeners();
   emit('SLRA_PAGE_HOOK_READY', 'install', { token: pageToken() });
+  postSong('install', true);
   revive('install');
 })();

@@ -3,7 +3,7 @@
  * player-actions.js - easy volume (wheel over non-scrolling player chrome) and
  * section repeat (A-B loop) for YouTube Music.
  *
- * Ported from pear-slowed-reverb: precise-volume/renderer.ts (wheel + HUD) and
+ * Ported from pear-slowed-reverb: precise-volume/renderer.ts (wheel) and
  * section-repeat/{engine,saved,section,controller}.ts at a418ecb8.
  *
  * Two halves:
@@ -22,8 +22,10 @@
   const WHEEL_PX_PER_STEP = 100;
   const VOLUME_STEP_PCT = 5;
   const TICK_MS = 100;
-  const HUD_VISIBLE_MS = 1200;
+  const NOTICE_VISIBLE_MS = 1200;
   const SAVED_LIMIT = 100;
+  const PLAYER_BAR_TAG = 'YTMUSIC-PLAYER-BAR';
+  const MAIN_PANEL_ID = 'main-panel';
   const SEEK_RETRY_MS = 120;
   const SEEK_RETRY_ATTEMPTS = 3;
   const SEEK_TOLERANCE_SECONDS = 0.25;
@@ -287,7 +289,7 @@
     const current = Number(currentVolume);
     const base = Number.isFinite(current) ? Math.round(current) : 0;
     // YouTube Music's slider is quantized to 5 %. Snap by direction instead of
-    // adding 5 blindly, or 37 + 5 = 42 would land on 40 while the HUD said 42.
+    // adding 5 blindly, or 37 + 5 = 42 would land on 40 while we said 42.
     const stepped = steps > 0
       ? Math.floor(base / VOLUME_STEP_PCT) * VOLUME_STEP_PCT + steps * VOLUME_STEP_PCT
       : Math.ceil(base / VOLUME_STEP_PCT) * VOLUME_STEP_PCT + steps * VOLUME_STEP_PCT;
@@ -331,12 +333,25 @@
     return chain;
   }
 
-  function viewportHeight(doc) {
-    if (!doc) return 0;
-    const view = doc.defaultView;
-    if (view && Number.isFinite(Number(view.innerHeight))) return Number(view.innerHeight);
-    if (Number.isFinite(Number(doc.innerHeight))) return Number(doc.innerHeight);
-    return 0;
+  /**
+   * The two surfaces that carry the wheel: the persistent player bar, and the
+   * player panel (artwork in song mode, the video in video mode). The panel must
+   * be visible: an inactive player keeps it offscreen with `visibility: hidden`,
+   * which is exactly the state where the wheel belongs to the browse page.
+   */
+  function isPlayerSurface(node, getStyle) {
+    if (!node || typeof node !== 'object') return false;
+    if (typeof node.tagName === 'string' && node.tagName.toUpperCase() === PLAYER_BAR_TAG) return true;
+    if (attributeOf(node, 'id') !== MAIN_PANEL_ID) return false;
+    try {
+      const computed = getStyle ? getStyle(node) : null;
+      if (!computed) return true;
+      if (String(computed.visibility || '').toLowerCase() === 'hidden') return false;
+      if (String(computed.display || '').toLowerCase() === 'none') return false;
+      return true;
+    } catch {
+      return true;
+    }
   }
 
   function computedOverflowY(getStyle, node) {
@@ -379,25 +394,30 @@
       if (attributeOf(node, 'aria-modal') === 'true') return { handle: false, reason: 'dialog' };
     }
 
-    // Nearest scrollable ancestor: native scroll wins unless it is the document
-    // scroller that does not actually scroll.
+    // Positive allowlist. YouTube Music's browse surfaces compute
+    // `overflow-y: visible` on an actually scrolling document, so an overflow
+    // heuristic cannot separate them from the player; only the player bar and
+    // the player panel are ours. Everything else keeps native scrolling: browse
+    // shelves, the guide, the queue, lyrics and the nav bar.
     const style = typeof getStyle === 'function' ? getStyle : () => null;
-    const documentElement = doc ? doc.documentElement : null;
-    const viewport = viewportHeight(doc);
-    for (const node of chain) {
+    let surface = -1;
+    for (let index = 0; index < chain.length; index += 1) {
+      if (isPlayerSurface(chain[index], style)) {
+        surface = index;
+        break;
+      }
+    }
+    if (surface === -1) return { handle: false, reason: 'not-player-surface' };
+
+    // Inside the surface, a genuinely scrollable descendant still wins.
+    for (let index = 0; index < surface; index += 1) {
+      const node = chain[index];
       if (!node || typeof node !== 'object') continue;
       if (!SCROLL_OVERFLOW.has(computedOverflowY(style, node))) continue;
       const scrollHeight = Number(node.scrollHeight);
       const clientHeight = Number(node.clientHeight);
-      const overflows = scrollHeight > clientHeight + 1;
-      if (!overflows) continue;
-      if (node === documentElement || (doc && node === doc.body)) {
-        if (scrollHeight > viewport + 1) return { handle: false, reason: 'document-scroller' };
-        return { handle: true, reason: 'handle' };
-      }
-      return { handle: false, reason: 'scrollable-ancestor' };
+      if (scrollHeight > clientHeight + 1) return { handle: false, reason: 'scrollable-ancestor' };
     }
-
     return { handle: true, reason: 'handle' };
   }
 
@@ -408,8 +428,6 @@
   const PANEL_CSS = [
     ':host{position:fixed;right:16px;bottom:96px;z-index:2147483000;display:block;pointer-events:none;font:12px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;color:#f1f1f1;}',
     '.slra-shell{display:flex;flex-direction:column;align-items:flex-end;gap:6px;}',
-    '.slra-hud{min-width:54px;padding:4px 8px;border-radius:8px;background:rgba(0,0,0,.82);text-align:center;font-size:15px;font-weight:600;opacity:0;transition:opacity .15s ease;pointer-events:none;}',
-    '.slra-hud.visible{opacity:1;}',
     '.slra-pill{pointer-events:auto;border:0;border-radius:999px;padding:6px 12px;background:rgba(0,0,0,.72);color:#f1f1f1;font:inherit;font-weight:600;cursor:pointer;}',
     '.slra-pill:hover{background:rgba(0,0,0,.85);}',
     '.slra-panel{display:none;pointer-events:auto;width:224px;padding:10px;border-radius:12px;background:rgba(15,15,15,.94);box-shadow:0 8px 24px rgba(0,0,0,.45);}',
@@ -451,13 +469,14 @@
     let generation = 0;
     let saved = [];
     let savedReady = false;
+    let pageSongId = null;
+    let songIdPushed = false;
     let unsubscribeStorage = null;
     let session = createSectionSession();
     let active = true;
     let notice = null;
     let noticeTimer = null;
     let volume = 50;
-    let hudTimer = null;
     let tickTimer = null;
     let media = null;
     let mediaCleanup = [];
@@ -493,8 +512,27 @@
       }
     }
 
+    /**
+     * Identity: the player's own id wins, because YouTube Music Home plays from
+     * `/` with no `?v=` and a song and its music-video version may legitimately
+     * have different ids, so per-media keys stay. The URL is only the fallback
+     * for the first moments after load; a pushed null is authoritative.
+     */
     function currentSongKey() {
+      if (songIdPushed) return pageSongId;
       return songKeyFrom(currentHref());
+    }
+
+    /** Adopts the id pushed by the page hook (null when no track is loaded). */
+    function setSongId(next) {
+      const normalized = typeof next === 'string' && next !== '' ? next : null;
+      songIdPushed = true;
+      if (normalized === pageSongId && normalized !== null) return;
+      pageSongId = normalized;
+      if (!started) return;
+      syncSong();
+      syncTick();
+      syncPanel();
     }
 
     function isVisible() {
@@ -571,10 +609,6 @@
           // Already detached.
         }
         unsubscribeStorage = null;
-      }
-      if (hudTimer !== null) {
-        timers.clearTimeout(hudTimer);
-        hudTimer = null;
       }
       if (noticeTimer !== null) {
         timers.clearTimeout(noticeTimer);
@@ -843,7 +877,6 @@
       // stop cannot overwrite the new session's volume.
       const mine = generation;
       const seq = ++volumeSeq;
-      showHud(percent);
       if (!pageHook || typeof pageHook.setVolume !== 'function') {
         writeMediaVolume(percent);
         return;
@@ -864,11 +897,9 @@
           writeMediaVolume(percent);
           return;
         }
+        // The page's applied value is the truth; the element mirrors it.
         const applied = Number(reply.volume);
-        if (Number.isFinite(applied)) {
-          volume = Math.round(applied);
-          showHud(volume);
-        }
+        if (Number.isFinite(applied)) volume = Math.round(applied);
       }).catch(() => {
         if (!started || mine !== generation || seq !== volumeSeq) return;
         writeMediaVolume(percent);
@@ -882,17 +913,6 @@
       } catch {
         // A detached element cannot be written.
       }
-    }
-
-    function showHud(percent) {
-      if (!ui) return;
-      ui.hud.textContent = percent + ' %';
-      ui.hud.classList.add('visible');
-      if (hudTimer !== null) timers.clearTimeout(hudTimer);
-      hudTimer = timers.setTimeout(() => {
-        hudTimer = null;
-        if (ui) ui.hud.classList.remove('visible');
-      }, HUD_VISIBLE_MS);
     }
 
     // -- user input --------------------------------------------------------
@@ -1045,10 +1065,6 @@
       const shell = doc.createElement('div');
       shell.className = 'slra-shell';
 
-      const hud = doc.createElement('div');
-      hud.className = 'slra-hud';
-      hud.setAttribute('aria-live', 'polite');
-
       const panel = doc.createElement('div');
       panel.className = 'slra-panel';
       panel.setAttribute('aria-label', 'Section repeat');
@@ -1084,14 +1100,13 @@
       pill.textContent = 'Repeat';
       pill.setAttribute('aria-label', 'Section repeat');
 
-      shell.append(hud, panel, pill);
+      shell.append(panel, pill);
       shadow.appendChild(shell);
       parent.appendChild(host);
 
       ui = {
         host: host,
         shadow: shadow,
-        hud: hud,
         panel: panel,
         repeat: repeat,
         from: fromRow.input,
@@ -1200,14 +1215,14 @@
       } else if (notice === 'failed') {
         text = 'Save failed';
       } else if (notice === 'no-song') {
-        text = 'Play a song to save';
+        text = 'Play a track to save';
       } else if (notice === 'saved') {
         text = 'Saved';
       } else if (notice === 'removed') {
         text = 'Removed';
       } else if (!session.identityKnown) {
-        // No `?v=`: repeat needs a song. Live looping still works while playing.
-        text = 'Play a song to repeat';
+        // No player id: repeat needs a track. Live looping still works.
+        text = 'Play a track to repeat';
       } else if (!active) {
         text = 'Repeat off';
       } else if (start === null && end === null) {
@@ -1394,7 +1409,7 @@
             noticeTimer = null;
             notice = null;
             syncPanel();
-          }, HUD_VISIBLE_MS);
+          }, NOTICE_VISIBLE_MS);
         }
       } catch {
         if (!started || mine !== generation) return;
@@ -1436,13 +1451,14 @@
       start: start,
       stop: stop,
       sync: sync,
+      setSongId: setSongId,
     };
   }
   const api = {
     WHEEL_PX_PER_STEP: WHEEL_PX_PER_STEP,
     VOLUME_STEP_PCT: VOLUME_STEP_PCT,
     TICK_MS: TICK_MS,
-    HUD_VISIBLE_MS: HUD_VISIBLE_MS,
+    NOTICE_VISIBLE_MS: NOTICE_VISIBLE_MS,
     SAVED_LIMIT: SAVED_LIMIT,
     STORAGE_KEY: STORAGE_KEY,
     parseTimeInput: parseTimeInput,

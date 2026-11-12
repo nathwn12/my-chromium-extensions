@@ -44,6 +44,8 @@
     lifecycleListenersReady: false,
     pageHookReady: false,
     pageHookToken: '',
+    pageSongId: null,
+    pageSongPushed: false,
     lastError: '',
     workletLoaded: false,
     workletRetryCount: 0,
@@ -266,6 +268,14 @@
         if (typeof data.token !== 'string' || data.token.length === 0) return;
         if (data.token !== state.pageHookToken) return;
         state.pageHookReady = true;
+      }
+
+      if (data.type === 'SLRA_SONG') {
+        if (typeof data.token !== 'string' || data.token.length === 0) return;
+        if (data.token !== state.pageHookToken) return;
+        state.pageSongPushed = true;
+        state.pageSongId = typeof data.videoId === 'string' && data.videoId !== '' ? data.videoId : null;
+        if (playerActions) playerActions.setSongId(state.pageSongId);
       }
 
       if (data.type === 'SLRA_VOLUME_STATE') {
@@ -546,6 +556,9 @@ function applyRuntimeState(runtime) {
       playerActions = null;
       return null;
     }
+    // Only a real push is authoritative: before it, the controller may still use
+    // the URL's `v`. A pushed null means "no track", which is different.
+    if (state.pageSongPushed) playerActions.setSongId(state.pageSongId);
     void playerActions.start();
     return playerActions;
   }

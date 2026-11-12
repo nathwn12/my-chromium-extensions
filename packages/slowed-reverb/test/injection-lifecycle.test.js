@@ -45,6 +45,9 @@ function loadPageHook() {
   sandbox.document = {
     documentElement: { dataset: { slraToken: 'token-minted-by-content-script' } },
     visibilityState: 'visible',
+    // The hook binds song events on document; keep them off the window count.
+    addEventListener() {},
+    removeEventListener() {},
   };
   sandbox.location = { href: 'https://music.youtube.com/watch?v=x', origin: 'https://music.youtube.com' };
   vm.createContext(sandbox);
