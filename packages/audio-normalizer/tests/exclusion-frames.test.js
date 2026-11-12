@@ -1021,14 +1021,6 @@ test('first-ever enable on a live document arms nothing; a navigation arms it', 
 });
 
 // ============ live toggle on a seen host ============
-const ACTIVE_COST = (frame) => ({
-  pageListeners: frame.pageListeners,
-  liveObservers: frame.liveObservers,
-  liveAudioContexts: frame.contexts.filter((context) => context.state !== 'closed').length,
-  worklets: frame.worklets,
-  mediaSourceCalls: frame.mediaSourceCalls,
-});
-
 test('seen host loaded off: the page hook is present and passive, nothing is processing', async () => {
   const storage = createFakeStorage({
     'site:top.test': { enabled: false, seen: true, gainDb: 0, seq: 2, mirror: false, excluded: false },
