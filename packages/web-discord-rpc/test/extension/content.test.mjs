@@ -45,6 +45,32 @@ function gones(handle) {
   return handle.messages.filter((message) => message.t === "wdr-gone");
 }
 
+/**
+ * The master presence switch as the content script sees it: one stored key and
+ * an onChanged fan-out the test drives.
+ */
+function fakeStorage(initial) {
+  const state = { ...initial };
+  const listeners = [];
+  return {
+    local: {
+      get(keys, callback) {
+        const out = {};
+        for (const key of [].concat(keys)) if (key in state) out[key] = state[key];
+        if (typeof callback === "function") callback(out);
+      }
+    },
+    onChanged: {
+      addListener(fn) {
+        listeners.push(fn);
+      }
+    },
+    emit(changes) {
+      for (const fn of listeners) fn(changes, "local");
+    }
+  };
+}
+
 function musicWatch(title = "First Song", props = {}) {
   return musicPage({
     title,
@@ -92,6 +118,34 @@ test("the 1 s poll reports a title or pause change once, then stays quiet", () =
   handle.poll();
   assert.equal(handle.messages.length, 3);
   assert.equal(handle.messages[2].state.paused, false);
+});
+
+test("the presence switch off holds no poll, reads nothing and sends nothing", () => {
+  const page = musicWatch();
+  const handle = boot(page, { storage: fakeStorage({ enabled: false }) });
+  assert.deepEqual(handle.intervalDelays(), [], "no poll while presence is off");
+  assert.deepEqual(handle.messages, [], "nothing to publish while off");
+  page.dispatchOnDoc("play", { target: page.doc.querySelector("audio") });
+  page.dispatchOnDoc("visibilitychange");
+  page.dispatchOnWindow("pagehide");
+  assert.deepEqual(handle.messages, [], "no report escapes while off");
+  assert.deepEqual(handle.intervalDelays(), [], "still no poll after a pagehide");
+});
+
+test("switching presence back on re-arms the poll and reports at once", () => {
+  const page = musicWatch();
+  const storage = fakeStorage({ enabled: true });
+  const handle = boot(page, { storage });
+  assert.deepEqual(handle.intervalDelays(), [1000]);
+  assert.equal(states(handle).length, 1);
+
+  storage.emit({ enabled: { newValue: false } });
+  assert.deepEqual(handle.intervalDelays(), [], "off stops the poll");
+
+  storage.emit({ enabled: { newValue: true } });
+  assert.deepEqual(handle.intervalDelays(), [1000], "on restarts the poll");
+  assert.equal(states(handle).length, 2, "on republishes without waiting for a tick");
+  assert.equal(states(handle)[1].state.title, "First Song");
 });
 
 test("the poll reports a seek no media event announced", () => {

@@ -37,11 +37,12 @@
   let lastReportAt = 0;
   let settleTimer = null;
   let pollTimer = null;
-  // While disabled the 1 s poll does no DOM work; the worker clears presence.
+  // While disabled the poll is not merely idle: it is stopped, so a switched-off
+  // extension costs no timer at all. The storage listener below re-arms it.
   let enabled = true;
   try {
     chrome.storage?.local?.get?.(["enabled"], (stored) => {
-      enabled = !stored || stored.enabled !== false;
+      setEnabled(!stored || stored.enabled !== false);
     });
   } catch {
     /* storage unavailable — stay enabled */
@@ -49,11 +50,35 @@
   try {
     chrome.storage?.onChanged?.addListener?.((changes, area) => {
       if (area === "local" && changes && changes.enabled) {
-        enabled = changes.enabled.newValue !== false;
+        setEnabled(changes.enabled.newValue !== false);
       }
     });
   } catch {
     /* storage unavailable — stay enabled */
+  }
+
+  function startPoll() {
+    if (!enabled || pollTimer !== null) return;
+    pollTimer = setInterval(tick, URL_POLL_MS);
+  }
+
+  function stopPoll() {
+    if (pollTimer === null) return;
+    clearInterval(pollTimer);
+    pollTimer = null;
+  }
+
+  /** Off stops the poll; on republishes at once and resumes polling. */
+  function setEnabled(next) {
+    const value = next !== false;
+    if (value === enabled) return;
+    enabled = value;
+    if (!enabled) {
+      stopPoll();
+      return;
+    }
+    report(false);
+    startPoll();
   }
 
   function send(message) {
@@ -167,7 +192,7 @@
     return true;
   }
 
-  pollTimer = setInterval(tick, URL_POLL_MS);
+  startPoll();
 
   // The 1 Hz poll runs only while a video actually exists: observer-driven
   // detection (player container mutations plus popstate/hashchange) covers
@@ -177,10 +202,7 @@
     checkUrl();
     const video = document.querySelector("video");
     if (!video) {
-      if (pollTimer !== null) {
-        clearInterval(pollTimer);
-        pollTimer = null;
-      }
+      stopPoll();
       return;
     }
     if (video && video !== lastVideo) report(false);
@@ -198,7 +220,7 @@
       checkUrl();
       const video = document.querySelector("video");
       if (video) {
-        if (pollTimer === null) pollTimer = setInterval(tick, URL_POLL_MS);
+        startPoll();
         if (video !== lastVideo) report(false);
       }
     });

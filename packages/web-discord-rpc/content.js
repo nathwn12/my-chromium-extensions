@@ -36,6 +36,8 @@
     "emptied"
   ];
   var POLL_MS = 1000;
+  // `storage.local` key the popup switch and the worker both use.
+  var ENABLED_KEY = "enabled";
   // A live position this far from the anchored one is a seek, a rate change or
   // an event we never saw — not rounding.
   var DRIFT_SECONDS = 2.5;
@@ -53,6 +55,11 @@
   var lastSample = null;
   var reported = false;
   var settleTimer = null;
+  var pollTimer = null;
+  // The master presence switch (on unless explicitly stored `false`). Off means
+  // the page is not read at all: the poll stops and every report is dropped,
+  // because the worker holds no port and has nothing to publish.
+  var enabled = true;
 
   function href() {
     try {
@@ -89,6 +96,7 @@
   }
 
   function gone() {
+    if (!enabled) return;
     if (!reported) {
       lastTitle = null;
       lastPaused = null;
@@ -103,6 +111,7 @@
   }
 
   function report(state) {
+    if (!enabled) return;
     if (!state || !state.title) {
       gone();
       return;
@@ -127,6 +136,7 @@
   }
 
   function reportNow() {
+    if (!enabled) return;
     report(readState());
   }
 
@@ -204,7 +214,54 @@
     return Math.abs(rate - 1) > RATE_EPSILON;
   }
 
+  function startPoll() {
+    if (!enabled || pollTimer !== null) return;
+    pollTimer = setInterval(tick, POLL_MS);
+  }
+
+  function stopPoll() {
+    if (pollTimer === null) return;
+    clearInterval(pollTimer);
+    pollTimer = null;
+  }
+
+  /**
+   * The switch is the master gate: off stops the poll and drops every report,
+   * on re-arms the poll and publishes the current state at once so the card
+   * fills in without waiting for a tick or a media event.
+   */
+  function setEnabled(next) {
+    var value = next !== false;
+    if (value === enabled) return;
+    enabled = value;
+    if (!enabled) {
+      stopPoll();
+      return;
+    }
+    startPoll();
+    reportNow();
+  }
+
+  /** Read the stored switch once and follow it from then on. */
+  function watchEnabled() {
+    try {
+      if (!chrome.storage || !chrome.storage.local) return;
+      chrome.storage.local.get([ENABLED_KEY], function (stored) {
+        if (stored && stored.enabled === false) setEnabled(false);
+      });
+      if (chrome.storage.onChanged && chrome.storage.onChanged.addListener) {
+        chrome.storage.onChanged.addListener(function (changes, area) {
+          if (area !== "local" || !changes || !changes.enabled) return;
+          setEnabled(changes.enabled.newValue !== false);
+        });
+      }
+    } catch (_) {
+      /* storage unavailable — presence stays on */
+    }
+  }
+
   function tick() {
+    if (!enabled) return;
     checkUrl();
     var state = readState();
     if (!state || !state.title) {
@@ -240,7 +297,8 @@
     reportNow();
   });
 
-  setInterval(tick, POLL_MS);
+  watchEnabled();
+  startPoll();
 
   if (document.readyState === "complete" || document.readyState === "interactive") {
     reportNow();

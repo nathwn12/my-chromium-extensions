@@ -407,7 +407,7 @@ export function makePage({
  * Evaluate the classic scripts in one vm context, with a fake `chrome` and
  * timers the test drives. Returns the message log plus controls.
  */
-export function loadContent({ extractSource, contentSource, page, sendMessage, top }) {
+export function loadContent({ extractSource, contentSource, page, sendMessage, top, storage }) {
   const messages = [];
   const record = (message) => {
     // Content runs in a vm realm; round-trip proves the payload is wire-serializable.
@@ -423,6 +423,10 @@ export function loadContent({ extractSource, contentSource, page, sendMessage, t
       }
     }
   };
+  // Only the storage-aware tests carry a `chrome.storage`; every other test
+  // boots the content script with the surface a real content script can always
+  // count on, which is why the script guards the read.
+  if (storage) chrome.storage = storage;
 
   const intervals = new Map();
   const timeouts = new Map();

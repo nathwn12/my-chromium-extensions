@@ -50,14 +50,14 @@ Plain MV3 extension. No build/bundle. No TS. Vanilla ES2020. Files are the sourc
 ## Commands
 
 ```
-npm run lint                          # eslint (flat config eslint.config.mjs) — expect 0 errors, 0 warnings; skips qa/ (ignored in config)
+bun run lint                          # eslint (flat config eslint.config.mjs) — expect 0 errors, 0 warnings; skips qa/ (ignored in config)
 node --check <file>.js                # syntax check per script (no build step exists)
 ```
 
 ## Verification safety
 
 - **No audio playback in any test, ever.** Do not launch any Chromium that can produce sound: no autoplay, no headed browser, no chrome-devtools MCP audio, and no muted-playback "audio test" either. A browser-based audio check is not permitted; if one is ever truly unavoidable, STOP and get explicit user approval before running it — never run it first and report afterwards.
-- Verification is **static and numeric only**: `npm run lint`, `node --check <file>.js`, unit tests, and offline numeric analysis of captured sample buffers that are never connected to a destination or device (`OfflineAudioContext`, or a worklet driven straight into a `Float32Array` from a plain Node harness with `AudioWorkletProcessor`/`registerProcessor`/`sampleRate` stubbed).
+- Verification is **static and numeric only**: `bun run lint`, `node --check <file>.js`, unit tests, and offline numeric analysis of captured sample buffers that are never connected to a destination or device (`OfflineAudioContext`, or a worklet driven straight into a `Float32Array` from a plain Node harness with `AudioWorkletProcessor`/`registerProcessor`/`sampleRate` stubbed).
 - CPU evidence is the **browser usage gauge** (Chrome/Brave Task Manager, `Shift+Esc`) — a human-read gauge, not a benchmark. Do not add or run a bespoke CPU benchmark harness.
 
 ## QA
@@ -75,4 +75,4 @@ node --check <file>.js                # syntax check per script (no build step e
 - Ignores `*.md`, `*.json`, `*.zip`, `/qa`, `/.agnes/`, `/output/`, `/user-data/`, `/.dev`, `/.prod`. Do not commit these file types.
 - `/qa` ignored means the QA scripts themselves are **untracked local-only** — edits there never show in `git status`.
 - Already-tracked `.md` exceptions stay in git: `README.md`, `PRIVACY_POLICY.md`, `STORE_SUBMISSION.md`.
-- **`package.json` IS tracked** — its changes appear in `git status`. `package-lock.json` and `AGENTS.md` itself are NOT tracked — their changes never appear in `git status` (force-add with `-f` if ever needed).
+- **`package.json` IS tracked** — its changes appear in `git status`. The lockfile is the workspace's single `bun.lock` at the repo root; this package has none of its own. `AGENTS.md` is tracked too (the `.gitignore` carries `!AGENTS.md`), so the `*.md` rule does not hide it.
