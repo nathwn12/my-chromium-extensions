@@ -65,7 +65,9 @@ as shipped.
   write `muted`.
 - Volume is 0–100 %, no software boost. The graph's gain carries `media.volume` once.
 - No YTM class selector is required for the feature to work. The panel is fixed and
-  shadow-hosted; wheel gating reads computed overflow, not class names.
+  shadow-hosted; wheel gating is a positive surface allowlist (the player bar and the
+  visible player panel), never computed overflow - YouTube Music computes
+  `overflow-y: visible` on an actually scrolling browse page.
 - No audio playback in tests. Offline/Node only, per `AGENTS.md`.
 - `main` is not touched until the merge step. The release is a separate, explicit
   step after green.
@@ -78,13 +80,14 @@ as shipped.
 |---|---|
 | `player-actions.js` | **new**. UMD module like `shared.js`: pure engine + a DOM controller factory. Exports under `globalThis.SlowedReverbPlayerActions` and `module.exports` for tests. |
 | `content-script.js` | minimal wiring: create the player-actions controller when eligible, feed it the media element(s), tear it down on retire/bypass; no refactor of the audio pipeline. |
-| `page-hook.js` | add token-verified `SLRA_SET_VOLUME` handling: call `#movie_player.setVolume(percent)`, read `getVolume()` back, reply with the applied value. Volume only - this hook never writes `muted` (see "Single writer"). |
+| `page-hook.js` | token-verified `SLRA_SET_VOLUME` (call `#movie_player.setVolume(percent)`, read `getVolume()` back, reply with the applied value) and `SLRA_SONG` (push `getVideoData().video_id` on every song signal, null when none). Volume only - this hook never writes `muted` (see "Single writer"). |
 | `manifest.json` | add `player-actions.js` to `content_scripts[0].js` between `shared.js` and `content-script.js`. Nothing else. |
 | `test/player-actions.test.js` | **new**. Engine, saved, wheel arbitration, controller lifecycle, storage. Port pear's cases; add the 15 guards. |
 | `popup.html/js/css` | **untouched**. |
 | `CHANGELOG.md`, `manifest.json`, `package.json` | version 1.2.0 at release time. |
 
-No CSS file: the panel and HUD live in a shadow root created by `player-actions.js`.
+No CSS file: the A-B panel lives in a shadow root created by `player-actions.js`.
+There is no volume HUD: YouTube Music's own slider is the feedback.
 
 ### Volume path
 
@@ -96,7 +99,7 @@ wheel / future hotkey
       → YTM updates its own slider + video.volume
   → native volumechange
   → content-script: masterGain.gain ← media.volume   (existing code, unchanged)
-  → HUD "65 %" for 1.2 s
+  (no HUD: the YTM slider is the feedback)
 ```
 
 - The page hook replies with the actual applied percent; if the API is missing, the
@@ -127,11 +130,13 @@ wheel / future hotkey
 4. Target inside the player-actions shadow host → no (panel has its own wheel/inputs).
 5. Target is `input`, `textarea`, `select`, `[contenteditable]`, or inside an open
    dialog (`dialog[open]`, `[aria-modal="true"]`) → no.
-6. Nearest scrollable ancestor: walk from target to `<html>`; an element with
-   `overflow-y` in `auto|scroll|overlay` and `scrollHeight > clientHeight + 1`.
-   - If the ancestor is not the document scroller → no (native scroll wins).
-   - If it is the document scroller and the document actually scrolls
-     (`documentElement.scrollHeight > innerHeight + 1`) → no.
+6. Surface allowlist: walk from target to `<html>`; the wheel is handled only when the
+   chain contains `ytmusic-player-bar`, or `#main-panel` with a visible computed style
+   (`visibility` not `hidden`, `display` not `none`). Browse content, the guide, the
+   queue, lyrics and the nav bar are native scroll and are never `preventDefault`ed.
+   Inside the surface, a genuinely scrollable descendant still wins (same
+   `overflow-y` + `scrollHeight > clientHeight + 1` test, evaluated only below the
+   surface node).
 7. Otherwise → handle.
 
 `preventDefault()` is called only when `handle` is true **and** a volume step will be
@@ -174,15 +179,20 @@ Controller behavior:
   is replaced on SPA navigation) and seeks when `resolveSeekTarget` returns a number.
 - `ended` listener is the backstop: seek to `resolveEndSeekTarget` and `play()` —
   gated on the same arming rules, so clearing/off cannot restart playback.
-- Song key: `new URL(location.href).searchParams.get('v')` **only**. There is no
-  `media.currentSrc` fallback and no hash of one. A blob or signed googlevideo URL is
-  transient, can be reused by the next track, and would either fail to restore its own
-  song or collide onto another one; storing it also retains a full signed URL. A page
-  with no `v` (the home/queue view) therefore gets a live loop and nothing else: no save,
-  no restore, no identity latch, and the status line reads `Play a song to repeat`. On
-  `yt-navigate-finish`, `popstate`, `hashchange`, `loadedmetadata`, and `emptied`: if the
-  key changed, clear points, stop the tick, then restore the saved section for the new
-  key from the in-memory cache (set points, `active = true`, seek to start). The restore
+- Song key: the **player's own id** wins - `page-hook.js` pushes
+  `#movie_player.getVideoData().video_id` as `SLRA_SONG` on install, on every revive, on
+  `videodatachange`, `loadedmetadata` and `yt-navigate-finish` - because YouTube Music Home
+  plays from `/` with no `?v=`, and the player swaps tracks without the URL naming one. The
+  same id covers song mode and video mode; a song and its music-video version may
+  legitimately have different ids, so per-media keys stay. The URL's `v` is only the
+  fallback until the first push. `media.currentSrc` and any hash of it are never used: a
+  blob or signed googlevideo URL is transient and reusable, so it cannot identify a song.
+  A pushed null is authoritative: the loop tick stops and the points are kept (a stale
+  range must never seek the next track), with the status line reading `Play a track to
+  repeat`. On `yt-navigate-finish`, `popstate`, `hashchange`, `loadedmetadata`, and
+  `emptied`: if the key changed, clear points, stop the tick, then restore the saved
+  section for the new key from the in-memory cache (set points, `active = true`, seek to
+  start). The restore
   is a synchronous cache lookup: no per-song storage read, no read token, no retry
   timer, so an edit, a transition or a second signal cannot interleave with it. One
   restore per song visit: a manual commit marks the visit restored, so a later cache
@@ -199,7 +209,7 @@ Controller behavior:
   snapshot; `ok: false` shows `Save failed` and leaves the cache untouched. No
   read-modify-write in the controller.
 - Status copy mirrors pear: off / need start / `A → B` / `A → end of song` / invalid
-  / saved / removed / `Play a song to repeat` (no id) / `Play a song to save`.
+  / saved / removed / `Play a track to repeat` (no id) / `Play a track to save`.
 
 ### Storage
 
