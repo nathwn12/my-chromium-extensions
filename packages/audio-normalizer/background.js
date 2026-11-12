@@ -1075,8 +1075,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           await writeSiteRecord(siteKey, next);
           return { seq: nextSeq, nextEnabled, gainDb: next.gainDb, excluded: next.excluded };
         });
-        // FINAL RULE: the toggle is recorded and applies on the next navigation;
-        // no open document is armed by it.
+        // This legacy toggle only records state. Live application is the
+        // per-site broadcast, which the storage change below emits.
         console.log('[bg] stored toggle:', siteKey, outcome.nextEnabled);
         return {
           ok: true,
@@ -1180,7 +1180,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         // Exclusion is immediate and worker-driven: the hook in every affected
         // frame of every affected tab is destroyed before the popup hears back,
         // so a mid-read or hung content script cannot delay it. Un-excluding is
-        // the mirror of an enable: it applies on the next navigation only.
+        // the one-way door: the captures are gone, so it applies on the next
+        // navigation only.
         if (persist && applied.exclusionChanged && applied.excluded) {
           await teardownHooksForSite(siteKey, { includeDescendants: true, mode: 'destroy' });
         }

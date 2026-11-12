@@ -1590,6 +1590,13 @@
       try {
         const session = await ensureMediaSession();
         await resumeWithTimeout(session.context, RESUME_TIMEOUT_MS);
+        // A stop landing mid-attach must not capture, connect or re-arm the
+        // resume listeners after the sweep: the hook is inactive, so leave the
+        // element exactly as the page has it.
+        if (!state.active) {
+          restoreHookGuard(mediaElement);
+          return;
+        }
         // Prefer the session that owns the source; it stays alive because a
         // captured context never closes.
         let owner = session;
@@ -1628,6 +1635,11 @@
     try {
       const session = await ensureMediaSession();
       await resumeWithTimeout(session.context, RESUME_TIMEOUT_MS);
+      // Same mid-attach stop guard as the cached-source path above.
+      if (!state.active) {
+        restoreHookGuard(mediaElement);
+        return;
+      }
       // Gate: per Web Audio, createMediaElementSource permanently steals
       // the element's direct output. A suspended/closed context therefore
       // means permanent silence — never capture into one. Restore the

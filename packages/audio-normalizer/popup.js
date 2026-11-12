@@ -51,9 +51,9 @@ let statusPollStarted = false;
 // document is not armed, so the notice replaces the ordinary status line.
 let reloadNoticePending = false;
 const EXCLUDED_TEXT = 'Excluded. Nothing runs on this site. Reload restores this page.';
-// FINAL RULE (gate G3): enabling never starts work in an already-loaded
-// document. The popup says so once, quietly — text only, no new control, and it
-// never reloads a page the user did not ask to reload.
+// One residual reload case, stated once and quietly: the FIRST-ever enable of a
+// host, where no page hook exists in the loaded document to start. A host that
+// has been enabled before is applied live, and the popup must not say this.
 const RELOAD_NOTICE_TEXT = 'Enabled. Reload applies this.';
 // A verdict, not silence: the page plays this audio through its own Web Audio
 // graph, so the one source per element rule means we can never route it.
@@ -707,8 +707,9 @@ async function refreshDocumentStatus() {
       renderStatus({ indicator: 'gray', text: runtimeActivationMessage || 'Enabled. Reload on a supported page.' });
       return;
     }
-    // No content script in this document: the enable (or un-exclude) is
-    // recorded and applies on the next navigation.
+    // No content script in this document: the enable was recorded but there is
+    // no hook to start here, so this tab needs one navigation (a first-ever
+    // enable, or a document that loaded before the extension did).
     if (toggle.checked && runtimeActivationState === 'reload') {
       renderStatus({ indicator: 'gray', text: RELOAD_NOTICE_TEXT });
       return;
