@@ -491,6 +491,7 @@
     let seekRetryCount = 0;
     let seekToken = 0;
     let settleTimer = null;
+    let lastSeekTarget = null;
     let saveChain = Promise.resolve();
     let volumeSeq = 0;
 
@@ -593,6 +594,7 @@
       fromDirty = false;
       toDirty = false;
       everBound = false;
+      lastSeekTarget = null;
       saveChain = Promise.resolve();
     }
 
@@ -624,6 +626,7 @@
       media = next || null;
       if (!media) return;
       everBound = true;
+      lastSeekTarget = null;
 
       if (replaced) {
         cancelSeekRetry();
@@ -643,6 +646,7 @@
       bindMediaListener('loadedmetadata', handleSourceChange);
       bindMediaListener('emptied', handleSourceChange);
       bindMediaListener('volumechange', refreshVolume);
+      bindMediaListener('seeked', handleSeeked);
     }
 
     function detachMedia() {
@@ -657,6 +661,15 @@
       }
       mediaCleanup = [];
       media = null;
+    }
+
+    /** A seek this controller did not write owns the position: stop fighting it. */
+    function handleSeeked() {
+      if (!media) return;
+      const at = Number(media.currentTime);
+      if (lastSeekTarget !== null && Number.isFinite(at) && Math.abs(at - lastSeekTarget) <= SEEK_TOLERANCE_SECONDS) return;
+      clearSettleCheck();
+      cancelSeekRetry();
     }
 
     function handleSourceChange() {
@@ -1160,6 +1173,7 @@
       const value = Number(target);
       if (!Number.isFinite(value) || value < 0) return false;
       cancelSeekRetry();
+      lastSeekTarget = value;
       return writeSeek(value, seekToken);
     }
 

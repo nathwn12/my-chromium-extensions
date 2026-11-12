@@ -1515,6 +1515,10 @@ test('controller: guard - a player reset after the restore seek is corrected onc
   await harness.start();
   assert.equal(harness.media().currentTime, 40);
 
+  // Our own seek landing is not a user seek: the settle stays armed.
+  harness.media().dispatchEvent('seeked');
+  assert.equal(harness.timers.timeoutCount(), 1);
+
   // YTM applies its own startup position after the restore landed.
   harness.media().currentTime = 0;
   assert.equal(harness.timers.timeoutCount(), 1);
@@ -1524,6 +1528,23 @@ test('controller: guard - a player reset after the restore seek is corrected onc
   // Exactly once: a later reset is not fought forever.
   harness.media().currentTime = 0;
   assert.equal(harness.timers.timeoutCount(), 0);
+  assert.equal(harness.media().currentTime, 0);
+});
+
+test('controller: guard - a user seek cancels the restore settle check', async () => {
+  const storage = createStorage({
+    playerActions: { sections: [{ videoId: 'song-a', startSeconds: 40, endSeconds: null }] },
+  });
+  const harness = createHarness({ storage });
+  await harness.start();
+  assert.equal(harness.timers.timeoutCount(), 1);
+
+  harness.media().currentTime = 5;
+  harness.media().dispatchEvent('seeked');
+  assert.equal(harness.timers.timeoutCount(), 0);
+
+  harness.media().currentTime = 0;
+  harness.timers.flushTimeouts();
   assert.equal(harness.media().currentTime, 0);
 });
 
