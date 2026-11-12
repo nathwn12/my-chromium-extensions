@@ -64,6 +64,9 @@ const PAGE_OWNED_TEXT = 'This page plays its audio through its own graph, so it 
 // Same verdict, different reason: cross-origin media the page has not approved
 // for CORS cannot be routed without silence, so it stays native and audible.
 const PROTECTED_TEXT = "This page's audio is cross-origin protected, so it plays unprocessed.";
+// A route that broke (source swap, context lost, worklet error) is handed back
+// to the page rather than left muted: native audio wins, and it says so.
+const INTERRUPTED_TEXT = "This page's audio changed and is playing unprocessed.";
 const ACTIVE_STALE_MS = 3000;
 
 // Single owner: the background owns persisted state and applies intents.
@@ -660,6 +663,7 @@ async function refreshDocumentStatus() {
     const hookPresent = doc?.hookPresent === false ? false : true;
     const unprocessed = Number(doc?.unprocessed) || 0;
     const protectedCount = Number(doc?.protectedCount) || 0;
+    const interruptedCount = Number(doc?.interruptedCount) || 0;
     const activating = Boolean(doc?.activating);
     const lastError = String(doc?.lastError || '');
 
@@ -714,6 +718,7 @@ async function refreshDocumentStatus() {
         hookPresent,
         unprocessed,
         protectedCount,
+        interruptedCount,
       }),
     });
   } catch {
@@ -744,9 +749,9 @@ async function refreshDocumentStatus() {
 }
 
 /**
- * @param {{ enabled: boolean, hookActive: boolean, activating: boolean, lastError: string, hookPresent?: boolean, unprocessed?: number, protectedCount?: number }} state
+ * @param {{ enabled: boolean, hookActive: boolean, activating: boolean, lastError: string, hookPresent?: boolean, unprocessed?: number, protectedCount?: number, interruptedCount?: number }} state
  */
-function getStatusText({ enabled, hookActive, activating, lastError, hookPresent, unprocessed, protectedCount }) {
+function getStatusText({ enabled, hookActive, activating, lastError, hookPresent, unprocessed, protectedCount, interruptedCount }) {
   if (enabled && lastError) return lastError;
   if (enabled && hookActive) return 'Normalizer active.';
   if (enabled && runtimeActivationState === 'restricted') {
@@ -771,6 +776,9 @@ function getStatusText({ enabled, hookActive, activating, lastError, hookPresent
   // Cross-origin protected media: the tap carries no accessible audio, so it is
   // left native — audible, unnormalized, and named.
   if (enabled && Number(protectedCount) > 0) return PROTECTED_TEXT;
+  // The route broke under us (source swapped, context lost, worklet error): the
+  // element was handed back, so the page plays native rather than muted.
+  if (enabled && Number(interruptedCount) > 0) return INTERRUPTED_TEXT;
   if (enabled) return 'Enabled. Waiting for audio.';
   return 'Off for this site.';
 }
@@ -805,6 +813,11 @@ function renderStatus({ indicator, text, excluded: isExcluded }) {
     return;
   }
   if (shown === PROTECTED_TEXT) {
+    statusPillEl.textContent = 'Limited';
+    statusPillEl.dataset.state = 'off';
+    return;
+  }
+  if (shown === INTERRUPTED_TEXT) {
     statusPillEl.textContent = 'Limited';
     statusPillEl.dataset.state = 'off';
     return;
