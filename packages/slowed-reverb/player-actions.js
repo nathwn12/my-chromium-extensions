@@ -286,7 +286,12 @@
 
     const current = Number(currentVolume);
     const base = Number.isFinite(current) ? Math.round(current) : 0;
-    const next = Math.min(100, Math.max(0, base + steps * VOLUME_STEP_PCT));
+    // YouTube Music's slider is quantized to 5 %. Snap by direction instead of
+    // adding 5 blindly, or 37 + 5 = 42 would land on 40 while the HUD said 42.
+    const stepped = steps > 0
+      ? Math.floor(base / VOLUME_STEP_PCT) * VOLUME_STEP_PCT + steps * VOLUME_STEP_PCT
+      : Math.ceil(base / VOLUME_STEP_PCT) * VOLUME_STEP_PCT + steps * VOLUME_STEP_PCT;
+    const next = Math.min(100, Math.max(0, stepped));
     if (next === 0 || next === 100) accumulator.remainder = 0;
     return { steps: steps, volume: next, applied: next !== base };
   }

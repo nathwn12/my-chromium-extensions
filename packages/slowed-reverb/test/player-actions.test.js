@@ -938,6 +938,77 @@ test('wheel: the floor clamps at 0 and resets the accumulator', () => {
   assert.deepEqual(actions.stepVolumeFromWheel(accumulator, { deltaY: 100, deltaMode: 0 }, 0), { steps: -1, volume: 0, applied: false });
 });
 
+test('wheel: a step snaps up to the 5 % grid the slider uses', () => {
+  assert.deepEqual(actions.stepVolumeFromWheel({ remainder: 0 }, { deltaY: -100, deltaMode: 0 }, 37), {
+    steps: 1,
+    volume: 40,
+    applied: true,
+  });
+  assert.deepEqual(actions.stepVolumeFromWheel({ remainder: 0 }, { deltaY: -100, deltaMode: 0 }, 40), {
+    steps: 1,
+    volume: 45,
+    applied: true,
+  });
+  assert.deepEqual(actions.stepVolumeFromWheel({ remainder: 0 }, { deltaY: -100, deltaMode: 0 }, 97), {
+    steps: 1,
+    volume: 100,
+    applied: true,
+  });
+});
+
+test('wheel: a step snaps down to the 5 % grid the slider uses', () => {
+  assert.deepEqual(actions.stepVolumeFromWheel({ remainder: 0 }, { deltaY: 100, deltaMode: 0 }, 37), {
+    steps: -1,
+    volume: 35,
+    applied: true,
+  });
+  assert.deepEqual(actions.stepVolumeFromWheel({ remainder: 0 }, { deltaY: 100, deltaMode: 0 }, 40), {
+    steps: -1,
+    volume: 35,
+    applied: true,
+  });
+  assert.deepEqual(actions.stepVolumeFromWheel({ remainder: 0 }, { deltaY: 100, deltaMode: 0 }, 2), {
+    steps: -1,
+    volume: 0,
+    applied: true,
+  });
+});
+
+test('wheel: a snapped step clamps at the rails and resets the accumulator', () => {
+  assert.deepEqual(actions.stepVolumeFromWheel({ remainder: 0 }, { deltaY: -100, deltaMode: 0 }, 100), {
+    steps: 1,
+    volume: 100,
+    applied: false,
+  });
+  assert.deepEqual(actions.stepVolumeFromWheel({ remainder: 0 }, { deltaY: 100, deltaMode: 0 }, 0), {
+    steps: -1,
+    volume: 0,
+    applied: false,
+  });
+  const accumulator = { remainder: 0 };
+  actions.stepVolumeFromWheel(accumulator, { deltaY: -500, deltaMode: 0 }, 97);
+  assert.equal(accumulator.remainder, 0);
+});
+
+test('wheel: trackpad accumulation snaps when the grid is crossed', () => {
+  const accumulator = { remainder: 0 };
+  assert.deepEqual(actions.stepVolumeFromWheel(accumulator, { deltaY: -30, deltaMode: 0 }, 37), {
+    steps: 0,
+    volume: null,
+    applied: false,
+  });
+  assert.deepEqual(actions.stepVolumeFromWheel(accumulator, { deltaY: -30, deltaMode: 0 }, 37), {
+    steps: 0,
+    volume: null,
+    applied: false,
+  });
+  assert.deepEqual(actions.stepVolumeFromWheel(accumulator, { deltaY: -40, deltaMode: 0 }, 37), {
+    steps: 1,
+    volume: 40,
+    applied: true,
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Wheel predicate ladder
 // ---------------------------------------------------------------------------
@@ -1191,6 +1262,27 @@ test('controller: guard - a stale volume reply cannot overwrite a newer write', 
   await settle();
   assert.equal(harness.media().volume, 0.5);
   assert.equal(harness.hudText(), '60 %');
+});
+
+test('controller: the wheel writes the snapped value and shows it', async () => {
+  const harness = createHarness({ pageHook: createPageHook(37), mediaOptions: { volume: 0.37 } });
+  await harness.start();
+  harness.wheel(-100);
+  await settle();
+  assert.deepEqual(harness.pageHook.calls.at(-1), { percent: 40 });
+  assert.equal(harness.hudText(), '40 %');
+});
+
+test('controller: the fallback path ends on the snapped value too', async () => {
+  const harness = createHarness({
+    pageHook: createPageHook(37, { source: 'none' }),
+    mediaOptions: { volume: 0.37 },
+  });
+  await harness.start();
+  harness.wheel(-100);
+  await settle();
+  assert.equal(harness.media().volume, 0.4);
+  assert.equal(harness.hudText(), '40 %');
 });
 
 test('controller: the 100 ms tick exists only while a loop is engaged', async () => {
