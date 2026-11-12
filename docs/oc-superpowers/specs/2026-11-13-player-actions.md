@@ -43,8 +43,8 @@ Both are ported from the final pear implementation, not re-invented:
    dialogs; volume only on non-scrolling chrome; `preventDefault` only when a volume
    step actually lands.
 4. **Lifecycle and persistence** — YTM is an SPA that replaces the media element and
-   changes songs. Result: song identity from the URL `v` param (fallback
-   `media.currentSrc`), one restore per song id, points cleared on change, saved
+   changes songs. Result: song identity from the URL `v` param only, one restore per
+   song id, points cleared on change, saved
    sections restored only for their own song, tick torn down when disarmed/disabled.
 5. **Shipability and footprint** — no new permissions, popup untouched (product
    guardrail: exactly four controls), shadow-DOM UI (no CSS leakage), one new
@@ -174,8 +174,12 @@ Controller behavior:
   is replaced on SPA navigation) and seeks when `resolveSeekTarget` returns a number.
 - `ended` listener is the backstop: seek to `resolveEndSeekTarget` and `play()` —
   gated on the same arming rules, so clearing/off cannot restart playback.
-- Song key: `new URL(location.href).searchParams.get('v')`, fallback
-  `media.currentSrc`. On `yt-navigate-finish`, `popstate`, `hashchange`,
+- Song key: `new URL(location.href).searchParams.get('v')` **only**. There is no
+  `media.currentSrc` fallback and no hash of one. A blob or signed googlevideo URL is
+  transient, can be reused by the next track, and would either fail to restore its own
+  song or collide onto another one; storing it also retains a full signed URL. A page
+  with no `v` (the home/queue view) therefore gets a live loop and nothing else: no save,
+  no restore, no identity latch. On `yt-navigate-finish`, `popstate`, `hashchange`,
   `loadedmetadata`, and `emptied`: if the key changed, clear points, stop the tick,
   then restore the saved section for the new key (set points, `active = true`, seek to
   start when metadata is ready). One restore per key; a pending restore retries for up
