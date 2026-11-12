@@ -378,6 +378,13 @@ function createStorage(initial, options) {
   const writes = [];
   let gate = null;
 
+  const subscribers = new Set();
+  function emit() {
+    const value = data.playerActions;
+    const sections = value && Array.isArray(value.sections) ? value.sections : [];
+    for (const callback of [...subscribers]) callback(sections);
+  }
+
   return {
     data,
     writes,
@@ -389,6 +396,11 @@ function createStorage(initial, options) {
     async set(items) {
       writes.push(items);
       Object.assign(data, items);
+      emit();
+    },
+    subscribe(callback) {
+      subscribers.add(callback);
+      return () => subscribers.delete(callback);
     },
     hold() {
       let release;
@@ -406,6 +418,7 @@ function createStorage(initial, options) {
     },
     setSections(sections) {
       data.playerActions = { sections };
+      emit();
     },
   };
 }
@@ -443,7 +456,6 @@ function createHarness(options) {
   const storage = settings.storage || createStorage();
   const pageHook = settings.pageHook || createPageHook(50);
   let media = settings.media || dom.makeMedia('song-a', settings.mediaOptions);
-  let clock = 1000;
 
   const controller = actions.createPlayerActions({
     window: dom.win,
@@ -452,7 +464,6 @@ function createHarness(options) {
     pageHook,
     storage,
     timers,
-    now: () => clock,
   });
 
   return {
@@ -467,9 +478,6 @@ function createHarness(options) {
     },
     setHref(href) {
       dom.win.location.href = href;
-    },
-    advance(ms) {
-      clock += ms;
     },
     hostCount() {
       return dom.documentElement.children.filter((child) => child.hasAttribute(HOST_ATTR)).length;
@@ -879,18 +887,6 @@ test('guard: one restore per song visit', () => {
   assert.equal(actions.songRestorePending(session, 'song-a'), false);
   actions.beginSong(session, 'song-b');
   assert.equal(actions.songRestorePending(session, 'song-a'), true);
-});
-
-test('guard: a pending restore retries for at most 3 s', () => {
-  const session = actions.createSectionSession();
-  actions.beginSong(session, 'song-a');
-  actions.deferRestore(session, 1000);
-  assert.equal(session.pendingRestore, true);
-  assert.equal(actions.restoreDeadlineReached(session, 2500), false);
-  assert.equal(actions.restoreDeadlineReached(session, 4001), true);
-  actions.clearPendingRestore(session);
-  assert.equal(session.pendingRestore, false);
-  assert.equal(actions.restoreDeadlineReached(session, 9999), false);
 });
 
 // ---------------------------------------------------------------------------
@@ -1421,28 +1417,6 @@ test('controller: guard - one restore per song visit (a repeat event never re-se
   assert.equal(harness.media().currentTime, 120);
 });
 
-test('controller: guard - a restore retries when the song id arrives with no event', async () => {
-  const storage = createStorage({
-    playerActions: { sections: [{ videoId: 'song-c', startSeconds: 30, endSeconds: null }] },
-  });
-  const harness = createHarness({ storage });
-  harness.setHref('https://music.youtube.com/');
-  harness.media().currentSrc = '';
-  await harness.start();
-
-  // No id at all: the pending restore keeps the tick alive.
-  assert.equal(harness.timers.intervalCount(), 1);
-  assert.equal(harness.media().currentTime, 0);
-
-  // The id appears with no named navigation event.
-  harness.setHref('https://music.youtube.com/watch?v=song-c');
-  harness.advance(500);
-  harness.timers.tickIntervals();
-  await settle();
-  assert.equal(harness.media().currentTime, 30);
-  assert.equal(harness.panel('Repeat').checked, true);
-});
-
 test('controller: guard - a restore seek the player swallows is retried inside the 3 s budget', async () => {
   const storage = createStorage({
     playerActions: { sections: [{ videoId: 'song-a', startSeconds: 40, endSeconds: null }] },
@@ -1472,35 +1446,6 @@ test('controller: guard - a restore seek the player swallows is retried inside t
   harness.timers.flushTimeouts();
   harness.timers.flushTimeouts();
   assert.equal(media.currentTime, 40);
-});
-
-test('controller: guard - the restore retry gives up after the 3 s budget', async () => {
-  const storage = createStorage({
-    playerActions: { sections: [{ videoId: 'song-a', startSeconds: 40, endSeconds: null }] },
-  });
-  const harness = createHarness({ storage });
-  const media = harness.media();
-  let writes = 0;
-  const value = 120;
-  Object.defineProperty(media, 'currentTime', {
-    configurable: true,
-    get() {
-      return value;
-    },
-    set() {
-      writes += 1;
-    },
-  });
-
-  await harness.start();
-  harness.advance(4000);
-  harness.timers.tickIntervals();
-  harness.timers.flushTimeouts();
-  const settled = writes;
-  harness.timers.tickIntervals();
-  harness.timers.flushTimeouts();
-  assert.equal(writes, settled);
-  assert.equal(media.currentTime, 120);
 });
 
 test('controller: guard - a player reset after the restore seek is corrected once', async () => {
@@ -1638,6 +1583,129 @@ test('controller: saving an empty section removes the song entry', async () => {
   await settle();
   assert.deepEqual(storage.sections(), []);
   assert.equal(harness.status(), 'Removed');
+});
+
+test('controller: guard - the cache load restores the first song', async () => {
+  const storage = createStorage({
+    playerActions: { sections: [{ videoId: 'song-a', startSeconds: 40, endSeconds: 60 }] },
+  });
+  const harness = createHarness({ storage });
+  await harness.start();
+
+  assert.equal(harness.media().currentTime, 40);
+  assert.equal(harness.fromValue(), '0:40');
+  assert.equal(harness.panel('Repeat').checked, true);
+  assert.equal(harness.timers.intervalDelays().includes(100), true);
+});
+
+test('controller: guard - input during the cache load does not block the restore', async () => {
+  const storage = createStorage({
+    playerActions: { sections: [{ videoId: 'song-a', startSeconds: 40, endSeconds: null }] },
+  });
+  const harness = createHarness({ storage });
+  const release = storage.hold();
+  const started = harness.controller.start();
+  await settle(2);
+
+  harness.dom.win.dispatch('keydown');
+  release();
+  await started;
+  await settle();
+
+  assert.equal(harness.media().currentTime, 40);
+  assert.equal(harness.fromValue(), '0:40');
+});
+
+test('controller: guard - an edit before the cache lands is not overwritten', async () => {
+  const storage = createStorage({
+    playerActions: { sections: [{ videoId: 'song-a', startSeconds: 40, endSeconds: null }] },
+  });
+  const harness = createHarness({ storage });
+  const release = storage.hold();
+  const started = harness.controller.start();
+  await settle(2);
+
+  harness.commit('From', '1:10');
+  harness.media().currentTime = 70;
+  release();
+  await started;
+  await settle();
+
+  assert.equal(harness.fromValue(), '1:10');
+  assert.equal(harness.media().currentTime, 70);
+});
+
+test('controller: guard - concurrent song signals apply the cache once', async () => {
+  const storage = createStorage({
+    playerActions: { sections: [{ videoId: 'song-b', startSeconds: 20, endSeconds: null }] },
+  });
+  const harness = createHarness({ storage });
+  await harness.start();
+
+  const media = harness.media();
+  let writes = 0;
+  let value = 0;
+  Object.defineProperty(media, 'currentTime', {
+    configurable: true,
+    get() {
+      return value;
+    },
+    set(next) {
+      writes += 1;
+      value = Number(next);
+    },
+  });
+
+  harness.setHref('https://music.youtube.com/watch?v=song-b');
+  harness.dom.win.dispatch('yt-navigate-finish');
+  harness.dom.win.dispatch('yt-navigate-finish');
+  harness.controller.sync();
+  await settle();
+
+  assert.equal(writes, 1);
+  assert.equal(value, 20);
+  assert.equal(harness.fromValue(), '0:20');
+});
+
+test('controller: guard - a failed save leaves the cache untouched', async () => {
+  const storage = createStorage({
+    playerActions: { sections: [{ videoId: 'song-b', startSeconds: 25, endSeconds: null }] },
+  });
+  storage.saveSection = async () => ({ ok: false, error: 'storage unavailable' });
+  const harness = createHarness({ storage });
+  await harness.start();
+  harness.commit('From', '0:10');
+  harness.click('Save section');
+  await settle();
+  assert.equal(harness.status(), 'Save failed');
+
+  // The cached section still restores: the failed write changed nothing.
+  harness.setHref('https://music.youtube.com/watch?v=song-b');
+  harness.dom.win.dispatch('yt-navigate-finish');
+  await settle();
+  assert.equal(harness.media().currentTime, 25);
+});
+
+test('controller: guard - a successful save updates the cache from the reply', async () => {
+  const storage = createStorage();
+  storage.saveSection = async (entry) => ({ ok: true, sections: [entry] });
+  const harness = createHarness({ storage });
+  await harness.start();
+  harness.commit('From', '0:10');
+  harness.commit('To', '0:20');
+  harness.click('Save section');
+  await settle();
+
+  // A second visit restores from the cache alone (the fake never stored it).
+  harness.setHref('https://music.youtube.com/watch?v=song-b');
+  harness.dom.win.dispatch('yt-navigate-finish');
+  await settle();
+  harness.setHref('https://music.youtube.com/watch?v=song-a');
+  harness.dom.win.dispatch('yt-navigate-finish');
+  await settle();
+
+  assert.equal(harness.media().currentTime, 10);
+  assert.equal(harness.fromValue(), '0:10');
 });
 
 test('controller: the service-worker save path is used when the content script supplies it', async () => {
@@ -1827,13 +1895,14 @@ test('controller: guard - Save without a song id asks for a song and writes noth
   assert.equal(harness.status(), 'Play a song to save');
 });
 
-test('controller: guard - another tab save is restored on this tab next visit', async () => {
+test('controller: guard - an onChanged save from another tab restores on the next visit', async () => {
   const storage = createStorage();
   const harness = createHarness({ storage });
   await harness.start();
 
-  // No cached list: the other tab's write lands after startup.
+  // Another tab writes; the cache learns it through storage.subscribe.
   storage.setSections([{ videoId: 'song-b', startSeconds: 25, endSeconds: null }]);
+  await settle();
 
   harness.setHref('https://music.youtube.com/watch?v=song-b');
   harness.dom.win.dispatch('yt-navigate-finish');
@@ -1909,70 +1978,6 @@ test('controller: guard - a reply from before a restart cannot overwrite the new
 // Round 4: restore token and seek cancellation
 // ---------------------------------------------------------------------------
 
-test('controller: guard - an edit during the restore read survives and never seeks', async () => {
-  const storage = createStorage({
-    playerActions: { sections: [{ videoId: 'song-a', startSeconds: 40, endSeconds: null }] },
-  });
-  const harness = createHarness({ storage });
-  const release = storage.hold();
-  const started = harness.controller.start();
-  await settle(2);
-
-  // The panel exists while the read is still in flight.
-  harness.commit('From', '1:10');
-  harness.media().currentTime = 70;
-  release();
-  await started;
-  await settle();
-
-  assert.equal(harness.fromValue(), '1:10');
-  assert.equal(harness.media().currentTime, 70);
-});
-
-test('controller: guard - a song id that disappears during the read is never restored', async () => {
-  const storage = createStorage({
-    playerActions: { sections: [{ videoId: 'song-a', startSeconds: 40, endSeconds: null }] },
-  });
-  const harness = createHarness({ storage });
-  const release = storage.hold();
-  const started = harness.controller.start();
-  await settle(2);
-
-  harness.setHref('https://music.youtube.com/');
-  release();
-  await started;
-  await settle();
-
-  assert.equal(harness.fromValue(), '');
-  assert.equal(harness.media().currentTime, 0);
-  assert.equal(harness.timers.intervalDelays().includes(100), false);
-});
-
-test('controller: guard - two overlapping restore reads: only the latest applies', async () => {
-  const storage = createStorage({
-    playerActions: {
-      sections: [
-        { videoId: 'song-a', startSeconds: 10, endSeconds: null },
-        { videoId: 'song-b', startSeconds: 20, endSeconds: null },
-      ],
-    },
-  });
-  const harness = createHarness({ storage });
-  const release = storage.hold();
-  const started = harness.controller.start();
-  await settle(2);
-
-  harness.setHref('https://music.youtube.com/watch?v=song-b');
-  harness.dom.win.dispatch('yt-navigate-finish');
-  await settle(2);
-  release();
-  await started;
-  await settle(10);
-
-  assert.equal(harness.media().currentTime, 20);
-  assert.equal(harness.fromValue(), '0:20');
-});
-
 test('controller: guard - Clear cancels an outstanding From retry and never seeks', async () => {
   const harness = createHarness();
   await harness.start();
@@ -1996,28 +2001,6 @@ test('controller: guard - Clear cancels an outstanding From retry and never seek
   harness.timers.flushTimeouts();
   assert.equal(writes, afterFrom);
   assert.equal(harness.fromValue(), '');
-});
-
-test('controller: guard - real user input abandons a pending restore', async () => {
-  const storage = createStorage({
-    playerActions: { sections: [{ videoId: 'song-a', startSeconds: 40, endSeconds: null }] },
-  });
-  const harness = createHarness({ storage });
-  const release = storage.hold();
-  const started = harness.controller.start();
-  await settle(2);
-
-  harness.dom.win.dispatch('keydown');
-  release();
-  await started;
-  await settle();
-  harness.timers.tickIntervals();
-  harness.timers.flushTimeouts();
-  await settle();
-
-  assert.equal(harness.media().currentTime, 0);
-  assert.equal(harness.fromValue(), '');
-  assert.equal(harness.timers.intervalDelays().includes(150), false);
 });
 
 // ---------------------------------------------------------------------------

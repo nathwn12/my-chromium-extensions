@@ -522,6 +522,24 @@ function applyRuntimeState(runtime) {
           get: (key) => chrome.storage.local.get(key),
           // One ordered writer for the section list, across every tab.
           saveSection: (entry) => chrome.runtime.sendMessage({ type: 'SAVE_PLAYER_SECTION', entry }),
+          // Another tab's save is what makes a section visible here. The
+          // controller keeps its cache from this, never from a re-read.
+          subscribe: (callback) => {
+            if (!chrome.storage || !chrome.storage.onChanged) return () => {};
+            const handler = (changes, area) => {
+              if (area !== 'local' || !changes || !changes.playerActions) return;
+              const value = changes.playerActions.newValue;
+              callback(value && Array.isArray(value.sections) ? value.sections : []);
+            };
+            chrome.storage.onChanged.addListener(handler);
+            return () => {
+              try {
+                chrome.storage.onChanged.removeListener(handler);
+              } catch {
+                // Already detached.
+              }
+            };
+          },
         },
       });
     } catch {

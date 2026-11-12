@@ -23,8 +23,6 @@
   const VOLUME_STEP_PCT = 5;
   const TICK_MS = 100;
   const HUD_VISIBLE_MS = 1200;
-  const RESTORE_RETRY_BUDGET_MS = 3000;
-  const RESTORE_RETRY_MS = 150;
   const SAVED_LIMIT = 100;
   const SEEK_RETRY_MS = 120;
   const SEEK_RETRY_ATTEMPTS = 3;
@@ -219,7 +217,6 @@
       startSeconds: null,
       endSeconds: null,
       pendingRestore: false,
-      restoreDeadline: 0,
     };
   }
 
@@ -235,7 +232,6 @@
     session.startSeconds = null;
     session.endSeconds = null;
     session.pendingRestore = false;
-    session.restoreDeadline = 0;
     return true;
   }
 
@@ -248,19 +244,8 @@
     session.restoredSongKey = key;
   }
 
-  function deferRestore(session, at) {
-    session.pendingRestore = true;
-    if (!session.restoreDeadline) session.restoreDeadline = at + RESTORE_RETRY_BUDGET_MS;
-  }
-
-  function restoreDeadlineReached(session, at) {
-    if (!session.pendingRestore || !session.restoreDeadline) return false;
-    return at > session.restoreDeadline;
-  }
-
   function clearPendingRestore(session) {
     session.pendingRestore = false;
-    session.restoreDeadline = 0;
   }
 
   // -------------------------------------------------------------------------
@@ -448,7 +433,6 @@
       setInterval: (fn, ms) => win.setInterval(fn, ms),
       clearInterval: (id) => win.clearInterval(id),
     };
-    const now = typeof settings.now === 'function' ? settings.now : () => Date.now();
     const mediaProvider = typeof settings.mediaProvider === 'function'
       ? settings.mediaProvider
       : () => doc.querySelector('video');
@@ -460,6 +444,9 @@
 
     let started = false;
     let generation = 0;
+    let saved = [];
+    let savedReady = false;
+    let unsubscribeStorage = null;
     let session = createSectionSession();
     let active = true;
     let notice = null;
@@ -467,7 +454,6 @@
     let volume = 50;
     let hudTimer = null;
     let tickTimer = null;
-    let restoreTimer = null;
     let media = null;
     let mediaCleanup = [];
     let wheelInstalled = false;
@@ -485,9 +471,6 @@
     let settleTimer = null;
     let saveChain = Promise.resolve();
     let volumeSeq = 0;
-    // Bumped by every edit, real user input, song change, stop and pending
-    // cancel. A restore read may only apply if its captured token still holds.
-    let restoreToken = 0;
 
     function currentState() {
       return {
@@ -551,23 +534,39 @@
       installSongListeners();
       bindMedia();
       refreshVolume();
-      // No saved-section snapshot: every restore reads storage fresh, so a save
-      // from another tab is visible on this tab's next visit.
-      await syncSong();
+      subscribeStorage();
+
+      // One cache load for the whole session. Every later change arrives through
+      // storage.subscribe, so a restore is a synchronous lookup that cannot
+      // interleave with an edit, a transition or another restore.
+      let sections = [];
+      try {
+        sections = await readSections();
+      } catch {
+        sections = [];
+      }
       if (!started || mine !== generation) return;
+      saved = sections;
+      savedReady = true;
+      syncSong();
       syncTick();
-      syncRestoreTimer();
       syncPanel();
     }
 
     function stop() {
       generation += 1;
-      bumpRestoreToken();
       started = false;
       stopTick();
-      stopRestoreTimer();
       cancelSeekRetry();
       clearSettleCheck();
+      if (unsubscribeStorage !== null) {
+        try {
+          unsubscribeStorage();
+        } catch {
+          // Already detached.
+        }
+        unsubscribeStorage = null;
+      }
       if (hudTimer !== null) {
         timers.clearTimeout(hudTimer);
         hudTimer = null;
@@ -581,6 +580,8 @@
       removeSongListeners();
       detachMedia();
       destroyUi();
+      saved = [];
+      savedReady = false;
       session = createSectionSession();
       active = true;
       notice = null;
@@ -597,11 +598,9 @@
       if (!ui) installUi();
       bindMedia();
       refreshVolume();
-      const restore = syncSong();
+      syncSong();
       syncTick();
-      syncRestoreTimer();
       syncPanel();
-      if (restore) void restore;
     }
 
     // -- media -------------------------------------------------------------
@@ -625,14 +624,12 @@
       if (replaced) {
         cancelSeekRetry();
         clearSettleCheck();
-        bumpRestoreToken();
         session.songKey = null;
         session.restoredSongKey = null;
         session.identityKnown = false;
         session.startSeconds = null;
         session.endSeconds = null;
         clearPendingRestore(session);
-        syncRestoreTimer();
         fromDirty = false;
         toDirty = false;
         syncPanel();
@@ -660,11 +657,9 @@
 
     function handleSourceChange() {
       if (!started) return;
-      const restore = syncSong();
+      syncSong();
       syncTick();
-      syncRestoreTimer();
       syncPanel();
-      if (restore) void restore;
     }
 
     function handleEnded() {
@@ -682,65 +677,49 @@
       }
     }
 
-    // -- song identity and restore ----------------------------------------
+    // -- song identity and the cached restore ------------------------------
 
     /**
-     * Adopts the URL's song id and restores its saved section. Returns the
-     * restore promise, if a restore was started.
+     * Adopts the URL's song id and restores its saved section from the cache.
      *
-     * While the id is missing nothing may seek: the points are kept (the same
-     * song can come back) but the loop tick is stopped, and a pending restore
-     * waits on its own bounded timer instead.
+     * Synchronous by design: the cache makes the lookup a plain read, so no edit,
+     * transition or second restore can interleave with it. While the cache is
+     * still loading the visit is marked pending and re-run once it lands.
+     *
+     * While the id is missing nothing seeks: the points are kept (the same song
+     * can come back) but the loop tick is stopped.
      */
     function syncSong() {
       const key = currentSongKey();
       session.identityKnown = key !== null;
       if (key === null) {
         cancelSeekRetry();
-        bumpRestoreToken();
-        // Wait for the id on the bounded restore timer - never on a loop tick,
-        // and never with a seek.
-        deferRestore(session, now());
-        syncRestoreTimer();
         syncTick();
-        return null;
+        return;
       }
       if (beginSong(session, key)) {
         cancelSeekRetry();
         clearSettleCheck();
-        bumpRestoreToken();
         fromDirty = false;
         toDirty = false;
         syncTick();
         syncPanel();
       }
       // One restore per song visit; a repeat event must not re-seek.
-      if (!songRestorePending(session, key)) return null;
-      return restoreForSong(key);
+      if (!songRestorePending(session, key)) return;
+      applySavedSection(key);
     }
 
-    /** Reads the saved list fresh and applies this song's section. */
-    async function restoreForSong(key) {
-      const mine = generation;
-      const token = restoreToken;
-      let sections = [];
-      try {
-        sections = await readSections();
-      } catch {
-        sections = [];
+    function applySavedSection(key) {
+      if (!savedReady) {
+        session.pendingRestore = true;
+        syncTick();
+        return;
       }
-      // A stop, a restart, an edit, real user input or a different song owns the
-      // state now. The key is re-derived from the live URL, never from the
-      // cached latch, so a transition cannot restore onto what plays next.
-      if (!started || mine !== generation) return;
-      if (token !== restoreToken) return;
-      if (currentSongKey() !== key) return;
-
-      const entry = lookupSaved(sections, key);
+      const entry = lookupSaved(saved, key);
       if (entry === null) {
         markSongRestored(session, key);
         clearPendingRestore(session);
-        syncRestoreTimer();
         syncTick();
         syncPanel();
         return;
@@ -752,76 +731,18 @@
       active = true;
       fromDirty = false;
       toDirty = false;
+      // Latched before the seek: a second signal in this visit cannot re-apply.
+      markSongRestored(session, key);
+      clearPendingRestore(session);
       syncTick();
       syncPanel();
-      applyRestoreSeek(key, entry.startSeconds);
-    }
 
-    function applyRestoreSeek(key, startSeconds) {
-      const start = startSeconds === null ? 0 : startSeconds;
-      const token = restoreToken;
-      const onLanded = () => {
-        if (!started || token !== restoreToken) return;
-        if (currentSongKey() !== key) return;
-        // Landing on the 120 ms retry counts exactly like the first write.
-        markSongRestored(session, key);
-        clearPendingRestore(session);
-        syncRestoreTimer();
-        armSettleCheck(key, startSeconds);
-      };
-      if (media && requestSeek(start, onLanded)) return;
-      deferRestore(session, now());
-      syncRestoreTimer();
-    }
-
-    // -- restore retry (independent of the loop tick) ----------------------
-
-    function stopRestoreTimer() {
-      if (restoreTimer === null) return;
-      timers.clearInterval(restoreTimer);
-      restoreTimer = null;
-    }
-
-    function syncRestoreTimer() {
-      const wanted = started && session.pendingRestore && isVisible();
-      if (wanted) {
-        if (restoreTimer === null) restoreTimer = timers.setInterval(handleRestoreTick, RESTORE_RETRY_MS);
-        return;
-      }
-      stopRestoreTimer();
-    }
-
-    function handleRestoreTick() {
-      if (!started) return;
-      // Deadline first: with no media a pending restore would otherwise wake
-      // every interval forever instead of expiring.
-      if (restoreDeadlineReached(session, now())) {
-        if (session.songKey !== null) markSongRestored(session, session.songKey);
-        clearPendingRestore(session);
-        bumpRestoreToken();
-        cancelSeekRetry();
-        syncRestoreTimer();
-        syncTick();
-        syncPanel();
-        return;
-      }
-      bindMedia();
+      const start = entry.startSeconds === null ? 0 : entry.startSeconds;
       if (!media) return;
-
-      const key = currentSongKey();
-      session.identityKnown = key !== null;
-      if (key === null) {
-        cancelSeekRetry();
-        return;
-      }
-      if (key !== session.songKey) {
-        beginSong(session, key);
-        clearSettleCheck();
-        bumpRestoreToken();
-        syncTick();
-        syncPanel();
-      }
-      if (songRestorePending(session, key)) void restoreForSong(key);
+      requestSeek(start, () => {
+        if (!started || session.songKey !== key) return;
+        armSettleCheck(key, entry.startSeconds);
+      });
     }
 
     // -- loop tick ---------------------------------------------------------
@@ -864,12 +785,11 @@
         // the previous song's points.
         cancelSeekRetry();
         clearSettleCheck();
-        bumpRestoreToken();
         fromDirty = false;
         toDirty = false;
         syncTick();
         syncPanel();
-        void restoreForSong(key);
+        applySavedSection(key);
         return;
       }
 
@@ -990,16 +910,13 @@
 
     /**
      * Real input disowns every position this controller asked for: a retry must
-     * not fight a user seek, and a settle must not drag playback back.
+     * not fight a user seek. It never touches the points or the cache — a section
+     * that has not restored yet still restores when the cache lands.
      */
     function onUserInput() {
       cancelSeekRetry();
       clearSettleCheck();
-      // Input also abandons a restore that has not applied yet: the user owns
-      // the position and the next visit will read the section again.
       clearPendingRestore(session);
-      bumpRestoreToken();
-      syncRestoreTimer();
     }
 
     // -- seeking -----------------------------------------------------------
@@ -1051,11 +968,6 @@
         writeSeek(target, token);
       }, SEEK_RETRY_MS);
       return false;
-    }
-
-    /** Abandons every in-flight restore: only a newer read may apply now. */
-    function bumpRestoreToken() {
-      restoreToken += 1;
     }
 
     function clearSettleCheck() {
@@ -1288,6 +1200,9 @@
         text = 'Saved';
       } else if (notice === 'removed') {
         text = 'Removed';
+      } else if (!session.identityKnown) {
+        // No `?v=`: repeat needs a song. Live looping still works while playing.
+        text = 'Play a song to repeat';
       } else if (!active) {
         text = 'Repeat off';
       } else if (start === null && end === null) {
@@ -1326,13 +1241,22 @@
         return;
       }
 
-      // Any commit (From, To, Clear) cancels outstanding seek work first: the
+      // Any commit (From, To, Clear) cancels outstanding position work first: the
       // new points own playback, and Clear must never jump.
       cancelSeekRetry();
       clearSettleCheck();
       clearPendingRestore(session);
-      bumpRestoreToken();
-      syncRestoreTimer();
+
+      // Adopt the identity when the cache load has not reached syncSong yet, so
+      // this edit latches the visit and the landing cannot overwrite it.
+      if (session.songKey === null) {
+        const earlyKey = currentSongKey();
+        if (earlyKey !== null) {
+          session.songKey = earlyKey;
+          session.identityKnown = true;
+        }
+      }
+      if (session.songKey !== null) markSongRestored(session, session.songKey);
 
       notice = null;
       session.startSeconds = live.startSeconds;
@@ -1365,10 +1289,34 @@
       return sanitizeSaved(raw ? raw.sections : undefined);
     }
 
+    function subscribeStorage() {
+      if (!storage || typeof storage.subscribe !== 'function') return;
+      try {
+        unsubscribeStorage = storage.subscribe(onStorageChange);
+      } catch {
+        unsubscribeStorage = null;
+      }
+    }
+
+    /**
+     * Another tab (or this one, echoed) changed the section list. The cache is
+     * the only source for restores, so this is what makes a save visible.
+     */
+    function onStorageChange(sections) {
+      if (!started) return;
+      saved = sanitizeSaved(sections);
+      savedReady = true;
+      // A visit still waiting for its first restore can now apply; a visit that
+      // already restored, or was edited, is left alone by the latch.
+      syncSong();
+      syncTick();
+      syncPanel();
+    }
+
     /**
      * Hands the write to the one ordered writer: the service worker when the
      * content script supplies it (across every tab), else a local promise chain.
-     * Both compose from fresh storage, so no entry is lost.
+     * The controller never read-modify-writes: it adopts the reply.
      */
     function requestSectionSave(entry, mine) {
       if (storage && typeof storage.saveSection === 'function') {
@@ -1415,11 +1363,17 @@
         const reply = await requestSectionSave(entry, mine);
         // A stop (or a new session) owns the state now: mutate nothing.
         if (!started || mine !== generation) return;
-        // `ok:false` is a storage failure, not a rejection: never claim a save.
+        // `ok:false` is a storage failure, not a rejection: never claim a save
+        // and never touch the cache.
         if (!reply || reply.ok !== true) {
           notice = 'failed';
           syncPanel();
           return;
+        }
+        // Adopt the writer's list now; the onChanged echo is then a no-op.
+        if (Array.isArray(reply.sections)) {
+          saved = sanitizeSaved(reply.sections);
+          savedReady = true;
         }
         // A song change (or a changed range) also owns the state now; the
         // notice for the old compose would be stale.
@@ -1448,17 +1402,14 @@
 
     function onSongSignal() {
       if (!started) return;
-      const restore = syncSong();
+      syncSong();
       syncTick();
-      syncRestoreTimer();
       syncPanel();
-      if (restore) void restore;
     }
 
     function onVisibilityChange() {
       if (!started) return;
       syncTick();
-      syncRestoreTimer();
     }
 
     function installSongListeners() {
@@ -1487,8 +1438,6 @@
     VOLUME_STEP_PCT: VOLUME_STEP_PCT,
     TICK_MS: TICK_MS,
     HUD_VISIBLE_MS: HUD_VISIBLE_MS,
-    RESTORE_RETRY_BUDGET_MS: RESTORE_RETRY_BUDGET_MS,
-    RESTORE_RETRY_MS: RESTORE_RETRY_MS,
     SAVED_LIMIT: SAVED_LIMIT,
     STORAGE_KEY: STORAGE_KEY,
     parseTimeInput: parseTimeInput,
@@ -1505,8 +1454,6 @@
     beginSong: beginSong,
     songRestorePending: songRestorePending,
     markSongRestored: markSongRestored,
-    deferRestore: deferRestore,
-    restoreDeadlineReached: restoreDeadlineReached,
     clearPendingRestore: clearPendingRestore,
     wheelPixels: wheelPixels,
     createWheelAccumulator: createWheelAccumulator,
