@@ -145,6 +145,109 @@ async function writeSiteRecord(siteKey, record) {
 }
 
 /**
+ * The MAIN-world call the worker makes on the hook. Self-contained: Chrome
+ * serializes it into the frame. It only reaches the hook through the dispatcher
+ * and the token; a page calling the dispatcher without the token gets nothing.
+ */
+function tnHookControl(action, payload) {
+  const entry = /** @type {any} */ (globalThis).__tnHookV6;
+  if (typeof entry !== 'function') {
+    return { ok: false, alive: false, active: false, error: 'No hook in this frame.' };
+  }
+  try {
+    return entry(action, payload);
+  } catch (e) {
+    return { ok: false, alive: false, active: false, error: String((e && e.message) || e) };
+  }
+}
+
+/**
+ * Broadcast teardown into EVERY frame of a tab. Each frame forwards to its own
+ * hook (if it has one) with the tab token; frames without a hook are no-ops.
+ */
+function tnHookTeardownAll(mode) {
+  const entry = /** @type {any} */ (globalThis).__tnHookV6;
+  if (typeof entry !== 'function') return { ok: true, stopped: 0 };
+  try {
+    entry(mode === 'destroy' ? 'destroy' : 'stop', null);
+  } catch {}
+  return { ok: true, stopped: 1 };
+}
+
+/**
+ * Control a single frame's hook. Every call is an injection from the worker;
+ * there is no page-reachable route to this decision.
+ * @param {number} tabId
+ * @param {number} frameId
+ * @param {string} action
+ * @param {Record<string, unknown>} payload
+ */
+async function controlHookFrame(tabId, frameId, action, payload) {
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId, frameIds: [frameId] },
+      func: tnHookControl,
+      args: [action, payload || {}],
+      world: 'MAIN',
+    });
+    const result = (results || [])
+      .map((entry) => entry && entry.result)
+      .find((value) => value && typeof value === 'object');
+    if (!result) return { ok: false, alive: false, active: false, error: 'No hook in this frame.' };
+    return result;
+  } catch (e) {
+    return { ok: false, alive: false, active: false, error: String((e && e.message) || e) };
+  }
+}
+
+/**
+ * Worker-driven teardown for every frame of a tab, used when exclusion must
+ * take effect immediately and reliably (the content script may be mid-read,
+ * hung, or already detached).
+ * @param {number} tabId
+ * @param {'stop'|'destroy'} mode
+ */
+async function teardownTabHook(tabId, mode) {
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      func: tnHookTeardownAll,
+      args: [mode],
+      world: 'MAIN',
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Teardown for every open tab whose host is the key or one of its descendants.
+ * @param {string} siteKey
+ * @param {{ includeDescendants?: boolean, mode?: 'stop'|'destroy' }} [options]
+ */
+async function teardownHooksForSite(siteKey, options = {}) {
+  if (!siteKey) return;
+  const includeDescendants = options.includeDescendants === true;
+  const mode = options.mode === 'stop' ? 'stop' : 'destroy';
+  let tabs = [];
+  try {
+    tabs = await chrome.tabs.query({});
+  } catch {
+    return;
+  }
+  for (const tab of tabs) {
+    if (!tab.id) continue;
+    const tabKey = getTabSiteKey(tab);
+    if (!tabKey) continue;
+    const matches = tabKey === siteKey
+      || (includeDescendants && backgroundShared.hostMatchesSiteKey(tabKey, siteKey));
+    if (!matches) continue;
+    await teardownTabHook(tab.id, mode);
+  }
+}
+
+/**
  * Exclusion outranks everything else: an excluded site is inactive whatever
  * `enabled`, browser site access, or a transient session override says.
  * The rule is the host's own record OR any parent host's (`h === key ||
@@ -200,10 +303,10 @@ async function readExcludedHosts() {
  * statement resolves the frame's own hostname, so an excluded cross-origin
  * iframe is decided by its OWN origin and never by its embedder's.
  *
- * It touches no DOM, listener or timer: it records the authoritative exclusion
- * list in that world (the product file's gate reads it, and it replaces any
- * stale cache after a re-injection) and reports the verdict to the worker.
- * Must stay self-contained: no closure over background.js scope.
+ * It also stages the per-tab hook token for the MAIN-world file (which deletes
+ * it on read) and drops any page-seeded control surface first, so a page cannot
+ * pre-seed, hijack or replay the dispatcher. It touches no DOM, listener or
+ * timer. Must stay self-contained: no closure over background.js scope.
  * @param {string[]} excludedHosts
  */
 function installFrameGate(excludedHosts) {
@@ -216,6 +319,8 @@ function installFrameGate(excludedHosts) {
   );
   const report = { host, excluded };
   try {
+    // Anything the page may have planted is removed before we write ours.
+    try { delete globalThis.__tnHookV6; } catch {}
     globalThis.__tabNormalizerExclusionCache = { hosts };
     globalThis.__tabNormalizerFrameGate = report;
   } catch {}
@@ -428,9 +533,10 @@ function collectLegacyEnabledSiteKeys(all, records) {
  * one (the suffix rule covers both). A legacy-only key contributes a wildcard
  * match, which would overlap an excluded descendant — it falls back to its
  * exact host in that case, leaving the descendant to `excludeMatches` alone.
- * @returns {Promise<{ matches: string[], excludeMatches: string[] }>}
+ * @returns {Promise<{ matches: string[], excludeMatches: string[], seq: number }>}
  */
 async function deriveContentScriptRegistration() {
+  // The stamp is carried with the derivation: an older read must never win.
   const all = /** @type {Record<string, unknown>} */ (await chrome.storage.local.get(null));
   const records = collectPerSiteRecords(all);
   /** @type {string[]} */
@@ -461,59 +567,174 @@ async function deriveContentScriptRegistration() {
   const matches = backgroundShared.siteHostMatchPatterns(exactActive)
     .concat(backgroundShared.siteHostMatchPatterns(legacyExact))
     .concat(backgroundShared.siteExcludeMatchPatterns(legacyWildcard));
+  let seq = 0;
+  for (const record of records.values()) {
+    if (Number.isFinite(record.seq) && record.seq > seq) seq = record.seq;
+  }
   return {
     matches,
     excludeMatches: backgroundShared.siteExcludeMatchPatterns(excludedHosts),
+    seq,
   };
 }
 
 /**
- * Bring `chrome.scripting` in line with stored truth. Registration failure is
- * never fatal: it is logged and the remaining two layers (the content-script
- * gate and the background's own injection refusal) still hold, so a browser
- * that rejects a pattern degrades to "the script runs and immediately stops"
- * rather than to "nothing works".
+ * Does the descriptor the browser actually holds already say what the records
+ * derive? Reconciliation runs on every worker wake, so it must not rewrite an
+ * identical descriptor (that is churn, not healing). Only the fields that decide
+ * injection are compared.
+ * @param {chrome.scripting.RegisteredContentScript|null} current
+ * @param {chrome.scripting.RegisteredContentScript} wanted
  */
-async function syncContentScriptRegistration() {
+function registrationMatchesDerivation(current, wanted) {
+  if (!current) return false;
+  const sorted = (list) => Array.from(new Set(list || [])).sort();
+  if (!Array.isArray(current.js) || current.js.join('|') !== (wanted.js || []).join('|')) return false;
+  if (sorted(current.matches).join('|') !== sorted(wanted.matches).join('|')) return false;
+  if (sorted(current.excludeMatches).join('|') !== sorted(wanted.excludeMatches).join('|')) return false;
+  if (current.runAt !== wanted.runAt) return false;
+  if (current.allFrames !== wanted.allFrames) return false;
+  if (wanted.world && current.world && current.world !== wanted.world) return false;
+  if (typeof current.matchOriginAsFallback === 'boolean'
+    && current.matchOriginAsFallback !== wanted.matchOriginAsFallback) return false;
+  return true;
+}
+
+/**
+ * One registration pass. Runs INSIDE the chain: derivation is re-done here, the
+ * last applied `seq` is checked, and the write happens before the lock is
+ * released, so an older read cannot install a stale persistent descriptor.
+ *
+ * The remaining two layers (the content-script gate and the background's own
+ * injection refusal) still hold, so registration trouble degrades the extension
+ * rather than breaking it outright. What it must never do is keep a descriptor
+ * the records contradict.
+ *
+ * FAIL CLOSED: when the write that would correct a descriptor rejects, the
+ * descriptor is dropped before the error is rethrown. An uncorrectable
+ * registration must never keep matching a host the records exclude; the bounded
+ * retry (and the next wake) rebuild it.
+ */
+async function applyRegistrationOnce() {
+  if (!chrome.scripting || typeof chrome.scripting.registerContentScripts !== 'function') return;
+  const derived = await deriveContentScriptRegistration();
+  if (derived.seq < lastAppliedRegistrationSeq) return;
+  const { matches, excludeMatches } = derived;
+  const existing = typeof chrome.scripting.getRegisteredContentScripts === 'function'
+    ? await chrome.scripting.getRegisteredContentScripts({ ids: [CONTENT_SCRIPT_ID] })
+    : [];
+  const current = (existing || []).find((entry) => entry && entry.id === CONTENT_SCRIPT_ID) || null;
+  if (matches.length === 0) {
+    const known = typeof chrome.scripting.getRegisteredContentScripts === 'function'
+      ? existing.length > 0
+      : true;
+    if (known) await chrome.scripting.unregisterContentScripts({ ids: [CONTENT_SCRIPT_ID] });
+    lastAppliedRegistrationSeq = derived.seq;
+    registrationRetryCount = 0;
+    return;
+  }
+  /** @type {chrome.scripting.RegisteredContentScript} */
+  const descriptor = {
+    id: CONTENT_SCRIPT_ID,
+    js: INJECTABLE_FILES,
+    matches,
+    excludeMatches,
+    runAt: 'document_start',
+    allFrames: true,
+    matchOriginAsFallback: true,
+    world: 'ISOLATED',
+    persistAcrossSessions: true,
+  };
+  if (registrationMatchesDerivation(current, descriptor)) {
+    // Already reconciled: this wake has nothing to write.
+    lastAppliedRegistrationSeq = derived.seq;
+    registrationRetryCount = 0;
+    return;
+  }
   try {
-    if (!chrome.scripting || typeof chrome.scripting.registerContentScripts !== 'function') return;
-    const { matches, excludeMatches } = await deriveContentScriptRegistration();
-    const existing = typeof chrome.scripting.getRegisteredContentScripts === 'function'
-      ? await chrome.scripting.getRegisteredContentScripts({ ids: [CONTENT_SCRIPT_ID] })
-      : [];
-    if (matches.length === 0) {
-      // Nothing can be active: leave no registration behind at all.
-      const known = typeof chrome.scripting.getRegisteredContentScripts === 'function'
-        ? (await chrome.scripting.getRegisteredContentScripts({ ids: [CONTENT_SCRIPT_ID] })).length > 0
-        : true;
-      if (known) await chrome.scripting.unregisterContentScripts({ ids: [CONTENT_SCRIPT_ID] });
-      return;
-    }
-    /** @type {chrome.scripting.RegisteredContentScript} */
-    const descriptor = {
-      id: CONTENT_SCRIPT_ID,
-      js: INJECTABLE_FILES,
-      matches,
-      excludeMatches,
-      runAt: 'document_start',
-      allFrames: true,
-      matchOriginAsFallback: true,
-      world: 'ISOLATED',
-      persistAcrossSessions: true,
-    };
-    if (existing.length > 0) {
+    if (current) {
       await chrome.scripting.updateContentScripts([descriptor]);
     } else {
       await chrome.scripting.registerContentScripts([descriptor]);
     }
-  } catch (e) {
-    console.warn('[bg] content-script registration failed, gate layer still enforces:', String(e));
+  } catch (error) {
+    // FAIL CLOSED, and say so when the platform will not let us be closed: with
+    // BOTH the correcting write and the removal rejected, no API is left to
+    // remove a descriptor that may still match an excluded host. That is an
+    // OS-level failure — reported loudly ONCE (not once per retry) and left to
+    // the bounded retry and the next wake, which is where it heals.
+    let removalError = null;
+    try {
+      if (typeof chrome.scripting.unregisterContentScripts === 'function') {
+        await chrome.scripting.unregisterContentScripts({ ids: [CONTENT_SCRIPT_ID] });
+      }
+    } catch (e) {
+      removalError = e;
+    }
+    if (removalError && !registrationRemovalFailureReported) {
+      registrationRemovalFailureReported = true;
+      console.error(
+        '[bg] REGISTRATION STUCK: the content-script descriptor could not be updated and could not be removed,'
+        + ' so it may still match an excluded host until a later worker wake repairs it.',
+        String(error),
+        String(removalError),
+      );
+    }
+    throw error;
   }
+  lastAppliedRegistrationSeq = derived.seq;
+  registrationRetryCount = 0;
+  registrationRemovalFailureReported = false;
+}
+
+async function runRegistrationPass() {
+  try {
+    await applyRegistrationOnce();
+  } catch (e) {
+    // A failed first registration would leave enabled sites with no
+    // document-start script at all, so it is retried with bounded backoff and
+    // re-armed by the next storage change, startup or alarm.
+    console.warn('[bg] content-script registration failed, will retry:', String(e));
+    scheduleRegistrationRetry();
+  }
+}
+
+/**
+ * Every registration sync goes through ONE promise chain (a mutex). Two
+ * concurrent syncs used to race their storage reads: an older derivation could
+ * land after a newer one and persist a descriptor that outlives the worker.
+ */
+function syncContentScriptRegistration() {
+  const run = registrationChain.then(runRegistrationPass, runRegistrationPass);
+  registrationChain = run.catch(() => {});
+  return run;
+}
+
+function scheduleRegistrationRetry() {
+  if (registrationRetryTimer) return;
+  if (registrationRetryCount >= REGISTRATION_RETRY_MAX) return;
+  const delay = REGISTRATION_RETRY_BASE_MS * Math.pow(2, registrationRetryCount);
+  registrationRetryCount += 1;
+  registrationRetryTimer = setTimeout(() => {
+    registrationRetryTimer = null;
+    void syncContentScriptRegistration();
+  }, delay);
 }
 
 // Coalesced re-registration: a burst of writes (toggle + gain + exclusion)
 // costs one registration pass, not one per write.
 let registrationSyncTimer = null;
+/** @type {Promise<unknown>} */
+let registrationChain = Promise.resolve();
+let lastAppliedRegistrationSeq = -1;
+let registrationRetryCount = 0;
+// Rule 7's documented limit: both the correcting write AND the removal rejected,
+// so nothing API-level is left. Reported once per stuck incident, never per retry.
+let registrationRemovalFailureReported = false;
+/** @type {ReturnType<typeof setTimeout> | null} */
+let registrationRetryTimer = null;
+const REGISTRATION_RETRY_BASE_MS = 250;
+const REGISTRATION_RETRY_MAX = 5;
 function scheduleRegistrationSync() {
   if (registrationSyncTimer) return;
   registrationSyncTimer = setTimeout(() => {
@@ -573,38 +794,29 @@ function flushSiteBroadcast(siteKey) {
         return;
       }
       tabs.forEach(tab => {
-        if (tab.url && tab.id && tabMatchesSiteKey(tab.url, siteKey)) {
-          // An excluded record must reach EVERY frame of the tab: teardown
-          // belongs to each frame, and a cross-origin iframe of the excluded
-          // host does not share the tab's top-level URL. Ordinary broadcasts
-          // stay top-frame-only (a frame's own storage listener covers the
-          // rest without a cross-frame fan-out).
-          const options = current.excluded ? undefined : { frameId: 0 };
-          chrome.tabs.sendMessage(tab.id, {
-            type: 'TOGGLE_CHANGED',
-            siteKey,
-            enabled: current.enabled,
-            gainDb: current.gainDb,
-            // Live teardown: the content script stops on this flag without a
-            // storage read. Exclusion outranks `enabled` at the tab.
-            excluded: current.excluded,
-          }, options).catch(() => {});
-        }
+        if (!tab.url || !tab.id) return;
+        const tabKey = getTabSiteKey(tab);
+        // Ancestry: the record's key AND its descendants. Top-URL equality
+        // alone missed `a.example.com` when `example.com` was excluded.
+        if (!tabKey) return;
+        if (tabKey !== siteKey && !backgroundShared.hostMatchesSiteKey(tabKey, siteKey)) return;
+        // Every frame, no frameId filter: a cross-origin iframe of the
+        // affected host does not share the tab's top-level URL, and exclusion
+        // must reach it immediately instead of through its own storage read.
+        chrome.tabs.sendMessage(tab.id, {
+          type: 'TOGGLE_CHANGED',
+          siteKey,
+          enabled: current.enabled,
+          gainDb: current.gainDb,
+          // Live teardown: the content script stops on this flag without a
+          // storage read. Exclusion outranks `enabled` at the tab.
+          excluded: current.excluded,
+        }).catch(() => {});
       });
     })();
   });
 }
 
-async function hasInjectedContentScript(tabId) {
-  try {
-    // Target the top frame only (frameId 0: RESEARCH §5.3). Without frameId
-    // every frame answers and the sender gets one arbitrary answer.
-    const response = await chrome.tabs.sendMessage(tabId, { type: 'GET_DOCUMENT_STATUS' }, { frameId: 0 });
-    return Boolean(response?.ok);
-  } catch {
-    return false;
-  }
-}
 
 async function injectMainWorldScript(tabId, file, frameId) {
   // Frame-targeted MAIN-world injection: a video inside a cross-origin
@@ -616,7 +828,8 @@ async function injectMainWorldScript(tabId, file, frameId) {
     ? { tabId, frameIds: [frameId] }
     : { tabId };
   // Frame gate first, in the MAIN world of the target frame: its own hostname
-  // decides, not the embedder's. An excluded frame gets no hook written into it.
+  // decides, not the embedder's. It also stages the per-tab token the hook file
+  // consumes, and clears any page-seeded surface.
   const gate = await injectFrameGate(target, 'MAIN');
   if (!gate.ok) {
     return { ok: false, error: gate.error || 'Frame gate failed.' };
@@ -639,55 +852,44 @@ async function injectMainWorldScript(tabId, file, frameId) {
   }
 }
 
-async function injectTabScripts(tabId) {
-  const target = { tabId, allFrames: true };
-  // Frame-level gate (layer 2a): the ISOLATED gate runs in EVERY frame and each
-  // frame's own hostname decides. The files below still run everywhere, but an
-  // excluded frame returns at its first statement, before any listener or timer.
-  const gate = await injectFrameGate(target, 'ISOLATED');
+function contentScriptPresence() {
+  return Boolean(/** @type {any} */ (globalThis).__tabNormalizerContentScriptV5);
+}
+
+/**
+ * Inject the ISOLATED pair into exactly the frames that do not have it.
+ *
+ * Per-frame, by frameIds: the old code asked frame 0 and skipped the WHOLE tab
+ * when it answered, so a detached embedded frame never revived. Presence is
+ * read in the ISOLATED world of each frame (where the content script lives),
+ * so a frame that gated itself out is correctly reported as missing.
+ * @param {number} tabId
+ */
+async function injectMissingFrames(tabId) {
+  const gate = await injectFrameGate({ tabId, allFrames: true }, 'ISOLATED');
   if (!gate.ok) {
     throw new Error(gate.error || 'Frame gate failed.');
   }
+  const present = await chrome.scripting.executeScript({
+    target: { tabId, allFrames: true },
+    func: contentScriptPresence,
+    world: 'ISOLATED',
+  });
+  /** @type {number[]} */
+  const missing = [];
+  for (const entry of present || []) {
+    if (!entry || typeof entry.frameId !== 'number') continue;
+    if (entry.result !== true) missing.push(entry.frameId);
+  }
+  if (missing.length === 0) return;
   await chrome.scripting.executeScript({
-    target,
+    target: { tabId, frameIds: missing },
     files: INJECTABLE_FILES,
   });
 }
 
-async function prepareCurrentTabActivation(tabId, siteKey) {
-  if (!tabId) {
-    return { state: 'pending' };
-  }
-
-  let tab = null;
-  try {
-    tab = await chrome.tabs.get(tabId);
-  } catch {
-    return { state: 'pending' };
-  }
-
-  if (!canAccessTabUrl(tab?.url)) {
-    return { state: 'restricted', message: 'Enabled. Reload on a supported page.' };
-  }
-
-  if (getTabSiteKey(tab) !== siteKey) {
-    return { state: 'pending' };
-  }
-
-  // Layer 3, enable path: an excluded host is never injected.
-  if (await isSiteBlocked(siteKey)) {
-    return { state: 'idle' };
-  }
-
-  try {
-    if (!await hasInjectedContentScript(tabId)) {
-      await injectTabScripts(tabId);
-    }
-  } catch {
-    return { state: 'unavailable', message: 'Enabled. Reload if this page stays unavailable.' };
-  }
-
-  return { state: 'pending' };
+async function injectTabScripts(tabId) {
+  await injectMissingFrames(tabId);
 }
 
 async function getPendingSessionStates() {
@@ -726,9 +928,7 @@ async function tryApplyPendingSessionState(tabId, tab) {
   }
 
   try {
-    if (!await hasInjectedContentScript(tabId)) {
-      await injectTabScripts(tabId);
-    }
+    await injectTabScripts(tabId);
 
     await chrome.tabs.sendMessage(tabId, {
       type: 'SET_DOCUMENT_STATE',
@@ -772,18 +972,13 @@ async function softRecheckDocument(tabId, siteKey) {
     return { ok: true, activation: { state: 'idle' } };
   }
 
-  try {
-    if (!await hasInjectedContentScript(tabId)) {
-      await injectTabScripts(tabId);
-    }
-  } catch {
-    return { ok: true, activation: { state: 'unavailable', message: 'Enabled. Waiting for this page.' } };
-  }
-
+  // FINAL RULE: this never injects. It asks a document that already has the
+  // content script to re-read its truth (stop or adjust); a document without
+  // one is reported as "enabled, applies on reload" instead of being armed.
   try {
     return await chrome.tabs.sendMessage(tabId, { type: 'SOFT_RECHECK_DOCUMENT' }, { frameId: 0 });
   } catch {
-    return { ok: true, activation: { state: 'unavailable', message: 'Enabled. Waiting for this page.' } };
+    return { ok: true, activation: { state: 'reload', message: 'Enabled. Reload applies this.' } };
   }
 }
 
@@ -816,11 +1011,6 @@ async function syncExistingTabsForSite(siteKey, options = {}) {
 
   await Promise.all(matchingTabs.map(async (tab) => {
     if (!tab.id || !canAccessTabUrl(tab.url)) {
-      return;
-    }
-
-    const isInjected = await hasInjectedContentScript(tab.id);
-    if (isInjected) {
       return;
     }
 
@@ -879,9 +1069,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           await writeSiteRecord(siteKey, next);
           return { seq: nextSeq, nextEnabled, gainDb: next.gainDb, excluded: next.excluded };
         });
-        if (outcome.nextEnabled) {
-          await syncExistingTabsForSite(siteKey);
-        }
+        // FINAL RULE: the toggle is recorded and applies on the next navigation;
+        // no open document is armed by it.
         console.log('[bg] stored toggle:', siteKey, outcome.nextEnabled);
         return {
           ok: true,
@@ -960,12 +1149,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           };
         });
 
-        // Exclusion beats enablement: activation is refused for an excluded
-        // host (layer 3), whatever the intent said.
-        const shouldActivateCurrentTab = applied.enabledApplied && applied.enabled && !applied.excluded;
-        const activation = shouldActivateCurrentTab
-          ? await prepareCurrentTabActivation(message.tabId, siteKey)
-          : { state: 'idle' };
+        // FINAL RULE: enabling a site never starts work in an already-loaded
+        // document. The enable is recorded and applied by registration on the
+        // next navigation; this tab, and every other open tab of the site, is
+        // left exactly as it is. The popup says so ("Reload applies this.").
         if (!persist && message.tabId) {
           await setPendingSessionState(
             message.tabId,
@@ -976,16 +1163,17 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             },
           );
         }
-        if (shouldActivateCurrentTab && persist) {
-          await syncExistingTabsForSite(siteKey);
+        // Exclusion is immediate and worker-driven: the hook in every affected
+        // frame of every affected tab is destroyed before the popup hears back,
+        // so a mid-read or hung content script cannot delay it. Un-excluding is
+        // the mirror of an enable: it applies on the next navigation only.
+        if (persist && applied.exclusionChanged && applied.excluded) {
+          await teardownHooksForSite(siteKey, { includeDescendants: true, mode: 'destroy' });
         }
-        // Live teardown / revive for tabs that are already open. The storage
-        // broadcast (TOGGLE_CHANGED, carrying `excluded`) reaches every frame
-        // whose listeners are still armed; an un-exclude must also re-inject
-        // the key AND its open descendants, because the torn-down frames have
-        // no listeners left to hear it and their cached key is their own.
-        if (persist && applied.exclusionChanged && !applied.excluded) {
-          await syncExistingTabsForSite(siteKey, { includeDescendants: true });
+        // A persisted disable stops the hook but keeps its dispatcher, so a
+        // re-enable revives it with one control call.
+        if (persist && applied.enabledApplied && !applied.enabled) {
+          await teardownHooksForSite(siteKey, { mode: 'stop' });
         }
         console.log('[bg]', persist ? 'stored:' : 'transient:', siteKey, JSON.stringify(applied));
         return {
@@ -995,7 +1183,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           excluded: applied.excluded,
           siteKey,
           seq: applied.seq,
-          activation,
+          // Exclusion beats enablement: nothing runs on this host, now or after
+          // a reload. Otherwise nothing is activated in the live document - the
+          // enable applies on the next navigation.
+          activation: applied.excluded
+            ? { state: 'idle' }
+            : { state: 'navigation', message: 'Enabled. Reload applies this.' },
         };
       }
       case 'GET_SITE_STATE': {
@@ -1021,6 +1214,34 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           siteKey,
           seq: reconciled.seq,
         };
+      }
+      case 'CONTROL_HOOK': {
+        const tabId = _sender?.tab?.id;
+        if (!tabId) throw new Error('No tab for hook control.');
+        const frameId = (typeof _sender?.frameId === 'number' && Number.isFinite(_sender.frameId))
+          ? _sender.frameId
+          : 0;
+        const senderUrl = String(_sender?.url || _sender?.tab?.url || '');
+        const siteKey = backgroundShared.getSiteKey(backgroundShared.extractHostname(senderUrl));
+        const action = String(message.action || 'status');
+        // The WORKER is the authority for exclusion. An excluded (or
+        // unreadable) frame is torn down, never asked to start, and the page
+        // has no way to reach this decision.
+        if (await isSiteBlocked(siteKey)) {
+          // Only the SENDER frame is destroyed. A frame on a blocked host inside
+          // an allowed tab (an embedded frame the tab-level selection never
+          // matches) must be able to end its own hook without tearing down the
+          // allowed frames that share its tab.
+          await controlHookFrame(tabId, frameId, 'destroy', {});
+          return { ok: false, alive: false, active: false, error: 'Site is excluded.' };
+        }
+        const payload = message.payload && typeof message.payload === 'object'
+          ? /** @type {Record<string, unknown>} */ (message.payload)
+          : {};
+        if (action === 'start' && payload.workletUrl === undefined) {
+          payload.workletUrl = chrome.runtime.getURL('audio/normalizer-worklet.js');
+        }
+        return await controlHookFrame(tabId, frameId, action, payload);
       }
       case 'INJECT_PAGE_HOOK': {
         const tabId = _sender?.tab?.id;
@@ -1204,9 +1425,27 @@ chrome.storage.onChanged.addListener((changes, area) => {
       || oldRec.excluded !== newRec.excluded) {
       scheduleRegistrationSync();
     }
+    // Worker-driven exclusion teardown: the storage change is authoritative and
+    // does not depend on any content script being awake or listening.
+    if (newRec.excluded && (!oldRec || oldRec.excluded !== true)) {
+      void teardownHooksForSite(backgroundShared.siteKeyFromStorageKey(key), {
+        includeDescendants: true,
+        mode: 'destroy',
+      });
+    }
     if (oldRec && oldRec.enabled === newRec.enabled
       && oldRec.gainDb === newRec.gainDb
       && oldRec.excluded === newRec.excluded) continue;
     scheduleSiteBroadcast(siteKey);
   }
 });
+// ---------------------------------------------------------------------------
+// Rule 7: registration is SELF-HEALING, not merely serialized.
+//
+// A service-worker wake evaluates this file, so reconciling here means a
+// descriptor left behind by a worker that died mid-pass (or by an update that
+// rejected) cannot outlive the next wake, let alone a restart. Install and
+// startup keep their own passes for re-injection; this one only makes the
+// stored registration match the stored records.
+// ---------------------------------------------------------------------------
+void syncContentScriptRegistration();

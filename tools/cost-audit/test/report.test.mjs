@@ -14,7 +14,7 @@ const EXTENSIONS = [
 ];
 
 function zeroFootprint() {
-  return { scripts: 0, listeners: 0, timers: 0, observers: 0, patches: 0, workletNodes: 0, audioContexts: 0, mediaElementSources: 0 };
+  return { scripts: 0, listenerRegistrations: 0, timers: 0, observers: 0, patches: 0, workletNodes: 0, audioContexts: 0, mediaElementSources: 0 };
 }
 
 function extensionsAll(values = {}) {
@@ -64,7 +64,7 @@ test("a clean control scenario passes with zero footprint for every extension", 
 });
 
 test("a single listener changes exactly one verdict and names extension, host and count", () => {
-  const dirty = scenario({ extensions: extensionsAll({ "audio-normalizer": { listeners: 2 } }) });
+  const dirty = scenario({ extensions: extensionsAll({ "audio-normalizer": { listenerRegistrations: 2 } }) });
   const assertions = buildAssertions(report({ scenarios: [dirty] }));
   const failed = assertions.filter((a) => a.verdict === "fail");
   assert.equal(failed.length, 1);
@@ -72,7 +72,7 @@ test("a single listener changes exactly one verdict and names extension, host an
   assert.equal(failed[0].host, "127.0.0.1");
   assert.match(failed[0].message, /Audio Normalizer/);
   assert.match(failed[0].message, /127\.0\.0\.1/);
-  assert.match(failed[0].message, /listeners=2/);
+  assert.match(failed[0].message, /listenerRegistrations=2/);
   assert.equal(exitCodeFor(assertions), EXIT_FAILED);
 });
 
@@ -160,7 +160,7 @@ test("a limit is printed loudly, is never a pass, and does not fail the run", ()
 
 test("the table carries one row per extension per scenario with all five counts", () => {
   const table = renderTable(report(), buildAssertions(report()));
-  for (const header of ["scenario", "extension", "scripts", "listeners", "timers", "observers", "patches"]) {
+  for (const header of ["scenario", "extension", "scripts", "listenerRegistrations", "timers", "observers", "patches"]) {
     assert.match(table, new RegExp(header));
   }
   assert.match(table, /Audio Normalizer/);
@@ -224,12 +224,12 @@ test("a presence-only extension in the coexistence run is asserted to cost nothi
     expectInert: false,
     graphExpected: [],
     probe: { patches: [], scriptElements: [], uncaught: [], mediaElementCurrentTime: 0.8, doubledWiring: [] },
-    extensions: extensionsAll({ "web-discord-rpc": { scripts: 1, listeners: 2 } }),
+    extensions: extensionsAll({ "web-discord-rpc": { scripts: 1, listenerRegistrations: 2 } }),
   });
   const assertions = buildAssertions(report({ scenarios: [coexist] }));
   const cost = assertions.find((a) => a.id === "coexistence-page-cost/web-discord-rpc");
   assert.equal(cost.verdict, "fail");
-  assert.match(cost.message, /listeners=2/);
+  assert.match(cost.message, /listenerRegistrations=2/);
 
   const clean = scenario({
     id: "coexistence",

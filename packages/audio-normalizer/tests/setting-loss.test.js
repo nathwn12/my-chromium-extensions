@@ -133,7 +133,17 @@ async function loadContentFrame(href, storage) {
       },
       runtime: {
         onMessage: { addListener: (fn) => runtimeListeners.push(fn) },
-        sendMessage: async () => ({ ok: true }),
+        sendMessage: async (msg) => {
+          // Control flows extension -> page only: the content script asks the WORKER,
+          // which is the only party allowed to reach the MAIN world. The harness
+          // records that request (the page receives nothing).
+          if (msg && msg.type === 'CONTROL_HOOK') {
+            const actionType = { start: 'START', stop: 'STOP', setGain: 'SET_GAIN', status: 'STATUS_REQUEST' }[msg.action] || msg.action;
+            postedToPage.push({ type: actionType, via: 'worker', ...(msg.payload || {}) });
+            return { ok: true, alive: true, active: true, gainDb: (msg.payload && msg.payload.gainDb) || 0, error: '' };
+          }
+          return { ok: true };
+        },
         getURL: (p) => `chrome-extension://fake/${p}`,
       },
     },
@@ -144,6 +154,8 @@ async function loadContentFrame(href, storage) {
     },
     document: {
       hidden: false,
+      // document_start: this instance was injected while the document loaded.
+      readyState: 'loading',
       documentElement: { setAttribute: () => {}, removeAttribute: () => {} },
       addEventListener: () => {},
     },
@@ -153,15 +165,24 @@ async function loadContentFrame(href, storage) {
   sandbox.self = sandbox;
   vm.createContext(sandbox);
   vm.runInContext(src('content-script.js'), sandbox, { filename: 'content-script.js' });
-  // FAIL CLOSED: listeners are installed only after the storage answer, so the
-  // harness waits for the bootstrap before asserting that it happened.
-  await settle(40);
-  if (runtimeListeners.length === 0) throw new Error(`content-script did not bootstrap for ${href}`);
+  // The instance is installed synchronously; whether it ARMS depends on the
+  // load-time record (a site that loads off does no work at all).
+  if (!sandbox.__tabNormalizerContentScriptV5) throw new Error(`content-script did not install for ${href}`);
   const sendMessage = (message) => new Promise((resolve) => {
+    if (typeof runtimeListeners[0] !== 'function') {
+      resolve({ ok: false, error: 'no receiver' });
+      return;
+    }
     const ret = runtimeListeners[0](message, {}, resolve);
     if (ret !== true) resolve(undefined);
   });
-  return { sandbox, sendMessage, storageListeners, postedToPage };
+  return {
+    sandbox,
+    sendMessage,
+    storageListeners,
+    postedToPage,
+    runtimeListeners: () => runtimeListeners.length,
+  };
 }
 
 // ---------- popup harness (real popup.js via vm with fake DOM) ----------
@@ -350,7 +371,14 @@ test('defect1d: background document messages are actually sent to the top frame 
   await settle(20);
   assert.ok(bg.tabsSent.length > 0, `expected a document message to be sent (got ${bg.tabsSent.length})`);
   for (const c of bg.tabsSent) {
-    assert.equal(c.options?.frameId, 0, `background message ${c.msg.type} targets top frame (got ${JSON.stringify(c.options)})`);
+    // Every frame, no frameId filter: a cross-origin frame of the site does not
+    // share the tab's top-level URL, so a top-frame-only broadcast would miss it
+    // and the frame's own siteKey guard isolates a foreign frame instead.
+    assert.equal(
+      c.options,
+      undefined,
+      `background message ${c.msg.type} targets every frame (got ${JSON.stringify(c.options)})`,
+    );
   }
   const types = bg.tabsSent.map((c) => c.msg.type);
   assert.ok(types.includes('TOGGLE_CHANGED'), `expected TOGGLE_CHANGED broadcast (got ${types})`);
@@ -878,7 +906,7 @@ test('background broadcast re-reads stored truth before sending (delayed query)'
   assert.ok(bg.tabsSent.length > 0, 'broadcast sent after delayed query');
   for (const c of bg.tabsSent) {
     assert.equal(c.msg.enabled, true, 'delayed disable is corrected to current stored truth (enabled:true)');
-    assert.equal(c.options?.frameId, 0, 'broadcast still targets the top frame');
+    assert.equal(c.options, undefined, 'broadcast still reaches every frame (no frameId filter)');
   }
 });
 
@@ -1118,7 +1146,7 @@ test('migration merges two raw keys that normalise to one site (no field loss)',
 
 test('preserved: content script performs zero storage writes (background is the single writer)', async () => {
   const storage = createFakeStorage({
-    'site:example.com': { enabled: false, gainDb: 0, seq: 0, mirror: false },
+    'site:example.com': { enabled: true, gainDb: 0, seq: 0, mirror: true },
     siteSettings: {},
     activeSites: { 'legacy.example': true },
   });
@@ -1139,8 +1167,18 @@ test('preserved: content script performs zero storage writes (background is the 
   assert.equal(res2.ok, true);
   assert.equal(writes, 0, 'transient document-state path writes nothing');
   const stored = await storage.get(['site:example.com', 'activeSites']);
-  assert.deepEqual(stored['site:example.com'], { enabled: false, gainDb: 0, seq: 0, mirror: false }, 'stored truth untouched by transient apply');
+  assert.deepEqual(stored['site:example.com'], { enabled: true, gainDb: 0, seq: 0, mirror: true }, 'stored truth untouched by transient apply');
   assert.ok('legacy.example' in stored.activeSites, 'legacy keys left for the background single writer');
+
+  // FINAL RULE: a document that loaded with the site OFF installs no listener
+  // at all, so it cannot even reach the read-only paths above.
+  const offStorage = createFakeStorage({
+    'site:quiet.example': { enabled: false, gainDb: 0, seq: 0, mirror: false },
+  });
+  const offFrame = await loadContentFrame('https://quiet.example/embed', offStorage);
+  await settle(60);
+  assert.equal(offFrame.runtimeListeners(), 0, 'a site that loads off does no work');
+  assert.equal(offFrame.storageListeners.length, 1, 'and keeps only the inert storage surface');
 });
 
 test('preserved: every message-type name still has a working read path', async () => {
@@ -1265,15 +1303,16 @@ test('legacy-only store (siteSettings/siteToggles/activeSites, no per-site key) 
   const snap = await storage.get(null);
   assert.equal(snap['site:youtube.com'].enabled, false, 'migrated per-site record persisted');
   assert.equal(snap['site:youtube.com'].gainDb, 4);
-  // Content-script read path agrees, write-free (background is single writer).
+  // Content-script read path agrees... by doing nothing: a document that loaded
+  // with the site off installs no listener and performs no work, and the
+  // background is the single writer.
   let writes = 0;
   const origSet = storage.set.bind(storage);
   storage.set = async (...a) => { writes++; return origSet(...a); };
   const frame = await loadContentFrame('https://music.youtube.com/watch', storage);
-  await settle();
-  const status = await frame.sendMessage({ type: 'GET_DOCUMENT_STATUS' });
-  assert.equal(status.enabled, false, 'content script applies the migrated truth');
-  assert.equal(status.gainDb, 4);
+  await settle(60);
+  assert.equal(frame.runtimeListeners(), 0, 'a disabled site installs no runtime listener');
+  assert.equal(frame.storageListeners.length, 1, 'only the one inert storage surface');
   assert.equal(writes, 0, 'content-script read path writes nothing');
 });
 

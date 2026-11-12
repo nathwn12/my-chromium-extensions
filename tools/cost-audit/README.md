@@ -54,10 +54,23 @@ assertion reads a sound device: audio is judged from instrumented node graphs,
 "Content-script executions" is counted at the source: CDP
 `Runtime.executionContextCreated` events whose origin is
 `chrome-extension://<id>` and whose `auxData.type` is `isolated`. Page-world
-cost — listeners, timers, observers, patched globals, audio graphs — comes from
-an instrument installed with `Page.addScriptToEvaluateOnNewDocument`, which runs
-before every page script and every content script. Each registration records a
-stack frame, so counts are attributed per extension.
+cost — listener registrations, timers, observers, patched globals, audio graphs —
+comes from an instrument installed with `Page.addScriptToEvaluateOnNewDocument`,
+which runs before every page script and every content script. Each registration
+records a stack frame, so counts are attributed per extension.
+
+The column and the JSON field are `listenerRegistrations`, and that is literally
+what they are: the number of `addEventListener` calls the page world saw. They
+are **not** a live listener count, and no live figure is published. Duplicate
+adds are counted twice even though the platform deduplicates them; a
+`{ once: true }` listener that already fired still counts; capture is not
+modelled; a removal via `AbortSignal` is invisible; a listener registered inside
+an isolated world never reaches the page-world `EventTarget.prototype` and is
+therefore not counted at all; and the log stops at 500 records. `removeEventListener`
+calls are counted separately as `listenerRemovalCalls` and are never subtracted
+from the registration count. Read the column as "how much listener registration
+this extension performed in the page", never as "how many listeners are
+attached now".
 
 ## The registration proof
 
@@ -116,6 +129,11 @@ The report prints the actual arrays for every phase, not just a verdict.
 - Isolated-world listener/timer/observer registrations are invisible to
   page-world instrumentation — an isolated world has its own
   `EventTarget.prototype`. They are counted as isolated worlds instead.
+- `listenerRegistrations` is a registration count, never a live count: duplicate
+  adds, `{ once: true }` listeners that already fired, unmodelled capture,
+  `AbortSignal` removals and the 500-record cap all make a "live" figure
+  indefensible, so none is published. `listenerRemovalCalls` is a separate raw
+  count and is not subtracted.
 - The fixture pages carry no site code, so this measures presence and graph
   shape, not the fidelity of any site's playback.
 - Patch detection compares function source text against a document-start

@@ -99,6 +99,13 @@ function loadHook() {
   sandbox.globalThis = sandbox;
   vm.createContext(sandbox);
   vm.runInContext(src, sandbox, { filename: 'page-hook.js' });
+  // The worker arms the hook through the dispatcher; there is no auto-start.
+  if (typeof sandbox.__tnHookV6 === 'function') {
+    sandbox.__tnHookV6('start', {
+      gainDb: 0,
+      workletUrl: 'chrome-extension://test-id/audio/normalizer-worklet.js',
+    });
+  }
   return {
     stats, scheduled, observedRoots, FakeElement,
     fireMutations: (mutations) => { if (observerCallback) observerCallback(mutations); },

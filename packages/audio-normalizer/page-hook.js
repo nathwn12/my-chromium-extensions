@@ -7,8 +7,6 @@
     return;
   }
 
-  const CHANNEL = 'tab-normalizer-v5';
-  const PENDING_ATTR = 'data-tab-normalizer-pending';
   const WORKLET_ATTR = 'data-tn-worklet-url';
   const WORKLET_SUFFIX = '/audio/normalizer-worklet.js';
   const RECOVERY_BURST_MS = 250;
@@ -40,7 +38,7 @@
     return true;
   }
 
-  /** @param {(entry: { target: any, type: string, fn: any, options: any }) => boolean} keep */
+  /** @param {((entry: { target: any, type: string, fn: any, options: any }) => boolean) | undefined} [keep] */
   function untrackListeners(keep) {
     const survivors = [];
     for (const entry of trackedListeners) {
@@ -266,7 +264,21 @@
   const originalConnect = AudioNode.prototype.connect;
   const originalPlay = HTMLMediaElement.prototype.play;
   const originalCreateMediaElementSource = AudioContext.prototype.createMediaElementSource;
+  // Originals of the constructor patches, so a dispose can put the page back
+  // exactly as it was instead of leaving half-patched globals behind.
+  /** @type {{ AudioContext?: any, OfflineAudioContext?: any, webkitAudioContext?: any }} */
+  const patchedConstructorOriginals = {};
 
+  // -------------------------------------------------------------------------
+  // Per-instance session registry — deliberately NOT page-durable.
+  //
+  // Design cut: a captured element cannot be recaptured (Web Audio allows one
+  // source per element), so a live document can never be re-normalized after its
+  // graph is released. Rather than retain a captured context and its sources for
+  // a later instance (which pins the graph and the removed elements for the life
+  // of the document), STOP/DESTROY release everything for good, and the popup
+  // tells the user that a reload restores the page.
+  // -------------------------------------------------------------------------
   const sessions = new Set();
   const contextSessions = new WeakMap();
   const mediaSessions = new WeakMap();
@@ -288,7 +300,8 @@
   // still be collected; the live AudioNodes stay pinned only by the owning
   // session's `sources` set). Removal never disconnects and never drops the
   // entry: a re-inserted element reuses the SAME source with zero re-capture
-  // (a second createMediaElementSource on one element throws).
+  // (a second createMediaElementSource on one element throws). Per instance, and
+  // released with the session: see releaseSessions.
   const elementSources = new WeakMap();
   let currentProgramGeneration = 0;
   let activeProgramElement = null;
@@ -305,26 +318,140 @@
     stopped: false,
   };
 
-  window.__tabNormalizerHookV5 = {
-    revive,
-  };
-
   // The frame gate (written by the background in the MAIN world just before
   // this file, from the frame's OWN hostname) is the first thing consulted: an
-  // excluded frame gets no listener, no observer and no patch. `undefined`
-  // (no gate ran, e.g. a stale re-entry) falls through to the pending-start
-  // path exactly as before.
+  // excluded frame gets no listener, no observer and no patch.
   if (globalThis.__tabNormalizerFrameGate?.excluded === true) {
     return;
   }
 
-  // The control channel is permanent by design: START after a STOP arrives
-  // here, and removing it would make re-enabling a page require a reload.
-  window.addEventListener('message', handleMessage);
+  // There is NO page -> extension control channel. Nothing here listens on
+  // `window`: a page posting START/STATUS_REQUEST/SET_GAIN reaches nothing.
+  // Control arrives only through the background's `executeScript({func})`,
+  // which calls the dispatcher below. STOP removes that dispatcher, so after
+  // STOP there is no page-reachable way to make this hook do work; the only
+  // way back is a fresh injection from the worker.
+  //
+  // `__tnDisposeV6` is the one inert marker left behind: it can only tear the
+  // hook down (never start it), and it exists so a re-injection does not stack
+  // a second instance on a live one. It costs no timer, observer or listener.
+  try {
+    if (typeof globalThis.__tnDisposeV6 === 'function') {
+      globalThis.__tnDisposeV6();
+    }
+  } catch {}
 
-  if (readPendingStart()) {
-    start();
+
+  function tnDispatch(action, payload) {
+    if (action === 'start') {
+      start(payload || null);
+      return status();
+    }
+    if (action === 'setGain') {
+      setGain(payload && payload.gainDb);
+      return status();
+    }
+    if (action === 'status') return status();
+    // 'stop' and 'destroy' are the same thing now: stop the work, put the page
+    // back, and remove the only page-reachable entrypoint.
+    if (action === 'stop' || action === 'destroy') {
+      dispose();
+      return { ok: true, alive: false, active: false, error: '' };
+    }
+    return status();
   }
+
+  /**
+   * Full teardown from the worker's point of view: no processing, no listeners,
+   * no timers, patched globals restored, the dispatcher deleted, and every
+   * session released for good. Nothing is kept for a later instance.
+   */
+  function dispose() {
+    try {
+      stop();
+    } catch {}
+    try {
+      releaseSessions();
+    } catch {}
+    try {
+      restorePatchedPrototypes();
+    } catch {}
+    removeControlSurface();
+  }
+
+  /**
+   * Release every session the hook created: detach its elements, disconnect its
+   * sources, disconnect its worklet and close its context.
+   *
+   * This is what makes a later instance start clean. It also means a captured
+   * element goes quiet for the rest of the document's life — the page's source
+   * cannot be re-created and we no longer hold a context to route it — which is
+   * exactly why the popup carries a reload notice (design cut, round 5).
+   */
+  function releaseSessions() {
+    for (const session of Array.from(sessions)) {
+      try {
+        for (const mediaElement of Array.from(session.mediaElements || [])) {
+          try {
+            detachMediaElement(mediaElement);
+          } catch {}
+        }
+        if (session.workletNode) {
+          try { session.inputNode.disconnect(session.workletNode); } catch {}
+          try { session.workletNode.disconnect(session.outputNode); } catch {}
+        }
+        try { session.inputNode.disconnect(session.outputNode); } catch {}
+        for (const source of Array.from(session.sources || [])) {
+          try { source.disconnect(); } catch {}
+        }
+        try { session.sources.clear(); } catch {}
+        try { session.mediaElements.clear(); } catch {}
+        if (session.context && session.context.state !== 'closed'
+          && typeof session.context.close === 'function') {
+          void session.context.close().catch(() => {});
+        }
+      } catch {}
+      try {
+        sessions.delete(session);
+      } catch {}
+      try {
+        if (mediaSessions.get(document) === session) mediaSessions.delete(document);
+      } catch {}
+    }
+    try {
+      deferredCaptureElements.clear();
+    } catch {}
+    try {
+      guardedMediaElements.clear();
+    } catch {}
+  }
+
+  function status() {
+    return {
+      ok: true,
+      alive: true,
+      active: isHookActive(),
+      gainDb: state.gainDb,
+      error: state.lastError,
+    };
+  }
+
+  /**
+   * Remove every page-callable entrypoint. After this a page cannot restart
+   * processing: the dispatcher is gone, the listeners are gone, the routes are
+   * bypassed. `__tnDisposeV6` stays (teardown-only) so a later re-injection can
+   * dispose this instance before installing its own.
+   */
+  function removeControlSurface() {
+    try {
+      delete globalThis.__tnHookV6;
+    } catch {
+      globalThis.__tnHookV6 = undefined;
+    }
+  }
+
+  globalThis.__tnHookV6 = tnDispatch;
+  globalThis.__tnDisposeV6 = dispose;
 
   function bindLifecycleListeners() {
     trackListener(document, 'visibilitychange', handleLifecycleEvent);
@@ -336,29 +463,6 @@
     untrackListener(document, 'visibilitychange', handleLifecycleEvent);
     untrackListener(window, 'focus', handleLifecycleEvent);
     untrackListener(window, 'pageshow', handleLifecycleEvent);
-  }
-
-  function handleMessage(event) {
-    if (event.source !== window || event.data?.channel !== CHANNEL) return;
-    if (event.data.type === 'START') start(event.data);
-    if (event.data.type === 'STOP') stop();
-    if (event.data.type === 'SET_GAIN') setGain(event.data.gainDb);
-    if (event.data.type === 'STATUS_REQUEST') reportStatus('HOOK_STATUS', { requestId: event.data.requestId });
-  }
-
-  function revive() {
-    console.log('[hook] revive requested');
-    reportStatus('HOOK_STATUS');
-
-    // A page can set the DOM pending attribute and call revive() after
-    // Active off. The pending fallback is ignored after stop until a real
-    // START arrives; only genuine recovery remains.
-    if (!state.stopped && readPendingStart()) {
-      start();
-      return;
-    }
-
-    scheduleRecoveryBurst();
   }
 
   let lifecycleTimer = null;
@@ -446,8 +550,7 @@
   function stop() {
     if (!state.active) return;
     state.active = false;
-    // The DOM pending fallback stays dead until a real START: revive() and
-    // the recovery burst must not re-route audio after an explicit stop.
+    // The recovery burst must not re-route audio after an explicit stop.
     state.stopped = true;
     clearRecoveryBurst();
     console.log('[hook] stopping');
@@ -473,14 +576,15 @@
     } catch {}
     maybeDisarmAttachedResume();
 
-    // Complete teardown: every tracked listener except the control channel,
-    // every tracked timer, every per-element listener. The patch itself stays
-    // (it cannot be removed without a reload); this makes it inert.
+    // Complete teardown: every tracked listener, every tracked timer, every
+    // per-element listener. `dispose()` goes further afterwards — it restores
+    // the patched prototypes and releases the sessions — so what remains here is
+    // the part `stop()` owns when it is called on its own.
     unbindLifecycleListeners();
     untrackTimeout(lifecycleTimer);
     lifecycleTimer = null;
     teardownElementListeners();
-    untrackListeners((entry) => entry.target === window && entry.type === 'message');
+    untrackListeners();
     // The armed flag must follow the sweep, or the next START would not re-add
     // the document-level resume pair.
     if (attachedResumeArmed) {
@@ -544,6 +648,7 @@
           }
         }
         PatchedAudioContext.__tnPatched = true;
+        patchedConstructorOriginals.AudioContext = OrigAC;
         window.AudioContext = /** @type {typeof AudioContext & {__tnPatched?: boolean}} */ (PatchedAudioContext);
       }
 
@@ -558,6 +663,7 @@
           }
         }
         PatchedOfflineAudioContext.__tnPatched = true;
+        patchedConstructorOriginals.OfflineAudioContext = OrigOAC;
         window.OfflineAudioContext = /** @type {typeof OfflineAudioContext & {__tnPatched?: boolean}} */ (PatchedOfflineAudioContext);
       }
 
@@ -572,6 +678,7 @@
             }
           }
           PatchedWebkitAudioContext.__tnPatched = true;
+          patchedConstructorOriginals.webkitAudioContext = Orig;
           window.webkitAudioContext = /** @type {typeof AudioContext & {__tnPatched?: boolean}} */ (PatchedWebkitAudioContext);
         }
       }
@@ -967,6 +1074,28 @@
     return session;
   }
 
+  /**
+   * Bind this instance's teardown-tracked `statechange` listener to a session's
+   * context. Called for a session this instance creates AND for one it ADOPTS:
+   * the previous instance's copy was released by its own sweep, so the new owner
+   * must watch the context it now routes.
+   * @param {any} session
+   */
+  function watchSessionContext(session) {
+    const context = session && session.context;
+    if (!context) return;
+    trackListener(context, 'statechange', () => {
+      if (!state.active) return;
+      if (context.state === 'closed') {
+        setError('Audio context closed. Reconnecting…');
+        teardownSession(session);
+        void recoverAudio();
+        return;
+      }
+      reportStatus('HOOK_STATUS');
+    });
+  }
+
   function createSession(context, kind) {
     const inputNode = context.createGain();
     const outputNode = context.createGain();
@@ -995,17 +1124,7 @@
       pendingResetGeneration: null,
     };
 
-    const onContextStateChange = () => {
-      if (!state.active) return;
-      if (context.state === 'closed') {
-        setError('Audio context closed. Reconnecting…');
-        teardownSession(session);
-        void recoverAudio();
-        return;
-      }
-      reportStatus('HOOK_STATUS');
-    };
-    trackListener(context, 'statechange', onContextStateChange);
+    watchSessionContext(session);
 
     session.ready = context.audioWorklet
       .addModule(WORKLET_URL || '')
@@ -1525,12 +1644,11 @@
       restoreHookGuard(mediaElement);
       if (e instanceof DOMException && e.name === 'InvalidStateError') {
         // No cached source and capture threw: the page (or a previous hook
-        // instance) owns this element. Record it and skip — the element is
-        // left unmuted and untouched (guard already restored). This latch
-        // never blocks a cached source: reuse is checked before the
-        // page-wiring gate above.
+        // instance, whose release left the element's source in the page) owns
+        // this element. Record it and leave it alone — unmuted, untouched, and
+        // unprocessed until a reload rebuilds the page.
         mediaElement.__tnWebAudio = true;
-        console.log('[hook] media element already connected to another source, skipping');
+        console.log('[hook] media element already connected to another source, left unprocessed until reload');
       } else {
         console.error('[hook] attachMediaElement failed:', e.message || e);
         setError(`Attach media failed: ${e.message || e}`);
@@ -1636,25 +1754,47 @@
     reportStatus('HOOK_ERROR');
   }
 
-  function reportStatus(type, extra = {}) {
-    // Re-assert the live worklet gains from `state.gainDb` on every status
-    // report: a page-forged SET_GAIN that drifted a worklet is corrected at
-    // once, and the echo below lets the content script (the stored-truth
-    // owner) correct a drifted `state.gainDb` with its own SET_GAIN.
+  /**
+   * Status is answered synchronously through the dispatcher (`status()`).
+   * Nothing is posted to the page: the old `window.postMessage` report was half
+   * of the page-reachable control channel.
+   */
+  function reportStatus(type) {
     if (type === 'HOOK_STATUS') {
+      // Re-assert the live worklet gains from `state.gainDb` on every status
+      // report, so a drifted worklet is corrected at once.
       updateSessionGains();
     }
-    window.postMessage({
-      channel: CHANNEL,
-      type,
-      alive: true,
-      active: isHookActive(),
-      // A fail-closed worklet error must stay visible even while inactive:
-      // hiding it behind `''` when `!state.active` buried the failure.
-      error: state.lastError,
-      gainDb: state.gainDb,
-      requestId: extra.requestId || '',
-    }, '*');
+  }
+
+  /**
+   * Put the page back the way it was: patched prototypes and constructors are
+   * restored, so a disposed instance leaves no half-patched globals and a
+   * re-injected instance installs on a clean page.
+   */
+  function restorePatchedPrototypes() {
+    try {
+      AudioNode.prototype.connect = originalConnect;
+      delete AudioNode.prototype.__tnConnect;
+    } catch {}
+    try {
+      HTMLMediaElement.prototype.play = originalPlay;
+      delete HTMLMediaElement.prototype.__tnPlay;
+    } catch {}
+    try {
+      AudioContext.prototype.createMediaElementSource = originalCreateMediaElementSource;
+    } catch {}
+    try {
+      if (patchedConstructorOriginals.AudioContext) {
+        window.AudioContext = patchedConstructorOriginals.AudioContext;
+      }
+      if (patchedConstructorOriginals.OfflineAudioContext) {
+        window.OfflineAudioContext = patchedConstructorOriginals.OfflineAudioContext;
+      }
+      if (patchedConstructorOriginals.webkitAudioContext) {
+        window.webkitAudioContext = patchedConstructorOriginals.webkitAudioContext;
+      }
+    } catch {}
   }
 
   function isHookActive() {
@@ -1677,9 +1817,4 @@
     return Math.max(MIN_GAIN_DB, Math.min(MAX_GAIN_DB, Math.round(numeric * 2) / 2));
   }
 
-  function readPendingStart() {
-    const value = document.documentElement?.getAttribute(PENDING_ATTR);
-    document.documentElement?.removeAttribute(PENDING_ATTR);
-    return value === '1';
-  }
 })();

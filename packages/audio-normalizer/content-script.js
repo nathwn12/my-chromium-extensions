@@ -1,10 +1,13 @@
 (() => {
-  const CHANNEL = 'tab-normalizer-v5';
   const HOOK_TIMEOUT_MS = 1000;
   const HOOK_FRESH_MS = 3000;
   const INJECT_TIMEOUT_MS = 5000;
   const ACTIVATE_RETRY_COUNT = 5;
   const ACTIVATE_RETRY_MS = 250;
+  // The bootstrap read decides everything this frame will ever do, so it may
+  // not be unbounded: two attempts, each raced against this budget.
+  const BOOTSTRAP_READ_TIMEOUT_MS = 2000;
+  const BOOTSTRAP_READ_ATTEMPTS = 2;
   const PENDING_ATTR = 'data-tab-normalizer-pending';
 
   const contentShared = globalThis.TabNormalizerShared;
@@ -78,13 +81,12 @@
    *   hookActive: boolean, injecting: boolean, injectStartedAt: number,
    *   lastError: string, lastStatusAt: number,
    *   transient: ({ enabled: boolean, gainDb: number } | null),
-   *   pendingProbe: ({ requestId: string, promise: Promise<boolean>, resolve: (v: boolean) => void, timeoutId: number } | null),
-   *   popupProbe: (Promise<boolean> | null),
    *   syncInFlight: boolean, queuedSyncReason: string,
    *   activeSync: (Promise<void> | null), initialSyncDone: boolean,
    *   bootstrapped: boolean, activationRetryTimer: (number | null),
    *   activationRetryCount: number, spaWatchTimer: (number | null),
-   *   storageChangeTimer: (number | null), detached: boolean
+   *   detached: boolean, stopSent: boolean,
+   *   runtimeListenerArmed: boolean, bootstrapError: string
    * }} */
   const state = {
     hostname: '',
@@ -100,8 +102,6 @@
     lastError: '',
     lastStatusAt: 0,
     transient: null,
-    pendingProbe: null,
-    popupProbe: null,
     syncInFlight: false,
     queuedSyncReason: '',
     activeSync: null,
@@ -110,18 +110,46 @@
     activationRetryTimer: null,
     activationRetryCount: 0,
     spaWatchTimer: null,
-    storageChangeTimer: null,
     detached: false,
+    stopSent: false,
+    runtimeListenerArmed: false,
+    bootstrapError: '',
   };
 
   // Every listener this frame owns, so teardown can release all of them (an
   // excluded frame must leave nothing behind that could do work).
   /** @type {Array<() => void>} */
   let listenerRemovers = [];
-  // Canceller for the popup probe's own window listener + 1 s timeout, which
-  // live outside the bootstrap listener set.
-  /** @type {(() => void) | null} */
-  let popupProbeCancel = null;
+
+  // The one inert surface that outlives a teardown (rule 6): a single
+  // `chrome.storage.onChanged` listener per frame.
+  let storageSignalArmed = false;
+
+  // ---------------------------------------------------------------------------
+  // FINAL RULE (gate G3): enabling a site never starts work in an already-loaded
+  // document. A live document is only ever torn down, never re-armed; work
+  // begins on the next navigation, via registration.
+  //
+  // Two facts decide it, both fixed at load:
+  //  - `arrivedAtDocumentStart`: this instance was injected while the document
+  //    was still parsing (`runAt: document_start`). An instance injected into a
+  //    finished document may stop things but never start them.
+  //  - `armDecision`: what the LOAD-TIME record said. 'allowed' means this
+  //    document loaded with the site enabled; 'denied' means it did not, and no
+  //    later message or storage change may change that for this document.
+  //    'pending' only exists while the load-time read has not answered (a hung
+  //    store); its bounded retry may still decide, because that is still the
+  //    load-time question, not a state change.
+  // ---------------------------------------------------------------------------
+  const arrivedAtDocumentStart = (() => {
+    try {
+      return document.readyState === 'loading';
+    } catch {
+      return false;
+    }
+  })();
+  /** @type {'pending'|'allowed'|'denied'} */
+  let armDecision = arrivedAtDocumentStart ? 'pending' : 'denied';
 
   // THE GATE. It runs on every entry, before the re-injection hook is called
   // and before anything is created, so a re-injection can never bypass it.
@@ -141,8 +169,14 @@
   globalThis.__tabNormalizerContentScriptV5 = {
     reinject: handleReinject,
   };
-  // FAIL CLOSED: nothing is installed until storage has answered, and a read
-  // error installs nothing at all.
+  // Rule 6: the ONE inert surface this frame keeps for its whole life, including
+  // after a teardown. It is driven only by the extension's own storage records
+  // and reacts to no page activity, and it exists because the worker's tab-level
+  // teardown is selected by TOP-LEVEL host: an embedded frame on an excluded host
+  // inside an allowed tab is never selected, so it must hear the record itself.
+  registerStorageExclusionSignal();
+  // FAIL CLOSED: nothing that works is installed until storage has answered, and
+  // a read error installs nothing at all.
   void bootstrap('init');
 
   /**
@@ -158,12 +192,24 @@
       console.log('[cs] no hostname, skipping');
       return;
     }
-    let config;
-    try {
-      config = await readStoredConfig();
-    } catch (error) {
-      console.log('[cs] storage read failed, staying inactive:', String(error));
+    const outcome = await readStoredConfigBounded();
+    if (!outcome.ok) {
+      state.bootstrapError = outcome.error;
+      console.log('[cs] storage read unusable, staying inactive:', outcome.error);
+      // A read that never ANSWERS is not an answer: install nothing that runs,
+      // but keep the one inert surface that lets the worker's soft re-check
+      // retry the read, so a hung store cannot disable an enabled site
+      // permanently and this state is reported instead of silently dead.
+      if (outcome.timedOut) registerRuntimeMessageListener();
       return;
+    }
+    state.bootstrapError = '';
+    const config = outcome.config;
+    // The load-time decision, taken once. A later bootstrap (re-injection, a
+    // retry after a hung read) may only resolve 'pending'; it can never turn a
+    // document that loaded disabled or excluded into an armed one.
+    if (armDecision === 'pending') {
+      armDecision = config.enabled && !config.excluded ? 'allowed' : 'denied';
     }
     if (config.excluded) {
       state.excluded = true;
@@ -174,6 +220,15 @@
     if (!config.known) {
       // No record for this host (or any parent): unknown is inactive.
       console.log('[cs] no stored record for', state.siteKey, '- inactive');
+      return;
+    }
+    if (!config.enabled) {
+      // FINAL RULE: a document that loaded with the site OFF does no work at
+      // all — no listener, no timer, no observer. Enabling it later applies on
+      // the next navigation, so there is nothing to arm here.
+      rememberExclusion(state.siteKey, false);
+      state.excluded = false;
+      console.log('[cs] site off at load, staying idle');
       return;
     }
     rememberExclusion(state.siteKey, false);
@@ -189,47 +244,12 @@
   }
 
   /**
-   * @returns {boolean} true when the listener set is armed for this frame
+   * The extension-message listener, registered from two places: the ordinary
+   * armed frame, and the timeout recovery surface of a frame whose storage read
+   * never answered. Idempotent, and released with every other listener.
    */
-  function ensureBootstrapListeners() {
-    if (state.bootstrapped || !state.siteKey || state.detached) return state.bootstrapped;
-
-    const onStorageChanged = (changes, area) => {
-      if (area !== 'local') return;
-      const perKey = state.siteKey ? contentShared.siteStorageKey(state.siteKey) : '';
-      // A parent-host record governs this frame too (exclusion covers
-      // subdomains), so its changes must not be filtered out.
-      const relevantAncestorChange = contentShared.ancestorSiteKeys(state.siteKey)
-        .some((key) => changes[contentShared.siteStorageKey(key)]);
-      if (!changes.activeSites && !changes.siteSettings && !changes.siteToggles
-        && !(perKey && changes[perKey]) && !relevantAncestorChange) return;
-      // Keep the synchronous gate's cache in step with persisted truth: this
-      // is the only refresh mechanism, there is no polling.
-      for (const [key, change] of Object.entries(changes)) {
-        if (!contentShared.isSiteStorageKey(key)) continue;
-        rememberExclusion(
-          contentShared.siteKeyFromStorageKey(key),
-          Boolean(change.newValue && change.newValue.excluded),
-        );
-      }
-      // Persisted truth changed. Drop the transient session override
-      // only when this tab's effective config actually changed, so an
-      // unrelated site's save never cuts a transient session short — but the
-      // next storage change for THIS site always clears it, and an ordinary
-      // persisted save then reads storage like any other tab.
-      if (storageChangeAffectsThisSite(changes)) {
-        state.transient = null;
-      }
-      if (state.storageChangeTimer) return;
-      state.storageChangeTimer = setTimeout(() => {
-        state.storageChangeTimer = null;
-        console.log('[cs] storage changed, syncing');
-        scheduleSync('storage');
-      }, 50);
-    };
-    chrome.storage.onChanged.addListener(onStorageChanged);
-    listenerRemovers.push(() => chrome.storage.onChanged.removeListener?.(onStorageChanged));
-
+  function registerRuntimeMessageListener() {
+    if (state.runtimeListenerArmed || state.detached) return;
     const onRuntimeMessage = (message, _sender, sendResponse) => {
       if (message?.type === 'GET_DOCUMENT_STATUS') {
         void getDocumentStatus().then(sendResponse);
@@ -310,13 +330,81 @@
     };
     chrome.runtime.onMessage.addListener(onRuntimeMessage);
     listenerRemovers.push(() => chrome.runtime.onMessage.removeListener?.(onRuntimeMessage));
+    state.runtimeListenerArmed = true;
+  }
 
-    const onPageMessage = (event) => {
-      if (event.source !== window || event.data?.channel !== CHANNEL) return;
-      handleHookMessage(event.data);
+  /**
+   * Rule 6: the per-frame exclusion signal.
+   *
+   * Exactly ONE `chrome.storage.onChanged` listener exists in this frame, and it
+   * is registered before the bootstrap read (so it survives a hung or failed
+   * read) and kept through teardown (so a torn-down frame still owns the one
+   * inert surface the contract allows). It never reacts to page activity.
+   *
+   * An exclusion write for this host, or any ancestor of it, runs the SAME
+   * dispose path the explicit `TOGGLE_CHANGED excluded` teardown runs. That is
+   * what reaches an embedded frame on an excluded host inside an allowed tab:
+   * the worker's tab selection is by top-level host and skips the tab entirely.
+   */
+  function registerStorageExclusionSignal() {
+    if (storageSignalArmed) return;
+    if (!state.siteKey) refreshLocationState();
+    storageSignalArmed = true;
+    const onStorageChanged = (changes, area) => {
+      if (area !== 'local') return;
+      // (a) This frame's host (or an ancestor) is now excluded: run the dispose
+      // path. `teardown` is idempotent, so a repeated write costs nothing.
+      const excludedKey = excludedKeyForThisFrame(changes);
+      if (excludedKey) {
+        // Record the key that carries the verdict (it may be an ancestor) so the
+        // synchronous gate refuses a re-entry, then run the dispose path.
+        rememberExclusion(excludedKey, true);
+        rememberExclusion(state.siteKey, true);
+        state.excluded = true;
+        state.transient = null;
+        console.log('[cs] exclusion signal:', state.siteKey, 'via', excludedKey);
+        teardown('excluded-storage');
+        return;
+      }
+      // Rule 2/6 + FINAL RULE: this listener may ONLY tear down. A live
+      // document is never armed from a storage change — not on un-exclude, not
+      // on enable, not on a gain write. Nothing is scheduled here, ever, so a
+      // torn-down or idle frame pays no timer, no observer and no re-read.
     };
-    window.addEventListener('message', onPageMessage);
-    listenerRemovers.push(() => window.removeEventListener('message', onPageMessage));
+    chrome.storage.onChanged.addListener(onStorageChanged);
+    // Deliberately NOT pushed into `listenerRemovers`: teardown releases
+    // everything it owns EXCEPT this surface, which the contract keeps.
+  }
+
+  /**
+   * Which excluded key, if any, does this change set say governs THIS frame's
+   * host? The record's key covers its subdomains, so an exclusion of
+   * `example.com` governs `a.example.com` too. Returns '' when nothing here
+   * excludes this frame.
+   * @param {Record<string, { oldValue?: unknown, newValue?: unknown }>} changes
+   * @returns {string}
+   */
+  function excludedKeyForThisFrame(changes) {
+    if (!state.siteKey) return '';
+    for (const [key, change] of Object.entries(changes || {})) {
+      if (!contentShared.isSiteStorageKey(key)) continue;
+      const value = change && change.newValue;
+      if (!value || typeof value !== 'object') continue;
+      if (/** @type {{ excluded?: unknown }} */ (value).excluded !== true) continue;
+      const excludedKey = contentShared.siteKeyFromStorageKey(key);
+      if (!excludedKey) continue;
+      if (contentShared.hostMatchesSiteKey(state.siteKey, excludedKey)) return excludedKey;
+    }
+    return '';
+  }
+
+  /**
+   * @returns {boolean} true when the listener set is armed for this frame
+   */
+  function ensureBootstrapListeners() {
+    if (state.bootstrapped || !state.siteKey || state.detached) return state.bootstrapped;
+
+    registerRuntimeMessageListener();
 
     const onVisibilityChange = () => {
       if (!document.hidden) scheduleSync('visibilitychange');
@@ -348,55 +436,6 @@
 
     state.bootstrapped = true;
     return true;
-  }
-
-  /**
-   * Whether a storage change alters this tab's effective config. A per-site
-   * `site:<key>` change for THIS site counts; missing maps are equal on both
-   * sides, so only a real before/after difference for this siteKey counts
-   * (legacy activeSites merges are evaluated exactly).
-   * @param {Record<string, { oldValue?: unknown, newValue?: unknown }>} changes
-   */
-  function storageChangeAffectsThisSite(changes) {
-    if (!state.siteKey) return true;
-    try {
-      const perKey = contentShared.siteStorageKey(state.siteKey);
-      if (perKey && changes[perKey]) {
-        const oldRec = changes[perKey].oldValue && typeof changes[perKey].oldValue === 'object'
-          ? contentShared.normalizeSiteRecord(changes[perKey].oldValue)
-          : null;
-        const newRec = changes[perKey].newValue && typeof changes[perKey].newValue === 'object'
-          ? contentShared.normalizeSiteRecord(changes[perKey].newValue)
-          : null;
-        if (!oldRec || !newRec) return true;
-        return oldRec.enabled !== newRec.enabled
-          || oldRec.gainDb !== newRec.gainDb
-          || oldRec.excluded !== newRec.excluded;
-      }
-      // Legacy fallback: evaluate the effective config (settings + actives
-      // + toggles, all normalised) on both sides. A `siteToggles` change for
-      // THIS site counts exactly like a settings/active change.
-      if (!changes.siteSettings && !changes.activeSites && !changes.siteToggles) return false;
-      const oldSettings = changes.siteSettings ? (changes.siteSettings.oldValue || {}) : {};
-      const newSettings = changes.siteSettings ? (changes.siteSettings.newValue || {}) : {};
-      const oldActive = changes.activeSites ? (changes.activeSites.oldValue || {}) : {};
-      const newActive = changes.activeSites ? (changes.activeSites.newValue || {}) : {};
-      const oldToggles = changes.siteToggles ? (changes.siteToggles.oldValue || {}) : {};
-      const newToggles = changes.siteToggles ? (changes.siteToggles.newValue || {}) : {};
-      const oldMig = contentShared.migrateLegacyToRecord(oldSettings, oldActive, oldToggles, state.siteKey);
-      const newMig = contentShared.migrateLegacyToRecord(newSettings, newActive, newToggles, state.siteKey);
-      if (oldMig || newMig) {
-        const o = oldMig || { enabled: false, gainDb: 0 };
-        const n = newMig || { enabled: false, gainDb: 0 };
-        return o.enabled !== n.enabled || o.gainDb !== n.gainDb;
-      }
-      const oldConfig = contentShared.getSiteConfig(oldSettings, oldActive, state.siteKey);
-      const newConfig = contentShared.getSiteConfig(newSettings, newActive, state.siteKey);
-      return oldConfig.enabled !== newConfig.enabled
-        || oldConfig.gainDb !== newConfig.gainDb;
-    } catch {
-      return true;
-    }
   }
 
   /**
@@ -491,6 +530,72 @@
     return withExcluded({ enabled: config.enabled, gainDb: config.gainDb, excluded: false }, false);
   }
 
+  class StorageReadTimeout extends Error {
+    constructor() {
+      super('Storage read timed out.');
+    }
+  }
+
+  /**
+   * Race one storage read against a budget. Resolves with the config; rejects
+   * with {@link StorageReadTimeout} when the platform never answers, or with
+   * the platform error. The timer is always cleared, so a slow-but-successful
+   * read leaves no timer behind.
+   * @param {number} ms
+   */
+  function withReadTimeout(ms) {
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        reject(new StorageReadTimeout());
+      }, ms);
+      readStoredConfig().then(
+        (config) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          resolve(config);
+        },
+        (error) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          reject(error);
+        },
+      );
+    });
+  }
+
+  /**
+   * The bootstrap read, bounded: one retry, each attempt under a timeout.
+   *
+   * Without this, a `chrome.storage.local.get` that never settles disabled the
+   * frame forever — nothing was installed, no timer was running, and no
+   * listener existed to retry with, so only a reload could recover it.
+   * @returns {Promise<{ ok: true, config: { enabled: boolean, gainDb: number, excluded: boolean, known: boolean }, error: '', timedOut: boolean }
+   *   | { ok: false, config: null, error: string, timedOut: boolean }>}
+   */
+  async function readStoredConfigBounded() {
+    let timedOut = false;
+    let message = '';
+    for (let attempt = 0; attempt < BOOTSTRAP_READ_ATTEMPTS; attempt += 1) {
+      try {
+        const config = await withReadTimeout(BOOTSTRAP_READ_TIMEOUT_MS);
+        return { ok: true, config, error: '', timedOut: false };
+      } catch (error) {
+        if (error instanceof StorageReadTimeout) {
+          timedOut = true;
+          message = 'Storage read timed out.';
+        } else {
+          message = `Storage read failed: ${String((error && error.message) || error)}`;
+        }
+      }
+    }
+    return { ok: false, config: null, error: message, timedOut };
+  }
+
   function startSpaWatch() {
     stopSpaWatch();
     let lastHref = location.href;
@@ -524,7 +629,16 @@
   }
 
   function isActivationPending() {
-    return state.enabled && (state.injecting || state.syncInFlight || Boolean(state.pendingProbe));
+    return state.enabled && (state.injecting || state.syncInFlight || Boolean(state.activeSync));
+  }
+
+  /**
+   * May this document start work at all? Only a document that LOADED with the
+   * site enabled may (FINAL RULE, gate G3). Everything else in this file stays
+   * available for teardown and status, and never arms.
+   */
+  function mayStartWork() {
+    return armDecision === 'allowed' && !state.detached && !state.excluded;
   }
 
   /**
@@ -666,6 +780,15 @@
     if (state.detached || state.excluded) return { ok: false, error: 'frame inactive' };
     const action = contentShared.getContentAction({ enabled, injected: state.injected, hookAlive });
 
+    // FINAL RULE: a message may stop or adjust an armed document; it may never
+    // arm one. See `mayStartWork`.
+    if ((action === 'inject' || action === 'start') && !mayStartWork()) {
+      clearPendingStart();
+      clearActivationRetry();
+      stopSpaWatch();
+      return { ok: true, deferred: 'navigation' };
+    }
+
     if (action === 'inject') {
       setPendingStart();
       inject();
@@ -736,23 +859,6 @@
     clearPendingStart();
     clearActivationRetry();
     stopSpaWatch();
-    if (state.storageChangeTimer) {
-      clearTimeout(state.storageChangeTimer);
-      state.storageChangeTimer = null;
-    }
-    // A probe in flight would otherwise keep its 1 s timeout alive and write
-    // hook state after teardown.
-    if (state.pendingProbe) {
-      clearTimeout(state.pendingProbe.timeoutId);
-      state.pendingProbe.resolve(false);
-      state.pendingProbe = null;
-    }
-    // The popup probe owns its own message listener and timeout; both go.
-    if (popupProbeCancel) {
-      popupProbeCancel();
-      popupProbeCancel = null;
-    }
-    state.popupProbe = null;
 
     postToPage('STOP', { reason });
     state.hookActive = false;
@@ -766,11 +872,18 @@
     }
     listenerRemovers = [];
     state.bootstrapped = false;
+    state.runtimeListenerArmed = false;
     rememberExclusion(state.siteKey, true);
     console.log('[cs] torn down (excluded):', state.siteKey, reason);
   }
 
   async function handleSoftRecheckDocument() {
+    if (!state.bootstrapped) {
+      // The bounded bootstrap read never produced an answer: retry the read
+      // rather than trust a state that was never resolved.
+      await bootstrap('soft-recheck');
+      return getDocumentStatus();
+    }
     const { enabled } = await getEffectiveDocumentState();
     if (!enabled) {
       return getDocumentStatus();
@@ -845,6 +958,7 @@
 
       state.enabled = enabled;
       state.gainDb = gainDb;
+      if (enabled) state.stopSent = false;
 
       console.log('[cs] sync:', state.siteKey, 'enabled:', enabled, 'gainDb:', gainDb, 'injected:', state.injected, 'hookAlive:', state.hookAlive, 'reason:', reason);
 
@@ -853,6 +967,21 @@
       // activation, page message or SPA timer is scheduled.
       if (state.detached) return;
       const action = contentShared.getContentAction({ enabled, injected: state.injected, hookAlive });
+
+      // FINAL RULE: a live document is never armed. Enabling while this document
+      // is loaded leaves it exactly as it is; the next navigation arms it
+      // through registration. Nothing below may start work unless this document
+      // loaded with the site enabled.
+      if ((action === 'inject' || action === 'start') && !mayStartWork()) {
+        console.log('[cs] enable deferred to the next navigation:', state.siteKey);
+        clearPendingStart();
+        clearActivationRetry();
+        stopSpaWatch();
+        state.hookActive = false;
+        state.hookAlive = false;
+        state.lastError = '';
+        return;
+      }
 
       if (action === 'inject') {
         setPendingStart();
@@ -953,50 +1082,68 @@
       });
   }
 
-  function handleHookMessage(data) {
-    if (!data?.type) return;
+  // -------------------------------------------------------------------------
+  // Control flow: extension -> page ONLY.
+  //
+  // This frame never posts to the page and never listens on `window`. It asks
+  // the worker, and the worker calls the MAIN-world dispatcher through
+  // chrome.scripting.executeScript with a per-tab token the page cannot read.
+  // A page posting START/SET_GAIN/STATUS_REQUEST reaches nothing.
+  // -------------------------------------------------------------------------
+  const CONTROL_ACTIONS = { START: 'start', STOP: 'stop', SET_GAIN: 'setGain' };
 
-    if (data.type === 'HOOK_STARTED' || data.type === 'HOOK_STATUS' || data.type === 'HOOK_ERROR') {
-      console.log('[cs] hook status:', data.type, 'active:', Boolean(data.active), 'error:', data.error || '');
+  function postToPage(type, payload) {
+    const action = CONTROL_ACTIONS[type];
+    if (!action) return Promise.resolve(null);
+    return sendHookControl(action, payload);
+  }
+
+  async function sendHookControl(action, payload) {
+    // A torn-down or excluded frame may ask for a STOP and nothing else: the
+    // dispose path must be able to make the worker deliver the teardown this
+    // frame can no longer perform itself, and a STOP can never start work.
+    // Every other action is refused on such a frame.
+    if ((state.detached || state.excluded) && action !== 'stop') return null;
+    try {
+      const response = await chrome.runtime.sendMessage({
+        type: 'CONTROL_HOOK',
+        action,
+        payload: payload || {},
+      });
+      applyHookStatus(response);
+      return response || null;
+    } catch {
+      return null;
+    }
+  }
+
+  function applyHookStatus(response) {
+    if (!response || typeof response !== 'object') return;
+    if (response.alive === true) {
       state.injected = true;
       state.hookAlive = true;
-      state.hookActive = Boolean(data.active);
-      state.lastError = state.enabled ? String(data.error || '') : '';
+      state.hookActive = Boolean(response.active);
+      state.lastError = state.enabled ? String(response.error || '') : '';
       state.lastStatusAt = Date.now();
-      if (data.type === 'HOOK_STARTED' || data.active) {
-        clearPendingStart();
-      }
-      resolveProbe(true);
-      // Disabled-tab backstop: the page can set the DOM pending attribute and
-      // call revive() after Active off, re-routing audio. A hook that reports
-      // active while this tab is disabled gets an immediate STOP; the hook
-      // itself ignores the DOM fallback after stop until a real START.
-      if (!state.enabled && data.active) {
-        postToPage('STOP', { reason: 'disabled-active-backstop' });
-        state.hookActive = false;
-      }
-      // Gain re-assertion: the hook echoes its live gainDb on every status
-      // (it numbers no provenance between our SET_GAIN and a page forgery),
-      // so a page SET_GAIN that drifted the hook cannot persist — correct it
-      // at once with the stored truth.
-      if (state.enabled && typeof data.gainDb === 'number'
-        && Number.isFinite(data.gainDb)
-        && contentShared.clampGainDb(data.gainDb) !== contentShared.clampGainDb(state.gainDb)) {
-        postToPage('SET_GAIN', { gainDb: state.gainDb });
+      if (response.active && !state.enabled && !state.stopSent) {
+        // The worker only starts a hook for enabled sites; an active hook on a
+        // disabled one is stale, so ask for the stop the worker can deliver.
+        // One shot: a hook that keeps reporting active must not spin here.
+        state.stopSent = true;
+        void postToPage('STOP', { reason: 'disabled-active-backstop' });
       }
       return;
     }
-
-    if (data.type === 'HOOK_STOPPED') {
+    if (response.ok === false) {
+      const wasAlive = state.hookAlive;
       state.hookAlive = false;
       state.hookActive = false;
-      state.lastError = '';
-      state.lastStatusAt = Date.now();
-      clearActivationRetry();
-      resolveProbe(false);
-      // Liveness: the hook died while this frame still wants audio — re-sync
-      // through the capped activation retry instead of going silent.
-      if (state.injected && !state.hookAlive) scheduleLivenessResync('hook-stopped');
+      state.lastError = state.enabled ? String(response.error || '') : '';
+      // The worker says the hook is installed but not answering. Arm the
+      // bounded re-sync ONLY on the alive -> dead transition: a retry that is
+      // answered "still dead" must not re-arm it, or the capped chain would
+      // restart itself on every answer (a busy loop).
+      if (wasAlive) scheduleLivenessResync('hook-not-alive');
     }
   }
 
@@ -1004,111 +1151,21 @@
     if (state.excluded || state.detached) return false;
     if (!state.injected) return false;
     if (state.hookAlive && (Date.now() - state.lastStatusAt) < HOOK_FRESH_MS) return true;
-    return probeHook();
+    const response = await sendHookControl('status');
+    return Boolean(response && response.alive);
   }
 
-  async function probeHook() {
-    if (!state.injected) {
-      return false;
+  function ensureFreshPopupStatus() {
+    if (!state.enabled || state.detached) return Promise.resolve(false);
+    if (state.hookAlive && (Date.now() - state.lastStatusAt) < HOOK_FRESH_MS) {
+      return Promise.resolve(true);
     }
-
-    if (state.pendingProbe) {
-      return state.pendingProbe.promise;
-    }
-
-    const requestId = `probe-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    const pending = createProbe(requestId);
-    postToPage('STATUS_REQUEST', { requestId });
-    return pending;
-  }
-
-  function createProbe(requestId) {
-    /** @type {(v: boolean) => void} */
-    let resolvePending = () => {};
-    const pendingPromise = new Promise((resolve) => {
-      resolvePending = resolve;
-    });
-
-    state.pendingProbe = {
-      requestId,
-      promise: pendingPromise,
-      resolve: resolvePending,
-      timeoutId: setTimeout(() => {
-        if (state.pendingProbe?.requestId !== requestId) return;
-        state.pendingProbe = null;
-        state.hookAlive = false;
-        state.hookActive = false;
-        resolvePending(false);
-        // Liveness: injected but dead — re-sync via capped retry, no busy loop.
-        if (state.injected && !state.hookAlive) scheduleLivenessResync('probe-timeout');
-      }, HOOK_TIMEOUT_MS),
-    };
-
-    return pendingPromise;
-  }
-
-  function resolveProbe(alive) {
-    if (!state.pendingProbe) return;
-
-    clearTimeout(state.pendingProbe.timeoutId);
-    state.pendingProbe.resolve(alive);
-    state.pendingProbe = null;
-  }
-
-  function probePopup() {
-    if (!state.enabled) return Promise.resolve(false);
-    if (!state.injected) return Promise.resolve(false);
-
-    return new Promise((resolve) => {
-      const requestId = `popup-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-      let settled = false;
-
-      const settle = (alive, data) => {
-        if (settled) return;
-        settled = true;
-        window.removeEventListener('message', handler);
-        clearTimeout(timeoutId);
-        popupProbeCancel = null;
-        if (alive) {
-          state.hookAlive = true;
-          state.hookActive = Boolean(data && data.active);
-          state.lastError = state.enabled ? String((data && data.error) || '') : '';
-          state.lastStatusAt = Date.now();
-        } else {
-          state.hookAlive = false;
-          state.hookActive = false;
-        }
-        resolve(alive);
-      };
-
-      const handler = (event) => {
-        if (settled) return;
-        if (event.source !== window || event.data?.channel !== CHANNEL) return;
-        if (event.data.requestId !== requestId) return;
-        settle(true, event.data);
-      };
-
-      const timeoutId = setTimeout(() => {
-        settle(false, null);
-        // Liveness: injected but dead — re-sync via capped retry, no busy loop.
-        if (state.detached) return;
-        if (state.injected && !state.hookAlive) scheduleLivenessResync('popup-probe-timeout');
-      }, HOOK_TIMEOUT_MS);
-
-      // Tracked: a teardown must cancel this probe's own listener AND timer,
-      // which live outside the bootstrap listener set.
-      popupProbeCancel = () => settle(false, null);
-
-      window.addEventListener('message', handler);
-      postToPage('STATUS_REQUEST', { requestId });
-    });
+    return sendHookControl('status').then((response) => Boolean(response && response.alive));
   }
 
   async function getEffectiveDocumentState() {
-    // A transient session override outranks stored settings for the live
-    // document until cleared. The per-site record stays the persistence
-    // authority; the transient only shapes what this tab applies and reports.
-    // Exclusion outranks both.
+    // Exclusion outranks everything; a transient session override outranks
+    // stored settings for the live document until cleared.
     if (state.excluded) {
       state.enabled = false;
       return { enabled: false, gainDb: state.gainDb, excluded: true };
@@ -1118,26 +1175,22 @@
       state.gainDb = state.transient.gainDb;
       return { ...state.transient };
     }
-    // The per-site record is the single authority (legacy maps are the
-    // read fallback). No session snapshot outranks it.
     const config = await readStoredConfig();
     state.excluded = config.excluded === true;
     const enabled = config.excluded ? false : config.enabled;
-    const gainDb = config.gainDb;
-
     state.enabled = enabled;
-    state.gainDb = gainDb;
-    return { enabled, gainDb };
+    state.gainDb = config.gainDb;
+    return { enabled, gainDb: config.gainDb };
   }
 
   async function getDocumentStatus() {
-    // In-memory answer: the 750 ms popup poll must NOT re-read storage in
-    // the tab (4,800 reads/hour). Storage is re-read only on
-    // `storage.onChanged` (via scheduleSync) and on explicit document-state
-    // applies. Before the first sync lands, wait for it once so the first
-    // answer is not a default-disabled snapshot.
+    // In-memory answer: the 750 ms popup poll must not re-read storage. Hook
+    // health comes from the worker's control responses, not from a page
+    // channel (there is none).
     if (!state.initialSyncDone) {
-      if (!state.syncInFlight && !state.activeSync) scheduleSync('popup-status-first');
+      // A frame that never bootstrapped has no truth to sync with: answer from
+      // memory instead of starting a read that may never settle.
+      if (state.bootstrapped && !state.syncInFlight && !state.activeSync) scheduleSync('popup-status-first');
       if (state.activeSync) {
         try {
           await state.activeSync;
@@ -1151,13 +1204,11 @@
       if (!state.injected && !state.syncInFlight) {
         scheduleSync('popup-status');
       }
-
       if (!state.hookAlive || (Date.now() - state.lastStatusAt) >= HOOK_FRESH_MS) {
         void ensureFreshPopupStatus();
       }
     }
 
-    const isExcluded = state.excluded === true;
     const indicator = contentShared.getPopupIndicator({
       enabled,
       hookAlive: state.hookAlive,
@@ -1168,7 +1219,7 @@
     return {
       ok: true,
       enabled,
-      excluded: isExcluded,
+      excluded: state.excluded === true,
       hostname: state.hostname,
       siteKey: state.siteKey,
       gainDb: state.gainDb,
@@ -1176,25 +1227,13 @@
       hookActive: state.hookActive,
       activating: isActivationPending(),
       lastError: enabled ? state.lastError : '',
+      // Why this frame is inert when it never got an answer: the bounded
+      // bootstrap read failed, and a soft re-check retries it.
+      bootstrapError: state.bootstrapError,
       indicator,
     };
   }
 
-  function ensureFreshPopupStatus() {
-    if (state.popupProbe) {
-      return state.popupProbe;
-    }
-
-    state.popupProbe = probePopup().finally(() => {
-      state.popupProbe = null;
-    });
-
-    return state.popupProbe;
-  }
-
-  function postToPage(type, payload) {
-    window.postMessage({ channel: CHANNEL, type, ...payload }, '*');
-  }
 
   function setPendingStart() {
     document.documentElement?.setAttribute(PENDING_ATTR, '1');

@@ -142,7 +142,10 @@ export function aggregate({ probe, contexts }, extensions) {
     const own = (list) => (list ?? []).filter((entry) => entry.frame === frame).length;
     byPackage[ext.package] = {
       scripts: (contexts ?? []).filter((context) => context.origin === origin && context.type === "isolated").length,
-      listeners: own(probe?.listeners),
+      // Registrations, not live listeners: this number is what the page world
+      // saw added, and it is what the column is named after.
+      listenerRegistrations: own(probe?.listeners),
+      listenerRemovalCalls: Number(probe?.listenerRemovalCalls) || 0,
       timers: own(probe?.timers) + own(probe?.rafs),
       observers: own(probe?.observers),
       patches: 0,

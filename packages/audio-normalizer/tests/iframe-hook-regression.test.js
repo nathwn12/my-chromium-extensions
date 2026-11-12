@@ -83,13 +83,23 @@ test('shadow re-enable: second start re-observes the same root', () => {
 });
 
 test('liveness: injected-but-dead hook re-syncs via capped retry, no busy loop', () => {
-  assert.ok(cs.includes('function scheduleLivenessResync'), 'liveness helper exists');
-  assert.ok(cs.includes('state.injected && !state.hookAlive'), 're-sync gated on injected && !hookAlive');
   const helper = fnSrc(cs, 'scheduleLivenessResync');
+  assert.ok(helper.length > 0, 'liveness helper exists');
+  assert.ok(
+    helper.includes('!state.injected || state.hookAlive'),
+    're-sync is gated on injected && !hookAlive (written as an early return)',
+  );
   assert.ok(helper.includes('scheduleActivationRetry'), 'reuses the existing capped retry/backoff');
   assert.ok(!helper.includes('setInterval') && !helper.includes('while ('), 'no busy loop');
-  const probeTimeouts = (cs.match(/scheduleLivenessResync\('/g) || []).length;
-  assert.ok(probeTimeouts >= 2, `probe timeouts schedule re-sync (found ${probeTimeouts})`);
+  // Wired where a death is observed, and ONLY on the alive -> dead transition:
+  // a retry answered "still dead" must not re-arm the chain.
+  const statusFn = fnSrc(cs, 'applyHookStatus');
+  assert.ok(statusFn.includes('scheduleLivenessResync('), 'a dead hook answer arms the re-sync');
+  assert.match(
+    statusFn,
+    /wasAlive[\s\S]{0,240}scheduleLivenessResync\(/,
+    'armed only on the transition, never on every answer',
+  );
 });
 
 test('guard restore only while still guard-muted', () => {

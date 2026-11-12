@@ -69,7 +69,17 @@ async function loadContent(href, storage) {
       },
       runtime: {
         onMessage: { addListener: (fn) => runtimeListeners.push(fn) },
-        sendMessage: async () => ({ ok: true }),
+        sendMessage: async (msg) => {
+          // Control flows extension -> page only: the content script asks the WORKER,
+          // which is the only party allowed to reach the MAIN world. The harness
+          // records that request (the page receives nothing).
+          if (msg && msg.type === 'CONTROL_HOOK') {
+            const actionType = { start: 'START', stop: 'STOP', setGain: 'SET_GAIN', status: 'STATUS_REQUEST' }[msg.action] || msg.action;
+            postedToPage.push({ type: actionType, via: 'worker', ...(msg.payload || {}) });
+            return { ok: true, alive: true, active: true, gainDb: (msg.payload && msg.payload.gainDb) || 0, error: '' };
+          }
+          return { ok: true };
+        },
         getURL: (p) => `chrome-extension://test-id/${p}`,
       },
     },
@@ -80,6 +90,8 @@ async function loadContent(href, storage) {
     },
     document: {
       hidden: false,
+      // document_start: this instance was injected while the document loaded.
+      readyState: 'loading',
       documentElement: {
         _a: {},
         setAttribute(k, v) { this._a[k] = String(v); },
@@ -105,10 +117,7 @@ async function loadContent(href, storage) {
     if (ret !== true) resolve(undefined);
   });
   const listenerCount = () => runtimeListeners.length;
-  const dispatchPage = (data) => {
-    for (const fn of (windowListeners.message || [])) fn({ source: sandbox.window, data });
-  };
-  return { sandbox, sendMessage, postedToPage, dispatchPage, listenerCount };
+  return { sandbox, sendMessage, postedToPage, listenerCount };
 }
 
 // ---------- background harness ----------
@@ -283,14 +292,21 @@ function loadHook({ attrs = null, preHook = null, preConnectPatch = false } = {}
   sandbox.globalThis = sandbox;
   vm.createContext(sandbox);
   vm.runInContext(hookSrc, sandbox, { filename: 'page-hook.js' });
-  const dispatchPage = (data) => {
-    for (const fn of (windowListeners.message || [])) fn({ source: windowStub, data });
-  };
+  // Control arrives only through the dispatcher the worker calls; the hook
+  // never starts itself, and no page channel exists to reach it.
+  const control = (action, payload) => (typeof sandbox.__tnHookV6 === 'function'
+    ? sandbox.__tnHookV6(action, payload || {})
+    : { ok: false, alive: false, active: false, error: 'No hook in this frame.' });
+  const WORKLET_URL = 'chrome-extension://test-id/audio/normalizer-worklet.js';
+  // The document carried the content-script-staged attributes: the old premise
+  // was "injected with a pending start", whose new-world equivalent is the
+  // worker starting the hook right after injecting it.
+  if (attrs === null) control('start', { gainDb: 0, workletUrl: WORKLET_URL });
   const fireMutations = (mutations) => {
     if (observerCallback) observerCallback(mutations);
   };
   return {
-    sandbox, posted, dispatchPage, fireMutations, addedModuleUrls, resetMessages,
+    sandbox, posted, control, fireMutations, addedModuleUrls, resetMessages,
     documentElementStub, windowStub, FakeMediaElement, FakeElement,
   };
 }
@@ -377,46 +393,49 @@ test('item1: own createMediaElementSource capture is not marked __tnWebAudio', a
 
 // ============ item 3: worklet origin pinning ============
 test('item3: foreign-extension START never becomes the worklet URL', async () => {
-  // Forged START as the FIRST start (no auto-start, no pinned fallback):
-  // the unpinned validator accepts the foreign id and loads it as the
-  // worklet; the pinned validator fails closed with no module load.
+  // Forged START as the FIRST start (no pinned origin, no pinned fallback):
+  // the pinned validator refuses the foreign id and loads no module at all.
   const h = loadHook({ attrs: {} });
   await sleep(80);
   h.addedModuleUrls.length = 0;
-  h.dispatchPage({
-    channel: 'tab-normalizer-v5',
-    type: 'START',
+  const status = h.control('start', {
     reason: 'forged',
     gainDb: 0,
     workletUrl: 'chrome-extension://other-id/audio/normalizer-worklet.js',
   });
   await sleep(150);
   assert.ok(!h.addedModuleUrls.some((u) => u.includes('other-id')), 'foreign origin never loaded as worklet');
-  assert.ok(h.posted.some((m) => m.type === 'HOOK_ERROR' && /Invalid worklet URL/.test(String(m.error))), 'fail-closed status error');
+  assert.equal(status.ok, true, 'the dispatcher answers the worker');
+  assert.equal(status.active, false, 'the forged start never becomes active');
+  assert.match(String(status.error), /Invalid worklet URL/, 'fail-closed status error');
 });
 
 test('item3: missing pinned origin fails closed with a visible error', async () => {
   const h = loadHook({ attrs: {} });
   await sleep(80);
-  h.dispatchPage({
-    channel: 'tab-normalizer-v5',
-    type: 'START',
+  const status = h.control('start', {
     reason: 'x',
     gainDb: 0,
     workletUrl: 'https://evil.example/audio/normalizer-worklet.js',
   });
   await sleep(80);
-  const errors = h.posted.filter((m) => m.type === 'HOOK_ERROR');
-  assert.ok(errors.length > 0, 'fail-closed HOOK_ERROR posted');
-  assert.ok(errors.every((m) => /Invalid worklet URL/.test(String(m.error))), 'clear status error, never empty');
+  assert.equal(status.active, false, 'nothing is active');
+  assert.ok(String(status.error).length > 0, 'status error never empty');
+  assert.match(String(status.error), /Invalid worklet URL/, 'clear status error');
+  assert.deepEqual(h.addedModuleUrls, [], 'no module load was attempted');
 });
 
 test('item3: hook echoes gainDb on status so drift is correctable', async () => {
   const h = loadHook();
   await sleep(150);
-  const started = h.posted.filter((m) => m.type === 'HOOK_STARTED');
-  assert.ok(started.length > 0, 'hook started');
-  assert.equal(typeof started[0].gainDb, 'number', 'status carries gainDb echo');
+  const started = h.control('start', {
+    gainDb: 4,
+    workletUrl: 'chrome-extension://test-id/audio/normalizer-worklet.js',
+  });
+  assert.equal(started.active, true, 'hook started');
+  assert.equal(typeof started.gainDb, 'number', 'status carries gainDb echo');
+  assert.equal(started.gainDb, 4, 'and echoes the gain the worker applied');
+  assert.equal(h.control('status', {}).gainDb, 4, 'a later status still reports it');
 });
 
 test('item3b: content corrects a drifted hook gain from stored truth', async () => {
@@ -426,11 +445,32 @@ test('item3b: content corrects a drifted hook gain from stored truth', async () 
   const c = await loadContent('https://example.com/watch', storage);
   await sleep(60);
   c.postedToPage.length = 0;
-  c.dispatchPage({ channel: 'tab-normalizer-v5', type: 'HOOK_STATUS', active: true, gainDb: 99 });
-  await sleep(20);
-  const corrections = c.postedToPage.filter((m) => m.type === 'SET_GAIN');
-  assert.ok(corrections.length > 0, 'drift corrected with a SET_GAIN');
-  assert.equal(corrections[corrections.length - 1].gainDb, 3, 'stored truth re-asserted');
+  // The worker's control response reports the DRIFTED gain. The content script
+  // never adopts it: the stored record is the only truth, and the next sync
+  // re-asserts it through the worker.
+  const requests = [];
+  c.sandbox.chrome.runtime.sendMessage = async (msg) => {
+    requests.push(clone(msg));
+    if (msg && msg.type === 'CONTROL_HOOK') {
+      return { ok: true, alive: true, active: true, gainDb: 99, error: '' };
+    }
+    return { ok: true };
+  };
+  await c.sendMessage({ type: 'SOFT_RECHECK_DOCUMENT' });
+  await sleep(40);
+  const controls = requests.filter((m) => m.type === 'CONTROL_HOOK');
+  assert.ok(controls.length > 0, 'the frame asks the worker for hook control');
+  const corrections = controls.filter((m) => m.action === 'setGain');
+  assert.ok(corrections.length > 0, 'drift corrected with a setGain sent through the worker');
+  assert.equal(
+    corrections[corrections.length - 1].payload.gainDb,
+    3,
+    'stored truth re-asserted',
+  );
+  assert.ok(
+    !controls.some((m) => m.payload && m.payload.gainDb === 99),
+    'the drifted value is never written back',
+  );
 });
 
 // ============ item 4: error always visible ============
@@ -439,17 +479,15 @@ test('item4: HOOK_ERROR carries lastError even while inactive', async () => {
   assert.ok(!src.includes('state.active ? state.lastError'), 'no active-gated error');
   const h = loadHook({ attrs: {} });
   await sleep(80);
-  h.dispatchPage({
-    channel: 'tab-normalizer-v5',
-    type: 'START',
+  const status = h.control('start', {
     reason: 'x',
     gainDb: 0,
     workletUrl: 'https://evil.example/audio/normalizer-worklet.js',
   });
   await sleep(80);
-  const errors = h.posted.filter((m) => m.type === 'HOOK_ERROR');
-  assert.ok(errors.length > 0, 'HOOK_ERROR posted while inactive');
-  assert.ok(errors.every((m) => String(m.error).length > 0), 'error never blanked');
+  assert.equal(status.alive, true, 'the hook is installed and answering');
+  assert.equal(status.active, false, 'while inactive');
+  assert.ok(String(status.error).length > 0, 'the error is reported while inactive');
 });
 
 // ============ item 5: page hook object cannot block install ============
@@ -469,38 +507,53 @@ test('item5: second load early-returns once the real hook is present', () => {
   assert.ok(h.posted.length === 0, 'patched hook present: no reinstall chatter');
 });
 
-// ============ item 7: stopped flag + disabled backstop ============
-test('item7: revive ignores the DOM pending fallback after stop', async () => {
+// ============ item 7: no page-driven re-arm after stop ============
+test('item7: no DOM pending marker can re-arm a stopped hook', async () => {
   const src = read('page-hook.js');
   assert.ok(src.includes('state.stopped'), 'stopped flag tracked');
   const h = loadHook();
   await sleep(150);
-  assert.ok(h.posted.some((m) => m.type === 'HOOK_STARTED'), 'started');
-  h.dispatchPage({ channel: 'tab-normalizer-v5', type: 'STOP' });
+  assert.equal(h.control('status', {}).active, true, 'started');
+  h.control('stop', {});
   await sleep(30);
-  assert.ok(h.posted.some((m) => m.type === 'HOOK_STOPPED'), 'stopped');
-  const before = h.posted.filter((m) => m.type === 'HOOK_STARTED').length;
+  const stopped = h.control('status', {});
+  assert.equal(stopped.alive, false, 'stopped: the dispatcher that answered is gone');
+  assert.equal(typeof h.sandbox.__tnHookV6, 'undefined', 'STOP deleted the dispatcher');
+  // The page can still write the old pending-start marker; nothing consumes it,
+  // because the file reads it once at load and there is no listener left.
+  const before = h.addedModuleUrls.length;
   h.documentElementStub.setAttribute('data-tab-normalizer-pending', '1');
-  h.windowStub.__tabNormalizerHookV5.revive();
+  h.documentElementStub.setAttribute('data-tn-worklet-url', 'chrome-extension://test-id/audio/normalizer-worklet.js');
   await sleep(150);
-  assert.equal(
-    h.posted.filter((m) => m.type === 'HOOK_STARTED').length,
-    before,
-    'no re-route after stop without a real START',
-  );
+  assert.equal(h.addedModuleUrls.length, before, 'no worklet module was loaded after stop');
+  assert.equal(typeof h.sandbox.__tnHookV6, 'undefined', 'and nothing re-installed the dispatcher');
 });
 
 test('item7: disabled tab posts STOP when an active hook reports in', async () => {
   const storage = createStore({
-    'site:example.com': { enabled: false, gainDb: 0, seq: 0, mirror: false },
+    'site:example.com': { enabled: true, gainDb: 0, seq: 1, mirror: true },
   });
   const c = await loadContent('https://example.com/watch', storage);
   await sleep(60);
   c.postedToPage.length = 0;
-  c.dispatchPage({ channel: 'tab-normalizer-v5', type: 'HOOK_STARTED', active: true });
-  await sleep(20);
+  // The worker's control answer says the hook is alive AND active while this
+  // tab has just been disabled: the backstop asks for one STOP, through the
+  // worker, and never starts anything.
+  await c.sendMessage({
+    type: 'SET_DOCUMENT_STATE',
+    siteKey: 'example.com',
+    enabled: false,
+    gainDb: 0,
+    transient: true,
+  });
+  await sleep(40);
   const stops = c.postedToPage.filter((m) => m.type === 'STOP');
-  assert.ok(stops.length > 0, 'STOP backstop posted for a disabled tab');
+  assert.ok(stops.length > 0, 'STOP backstop requested for a disabled tab');
+  assert.deepEqual(
+    c.postedToPage.filter((m) => m.type === 'START'),
+    [],
+    'and a disabled tab never asks for a start',
+  );
 });
 
 // ============ item 11: prune on emptied/ended/removal ============
@@ -658,7 +711,11 @@ test('item13: drag persists once on release with one broadcast', async () => {
   assert.deepEqual({ ...seen[0].set }, { gainDb: 10 }, 'field-level gain intent only');
   const broadcasts = bg.tabsSent.filter((c) => c.msg?.type === 'TOGGLE_CHANGED');
   assert.equal(broadcasts.length, 1, 'exactly one broadcast per persisted write');
-  assert.equal(broadcasts[0].options?.frameId, 0, 'broadcast targets the top frame');
+  assert.equal(
+    broadcasts[0].options,
+    undefined,
+    'the broadcast reaches every frame: no frameId filter, so a cross-origin frame of the same site hears it too',
+  );
 });
 
 test('item13: same-tick bursts broadcast once per site', async () => {

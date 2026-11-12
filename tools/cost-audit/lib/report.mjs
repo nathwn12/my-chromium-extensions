@@ -15,10 +15,10 @@ export const EXIT_OK = 0;
 export const EXIT_FAILED = 1;
 
 /** Metrics that must stay at zero on a host no extension is opted into. */
-export const FOOTPRINT_KEYS = ["scripts", "listeners", "timers", "observers", "patches"];
+export const FOOTPRINT_KEYS = ["scripts", "listenerRegistrations", "timers", "observers", "patches"];
 
 /** Page-world cost only: on a host it is opted into, an extension may run a content script. */
-export const PAGE_COST_KEYS = ["listeners", "timers", "observers", "patches"];
+export const PAGE_COST_KEYS = ["listenerRegistrations", "timers", "observers", "patches"];
 
 function violationsOf(value, keys = FOOTPRINT_KEYS) {
   const out = [];
@@ -535,7 +535,7 @@ function pad(text, width) {
 /** Human-readable table: one row per extension per scenario. */
 export function renderTable(report, assertions) {
   const lines = [];
-  const headers = ["scenario", "extension", "scripts", "listeners", "timers", "observers", "patches", "verdict"];
+  const headers = ["scenario", "extension", "scripts", "listenerRegistrations", "timers", "observers", "patches", "verdict"];
   const rows = [];
   const failed = new Set(assertions.filter((a) => a.verdict === "fail").map((a) => `${a.scenario}|${a.extension}`));
   const limited = new Set(assertions.filter((a) => a.verdict === "limit").map((a) => `${a.scenario}|${a.extension}`));
@@ -549,7 +549,7 @@ export function renderTable(report, assertions) {
         scenario.id,
         name,
         value.scripts ?? 0,
-        value.listeners ?? 0,
+        value.listenerRegistrations ?? 0,
         value.timers ?? 0,
         value.observers ?? 0,
         value.patches ?? 0,

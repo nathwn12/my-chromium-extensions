@@ -47,7 +47,14 @@ let softWakePromise = null;
 let excluded = false;
 let excludeInFlight = false;
 let statusPollStarted = false;
-const EXCLUDED_TEXT = 'Excluded. Nothing runs on this site.';
+// Set when the user enables (or un-excludes) a site on this popup: the live
+// document is not armed, so the notice replaces the ordinary status line.
+let reloadNoticePending = false;
+const EXCLUDED_TEXT = 'Excluded. Nothing runs on this site. Reload restores this page.';
+// FINAL RULE (gate G3): enabling never starts work in an already-loaded
+// document. The popup says so once, quietly — text only, no new control, and it
+// never reloads a page the user did not ask to reload.
+const RELOAD_NOTICE_TEXT = 'Enabled. Reload applies this.';
 const ACTIVE_STALE_MS = 3000;
 
 // Single owner: the background owns persisted state and applies intents.
@@ -283,12 +290,16 @@ async function toggleExclusion() {
     excluded = Boolean(res.excluded);
     applyExcludedState();
     if (excluded) {
+      reloadNoticePending = false;
       runtimeActivationState = 'idle';
       runtimeActivationMessage = '';
       lastHookActive = false;
       hookWasActiveAt = 0;
       renderStatus({ indicator: 'gray', text: EXCLUDED_TEXT, excluded: true });
     } else {
+      // The release on exclusion means this document cannot be re-normalized in
+      // place: tell the user once, quietly, that a reload restores it.
+      reloadNoticePending = true;
       startStatusPolling();
       await refreshDocumentStatus();
     }
@@ -321,6 +332,8 @@ async function toggleSite() {
     toggle.checked = !toggle.checked;
     return;
   }
+  // A deliberate action supersedes the quiet reload notice.
+  reloadNoticePending = false;
   // Exclusion owns the switch: while excluded it is disabled, and a stale
   // caller must not resurrect audio on the site.
   if (excluded) {
@@ -358,9 +371,12 @@ async function toggleSite() {
     applyControlState({ enabled: res.enabled, gainDb: res.gainDb });
 
     if (res.enabled) {
-      runtimeActivationState = 'pending';
-      runtimeActivationMessage = 'Enabling on this tab…';
-      renderStatus({ indicator: 'gray', text: runtimeActivationMessage });
+      // FINAL RULE: the enable applies on the next navigation. Nothing is armed
+      // in this document, so say so instead of promising activation.
+      reloadNoticePending = true;
+      runtimeActivationState = 'reload';
+      runtimeActivationMessage = RELOAD_NOTICE_TEXT;
+      renderStatus({ indicator: 'gray', text: RELOAD_NOTICE_TEXT });
     } else {
       // Immediate apply for the current tab's TOP FRAME ONLY (frameId 0:
       // RESEARCH §5.3). The named siteKey keeps every other frame from
@@ -398,6 +414,8 @@ async function toggleSite() {
 
 async function saveGainInner(gainDb) {
   if (!toggle.checked) return;
+  // A deliberate action supersedes the quiet reload notice.
+  reloadNoticePending = false;
   saveInFlight += 1;
   const wantedGain = popupShared.clampGainDb(gainDb);
   persistTargetGain = wantedGain;
@@ -666,6 +684,12 @@ async function refreshDocumentStatus() {
       renderStatus({ indicator: 'gray', text: runtimeActivationMessage || 'Enabled. Reload on a supported page.' });
       return;
     }
+    // No content script in this document: the enable (or un-exclude) is
+    // recorded and applies on the next navigation.
+    if (toggle.checked && runtimeActivationState === 'reload') {
+      renderStatus({ indicator: 'gray', text: RELOAD_NOTICE_TEXT });
+      return;
+    }
 
     renderStatus({
       indicator: fallbackIndicator,
@@ -682,6 +706,9 @@ function getStatusText({ enabled, hookActive, activating, lastError }) {
   if (enabled && runtimeActivationState === 'restricted') {
     return runtimeActivationMessage || 'Enabled. Reload on a supported page.';
   }
+  if (enabled && runtimeActivationState === 'reload') {
+    return RELOAD_NOTICE_TEXT;
+  }
   if (enabled && (activating || runtimeActivationState === 'pending')) {
     return runtimeActivationMessage || 'Enabling on this tab…';
   }
@@ -693,10 +720,18 @@ function getStatusText({ enabled, hookActive, activating, lastError }) {
  * @param {{ indicator: string, text: string, excluded?: boolean }} status
  */
 function renderStatus({ indicator, text, excluded: isExcluded }) {
-  statusTextEl.textContent = text;
+  // One quiet line, no control: while the reload notice is pending it replaces
+  // the ordinary status text (the excluded state already carries its own).
+  const shown = !isExcluded && reloadNoticePending && toggle.checked ? RELOAD_NOTICE_TEXT : text;
+  statusTextEl.textContent = shown;
   if (!statusPillEl) return;
   if (isExcluded) {
     statusPillEl.textContent = 'Excluded';
+    statusPillEl.dataset.state = 'off';
+    return;
+  }
+  if (shown === RELOAD_NOTICE_TEXT) {
+    statusPillEl.textContent = 'Reload';
     statusPillEl.dataset.state = 'off';
     return;
   }

@@ -116,6 +116,7 @@ function loadHook() {
       'data-tn-worklet-url': 'chrome-extension://test-id/audio/normalizer-worklet.js',
     },
     getAttribute(k) { return Object.hasOwn(this._attrs, k) ? this._attrs[k] : null; },
+    setAttribute(k, v) { this._attrs[k] = String(v); },
     removeAttribute(k) { delete this._attrs[k]; },
   };
   const documentStub = {
@@ -144,12 +145,27 @@ function loadHook() {
   sandbox.globalThis = sandbox;
   vm.createContext(sandbox);
   vm.runInContext(src, sandbox, { filename: 'page-hook.js' });
+  // No page control channel: the worker arms the hook through the dispatcher.
+  const control = (action, payload) => (typeof sandbox.__tnHookV6 === 'function'
+    ? sandbox.__tnHookV6(action, payload || {})
+    : { ok: false, alive: false, active: false, error: 'No hook in this frame.' });
+  const stopHook = () => control('stop', {});
+  const WORKLET_URL = 'chrome-extension://test-id/audio/normalizer-worklet.js';
+  const startHook = () => control('start', { gainDb: 0, workletUrl: WORKLET_URL });
+  // What the content script does before asking the worker to inject again: stage
+  // the worklet URL on the document, then run the file in the same page world.
+  const reinject = () => {
+    docEl.setAttribute('data-tn-worklet-url', WORKLET_URL);
+    vm.runInContext(src, sandbox, { filename: 'page-hook.js#reinject' });
+  };
+  startHook();
   return {
     sandbox, posted, contexts, createdSources, FakeMediaElement,
     counts: () => ({ createCalls, closeCalls, suspendCalls }),
-    dispatchPage: (d) => {
-      for (const fn of (windowListeners.message || [])) fn({ source: windowStub, data: d });
-    },
+    control,
+    startHook,
+    reinject,
+    stopHook,
     fireMutations: (mutations) => { if (observerCallback) observerCallback(mutations); },
     // The page (or a previous hook instance) owns the element: the one-shot
     // capture is consumed. pageCapture also labels like the patched page
@@ -215,7 +231,7 @@ test('detach never disconnects and never drops the cache entry', async () => {
   assert.equal(B.__tnSource, source, 'same node reused after removal');
 });
 
-test('a captured context is suspended, never closed, when idle', async () => {
+test('stop RELEASES the captured context: closed, source disconnected, nothing kept', async () => {
   const h = loadHook();
   await sleep(250);
   const A = new h.FakeMediaElement();
@@ -223,20 +239,33 @@ test('a captured context is suspended, never closed, when idle', async () => {
   await sleep(300);
   assert.equal(A.__tnAttached, true, 'element captured');
   assert.equal(h.counts().createCalls, 1, 'context captured something');
+  const source = A.__tnSource;
+  const context = h.contexts[0];
 
   // Removal while active must not close or suspend the running context.
   h.fireMutations([{ addedNodes: [], removedNodes: [A] }]);
   await sleep(300);
-  assert.equal(h.contexts[0].state, 'running', 'active context stays running when idle');
+  assert.equal(context.state, 'running', 'active context stays running when idle');
   assert.equal(h.counts().closeCalls, 0, 'no close while active');
 
-  // Stopping with no present elements suspends the captured context instead
-  // of closing it.
-  h.dispatchPage({ channel: 'tab-normalizer-v5', type: 'STOP' });
-  await sleep(200);
-  assert.equal(h.counts().closeCalls, 0, 'a captured context is never closed');
-  assert.ok(h.counts().suspendCalls >= 1, 'the idle captured context is suspended');
-  assert.equal(h.contexts[0].state, 'suspended', 'suspended, not closed');
+  // The design cut: stop (an ordinary disable) releases for good — the context
+  // is closed and the source disconnected, nothing is kept for a later instance.
+  h.stopHook();
+  await sleep(250);
+  assert.equal(h.counts().closeCalls, 1, 'the captured context is closed, not suspended');
+  assert.equal(context.state, 'closed', 'and it stays closed');
+  assert.ok(source.disconnectCount >= 1, 'the captured source is disconnected');
+  assert.equal(A.__tnAttached, false, 'the element is released from our registry');
+  assert.equal(A.muted, false, 'and never left muted by us');
+
+  // Nothing survived: a later instance (a fresh injection, as after a reload)
+  // builds its OWN context and never adopts the released one.
+  h.reinject();
+  h.startHook();
+  await sleep(300);
+  assert.equal(h.contexts.length, 2, 'a later instance creates its own context, it does not adopt');
+  assert.equal(h.counts().createCalls, 1, 'and does not try to capture the old element again');
+  assert.equal(A.__tnAttached !== true, true, 'the old element stays unmanaged until a reload');
 });
 
 test('a page-captured element is skipped and left unmuted by us', async () => {

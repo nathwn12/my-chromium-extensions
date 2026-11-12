@@ -262,6 +262,7 @@ async function main() {
     limitations: [
       "Audio was muted for every page load (--mute-audio) at the owner's instruction, so nothing here listens to sound and no assertion reads a device. Silence is measured as a stalled media element plus AudioContext state, never by ear.",
       "Isolated-world (content script) listener, timer and observer registrations are invisible to page-world instrumentation; those are counted as isolated worlds through CDP instead.",
+      "The listenerRegistrations column counts addEventListener calls observed in the page world. It is NOT a live listener count: duplicate adds are counted twice even though the platform deduplicates them, a once-listener that already fired still counts, capture is not modelled, AbortSignal removals are invisible, isolated-world registrations never reach the page-world EventTarget.prototype, a registration whose stack names no extension is counted as unattributed, and the log is capped at 500. removeEventListener calls are recorded separately as listenerRemovalCalls and are never subtracted; do not read this column as 'how many listeners are attached'.",
       "The synthetic pages carry no site code, so this measures presence and graph shape, not the fidelity of any site's playback.",
       "Main-world patch detection compares function source text against a baseline taken at document start; a patch that restores identical text would evade it.",
     ],

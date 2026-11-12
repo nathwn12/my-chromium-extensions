@@ -2,7 +2,15 @@
 // Page.addScriptToEvaluateOnNewDocument before any page or content script runs.
 //
 // It counts what a page can observe about an extension that is present:
-//   listeners   - EventTarget.prototype.addEventListener calls
+//   listenerRegistrations - EventTarget.prototype.addEventListener calls seen in
+//                 the page world. It is a REGISTRATION count, not a live listener
+//                 count: duplicate adds land as duplicate registrations (the
+//                 platform deduplicates them), a `once` listener that already
+//                 fired still counts, capture is not modelled, AbortSignal
+//                 removals are invisible, isolated-world registrations never reach
+//                 this prototype, and the log is capped. removeEventListener
+//                 calls are counted separately as `listenerRemovalCalls`; nothing
+//                 here subtracts one from the other.
 //   timers      - setTimeout / setInterval / requestAnimationFrame calls
 //   observers   - Mutation/Intersection/Resize/PerformanceObserver constructions
 //                   and observe() calls
@@ -36,9 +44,20 @@ export const PROBE_SOURCE = `(() => {
     inlineScriptCalls: 0
   };
   var CAP = 500;
+  // How many removeEventListener calls this page world saw. Deliberately NOT
+  // paired with registrations: the platform deduplicates duplicate adds, honours
+  // capture, drops once-listeners after they fire and accepts an AbortSignal,
+  // none of which this instrument can observe. A "live listener count" built by
+  // subtracting these would be a guess dressed as a measurement, so only the
+  // observed registration count is published.
+  var listenerRemovalCalls = 0;
 
   function push(list, value) {
-    if (list.length < CAP) list.push(value);
+    if (list.length < CAP) {
+      list.push(value);
+      return true;
+    }
+    return false;
   }
 
   function frameOf(stack) {
@@ -179,6 +198,11 @@ export const PROBE_SOURCE = `(() => {
     return nativeAdd.apply(this, arguments);
   };
 
+  EventTarget.prototype.removeEventListener = function () {
+    listenerRemovalCalls += 1;
+    return nativeRemove.apply(this, arguments);
+  };
+
   window.setTimeout = function () {
     push(state.timers, { kind: "timeout", delay: Number(arguments[1]) || 0, frame: frameOf(stackNow()), at: Date.now() });
     return nativeSetTimeout.apply(window, arguments);
@@ -242,6 +266,8 @@ export const PROBE_SOURCE = `(() => {
         url: location.href,
         host: location.hostname,
         listeners: state.listeners,
+        listenerRegistrations: state.listeners.length,
+        listenerRemovalCalls: listenerRemovalCalls,
         timers: state.timers,
         rafs: state.rafs,
         observers: state.observers,

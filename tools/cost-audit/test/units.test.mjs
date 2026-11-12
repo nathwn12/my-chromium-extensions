@@ -7,10 +7,12 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import vm from "node:vm";
 
 import { buildArgs, findBrowser, parseDevToolsActivePort, wsUrlFor, BROWSER_CANDIDATES, silentArgvProblems, silentCheck } from "../lib/browser.mjs";
 import { patternHost, patternsCoverHost, hostCovers, packageMentions, sourceGrep } from "../lib/source.mjs";
 import { PROBE_SOURCE, sineWavDataUri } from "../lib/probe.mjs";
+import { aggregate } from "../lib/measure.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -134,4 +136,101 @@ test("the in-page instrument is valid JavaScript and exposes read()", () => {
   for (const key of ["listeners", "timers", "observers", "audioContexts", "workletNodes", "patches"]) {
     assert.match(PROBE_SOURCE, new RegExp(key), `the probe must collect ${key}`);
   }
+});
+
+// Run the real instrument in a stub page world: enough of window/document for
+// it to install and count, with no browser involved.
+function installProbe() {
+  class FakeEventTarget {
+    constructor() {
+      this._handlers = [];
+    }
+    addEventListener(type, fn) {
+      this._handlers.push({ type, fn });
+    }
+    removeEventListener(type, fn) {
+      const index = this._handlers.findIndex((entry) => entry.type === type && entry.fn === fn);
+      if (index !== -1) this._handlers.splice(index, 1);
+    }
+  }
+  class FakeAudioContext {
+    createMediaElementSource() {
+      return { connect() {}, disconnect() {} };
+    }
+  }
+  class FakeWorkletNode {}
+  const window = new FakeEventTarget();
+  window.setTimeout = (fn) => setTimeout(fn, 0);
+  window.setInterval = () => 0;
+  window.requestAnimationFrame = () => 0;
+  window.AudioContext = FakeAudioContext;
+  window.AudioWorkletNode = FakeWorkletNode;
+  const document = new FakeEventTarget();
+  document.querySelector = () => null;
+  document.querySelectorAll = () => [];
+  document.documentElement = {};
+  const sandbox = {
+    window,
+    document,
+    location: { href: "http://127.0.0.1/", hostname: "127.0.0.1" },
+    EventTarget: FakeEventTarget,
+    AudioNode: { prototype: { connect() {} } },
+    HTMLMediaElement: { prototype: { play() {} } },
+    Element: { prototype: { attachShadow() {} } },
+    AudioWorkletNode: FakeWorkletNode,
+    console,
+    Date,
+    Function,
+    String,
+    Object,
+    Array,
+    JSON,
+    Error,
+  };
+  vm.runInNewContext(PROBE_SOURCE, sandbox, { filename: "probe.js" });
+  return { window, document, probe: window.__costProbe };
+}
+
+test("the probe reports listener REGISTRATIONS, and claims no live count", () => {
+  const { window, document, probe } = installProbe();
+  const first = () => {};
+  const second = () => {};
+  window.addEventListener("focus", first);
+  window.addEventListener("focus", second);
+  document.addEventListener("click", first);
+  window.removeEventListener("focus", first);
+
+  const read = probe.read();
+  assert.equal(read.listenerRegistrations, 3, "every addEventListener call the page world sees is counted");
+  assert.equal(read.listenerRemovalCalls, 1, "removeEventListener calls are counted as calls, nothing more");
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(read, "liveListeners"),
+    false,
+    "no live count is published: duplicate adds, capture, once and AbortSignal make one indefensible",
+  );
+  assert.equal(read.listeners.length, 3, "the registration log is kept for attribution");
+});
+
+test("the aggregate reports listenerRegistrations and no invented live figure", () => {
+  const extensions = [{ id: "a".repeat(32), package: "audio-normalizer", name: "Audio Normalizer" }];
+  const frame = `extension:${"a".repeat(32)}`;
+  const probe = {
+    listeners: [
+      { type: "focus", frame },
+      { type: "focus", frame },
+      { type: "play", frame },
+    ],
+    listenerRemovalCalls: 2,
+    timers: [],
+    rafs: [],
+    observers: [],
+    audioContexts: [],
+    contextStates: [],
+    workletNodes: [],
+    mediaElementSources: [],
+  };
+  const row = aggregate({ probe, contexts: [] }, extensions)["audio-normalizer"];
+  assert.equal(row.listenerRegistrations, 3, "the column is the observed registration count");
+  assert.equal(row.listeners, undefined, "there is no `listeners` field to mistake for a live count");
+  assert.equal(row.liveListeners, undefined, "and no live derivative either");
 });
