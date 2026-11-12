@@ -1,7 +1,7 @@
 {
   "name": "audio-normalizer",
   "private": true,
-  "version": "5.6.0",
+  "version": "5.6.1",
   "type": "commonjs",
   "devDependencies": {
     "@types/chrome": "~0.0.332",

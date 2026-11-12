@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.6.1] - 2026-11-12
+
+### Fixed
+
+- The stream tap is now proven audible before any mute for **every** media source, including `blob:`/MSE (TikTok, YouTube, Instagram feeds) and same-origin media, not just cross-origin `http(s)`. A silent tap stays native with a verdict instead of muting a page nobody is routing.
+- Feed churn (TikTok/Facebook/YouTube/Instagram): a reused `<video>` whose source changed kept the previous stream tap, so the element stayed muted for audio nobody was routing. The tap is bound to the source it was captured from; a source change (or `playing` on a new source) detaches it, hands native audio back, and re-evaluates. `playing` is also the re-attach trigger for reused/autoplayed elements (one document-level listener per event, not four per element).
+- Fail-open watchdog: while a routed element plays, the recovery pass verifies the context, the tap source, the worklet and the element's presence — never amplitude — and hands the element back (unmute → native, `interrupted` verdict) when the route cannot carry audio. A worklet processor error on a stream route fails open the same way instead of trusting a possibly-silent bypass.
+
 ## [5.6.0] - 2026-11-12
 
 ### Fixed
@@ -31,19 +39,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Feed churn (TikTok/Facebook/YouTube/Instagram): a reused `<video>` whose
-  source changed kept the previous stream tap, so the element stayed muted for
-  audio nobody was routing. The tap is now bound to the source it was captured
-  from; a source change (or `playing` on a new source) detaches it, hands native
-  audio back, and re-evaluates. `playing` is also the re-attach trigger for
-  reused/autoplayed elements (one document-level listener per event, not four
-  per element).
-- Fail-open watchdog: while a routed element plays, the recovery pass verifies
-  the context, the tap source, the worklet and the element's presence — never
-  amplitude — and hands the element back (unmute → native, `interrupted`
-  verdict) when the route cannot carry audio. A worklet processor error on a
-  stream route fails open the same way instead of trusting a possibly-silent
-  bypass.
 - A disabled or excluded page could be left silent: an element captured into a
   suspended context has no native output left, so "bypass at 0 dB" was silence
   until a reload. The non-stealing tap ends that — off is always native audio.
