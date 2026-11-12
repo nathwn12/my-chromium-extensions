@@ -1,5 +1,7 @@
 {
+  "name": "my-chromium-extensions",
   "private": true,
+  "packageManager": "bun@1.4.4",
   "workspaces": [
     "packages/*"
   ],
@@ -7,8 +9,8 @@
     "node": "26"
   },
   "scripts": {
-    "test": "npm test --workspace=audio-normalizer && npm test --workspace=crunchy-presence && npm test --workspace=slowed-reverb && npm test --workspace=web-discord-rpc",
-    "lint": "npm run lint --workspace=slowed-reverb",
-    "typecheck": "npm run typecheck --workspace=audio-normalizer"
+    "test": "bun run --filter audio-normalizer test && bun run --filter crunchy-presence test && bun run --filter slowed-reverb test && bun run --filter web-discord-rpc test",
+    "lint": "bun run --filter slowed-reverb lint",
+    "typecheck": "bun run --filter audio-normalizer typecheck"
   }
 }

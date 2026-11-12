@@ -8,6 +8,10 @@ permissions:
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
+
+# Bun installs and runs the scripts; Node remains the runtime (engines.node 26 and
+# the tests' node:test semantics). Every install job pins bun 1.4.4 and uses the
+# committed bun.lock with --frozen-lockfile.
 jobs:
   integration:
     runs-on: ubuntu-26.04
@@ -18,19 +22,22 @@ jobs:
           node-version-file: .nvmrc
       - name: Verify integration (reads the tree, installs nothing)
         run: node scripts/verify-integration.mjs
+
   audio-normalizer:
     runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
       - uses: actions/setup-node@v7
         with:
           node-version-file: .nvmrc
-          cache: npm
       - name: Install (root lockfile)
-        run: npm ci
+        run: bun install --frozen-lockfile
       - name: Tests
         working-directory: packages/audio-normalizer
-        run: npm test
+        run: bun run test
       - name: Feed transition QA
         working-directory: packages/audio-normalizer
         run: node qa/feed-transition-qa.cjs
@@ -39,52 +46,61 @@ jobs:
         run: node qa/program-boundary-qa.cjs
       - name: Typecheck
         working-directory: packages/audio-normalizer
-        run: npm run typecheck
+        run: bun run typecheck
+
   slowed-reverb:
     runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
       - uses: actions/setup-node@v7
         with:
           node-version-file: .nvmrc
-          cache: npm
       - name: Install (root lockfile)
-        run: npm ci
+        run: bun install --frozen-lockfile
       - name: Lint
         working-directory: packages/slowed-reverb
-        run: npm run lint
+        run: bun run lint
       - name: Tests
         working-directory: packages/slowed-reverb
-        run: npm test
+        run: bun run test
+
   crunchy-presence:
     runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
       - uses: actions/setup-node@v7
         with:
           node-version-file: .nvmrc
-          cache: npm
       - name: Install (root lockfile)
-        run: npm ci
+        run: bun install --frozen-lockfile
       - name: Tests
         working-directory: packages/crunchy-presence
-        run: npm test
+        run: bun run test
       - name: Native host selftest
         working-directory: packages/crunchy-presence
-        run: npm run selftest
+        run: bun run selftest
+
   web-discord-rpc:
     runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
       - uses: actions/setup-node@v7
         with:
           node-version-file: .nvmrc
-          cache: npm
       - name: Install (root lockfile)
-        run: npm ci
+        run: bun install --frozen-lockfile
       - name: Tests
         working-directory: packages/web-discord-rpc
-        run: npm test
+        run: bun run test
       - name: Native host selftest
         working-directory: packages/web-discord-rpc
         run: node native/host.mjs --selftest

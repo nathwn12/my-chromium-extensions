@@ -259,7 +259,7 @@ const predicates = {
     if (typeof ci !== "string" || !ci.includes(`${WDR}:`)) return false;
     const job = ci.slice(ci.indexOf(`${WDR}:`));
     return (
-      /run:\s*npm test/.test(job) &&
+      /run:\s*(npm|bun run) test/.test(job) &&
       !/continue-on-error:\s*true/.test(job) &&
       !/if:\s*false/.test(job)
     );
@@ -309,21 +309,12 @@ const predicates = {
     return bad.length === 0 ? true : `declares Playwright: ${bad.join(", ")}`;
   },
   "the lockfile resolves no Playwright package": ({ lock }) => {
-    if (!lock?.packages) return "no lockfile was read";
-    const bad = [];
-    for (const [key, entry] of Object.entries(lock.packages)) {
-      if (/(^|\/)node_modules\/(@playwright\/test|playwright|playwright-core)$/.test(key))
-        bad.push(key);
-      const deps = {
-        ...entry?.dependencies,
-        ...entry?.devDependencies,
-        ...entry?.optionalDependencies,
-        ...entry?.peerDependencies,
-      };
-      for (const name of PLAYWRIGHT) {
-        if (name in deps) bad.push(`${key || "<root>"} -> ${name}`);
-      }
-    }
+    if (typeof lock !== "string" || lock.length === 0) return "no lockfile was read";
+    // bun.lock keys every resolved package as `"name": [ ... ]`; a dependency that
+    // only mentions Playwright still resolves it, so a key scan is the honest test.
+    const bad = PLAYWRIGHT.filter((name) =>
+      new RegExp(`"${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"\\s*:`).test(lock),
+    );
     return bad.length === 0 ? true : `lockfile names Playwright: ${bad.join(", ")}`;
   },
   "the Playwright scan reads every source file": ({ scan }) => {
@@ -386,7 +377,7 @@ function loadContext() {
     release: read(".github/workflows/release.yml"),
     lock: (() => {
       try {
-        return JSON.parse(read("package-lock.json") ?? "null");
+        return read("bun.lock") ?? null;
       } catch {
         return null;
       }

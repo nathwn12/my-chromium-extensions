@@ -8,7 +8,7 @@ import { DEFAULT_CLIENT_ID, SOURCE_META } from "../config.js";
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const read = (rel) => readFileSync(path.join(root, rel), "utf8");
 const rootReadme = readFileSync(path.join(root, "..", "..", "README.md"), "utf8");
-const rootLock = JSON.parse(readFileSync(path.join(root, "..", "..", "package-lock.json"), "utf8"));
+const rootLock = readFileSync(path.join(root, "..", "..", "bun.lock"), "utf8");
 const readme = read("README.md");
 const arch = read("docs/ARCHITECTURE.md");
 const research = read("docs/RESEARCH.md");
@@ -49,7 +49,9 @@ test("version 1.1.7 is aligned across package, manifest, root index and changelo
   const manifest = JSON.parse(read("manifest.json"));
   assert.equal(pkg.version, "1.1.7");
   assert.equal(manifest.version, "1.1.7");
-  assert.equal(rootLock.packages["packages/web-discord-rpc"].version, "1.1.7");
+  // bun.lock is JSONC: the workspace block carries the resolved version.
+  const locked = rootLock.match(/"packages\/web-discord-rpc":\s*\{[^}]*?"version":\s*"([^"]+)"/);
+  assert.equal(locked?.[1], "1.1.7", "bun.lock workspace version matches");
   assert.match(changelog, /\[1\.1\.7\]/);
   assert.match(rootReadme, /YouTube Music.*\| 1\.1\.7/);
   assert.equal(DEFAULT_CLIENT_ID, "1566530911514923188");
