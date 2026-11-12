@@ -55,6 +55,45 @@
   script also runs in `about:blank`/srcdoc/opaque-origin iframes; MAIN-world
   injection still targets the sender frame (`frameIds: [sender.frameId]`).
 
+## Live enable/disable (no reload)
+
+The toggle must act on the document that is already playing, so "off" can no
+longer mean "nothing is installed".
+
+- **`seen`.** A per-site record carries `seen`, set on the first enable and
+  never cleared by a disable. It is derived on read (`seen || enabled`), so no
+  data migration is needed: a record written before the field existed is seen
+  exactly when it is enabled.
+- **Registration.** `deriveContentScriptRegistration` matches `seen || enabled`,
+  minus `excluded`. A host that was never enabled and is off stays at zero
+  cost (no content script, no hook, no registration entry). A seen host keeps
+  the `document_start` pair so a later enable needs no navigation.
+- **Reservation mode.** On a seen-but-off document the content script injects
+  `page-hook.js` (MAIN) and starts nothing: no `AudioContext`, no worklet, no
+  observer, no media capture, no listener. The hook is *present and idle* —
+  which is all the one-`MediaElementSource`-per-element rule and the
+  page-graph patches require, because both must exist before the page creates
+  them. The page plays natively and the audio graph is untouched while off.
+- **Enable.** `SET_SITE_STATE { enabled: true }` records the flag (and `seen`),
+  the background answers `activation: { state: 'live' }`, and its
+  `TOGGLE_CHANGED` broadcast makes the content script `START` the hook that is
+  already there: `attachExistingMediaElements` captures the playing elements,
+  the pre-warmed session routes through the worklet, and one program
+  generation is minted. No navigation; `currentTime` is never touched.
+- **Disable.** `STOP` is a bypass: `input → output` at 0 dB, the worklet is
+  disconnected, the observer stops, and the sessions, sources and dispatcher
+  are **kept**. `destroy` is reserved for exclusion and uninstall, and is the
+  only path that releases captures — after which the element cannot be
+  recaptured in that document and only a reload restores it.
+- **First-ever enable.** A host with no hook in the loaded document is the one
+  residual reload case: the background answers `activation:
+  { state: 'reload' }` and the popup shows the one-time notice. There is no
+  programmatic reload.
+- **Verdicts, not silence.** A page-claimed element throws `InvalidStateError`
+  on capture and is left unmuted and unmanaged (`__tnWebAudio`), never retried
+  in a loop; a suspended context defers capture to the next gesture/play
+  event rather than routing into a suspended graph.
+
 ## Session liveness (related)
 
 - Autoplay-policy `resume()` is raced with a 300 ms timeout; click/touch/key

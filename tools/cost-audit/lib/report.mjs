@@ -278,6 +278,35 @@ export function buildAssertions(report, options = {}) {
       const ext = byPackage.get(pkg);
       const name = ext?.name ?? pkg;
 
+      if (scenario.kind === "seen-off") {
+        // A host the user has enabled before, currently off: the content script
+        // must be there (registration matches `seen || enabled`, and that is what
+        // makes a later enable live) while the page pays NOTHING — no listener,
+        // no timer, no observer, no patched global, no audio graph. "Excluded is
+        // zero" is asserted separately and is unchanged.
+        const scripts = Number(value.scripts ?? 0);
+        const violations = violationsOf(value, PAGE_COST_KEYS);
+        const graphs = Number(value.workletNodes ?? 0);
+        const contexts = Number(value.audioContexts ?? 0);
+        const ok = scripts >= 1 && violations.length === 0 && graphs === 0 && contexts === 0;
+        assertions.push({
+          id: `seen-off/${pkg}`,
+          scenario: scenario.id,
+          extension: name,
+          host: scenario.host,
+          metric: "footprint",
+          expected: ">= 1 content script, 0 page-world cost, 0 audio graphs",
+          actual: { scripts, workletNodes: graphs, audioContexts: contexts, ...Object.fromEntries(PAGE_COST_KEYS.map((k) => [k, value[k] ?? 0])) },
+          verdict: ok ? "pass" : "fail",
+          message: ok
+            ? `${name} runs ${scripts} content script(s) on the seen-but-off ${scenario.host} with no page cost and no audio graph`
+            : (scripts < 1
+              ? `${name} has no content script on ${scenario.host}, which was seen earlier and is off — a later enable could not be live`
+              : `${name} costs the seen-but-off ${scenario.host}: ${describeViolations(name, scenario.host, violations)}${graphs || contexts ? `, workletNodes=${graphs}, audioContexts=${contexts}` : ""}`),
+        });
+        continue;
+      }
+
       if (scenario.kind === "coexistence") {
         const expectsGraph = (scenario.graphExpected ?? []).includes(pkg);
         const graphs = Number(value.workletNodes ?? 0);

@@ -64,6 +64,10 @@ const LOCAL_HOST = "127.0.0.1";
 const EXCLUDED_KEY = "excluded.test";
 const EXCLUDED_SUB_HOST = `sub.${EXCLUDED_KEY}`;
 const NEVER_CONFIGURED_HOST = "never-configured.test";
+// Seen once, switched off: registration still matches (`seen || enabled`), so the
+// content script and the passive page hook are present while the page pays
+// nothing and no audio graph exists. Enabling it later is live, no reload.
+const SEEN_OFF_HOST = "seen-off.test";
 // Kept opted in throughout so a registration stays alive while A is excluded;
 // without it the extension unregisters entirely and excludeMatches is invisible.
 const OTHER_ENABLED_HOST = "elsewhere.test";
@@ -122,9 +126,10 @@ function usage() {
 }
 
 /** chrome.storage.local items that put one package into a known state for a host. */
-function seedItems(pkg, { host, excluded = false }) {
+function seedItems(pkg, { host, excluded = false, seen = false }) {
   if (pkg === "audio-normalizer") {
-    const record = { enabled: true, gainDb: 0, seq: 1, mirror: true };
+    const record = { enabled: !seen, gainDb: 0, seq: 1, mirror: !seen };
+    if (seen) record.seen = true;
     if (excluded) record.excluded = true;
     return { [`site:${host}`]: record };
   }
@@ -508,11 +513,30 @@ async function main() {
         await snapshotRegistration("B-never-configured", B, "host-unknown", "B-never-configured", scriptsOn("B-never-configured")),
       );
 
-      // ---- 5. nothing enabled: no registration may survive ----------------
+      // ---- 4b. seen once, switched off: live-capable, zero page cost -------
+      await seed(client, audio, "audio-normalizer", seedItems("audio-normalizer", { host: SEEN_OFF_HOST, seen: true }));
+      await runScenario({
+        id: "seen-off",
+        kind: "seen-off",
+        label: `${SEEN_OFF_HOST} enabled once before, currently off`,
+        url: urlFor(SEEN_OFF_HOST),
+        host: SEEN_OFF_HOST,
+        expectInert: false,
+        expectInject: "audio-normalizer",
+      });
+      phases.push(
+        await snapshotRegistration("seen-off", SEEN_OFF_HOST, "covers-host", "seen-off", scriptsOn("seen-off")),
+      );
+
+      // ---- 5. nothing enabled and nothing seen: no registration survives --
+      // `seen` is cleared here too (a record written without the field derives
+      // `seen: false`), because a seen host is registered on purpose now; what
+      // this phase still proves is that no ENABLED site is left behind.
       await seed(client, audio, "audio-normalizer", {
         [`site:${A}`]: { enabled: false, gainDb: 0, seq: 3, mirror: false },
         [`site:${S}`]: { enabled: false, gainDb: 0, seq: 2, mirror: false },
         [`site:${OTHER_ENABLED_HOST}`]: { enabled: false, gainDb: 0, seq: 2, mirror: false },
+        [`site:${SEEN_OFF_HOST}`]: { enabled: false, gainDb: 0, seq: 2, mirror: false },
       });
       phases.push(await snapshotRegistration("nothing-enabled", A, "no-registration", "(no page load)", 0));
 

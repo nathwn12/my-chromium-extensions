@@ -118,6 +118,42 @@ test("a signal scenario records the injection it proved", () => {
   assert.match(signal.message, /injects 1 content script/);
 });
 
+test("a seen-off scenario passes when the content script runs and the page costs nothing", () => {
+  const seenOff = scenario({
+    id: "seen-off",
+    kind: "seen-off",
+    host: "seen-off.test",
+    expectInert: false,
+    extensions: extensionsAll({ "audio-normalizer": { scripts: 1 } }),
+  });
+  const assertions = buildAssertions(report({ scenarios: [seenOff] }));
+  const verdict = assertions.find((a) => a.id === "seen-off/audio-normalizer");
+  assert.equal(verdict.verdict, "pass");
+  assert.match(verdict.message, /1 content script\(s\) on the seen-but-off seen-off\.test/);
+
+  // No content script on a seen host is a failure: registration is what makes a
+  // later enable live.
+  const absent = buildAssertions(report({
+    scenarios: [scenario({ id: "seen-off", kind: "seen-off", host: "seen-off.test", expectInert: false, extensions: extensionsAll() })],
+  })).find((a) => a.id === "seen-off/audio-normalizer");
+  assert.equal(absent.verdict, "fail");
+  assert.match(absent.message, /no content script .* could not be live/);
+
+  // Page-world cost on a seen-but-off host is a failure of the reservation mode:
+  // it must be idle, not merely unprocessed.
+  const costly = buildAssertions(report({
+    scenarios: [scenario({
+      id: "seen-off",
+      kind: "seen-off",
+      host: "seen-off.test",
+      expectInert: false,
+      extensions: extensionsAll({ "audio-normalizer": { scripts: 1, observers: 1, workletNodes: 1 } }),
+    })],
+  })).find((a) => a.id === "seen-off/audio-normalizer");
+  assert.equal(costly.verdict, "fail");
+  assert.match(costly.message, /observers=1/);
+});
+
 test("a zero with no signal is a limit when the manifest cannot even match the host", () => {
   const pinned = scenario({ extensions: extensionsAll() });
   const assertions = buildAssertions(
