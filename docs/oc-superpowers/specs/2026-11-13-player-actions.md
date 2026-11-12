@@ -179,21 +179,27 @@ Controller behavior:
   transient, can be reused by the next track, and would either fail to restore its own
   song or collide onto another one; storing it also retains a full signed URL. A page
   with no `v` (the home/queue view) therefore gets a live loop and nothing else: no save,
-  no restore, no identity latch. On `yt-navigate-finish`, `popstate`, `hashchange`,
-  `loadedmetadata`, and `emptied`: if the key changed, clear points, stop the tick,
-  then restore the saved section for the new key (set points, `active = true`, seek to
-  start when metadata is ready). One restore per key; a pending restore retries for up
-  to 3 s on the tick.
+  no restore, no identity latch, and the status line reads `Play a song to repeat`. On
+  `yt-navigate-finish`, `popstate`, `hashchange`, `loadedmetadata`, and `emptied`: if the
+  key changed, clear points, stop the tick, then restore the saved section for the new
+  key from the in-memory cache (set points, `active = true`, seek to start). The restore
+  is a synchronous cache lookup: no per-song storage read, no read token, no retry
+  timer, so an edit, a transition or a second signal cannot interleave with it. One
+  restore per song visit: a manual commit marks the visit restored, so a later cache
+  landing cannot overwrite it.
 - Enabling mid-song seeds the current key immediately (pear guard `52762433`).
 - UI: fixed pill bottom-right above the player bar; expands to a shadow-DOM panel:
   Repeat checkbox, From row + Now, To row + Now, status line, Clear, Save. Time
   inputs commit on `change`/Enter; a commit of From seeks immediately; To/clear never
   seek; reversed range marks both fields invalid and refuses the commit; sync never
   clobbers a field being edited.
-- Save: read the current `playerActions.sections`, upsert, write, show a transient
-  notice only if the song + points are unchanged since the compose.
+- Save: snapshot `{videoId, startSeconds, endSeconds}` at the click and send it to the
+  ordered writer immediately (no debounce). Adopt the reply's `sections` on `ok: true`
+  and show the transient notice only if the song + points are unchanged since the
+  snapshot; `ok: false` shows `Save failed` and leaves the cache untouched. No
+  read-modify-write in the controller.
 - Status copy mirrors pear: off / need start / `A → B` / `A → end of song` / invalid
-  / saved / removed.
+  / saved / removed / `Play a song to repeat` (no id) / `Play a song to save`.
 
 ### Storage
 
@@ -203,8 +209,24 @@ Controller behavior:
 { "sections": [{ "videoId": "abc", "startSeconds": 12, "endSeconds": 30 }] }
 ```
 
-Separate from `siteSettings` so `normalizeSettings` can never drop it. Read-modify-
-write, debounced 250 ms for saves. No volume key.
+Separate from `siteSettings` so `normalizeSettings` can never drop it. No volume key.
+
+Access model (one writer, one cache):
+
+- **Cache.** The controller loads `playerActions.sections` once on `start()` into an
+  in-memory `saved` list and sets `savedReady`. Restores read that list only; a song
+  signal arriving before the load sets `pendingRestore`, and the load re-runs
+  `syncSong()` once when it resolves (generation-checked).
+- **Live updates.** The content script exposes `storage.subscribe(cb)` backed by
+  `chrome.storage.onChanged`, filtered to area `local` and key `playerActions`; the
+  controller replaces `saved` from `newValue.sections` and re-runs `syncSong()` /
+  `syncTick()` / `syncPanel()`. Unsubscribed on `stop()`. This is how another tab's
+  save becomes visible.
+- **Write.** Saves go to the service worker (`SAVE_PLAYER_SECTION`), which serializes
+  get → sanitize → upsert → cap(100) → set behind one promise chain, so two tabs
+  cannot clobber each other. The controller adopts the reply's `sections`; it never
+  reads-modifies-writes. The queue is in memory: a save interrupted by worker
+  termination is not replayed (documented limit, not a journal).
 
 ## The 15 guards become tests
 
