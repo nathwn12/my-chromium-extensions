@@ -485,6 +485,9 @@
     let settleTimer = null;
     let saveChain = Promise.resolve();
     let volumeSeq = 0;
+    // Bumped by every edit, real user input, song change, stop and pending
+    // cancel. A restore read may only apply if its captured token still holds.
+    let restoreToken = 0;
 
     function currentState() {
       return {
@@ -515,6 +518,12 @@
       return Number.isFinite(media.currentTime) ? media.currentTime : null;
     }
 
+    /**
+     * The element volume is the actual playback volume and the gain source: the
+     * existing graph mirrors `media.volume` into its single output gain. The page
+     * player API is used for writes and slider truth only, never as a second
+     * read, so this stays the single seed for the wheel.
+     */
     function readMediaVolume() {
       if (!media) return null;
       const value = Number(media.volume);
@@ -553,6 +562,7 @@
 
     function stop() {
       generation += 1;
+      bumpRestoreToken();
       started = false;
       stopTick();
       stopRestoreTimer();
@@ -615,6 +625,7 @@
       if (replaced) {
         cancelSeekRetry();
         clearSettleCheck();
+        bumpRestoreToken();
         session.songKey = null;
         session.restoredSongKey = null;
         session.identityKnown = false;
@@ -686,6 +697,7 @@
       session.identityKnown = key !== null;
       if (key === null) {
         cancelSeekRetry();
+        bumpRestoreToken();
         // Wait for the id on the bounded restore timer - never on a loop tick,
         // and never with a seek.
         deferRestore(session, now());
@@ -696,6 +708,7 @@
       if (beginSong(session, key)) {
         cancelSeekRetry();
         clearSettleCheck();
+        bumpRestoreToken();
         fromDirty = false;
         toDirty = false;
         syncTick();
@@ -709,15 +722,19 @@
     /** Reads the saved list fresh and applies this song's section. */
     async function restoreForSong(key) {
       const mine = generation;
+      const token = restoreToken;
       let sections = [];
       try {
         sections = await readSections();
       } catch {
         sections = [];
       }
-      // A stop, a restart or a song change owns the state now.
+      // A stop, a restart, an edit, real user input or a different song owns the
+      // state now. The key is re-derived from the live URL, never from the
+      // cached latch, so a transition cannot restore onto what plays next.
       if (!started || mine !== generation) return;
-      if (session.songKey !== key) return;
+      if (token !== restoreToken) return;
+      if (currentSongKey() !== key) return;
 
       const entry = lookupSaved(sections, key);
       if (entry === null) {
@@ -742,8 +759,10 @@
 
     function applyRestoreSeek(key, startSeconds) {
       const start = startSeconds === null ? 0 : startSeconds;
+      const token = restoreToken;
       const onLanded = () => {
-        if (!started || session.songKey !== key) return;
+        if (!started || token !== restoreToken) return;
+        if (currentSongKey() !== key) return;
         // Landing on the 120 ms retry counts exactly like the first write.
         markSongRestored(session, key);
         clearPendingRestore(session);
@@ -779,6 +798,7 @@
       if (restoreDeadlineReached(session, now())) {
         if (session.songKey !== null) markSongRestored(session, session.songKey);
         clearPendingRestore(session);
+        bumpRestoreToken();
         cancelSeekRetry();
         syncRestoreTimer();
         syncTick();
@@ -797,6 +817,7 @@
       if (key !== session.songKey) {
         beginSong(session, key);
         clearSettleCheck();
+        bumpRestoreToken();
         syncTick();
         syncPanel();
       }
@@ -843,6 +864,7 @@
         // the previous song's points.
         cancelSeekRetry();
         clearSettleCheck();
+        bumpRestoreToken();
         fromDirty = false;
         toDirty = false;
         syncTick();
@@ -973,6 +995,11 @@
     function onUserInput() {
       cancelSeekRetry();
       clearSettleCheck();
+      // Input also abandons a restore that has not applied yet: the user owns
+      // the position and the next visit will read the section again.
+      clearPendingRestore(session);
+      bumpRestoreToken();
+      syncRestoreTimer();
     }
 
     // -- seeking -----------------------------------------------------------
@@ -1024,6 +1051,11 @@
         writeSeek(target, token);
       }, SEEK_RETRY_MS);
       return false;
+    }
+
+    /** Abandons every in-flight restore: only a newer read may apply now. */
+    function bumpRestoreToken() {
+      restoreToken += 1;
     }
 
     function clearSettleCheck() {
@@ -1294,11 +1326,17 @@
         return;
       }
 
+      // Any commit (From, To, Clear) cancels outstanding seek work first: the
+      // new points own playback, and Clear must never jump.
+      cancelSeekRetry();
+      clearSettleCheck();
+      clearPendingRestore(session);
+      bumpRestoreToken();
+      syncRestoreTimer();
+
       notice = null;
       session.startSeconds = live.startSeconds;
       session.endSeconds = live.endSeconds;
-      clearPendingRestore(session);
-      syncRestoreTimer();
       fromDirty = false;
       toDirty = false;
       ui.from.value = live.startSeconds === null ? '' : formatTime(live.startSeconds);

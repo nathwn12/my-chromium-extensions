@@ -1906,6 +1906,121 @@ test('controller: guard - a reply from before a restart cannot overwrite the new
 });
 
 // ---------------------------------------------------------------------------
+// Round 4: restore token and seek cancellation
+// ---------------------------------------------------------------------------
+
+test('controller: guard - an edit during the restore read survives and never seeks', async () => {
+  const storage = createStorage({
+    playerActions: { sections: [{ videoId: 'song-a', startSeconds: 40, endSeconds: null }] },
+  });
+  const harness = createHarness({ storage });
+  const release = storage.hold();
+  const started = harness.controller.start();
+  await settle(2);
+
+  // The panel exists while the read is still in flight.
+  harness.commit('From', '1:10');
+  harness.media().currentTime = 70;
+  release();
+  await started;
+  await settle();
+
+  assert.equal(harness.fromValue(), '1:10');
+  assert.equal(harness.media().currentTime, 70);
+});
+
+test('controller: guard - a song id that disappears during the read is never restored', async () => {
+  const storage = createStorage({
+    playerActions: { sections: [{ videoId: 'song-a', startSeconds: 40, endSeconds: null }] },
+  });
+  const harness = createHarness({ storage });
+  const release = storage.hold();
+  const started = harness.controller.start();
+  await settle(2);
+
+  harness.setHref('https://music.youtube.com/');
+  release();
+  await started;
+  await settle();
+
+  assert.equal(harness.fromValue(), '');
+  assert.equal(harness.media().currentTime, 0);
+  assert.equal(harness.timers.intervalDelays().includes(100), false);
+});
+
+test('controller: guard - two overlapping restore reads: only the latest applies', async () => {
+  const storage = createStorage({
+    playerActions: {
+      sections: [
+        { videoId: 'song-a', startSeconds: 10, endSeconds: null },
+        { videoId: 'song-b', startSeconds: 20, endSeconds: null },
+      ],
+    },
+  });
+  const harness = createHarness({ storage });
+  const release = storage.hold();
+  const started = harness.controller.start();
+  await settle(2);
+
+  harness.setHref('https://music.youtube.com/watch?v=song-b');
+  harness.dom.win.dispatch('yt-navigate-finish');
+  await settle(2);
+  release();
+  await started;
+  await settle(10);
+
+  assert.equal(harness.media().currentTime, 20);
+  assert.equal(harness.fromValue(), '0:20');
+});
+
+test('controller: guard - Clear cancels an outstanding From retry and never seeks', async () => {
+  const harness = createHarness();
+  await harness.start();
+  const media = harness.media();
+  let writes = 0;
+  Object.defineProperty(media, 'currentTime', {
+    configurable: true,
+    get() {
+      return 0;
+    },
+    set() {
+      writes += 1;
+    },
+  });
+
+  harness.commit('From', '0:30');
+  const afterFrom = writes;
+  assert.equal(afterFrom, 1);
+
+  harness.click('Clear section');
+  harness.timers.flushTimeouts();
+  assert.equal(writes, afterFrom);
+  assert.equal(harness.fromValue(), '');
+});
+
+test('controller: guard - real user input abandons a pending restore', async () => {
+  const storage = createStorage({
+    playerActions: { sections: [{ videoId: 'song-a', startSeconds: 40, endSeconds: null }] },
+  });
+  const harness = createHarness({ storage });
+  const release = storage.hold();
+  const started = harness.controller.start();
+  await settle(2);
+
+  harness.dom.win.dispatch('keydown');
+  release();
+  await started;
+  await settle();
+  harness.timers.tickIntervals();
+  harness.timers.flushTimeouts();
+  await settle();
+
+  assert.equal(harness.media().currentTime, 0);
+  assert.equal(harness.fromValue(), '');
+  assert.equal(harness.timers.intervalDelays().includes(150), false);
+});
+
+// ---------------------------------------------------------------------------
 // Storage schema
 // ---------------------------------------------------------------------------
 
