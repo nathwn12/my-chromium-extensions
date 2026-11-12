@@ -799,6 +799,7 @@
     state.transient = { enabled, gainDb };
     state.enabled = enabled;
     state.gainDb = gainDb;
+    if (enabled) state.stopSent = false;
 
     console.log('[cs] document-state (transient):', state.siteKey, 'enabled:', enabled, 'gainDb:', gainDb);
 
@@ -854,7 +855,7 @@
       clearActivationRetry();
       stopSpaWatch();
       // Bypass, not teardown: the hook stays loaded for a later live enable.
-      postToPage('STOP', { reason: 'document-state' });
+      postStopOnce('document-state');
       state.hookActive = false;
       state.lastError = '';
       return { ok: true };
@@ -869,6 +870,18 @@
     return { ok: true };
   }
 
+  /**
+   * Deliver one STOP per enabled→disabled transition. Off sites are resynced on
+   * focus/visibility/pageshow like any other document; without this the worker
+   * would run a MAIN-world stop for an already-bypassed hook on every focus.
+   * @param {string} reason
+   */
+  function postStopOnce(reason) {
+    if (state.stopSent) return;
+    state.stopSent = true;
+    postToPage('STOP', { reason });
+  }
+
   function cleanupAndReset() {
     clearPendingStart();
     clearActivationRetry();
@@ -876,7 +889,7 @@
     // STOP bypasses and keeps the hook loaded (dispatcher, sessions, captured
     // sources), so a later enable in this document is live. Only exclusion or
     // uninstall destroy it.
-    postToPage('STOP', { reason: 'toggle-changed' });
+    postStopOnce('toggle-changed');
     state.hookActive = false;
     state.lastError = '';
   }
@@ -1069,8 +1082,9 @@
         // STOP is a bypass, not a teardown: the hook keeps its dispatcher,
         // sessions and captured sources so the next enable is live. The
         // response confirms the hook is still alive; `hookAlive` is left to
-        // applyHookStatus instead of being cleared here.
-        postToPage('STOP', { reason });
+        // applyHookStatus instead of being cleared here. One STOP per
+        // transition — an off site resyncs on focus without a worker call.
+        postStopOnce(reason);
         state.hookActive = false;
         state.lastError = '';
         return;

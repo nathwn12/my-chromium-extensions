@@ -565,6 +565,41 @@ test('item7: disabled tab posts STOP when an active hook reports in', async () =
   );
 });
 
+test('item7: an off tab asks the worker for exactly one STOP across repeated resyncs', async () => {
+  const storage = createStore({
+    'site:example.com': { enabled: true, gainDb: 0, seq: 1, mirror: true },
+  });
+  const c = await loadContent('https://example.com/watch', storage);
+  await sleep(60);
+  c.postedToPage.length = 0;
+  const disable = () => c.sendMessage({
+    type: 'SET_DOCUMENT_STATE',
+    siteKey: 'example.com',
+    enabled: false,
+    gainDb: 0,
+    transient: true,
+  });
+  await disable();
+  await sleep(40);
+  await disable();
+  await sleep(60);
+  const stops = c.postedToPage.filter((m) => m.type === 'STOP');
+  assert.equal(stops.length, 1, 'one STOP per disable, not one per resync');
+  // Re-enabling resets the latch so the NEXT disable can stop again.
+  await c.sendMessage({
+    type: 'SET_DOCUMENT_STATE',
+    siteKey: 'example.com',
+    enabled: true,
+    gainDb: 0,
+    transient: true,
+  });
+  await sleep(80);
+  c.postedToPage.length = 0;
+  await disable();
+  await sleep(60);
+  assert.equal(c.postedToPage.filter((m) => m.type === 'STOP').length, 1, 'and a later disable stops again');
+});
+
 // ============ item 11: prune on emptied/ended/removal ============
 test('item11: emptied and ended detach the element for collection', async () => {
   const src = read('page-hook.js');
