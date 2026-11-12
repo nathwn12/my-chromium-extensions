@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-11-12
+
+- Fix: after a page-hook volume write, settle the graph and re-assert the mute. YouTube's player API unmutes the element and fires no `volumechange`, which could leave the old gain and the native element playing together — heard as louder at low slider values.
+
 ## [1.2.0] - 2026-11-12
 
 - Wheel volume over the player bar and the watch-page player panel, snapped to YouTube Music's 5% slider grid and mirrored into the real slider and tooltip; no HUD, the site's own control is the feedback.
