@@ -1111,6 +1111,35 @@ test('an ordinary (non-exclusion) broadcast also reaches every frame, and the si
 });
 
 // ============ popup control ============
+test('popup: a first-ever enable shows the automatic reload, not an instruction', async () => {
+  const popup = loadPopup({
+    tabUrl: 'https://fresh.example/watch',
+    runtimeSendMessage: async (msg) => {
+      if (msg.type === 'GET_SITE_STATE') {
+        return { ok: true, enabled: false, gainDb: 0, excluded: false, siteKey: 'fresh.example', seq: 1 };
+      }
+      if (msg.type === 'SET_SITE_STATE') {
+        return {
+          ok: true, enabled: true, gainDb: 0, excluded: false, seen: true,
+          siteKey: 'fresh.example', seq: 2,
+          activation: { state: 'reloading', message: 'Reloading to activate…' },
+        };
+      }
+      return { ok: true };
+    },
+    // The tab is going away: the document cannot answer.
+    tabsSendMessage: async () => { throw new Error('Receiving end does not exist.'); },
+  });
+  await settle(60);
+  popup.els.toggle.checked = true;
+  await popup.els.toggle.fire('change');
+  await settle(160);
+  const text = String(popup.els['status-text'].textContent);
+  assert.match(text, /reloading to activate/i, 'the automatic reload is announced');
+  assert.doesNotMatch(text, /reload applies this/i, 'the user is never told to reload');
+  assert.equal(popup.els['status-pill'].textContent, 'Reloading', 'the pill says what is happening');
+});
+
 test('popup: a live enable says Active without a reload notice; a first-ever enable keeps the notice', async () => {
   // A seen host: the background answers activation "live" and the tab reports
   // an armed, processing document with the hook present.

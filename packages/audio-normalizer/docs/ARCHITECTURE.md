@@ -86,9 +86,13 @@ longer mean "nothing is installed".
   only path that releases captures — after which the element cannot be
   recaptured in that document and only a reload restores it.
 - **First-ever enable.** A host with no hook in the loaded document is the one
-  residual reload case: the background answers `activation:
-  { state: 'reload' }` and the popup shows the one-time notice. There is no
-  programmatic reload.
+  residual reload case, and it is **automatic**: the background records `seen`,
+  answers `activation: { state: 'reloading' }`, waits ~500 ms so the popup can
+  paint, and calls `chrome.tabs.reload(tabId)` exactly once (a disable, a live
+  enable or an exclusion never reloads). If the tab id is missing, the platform
+  refuses, or the API is absent, it falls back to the notice
+  (`activation: { state: 'reload' }`) and no reload is attempted. This is the
+  only navigation the extension ever performs.
 - **Verdicts, not silence.** A page-claimed element throws `InvalidStateError`
   on capture and is left unmuted and unmanaged (`__tnWebAudio`), never retried
   in a loop; a suspended context defers capture to the next gesture/play

@@ -144,6 +144,34 @@ async function writeSiteRecord(siteKey, record) {
   });
 }
 
+// Automatic reload on the one enable that has no hook to start (the first-ever
+// enable of a host on an already-loaded document). The delay lets the popup
+// paint its "Reloading to activate…" state before the document goes away; the
+// reload itself is the ONLY navigation this extension ever performs, and it
+// happens once per host, ever.
+const FIRST_ENABLE_RELOAD_DELAY_MS = 500;
+const RELOAD_NOTICE_MESSAGE = 'Enabled. Reload applies this.';
+const RELOADING_MESSAGE = 'Reloading to activate…';
+
+/**
+ * Reload one tab, once. Answers false — never throws — when there is no tab to
+ * reload or the platform refuses, so the caller can fall back to the notice.
+ * @param {unknown} tabId
+ * @returns {Promise<boolean>}
+ */
+async function reloadTabOnce(tabId) {
+  if (typeof tabId !== 'number' || !Number.isFinite(tabId)) return false;
+  if (!chrome.tabs || typeof chrome.tabs.reload !== 'function') return false;
+  await new Promise((resolve) => setTimeout(resolve, FIRST_ENABLE_RELOAD_DELAY_MS));
+  try {
+    await Promise.resolve(chrome.tabs.reload(tabId));
+    return true;
+  } catch (e) {
+    console.warn('[bg] first-enable reload failed, falling back to the notice:', String(e));
+    return false;
+  }
+}
+
 /**
  * The MAIN-world call the worker makes on the hook. Self-contained: Chrome
  * serializes it into the frame. It only reaches the hook through the dispatcher
@@ -975,13 +1003,15 @@ async function softRecheckDocument(tabId, siteKey) {
     return { ok: true, activation: { state: 'idle' } };
   }
 
-  // FINAL RULE: this never injects. It asks a document that already has the
-  // content script to re-read its truth (stop or adjust); a document without
-  // one is reported as "enabled, applies on reload" instead of being armed.
+  // This never injects. It asks a document that already has the content script
+  // to re-read its truth (stop or adjust); a document without one is reported
+  // as "enabled, applies on reload" instead of being armed. No reload is
+  // triggered from here: a slider soft-wake is not an enable, so the notice is
+  // the honest answer (the automatic reload belongs to a first-ever enable).
   try {
     return await chrome.tabs.sendMessage(tabId, { type: 'SOFT_RECHECK_DOCUMENT' }, { frameId: 0 });
   } catch {
-    return { ok: true, activation: { state: 'reload', message: 'Enabled. Reload applies this.' } };
+    return { ok: true, activation: { state: 'reload', message: RELOAD_NOTICE_MESSAGE } };
   }
 }
 
@@ -1165,8 +1195,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         // Enabling a SEEN host is live: the document already holds the passive
         // page hook, and the broadcast below flips it on in place with no
         // navigation. The one residual reload case is the FIRST-ever enable of a
-        // host, where no hook exists to start — say so instead of claiming
-        // activation. Disabling is live on both paths (STOP keeps the graph).
+        // host, where no hook exists to start — that case reloads the tab once,
+        // automatically, because a reload the user has to perform is not
+        // acceptable. Disabling is live on both paths (STOP keeps the graph).
         if (!persist && message.tabId) {
           await setPendingSessionState(
             message.tabId,
@@ -1192,6 +1223,26 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           await teardownHooksForSite(siteKey, { mode: 'stop' });
         }
         console.log('[bg]', persist ? 'stored:' : 'transient:', siteKey, JSON.stringify(applied));
+        // Exclusion beats enablement: nothing runs on this host, now or after a
+        // reload. A seen host enables live (its document holds the passive
+        // hook). The FIRST-ever enable of a host is the one case with no hook to
+        // start, and it reloads this tab once, automatically.
+        const firstEnable = persist
+          && applied.enabledApplied
+          && applied.enabled
+          && !applied.excluded
+          && !applied.wasSeen;
+        let activation = applied.excluded
+          ? { state: 'idle' }
+          : (!applied.enabled
+            ? { state: 'stop' }
+            : (applied.wasSeen
+              ? { state: 'live' }
+              : { state: 'reload', message: RELOAD_NOTICE_MESSAGE }));
+        if (firstEnable) {
+          const reloading = await reloadTabOnce(message.tabId);
+          if (reloading) activation = { state: 'reloading', message: RELOADING_MESSAGE };
+        }
         return {
           ok: true,
           enabled: applied.enabled,
@@ -1200,17 +1251,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           siteKey,
           seq: applied.seq,
           seen: applied.seen,
-          // Exclusion beats enablement: nothing runs on this host, now or after
-          // a reload. Otherwise the enable path is live for a host that has been
-          // enabled before (its document holds the passive hook) and deferred to
-          // one navigation exactly once per host.
-          activation: applied.excluded
-            ? { state: 'idle' }
-            : (!applied.enabled
-              ? { state: 'stop' }
-              : (applied.wasSeen
-                ? { state: 'live' }
-                : { state: 'reload', message: 'Enabled. Reload applies this.' })),
+          activation,
         };
       }
       case 'GET_SITE_STATE': {

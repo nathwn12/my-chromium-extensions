@@ -55,6 +55,9 @@ const EXCLUDED_TEXT = 'Excluded. Nothing runs on this site. Reload restores this
 // host, where no page hook exists in the loaded document to start. A host that
 // has been enabled before is applied live, and the popup must not say this.
 const RELOAD_NOTICE_TEXT = 'Enabled. Reload applies this.';
+// The first-ever enable of a host reloads its tab automatically; this is what
+// the popup says while that happens (no control, one line plus the pill).
+const RELOADING_TEXT = 'Reloading to activate…';
 // A verdict, not silence: the page plays this audio through its own Web Audio
 // graph, so the one source per element rule means we can never route it.
 const PAGE_OWNED_TEXT = 'This page plays its audio through its own graph, so it cannot be normalized.';
@@ -383,7 +386,14 @@ async function toggleSite() {
         ? /** @type {Record<string, unknown>} */ (res.activation)
         : null;
       const activationState = activation ? String(activation.state || '') : '';
-      if (activationState !== 'live' && activationState !== 'pending') {
+      if (activationState === 'reloading') {
+        // The background already reloaded (or is about to): say so, once, and
+        // never ask the user for an action they do not have to take.
+        reloadNoticePending = false;
+        runtimeActivationState = 'reloading';
+        runtimeActivationMessage = String(activation?.message || RELOADING_TEXT);
+        renderStatus({ indicator: 'gray', text: runtimeActivationMessage });
+      } else if (activationState !== 'live' && activationState !== 'pending') {
         reloadNoticePending = true;
         runtimeActivationState = 'reload';
         runtimeActivationMessage = RELOAD_NOTICE_TEXT;
@@ -707,9 +717,13 @@ async function refreshDocumentStatus() {
       renderStatus({ indicator: 'gray', text: runtimeActivationMessage || 'Enabled. Reload on a supported page.' });
       return;
     }
-    // No content script in this document: the enable was recorded but there is
-    // no hook to start here, so this tab needs one navigation (a first-ever
-    // enable, or a document that loaded before the extension did).
+    // No content script in this document: either the tab is reloading right now
+    // (a first-ever enable), or there was no hook to start and the notice is
+    // the honest answer.
+    if (toggle.checked && runtimeActivationState === 'reloading') {
+      renderStatus({ indicator: 'gray', text: runtimeActivationMessage || RELOADING_TEXT });
+      return;
+    }
     if (toggle.checked && runtimeActivationState === 'reload') {
       renderStatus({ indicator: 'gray', text: RELOAD_NOTICE_TEXT });
       return;
@@ -732,6 +746,9 @@ function getStatusText({ enabled, hookActive, activating, lastError, hookPresent
   if (enabled && hookActive) return 'Normalizer active.';
   if (enabled && runtimeActivationState === 'restricted') {
     return runtimeActivationMessage || 'Enabled. Reload on a supported page.';
+  }
+  if (enabled && runtimeActivationState === 'reloading') {
+    return runtimeActivationMessage || RELOADING_TEXT;
   }
   if (enabled && runtimeActivationState === 'reload') {
     return RELOAD_NOTICE_TEXT;
@@ -766,6 +783,11 @@ function renderStatus({ indicator, text, excluded: isExcluded }) {
   }
   if (shown === RELOAD_NOTICE_TEXT) {
     statusPillEl.textContent = 'Reload';
+    statusPillEl.dataset.state = 'off';
+    return;
+  }
+  if (shown === RELOADING_TEXT) {
+    statusPillEl.textContent = 'Reloading';
     statusPillEl.dataset.state = 'off';
     return;
   }
