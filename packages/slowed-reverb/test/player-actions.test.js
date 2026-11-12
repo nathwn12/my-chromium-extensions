@@ -396,8 +396,10 @@ function createStorage(initial, options) {
     writes,
     saveSection: options && options.saveSection ? options.saveSection : undefined,
     async get(key) {
+      // Snapshot before the gate: a read in flight returns the value it saw.
+      const snapshot = data[key];
       if (gate) await gate;
-      return { [key]: data[key] };
+      return { [key]: snapshot };
     },
     async set(items) {
       writes.push(items);
@@ -465,7 +467,7 @@ function createHarness(options) {
   const timers = createTimers();
   const storage = settings.storage || createStorage();
   const pageHook = settings.pageHook || createPageHook(50);
-  let media = settings.media || dom.makeMedia('song-a', settings.mediaOptions);
+  let media = settings.startWithoutMedia ? null : settings.media || dom.makeMedia('song-a', settings.mediaOptions);
 
   const controller = actions.createPlayerActions({
     window: dom.win,
@@ -1710,6 +1712,89 @@ test('controller: saving an empty section removes the song entry', async () => {
   await settle();
   assert.deepEqual(storage.sections(), []);
   assert.equal(harness.status(), 'Removed');
+});
+
+test('cache: a subscription update during the initial read wins', async () => {
+  const storage = createStorage({
+    playerActions: { sections: [{ videoId: 'song-a', startSeconds: 10, endSeconds: null }] },
+  });
+  const harness = createHarness({ storage });
+  const release = storage.hold();
+  const started = harness.controller.start();
+  await settle(2);
+
+  // Another tab writes while the initial read is still in flight.
+  storage.setSections([{ videoId: 'song-a', startSeconds: 55, endSeconds: null }]);
+  release();
+  await started;
+  await settle();
+
+  // A later visit proves which cache survived: the subscription's 55, not the
+  // stale read's 10.
+  harness.setHref('https://music.youtube.com/watch?v=song-b');
+  harness.dom.win.dispatch('yt-navigate-finish');
+  await settle();
+  harness.setHref('https://music.youtube.com/watch?v=song-a');
+  harness.dom.win.dispatch('yt-navigate-finish');
+  await settle();
+
+  assert.equal(harness.fromValue(), '0:55');
+  assert.equal(harness.media().currentTime, 55);
+});
+
+test('cache: a saved start is sought when the media element arrives late', async () => {
+  const storage = createStorage({
+    playerActions: { sections: [{ videoId: 'late-id', startSeconds: 40, endSeconds: null }] },
+  });
+  const harness = createHarness({ storage, startWithoutMedia: true });
+  harness.setHref('https://music.youtube.com/');
+  await harness.start();
+  harness.pushSong('late-id');
+  await settle();
+  assert.equal(harness.fromValue(), '0:40');
+
+  const media = harness.dom.makeMedia('late-id');
+  let writes = 0;
+  let value = 0;
+  Object.defineProperty(media, 'currentTime', {
+    configurable: true,
+    get() {
+      return value;
+    },
+    set(next) {
+      writes += 1;
+      value = Number(next);
+    },
+  });
+  harness.setMedia(media);
+  harness.timers.tickIntervals();
+  await settle();
+
+  assert.equal(value, 40);
+  assert.equal(writes, 1);
+});
+
+test('cache: a cache restore does not clobber a field being typed', async () => {
+  const storage = createStorage({
+    playerActions: { sections: [{ videoId: 'song-a', startSeconds: 40, endSeconds: null }] },
+  });
+  const harness = createHarness({ storage });
+  const release = storage.hold();
+  const started = harness.controller.start();
+  await settle(2);
+
+  harness.typeInto('From', '2:00');
+  release();
+  await started;
+  await settle();
+
+  // The typed text survived the landing.
+  assert.equal(harness.fromValue(), '2:00');
+
+  // And the commit wins.
+  harness.commit('From', '2:00');
+  assert.equal(harness.fromValue(), '2:00');
+  assert.equal(harness.media().currentTime, 120);
 });
 
 test('controller: guard - the cache load restores the first song', async () => {

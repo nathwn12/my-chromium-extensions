@@ -469,6 +469,9 @@
     let generation = 0;
     let saved = [];
     let savedReady = false;
+    // Bumped by every subscription update: a read that started earlier must not
+    // overwrite a newer cache.
+    let savedRevision = 0;
     let pageSongId = null;
     let songIdPushed = false;
     let unsubscribeStorage = null;
@@ -582,6 +585,7 @@
       // One cache load for the whole session. Every later change arrives through
       // storage.subscribe, so a restore is a synchronous lookup that cannot
       // interleave with an edit, a transition or another restore.
+      const revision = savedRevision;
       let sections = [];
       try {
         sections = await readSections();
@@ -589,7 +593,8 @@
         sections = [];
       }
       if (!started || mine !== generation) return;
-      saved = sections;
+      // A subscription update during the read is newer than this read.
+      if (revision === savedRevision) saved = sections;
       savedReady = true;
       syncSong();
       syncTick();
@@ -739,8 +744,8 @@
       if (beginSong(session, key)) {
         cancelSeekRetry();
         clearSettleCheck();
-        fromDirty = false;
-        toDirty = false;
+        // A dirty field is left alone even on the first adoption: the cache
+        // landing must not clobber an in-progress edit.
         syncTick();
         syncPanel();
       }
@@ -768,18 +773,25 @@
       session.endSeconds = entry.endSeconds;
       // A saved section comes back armed: Repeat off must not mute its range.
       active = true;
-      fromDirty = false;
-      toDirty = false;
-      // Latched before the seek: a second signal in this visit cannot re-apply.
-      markSongRestored(session, key);
-      clearPendingRestore(session);
+      // Dirty fields are left alone: an in-progress edit outranks a cache restore
+      // and its commit will win.
       syncTick();
       syncPanel();
 
       const start = entry.startSeconds === null ? 0 : entry.startSeconds;
-      if (!media) return;
+      if (!media) {
+        // The id can arrive before the element. Stay pending and let the loop
+        // tick (or the next signal) seek once media exists; do NOT latch a
+        // restore that never happened.
+        session.pendingRestore = true;
+        return;
+      }
+      session.pendingRestore = false;
       requestSeek(start, () => {
         if (!started || session.songKey !== key) return;
+        // Latch only when the seek actually lands.
+        markSongRestored(session, key);
+        clearPendingRestore(session);
         armSettleCheck(key, entry.startSeconds);
       });
     }
@@ -828,6 +840,10 @@
         toDirty = false;
         syncTick();
         syncPanel();
+        applySavedSection(key);
+        return;
+      }
+      if (session.pendingRestore && songRestorePending(session, key)) {
         applySavedSection(key);
         return;
       }
@@ -1334,6 +1350,7 @@
      */
     function onStorageChange(sections) {
       if (!started) return;
+      savedRevision += 1;
       saved = sanitizeSaved(sections);
       savedReady = true;
       // A visit still waiting for its first restore can now apply; a visit that
