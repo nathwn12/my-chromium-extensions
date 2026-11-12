@@ -24,6 +24,7 @@
   const TICK_MS = 100;
   const NOTICE_VISIBLE_MS = 1200;
   const SAVED_LIMIT = 100;
+  const RESTORE_DEADLINE_MS = 3000;
   const PLAYER_BAR_TAG = 'YTMUSIC-PLAYER-BAR';
   const MAIN_PANEL_ID = 'main-panel';
   const SEEK_RETRY_MS = 120;
@@ -219,6 +220,7 @@
       startSeconds: null,
       endSeconds: null,
       pendingRestore: false,
+      restoreDeadlineAt: 0,
     };
   }
 
@@ -248,6 +250,7 @@
 
   function clearPendingRestore(session) {
     session.pendingRestore = false;
+    session.restoreDeadlineAt = 0;
   }
 
   // -------------------------------------------------------------------------
@@ -459,6 +462,7 @@
     const mediaProvider = typeof settings.mediaProvider === 'function'
       ? settings.mediaProvider
       : () => doc.querySelector('video');
+    const now = typeof settings.now === 'function' ? settings.now : () => Date.now();
     const pageHook = settings.pageHook || null;
     const storage = settings.storage || null;
     const getStyle = typeof settings.getStyle === 'function'
@@ -741,11 +745,18 @@
         syncTick();
         return;
       }
+      // Captured before adoption: beginSong overwrites the key.
+      const previousSong = session.songKey !== null;
       if (beginSong(session, key)) {
         cancelSeekRetry();
         clearSettleCheck();
-        // A dirty field is left alone even on the first adoption: the cache
-        // landing must not clobber an in-progress edit.
+        // A genuine song change drops the previous song's typed text; the first
+        // adoption of the current song leaves an in-progress edit alone (the
+        // cache landing must not clobber it).
+        if (previousSong) {
+          fromDirty = false;
+          toDirty = false;
+        }
         syncTick();
         syncPanel();
       }
@@ -779,14 +790,13 @@
       syncPanel();
 
       const start = entry.startSeconds === null ? 0 : entry.startSeconds;
-      if (!media) {
-        // The id can arrive before the element. Stay pending and let the loop
-        // tick (or the next signal) seek once media exists; do NOT latch a
-        // restore that never happened.
-        session.pendingRestore = true;
-        return;
-      }
-      session.pendingRestore = false;
+      // Pending until the seek lands: no element yet, or every attempt so far
+      // was swallowed. The tick retries, and the deadline below ends it.
+      if (!session.pendingRestore) session.restoreDeadlineAt = now() + RESTORE_DEADLINE_MS;
+      session.pendingRestore = true;
+      if (!media) return;
+      // One ladder at a time: the tick must not restart an in-flight seek.
+      if (seekRetryTimer !== null || seekOnLanded !== null) return;
       requestSeek(start, () => {
         if (!started || session.songKey !== key) return;
         // Latch only when the seek actually lands.
@@ -821,6 +831,16 @@
 
     function handleTick() {
       if (!started) return;
+      // Deadline first: a pending restore with no media must still expire
+      // instead of waking every tick forever.
+      if (session.pendingRestore && session.restoreDeadlineAt && now() > session.restoreDeadlineAt) {
+        if (session.songKey !== null) markSongRestored(session, session.songKey);
+        clearPendingRestore(session);
+        cancelSeekRetry();
+        syncTick();
+        syncPanel();
+        return;
+      }
       bindMedia();
       if (!media) return;
 
@@ -1012,7 +1032,12 @@
         if (landed) landed();
         return true;
       }
-      if (seekRetryCount >= SEEK_RETRY_ATTEMPTS) return false;
+      if (seekRetryCount >= SEEK_RETRY_ATTEMPTS) {
+        // Out of attempts: the landing callback can never fire, so the next
+        // signal or tick may start a fresh ladder.
+        seekOnLanded = null;
+        return false;
+      }
       seekRetryCount += 1;
       seekRetryTimer = timers.setTimeout(() => {
         seekRetryTimer = null;

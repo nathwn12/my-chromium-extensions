@@ -468,6 +468,7 @@ function createHarness(options) {
   const storage = settings.storage || createStorage();
   const pageHook = settings.pageHook || createPageHook(50);
   let media = settings.startWithoutMedia ? null : settings.media || dom.makeMedia('song-a', settings.mediaOptions);
+  let clock = 1000;
 
   const controller = actions.createPlayerActions({
     window: dom.win,
@@ -476,6 +477,7 @@ function createHarness(options) {
     pageHook,
     storage,
     timers,
+    now: () => clock,
   });
 
   return {
@@ -502,6 +504,13 @@ function createHarness(options) {
     },
     pushSong(id) {
       controller.setSongId(id);
+    },
+    advance(ms) {
+      clock += ms;
+    },
+    toValue() {
+      const node = dom.panel('To');
+      return node ? node.value : '';
     },
     host() {
       return dom.host();
@@ -1712,6 +1721,61 @@ test('controller: saving an empty section removes the song entry', async () => {
   await settle();
   assert.deepEqual(storage.sections(), []);
   assert.equal(harness.status(), 'Removed');
+});
+
+test('cache: a restore that cannot seek stays pending, retries on a source change, then gives up', async () => {
+  const storage = createStorage({
+    playerActions: { sections: [{ videoId: 'song-a', startSeconds: 40, endSeconds: null }] },
+  });
+  const harness = createHarness({ storage });
+  const media = harness.media();
+  let writes = 0;
+  const value = 0;
+  Object.defineProperty(media, 'currentTime', {
+    configurable: true,
+    get() {
+      return value;
+    },
+    set() {
+      writes += 1;
+    },
+  });
+
+  await harness.start();
+  assert.equal(writes, 1);
+
+  // The bounded ladder exhausts (three retries); pending must survive.
+  harness.timers.flushTimeouts();
+  harness.timers.flushTimeouts();
+  harness.timers.flushTimeouts();
+  assert.equal(writes, 4);
+
+  // A source change gets exactly one more attempt.
+  media.dispatchEvent('loadedmetadata');
+  assert.equal(writes, 5);
+
+  // The deadline ends it: no further attempts, even from the tick.
+  harness.advance(3001);
+  harness.timers.tickIntervals();
+  const settled = writes;
+  harness.timers.tickIntervals();
+  harness.timers.flushTimeouts();
+  assert.equal(writes, settled);
+});
+
+test('dirty: a genuine song change clears the typed fields', async () => {
+  const harness = createHarness();
+  await harness.start();
+  harness.typeInto('From', '2:00');
+  harness.typeInto('To', '2:30');
+  assert.equal(harness.fromValue(), '2:00');
+
+  harness.setHref('https://music.youtube.com/watch?v=song-b');
+  harness.dom.win.dispatch('yt-navigate-finish');
+  await settle();
+
+  assert.equal(harness.fromValue(), '');
+  assert.equal(harness.toValue(), '');
 });
 
 test('cache: a subscription update during the initial read wins', async () => {
