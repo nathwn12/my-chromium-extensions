@@ -419,20 +419,13 @@ function createPageHook(volume, options) {
     volume() {
       return state.volume;
     },
-    async getVolume() {
-      return { volume: state.volume, applied: state.source === 'player', source: state.source };
-    },
-    async setVolume(percent, keepMuted) {
-      calls.push({ percent, keepMuted });
+    async setVolume(percent) {
+      calls.push({ percent });
       if (state.source === 'none') {
         return { volume: null, applied: false, source: 'none' };
       }
       state.volume = percent;
       return { volume: percent, applied: true, source: state.source };
-    },
-    reply(volume, source) {
-      state.volume = volume;
-      state.source = source;
     },
   };
 }
@@ -845,16 +838,18 @@ test('songKeyFrom prefers the URL v param over the media source', () => {
   assert.equal(actions.songKeyFrom('https://music.youtube.com/watch?v=abc&list=x', 'blob:src'), 'abc');
 });
 
-test('songKeyFrom: the currentSrc fallback is a short stable key, never the URL', () => {
-  const url = 'https://rr1.googlevideo.com/videoplayback?expire=1&sig=LONGSIGNEDVALUE&id=abc';
-  const first = actions.songKeyFrom('https://music.youtube.com/', url);
-  assert.equal(first, actions.songKeyFrom('https://music.youtube.com/', url));
-  assert.match(first, /^src:[0-9a-f]{8}$/);
-  assert.equal(first.includes('googlevideo'), false);
-  assert.equal(first.length, 12);
-  assert.notEqual(actions.songKeyFrom('https://music.youtube.com/', url + '&extra=1'), first);
-  assert.equal(actions.songKeyFrom('https://music.youtube.com/', ''), null);
-  assert.equal(actions.songKeyFrom('not a url', ''), null);
+test('songKeyFrom uses the URL v param only: no media source, no URL key', () => {
+  assert.equal(actions.songKeyFrom('https://music.youtube.com/watch?v=abc&list=x'), 'abc');
+  assert.equal(actions.songKeyFrom('https://music.youtube.com/'), null);
+  assert.equal(actions.songKeyFrom('https://music.youtube.com/watch?list=x'), null);
+  assert.equal(actions.songKeyFrom('not a url'), null);
+  assert.equal(actions.songKeyFrom(''), null);
+  // A source argument is ignored entirely: it can never become an id.
+  assert.equal(
+    actions.songKeyFrom('https://music.youtube.com/', 'https://rr1.googlevideo.com/videoplayback?sig=x'),
+    null,
+  );
+  assert.equal(actions.sourceKey, undefined);
 });
 
 test('guard: a null song key defers instead of restoring the previous song', () => {
@@ -1132,7 +1127,7 @@ test('controller: a wheel over the player bar writes the page volume and shows t
   const event = harness.wheel(-100);
   assert.equal(event.defaultPrevented, true);
   await settle();
-  assert.deepEqual(harness.pageHook.calls.at(-1), { percent: 55, keepMuted: true });
+  assert.deepEqual(harness.pageHook.calls.at(-1), { percent: 55 });
   assert.equal(harness.hudText(), '55 %');
   assert.equal(harness.hudVisible(), true);
   harness.timers.flushTimeouts();
@@ -1443,6 +1438,7 @@ test('controller: guard - a restore retries when the song id arrives with no eve
   harness.setHref('https://music.youtube.com/watch?v=song-c');
   harness.advance(500);
   harness.timers.tickIntervals();
+  await settle();
   assert.equal(harness.media().currentTime, 30);
   assert.equal(harness.panel('Repeat').checked, true);
 });
@@ -1518,6 +1514,8 @@ test('controller: guard - a player reset after the restore seek is corrected onc
   // Our own seek landing is not a user seek: the settle stays armed.
   harness.media().dispatchEvent('seeked');
   assert.equal(harness.timers.timeoutCount(), 1);
+  harness.media().dispatchEvent('seeked');
+  assert.equal(harness.timers.timeoutCount(), 1);
 
   // YTM applies its own startup position after the restore landed.
   harness.media().currentTime = 0;
@@ -1531,21 +1529,36 @@ test('controller: guard - a player reset after the restore seek is corrected onc
   assert.equal(harness.media().currentTime, 0);
 });
 
-test('controller: guard - a user seek cancels the restore settle check', async () => {
+test('controller: guard - real user input cancels the restore settle and the seek retry', async () => {
+  const storage = createStorage({
+    playerActions: { sections: [{ videoId: 'song-a', startSeconds: 40, endSeconds: null }] },
+  });
+
+  for (const eventName of ['pointerdown', 'keydown', 'touchstart']) {
+    const harness = createHarness({ storage });
+    await harness.start();
+    assert.equal(harness.timers.timeoutCount(), 1, eventName + ' arms the settle');
+
+    harness.dom.win.dispatch(eventName);
+    assert.equal(harness.timers.timeoutCount(), 0, eventName + ' disowns the settle');
+    harness.media().currentTime = 0;
+    harness.timers.flushTimeouts();
+    assert.equal(harness.media().currentTime, 0, eventName + ' leaves the position alone');
+  }
+});
+
+test('controller: guard - a seeked event is not proof of a user seek', async () => {
   const storage = createStorage({
     playerActions: { sections: [{ videoId: 'song-a', startSeconds: 40, endSeconds: null }] },
   });
   const harness = createHarness({ storage });
   await harness.start();
-  assert.equal(harness.timers.timeoutCount(), 1);
 
-  harness.media().currentTime = 5;
-  harness.media().dispatchEvent('seeked');
-  assert.equal(harness.timers.timeoutCount(), 0);
-
+  // A player reset to zero emits seeked; the settle must still correct it once.
   harness.media().currentTime = 0;
+  harness.media().dispatchEvent('seeked');
   harness.timers.flushTimeouts();
-  assert.equal(harness.media().currentTime, 0);
+  assert.equal(harness.media().currentTime, 40);
 });
 
 test('controller: guard - save composes from fresh storage and keeps other songs', async () => {
@@ -1728,6 +1741,171 @@ test('controller: status copy mirrors the section state', async () => {
 });
 
 // ---------------------------------------------------------------------------
+// Round 3: identity, save correctness, cross-tab reads, seek provenance
+// ---------------------------------------------------------------------------
+
+test('controller: guard - no song id means no loop seek; the same id resumes, a new one clears', async () => {
+  const harness = createHarness();
+  await harness.start();
+  harness.commit('From', '0:30');
+  assert.equal(harness.timers.intervalDelays().includes(100), true);
+
+  harness.media().currentTime = 299.75;
+  harness.setHref('https://music.youtube.com/watch');
+  harness.dom.win.dispatch('yt-navigate-finish');
+  await settle();
+
+  // No id: the loop tick is gone (only the bounded restore retry may run) and
+  // nothing seeks, even when the retry ticks.
+  assert.equal(harness.timers.intervalDelays().includes(100), false);
+  harness.timers.tickIntervals();
+  await settle();
+  assert.equal(harness.media().currentTime, 299.75);
+
+  // The same song comes back: the points were kept and the loop resumes.
+  harness.setHref('https://music.youtube.com/watch?v=song-a');
+  harness.dom.win.dispatch('yt-navigate-finish');
+  await settle();
+  assert.equal(harness.fromValue(), '0:30');
+  assert.equal(harness.timers.intervalDelays().includes(100), true);
+
+  // A different song clears them.
+  harness.setHref('https://music.youtube.com/watch?v=song-b');
+  harness.dom.win.dispatch('yt-navigate-finish');
+  await settle();
+  assert.equal(harness.fromValue(), '');
+  assert.equal(harness.timers.intervalDelays().includes(100), false);
+});
+
+test('controller: guard - a failed storage write never reports Saved', async () => {
+  const storage = createStorage();
+  storage.saveSection = async () => ({ ok: false, error: 'storage unavailable' });
+  const harness = createHarness({ storage });
+  await harness.start();
+  harness.commit('From', '0:10');
+  harness.click('Save section');
+  await settle();
+  assert.equal(harness.status(), 'Save failed');
+});
+
+test('controller: guard - Save snapshots the song and points at the click', async () => {
+  const calls = [];
+  const storage = createStorage();
+  storage.saveSection = async (entry) => {
+    calls.push(entry);
+    return { ok: true, sections: [entry] };
+  };
+  const harness = createHarness({ storage });
+  await harness.start();
+  harness.commit('From', '0:10');
+  harness.commit('To', '0:20');
+
+  harness.click('Save section');
+  // Navigate while the write is in flight: the composed entry must not change.
+  harness.setHref('https://music.youtube.com/watch?v=song-b');
+  harness.dom.win.dispatch('yt-navigate-finish');
+  await settle();
+
+  assert.deepEqual(calls, [{ videoId: 'song-a', startSeconds: 10, endSeconds: 20 }]);
+  assert.notEqual(harness.status(), 'Saved');
+});
+
+test('controller: guard - Save without a song id asks for a song and writes nothing', async () => {
+  const writes = [];
+  const storage = createStorage();
+  storage.saveSection = async (entry) => {
+    writes.push(entry);
+    return { ok: true, sections: [] };
+  };
+  const harness = createHarness({ storage });
+  harness.setHref('https://music.youtube.com/');
+  await harness.start();
+  harness.commit('From', '0:10');
+  harness.click('Save section');
+  await settle();
+  assert.deepEqual(writes, []);
+  assert.equal(harness.status(), 'Play a song to save');
+});
+
+test('controller: guard - another tab save is restored on this tab next visit', async () => {
+  const storage = createStorage();
+  const harness = createHarness({ storage });
+  await harness.start();
+
+  // No cached list: the other tab's write lands after startup.
+  storage.setSections([{ videoId: 'song-b', startSeconds: 25, endSeconds: null }]);
+
+  harness.setHref('https://music.youtube.com/watch?v=song-b');
+  harness.dom.win.dispatch('yt-navigate-finish');
+  await settle();
+  assert.equal(harness.media().currentTime, 25);
+  assert.equal(harness.fromValue(), '0:25');
+});
+
+test('controller: guard - a restore that lands on the retry marks restored and arms the settle', async () => {
+  const storage = createStorage({
+    playerActions: { sections: [{ videoId: 'song-a', startSeconds: 40, endSeconds: null }] },
+  });
+  const harness = createHarness({ storage });
+  const media = harness.media();
+  let swallows = 1;
+  let value = 0;
+  Object.defineProperty(media, 'currentTime', {
+    configurable: true,
+    get() {
+      return value;
+    },
+    set(next) {
+      if (swallows > 0) {
+        swallows -= 1;
+        return;
+      }
+      value = next;
+    },
+  });
+
+  await harness.start();
+  assert.equal(media.currentTime, 0);
+  harness.timers.flushTimeouts();
+  assert.equal(media.currentTime, 40);
+  // Restored (no restore retry left) and settled (one settle timer armed).
+  assert.equal(harness.timers.intervalDelays().includes(150), false);
+  assert.equal(harness.timers.timeoutCount(), 1);
+
+  media.currentTime = 0;
+  harness.timers.flushTimeouts();
+  assert.equal(media.currentTime, 40);
+});
+
+test('controller: guard - a reply from before a restart cannot overwrite the new session', async () => {
+  const pending = [];
+  const pageHook = {
+    setVolume(percent) {
+      return new Promise((resolve) => {
+        pending.push({ percent, resolve });
+      });
+    },
+  };
+  const harness = createHarness({ pageHook });
+  await harness.start();
+  harness.wheel(-100);
+  assert.equal(pending.length, 1);
+
+  harness.controller.stop();
+  await harness.start();
+  harness.wheel(-100);
+  assert.equal(pending.length, 2);
+
+  pending[1].resolve({ volume: 55, applied: true, source: 'player' });
+  await settle();
+  assert.equal(harness.hudText(), '55 %');
+
+  pending[0].resolve({ volume: 10, applied: true, source: 'player' });
+  await settle();
+  assert.equal(harness.hudText(), '55 %');
+});
+
+// ---------------------------------------------------------------------------
 // Storage schema
 // ---------------------------------------------------------------------------
 
@@ -1810,7 +1988,6 @@ function createPageHookSandbox(options) {
   const settings = options || {};
   const posted = [];
   const listeners = new Map();
-  const video = { muted: false, volume: 1 };
   const player = {
     volume: settings.volume === undefined ? 40 : settings.volume,
     setVolumeCalls: [],
@@ -1838,7 +2015,7 @@ function createPageHookSandbox(options) {
     documentElement: { dataset: { slraToken: settings.token === undefined ? 'tok-1' : settings.token } },
     querySelector(selector) {
       if (selector === '#movie_player') return settings.noPlayer ? null : player;
-      if (selector === 'video') return video;
+      if (selector === 'video') return settings.video || null;
       return null;
     },
   };
@@ -1855,15 +2032,6 @@ function createPageHookSandbox(options) {
 
   return {
     player,
-    video,
-    attach(session, attached) {
-      for (const fn of listeners.get('message') || []) {
-        fn({
-          source: win,
-          data: { __slra: true, type: 'SLRA_ATTACH_STATE', token: 'tok-1', session, attached },
-        });
-      }
-    },
     replies() {
       return posted.filter((message) => message && message.type === 'SLRA_VOLUME_STATE');
     },
@@ -1873,109 +2041,12 @@ function createPageHookSandbox(options) {
   };
 }
 
-function createBackgroundSandbox() {
-  const handlers = [];
-  const storageData = {};
-  const chrome = {
-    runtime: {
-      onMessage: {
-        addListener(fn) {
-          handlers.push(fn);
-        },
-      },
-      onStartup: { addListener() {} },
-      onInstalled: { addListener() {} },
-      getURL: (value) => String(value),
-    },
-    tabs: {
-      onUpdated: { addListener() {} },
-      onRemoved: { addListener() {} },
-      onReplaced: { addListener() {} },
-      query: async () => [],
-      get: async () => null,
-      sendMessage: async () => ({ ok: true }),
-    },
-    scripting: { executeScript: async () => [] },
-    storage: {
-      local: {
-        async get(key) {
-          const out = {};
-          out[key] = storageData[key];
-          return out;
-        },
-        async set(items) {
-          Object.assign(storageData, items);
-        },
-      },
-      session: { async get() { return {}; }, async set() {} },
-      onChanged: { addListener() {} },
-    },
-  };
-
-  let context = null;
-  const sandbox = {
-    chrome,
-    console,
-    URL,
-    importScripts(...files) {
-      for (const file of files) {
-        vm.runInContext(fs.readFileSync(path.join(ROOT, file), 'utf8'), context, { filename: file });
-      }
-    },
-  };
-  sandbox.self = sandbox;
-  sandbox.globalThis = sandbox;
-  context = vm.createContext(sandbox);
-  vm.runInContext(fs.readFileSync(path.join(ROOT, 'background.js'), 'utf8'), context, { filename: 'background.js' });
-
-  return {
-    sections() {
-      const value = storageData.playerActions;
-      return value && Array.isArray(value.sections) ? value.sections : [];
-    },
-    send(message) {
-      return new Promise((resolve) => {
-        for (const fn of handlers) fn(message, {}, resolve);
-      });
-    },
-  };
-}
-
-test('background: two overlapping section saves both survive the queue', async () => {
-  const app = createBackgroundSandbox();
-  const [first, second] = await Promise.all([
-    app.send({ type: 'SAVE_PLAYER_SECTION', entry: { videoId: 'song-a', startSeconds: 10, endSeconds: null } }),
-    app.send({ type: 'SAVE_PLAYER_SECTION', entry: { videoId: 'song-b', startSeconds: 20, endSeconds: 30 } }),
-  ]);
-
-  assert.equal(first.ok, true);
-  assert.equal(second.ok, true);
-  assert.deepEqual(
-    Array.from(app.sections(), (item) => item.videoId).sort(),
-    ['song-a', 'song-b'],
-  );
-  assert.equal(second.sections.length, 2);
-});
-
-test('background: a both-null entry removes the song and a malformed entry is refused', async () => {
-  const app = createBackgroundSandbox();
-  await app.send({ type: 'SAVE_PLAYER_SECTION', entry: { videoId: 'song-a', startSeconds: 10, endSeconds: null } });
-  const removed = await app.send({ type: 'SAVE_PLAYER_SECTION', entry: { videoId: 'song-a', startSeconds: null, endSeconds: null } });
-  assert.equal(removed.ok, true);
-  assert.equal(removed.sections.length, 0);
-
-  const refused = await app.send({ type: 'SAVE_PLAYER_SECTION', entry: { videoId: '', startSeconds: 1, endSeconds: 2 } });
-  assert.equal(refused.ok, false);
-});
-
-test('page-hook: SLRA_SET_VOLUME applies the percent and re-asserts the mute contract', () => {
+test('page-hook: SLRA_SET_VOLUME applies the percent and replies with the applied value', () => {
   const hook = createPageHookSandbox();
-  hook.attach('sess-1', true);
-  hook.fire({ __slra: true, type: 'SLRA_SET_VOLUME', id: 7, token: 'tok-1', session: 'sess-1', percent: 65, keepMuted: true });
+  hook.fire({ __slra: true, type: 'SLRA_SET_VOLUME', id: 7, token: 'tok-1', percent: 65 });
 
   assert.deepEqual(hook.player.setVolumeCalls, [65]);
   assert.equal(hook.player.volume, 65);
-  assert.equal(hook.video.muted, true);
   const [reply] = hook.replies();
   assert.equal(reply.id, 7);
   assert.equal(reply.token, 'tok-1');
@@ -1984,71 +2055,56 @@ test('page-hook: SLRA_SET_VOLUME applies the percent and re-asserts the mute con
   assert.equal(reply.source, 'player');
 });
 
-test('page-hook: SLRA_GET_VOLUME reports the live player volume without writing', () => {
-  const hook = createPageHookSandbox({ volume: 33 });
-  hook.fire({ __slra: true, type: 'SLRA_GET_VOLUME', id: 3, token: 'tok-1' });
-  assert.deepEqual(hook.player.setVolumeCalls, []);
-  const [reply] = hook.replies();
-  assert.equal(reply.id, 3);
-  assert.equal(reply.volume, 33);
-  assert.equal(reply.applied, true);
-  assert.equal(reply.source, 'player');
-});
-
 test('page-hook: a volume request with the wrong token is ignored', () => {
   const hook = createPageHookSandbox();
-  hook.fire({ __slra: true, type: 'SLRA_SET_VOLUME', id: 9, token: 'stale', percent: 80, keepMuted: true });
-  hook.fire({ __slra: true, type: 'SLRA_SET_VOLUME', id: 10, percent: 80, keepMuted: true });
+  hook.fire({ __slra: true, type: 'SLRA_SET_VOLUME', id: 9, token: 'stale', percent: 80 });
+  hook.fire({ __slra: true, type: 'SLRA_SET_VOLUME', id: 10, percent: 80 });
   assert.deepEqual(hook.player.setVolumeCalls, []);
   assert.equal(hook.replies().length, 0);
-  assert.equal(hook.video.muted, false);
 });
 
-test('page-hook: attach state - a set followed by a detach ends unmuted', () => {
-  const hook = createPageHookSandbox();
-  hook.attach('sess-1', true);
-  hook.fire({ __slra: true, type: 'SLRA_SET_VOLUME', id: 21, token: 'tok-1', session: 'sess-1', percent: 70, keepMuted: true });
-  assert.equal(hook.video.muted, true);
-
-  // Teardown posts the detach after the (already queued) set.
-  hook.attach('sess-1', false);
-  assert.equal(hook.video.muted, false);
-});
-
-test('page-hook: attach state - a detach before a queued set skips the mute', () => {
-  const hook = createPageHookSandbox();
-  hook.attach('sess-1', true);
-  hook.attach('sess-1', false);
-  hook.fire({ __slra: true, type: 'SLRA_SET_VOLUME', id: 22, token: 'tok-1', session: 'sess-1', percent: 70, keepMuted: true });
-
-  // The write still lands; the mute must not.
-  assert.deepEqual(hook.player.setVolumeCalls, [70]);
-  assert.equal(hook.video.muted, false);
-});
-
-test('page-hook: attach state - a set from an older session never re-mutes', () => {
-  const hook = createPageHookSandbox();
-  hook.attach('sess-old', true);
-  hook.attach('sess-new', false);
-  hook.fire({ __slra: true, type: 'SLRA_SET_VOLUME', id: 23, token: 'tok-1', session: 'sess-old', percent: 90, keepMuted: true });
-  assert.equal(hook.video.muted, false);
-});
-
-test('page-hook: attach state - a detach never unmutes a video we did not mute', () => {
-  const hook = createPageHookSandbox();
-  hook.video.muted = true;
-  hook.attach('sess-1', false);
-  assert.equal(hook.video.muted, true);
-});
-
-test('page-hook: a missing player API replies source none and still keeps the element muted', () => {
+test('page-hook: a missing player API replies source none', () => {
   const hook = createPageHookSandbox({ noPlayer: true });
-  hook.attach('sess-1', true);
-  hook.fire({ __slra: true, type: 'SLRA_SET_VOLUME', id: 11, token: 'tok-1', session: 'sess-1', percent: 80, keepMuted: true });
+  hook.fire({ __slra: true, type: 'SLRA_SET_VOLUME', id: 11, token: 'tok-1', percent: 80 });
   const [reply] = hook.replies();
   assert.equal(reply.id, 11);
   assert.equal(reply.applied, false);
   assert.equal(reply.source, 'none');
   assert.equal(reply.volume, null);
-  assert.equal(hook.video.muted, true);
+});
+
+test('page-hook: no GET_VOLUME surface and no mute write survive', () => {
+  const hook = createPageHookSandbox();
+  const video = { muted: false, setCount: 0 };
+  Object.defineProperty(video, 'muted', {
+    configurable: true,
+    get() {
+      return false;
+    },
+    set() {
+      video.setCount += 1;
+    },
+  });
+  const withVideo = createPageHookSandbox({ video });
+  withVideo.fire({ __slra: true, type: 'SLRA_GET_VOLUME', id: 12, token: 'tok-1' });
+  withVideo.fire({ __slra: true, type: 'SLRA_SET_VOLUME', id: 13, token: 'tok-1', percent: 55, keepMuted: true, session: 's1' });
+  assert.equal(withVideo.replies().filter((reply) => reply.id === 12).length, 0);
+  assert.equal(withVideo.player.setVolumeCalls.length, 1);
+  assert.equal(video.setCount, 0);
+  assert.equal(hook.player.setVolumeCalls.length, 0);
+});
+
+test('static: page-hook.js writes volume only - no muted assignment, no attach channel', () => {
+  assert.equal(/\.muted\s*=/.test(pageHookSource), false);
+  assert.equal(pageHookSource.includes('ATTACH_STATE'), false);
+  assert.equal(pageHookSource.includes('keepMuted'), false);
+  assert.equal(pageHookSource.includes('SLRA_GET_VOLUME'), false);
+});
+
+test('static: content-script is the single writer of media.muted', () => {
+  assert.equal(/ATTACH_STATE|keepMuted|SLRA_GET_VOLUME/.test(contentScriptSource), false);
+  // The only mute writer in the extension runtime that touches an element.
+  assert.equal(/\.muted\s*=/.test(playerActionsSource), false);
+  assert.equal(/\.muted\s*=/.test(contentScriptSource), true);
+  assert.equal(/\.muted\s*=/.test(pageHookSource), false);
 });

@@ -27,10 +27,12 @@
     emit('SLRA_PAGE_REVIVE', reason);
   }
 
-  // Volume is written through YouTube's own player API so its slider stays
-  // truthful and the content script's gain mirror keeps carrying media.volume.
-  // The reply is always posted, even when the API is missing: the content
-  // script then falls back to element volume itself.
+  // Volume only. This hook never writes `muted`: the content script is the only
+  // writer of that flag, and its volumechange enforcement corrects a flip. A
+  // second mute writer is exactly the bug that re-muted a detached graph.
+  //
+  // The token is an anti-collision marker, not authentication: a page script can
+  // read it and forge a volume message, which can only change its own volume.
   function playerApi() {
     try {
       const player = document.querySelector('#movie_player');
@@ -55,34 +57,6 @@
     }
   }
 
-  // The content script owns `muted` while the graph is attached; a volume write
-  // can flip it back, so the same task re-asserts the contract. Unmuting is
-  // reserved for a detach of a session that had attached (we muted it).
-  function setVideoMuted(muted) {
-    try {
-      const video = document.querySelector('video');
-      if (video) video.muted = muted;
-    } catch {
-      // No element to touch.
-    }
-  }
-
-  /**
-   * Ordered attach state, posted by the content script on every attach and
-   * before every teardown unmute. A SET_VOLUME may still be in flight when the
-   * graph detaches, so `keepMuted` is honored only for the session that is
-   * attached right now. When a detach arrives first, the late set sees
-   * `attached: false` and skips the mute; when the set arrives first, this
-   * handler unmutes after it. Both orders end unmuted.
-   */
-  function handleAttachState(data) {
-    const previous = state.attach;
-    const session = typeof data.session === 'string' ? data.session : '';
-    const attached = data.attached === true;
-    state.attach = { session: session, attached: attached };
-    if (!attached && previous.attached) setVideoMuted(false);
-  }
-
   function replyVolume(data, volume, applied, source) {
     emit('SLRA_VOLUME_STATE', '', {
       id: data.id,
@@ -94,19 +68,6 @@
   }
 
   function handleVolumeRequest(data) {
-    const token = pageToken();
-    if (!token) return;
-    if (typeof data.token !== 'string' || data.token !== token) return;
-
-    if (data.type === 'SLRA_GET_VOLUME') {
-      const reading = readPlayerVolume();
-      replyVolume(data, reading.volume, reading.source === 'player', reading.source);
-      return;
-    }
-
-    const keepMuted = data.keepMuted === true
-      && state.attach.attached === true
-      && state.attach.session === String(data.session || '');
     const percent = Number(data.percent);
     if (!Number.isFinite(percent)) {
       const reading = readPlayerVolume();
@@ -117,18 +78,15 @@
     const target = Math.max(0, Math.min(100, Math.round(percent)));
     const player = playerApi();
     if (!player) {
-      if (keepMuted) setVideoMuted(true);
       replyVolume(data, null, false, 'none');
       return;
     }
     try {
       player.setVolume(target);
     } catch {
-      if (keepMuted) setVideoMuted(true);
       replyVolume(data, null, false, 'none');
       return;
     }
-    if (keepMuted) setVideoMuted(true);
     const reading = readPlayerVolume();
     replyVolume(data, reading.volume === null ? target : reading.volume, true, 'player');
   }
@@ -140,25 +98,22 @@
 
   const state = {
     listenersReady: false,
-    attach: { session: '', attached: false },
   };
 
   function ensureListeners() {
     if (state.listenersReady) return;
 
-    // Volume and attach-state messages arrive on the same window bus as the
-    // lifecycle signals; the token check keeps a page-injected message out.
+    // Volume requests arrive on the same window bus as the lifecycle signals.
+    // The token is an anti-collision marker, not authentication: it keeps a
+    // stale request from an earlier injection from being applied, and a page
+    // script that forges one can only change its own volume.
     window.addEventListener('message', (event) => {
       if (event.source !== window) return;
       const data = event.data;
       if (!data || data.__slra !== true) return;
+      if (data.type !== 'SLRA_SET_VOLUME') return;
       if (typeof data.token !== 'string' || data.token.length === 0) return;
       if (data.token !== pageToken()) return;
-      if (data.type === 'SLRA_ATTACH_STATE') {
-        handleAttachState(data);
-        return;
-      }
-      if (data.type !== 'SLRA_SET_VOLUME' && data.type !== 'SLRA_GET_VOLUME') return;
       handleVolumeRequest(data);
     }, false);
 

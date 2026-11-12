@@ -23,8 +23,8 @@
   const VOLUME_STEP_PCT = 5;
   const TICK_MS = 100;
   const HUD_VISIBLE_MS = 1200;
-  const SAVE_DEBOUNCE_MS = 250;
   const RESTORE_RETRY_BUDGET_MS = 3000;
+  const RESTORE_RETRY_MS = 150;
   const SAVED_LIMIT = 100;
   const SEEK_RETRY_MS = 120;
   const SEEK_RETRY_ATTEMPTS = 3;
@@ -38,6 +38,7 @@
   const FIELD_TAGS = new Set(['INPUT', 'TEXTAREA', 'SELECT']);
   const SCROLL_OVERFLOW = new Set(['auto', 'scroll', 'overlay']);
   const SONG_EVENTS = ['yt-navigate-finish', 'yt-page-data-updated', 'popstate', 'hashchange'];
+  const USER_INPUT_EVENTS = ['pointerdown', 'keydown', 'touchstart'];
 
   // -------------------------------------------------------------------------
   // Loop engine (verbatim behavior from pear engine.ts)
@@ -194,36 +195,27 @@
   // -------------------------------------------------------------------------
 
   /**
-   * Folds a media source into a short stable key. Blob/track URLs are long,
-   * signed and transient, so the URL itself is never stored as a song id.
+   * The URL's `v` param is the only song id. A media source is never used: blob
+   * and signed track URLs are transient and can be reused by the next track, so
+   * they cannot identify a song. No id means live looping still works, but
+   * nothing is saved or restored.
    */
-  function sourceKey(mediaSrc) {
-    const src = typeof mediaSrc === 'string' ? mediaSrc : '';
-    if (src === '') return null;
-    let hash = 0x811c9dc5;
-    for (let index = 0; index < src.length; index += 1) {
-      hash ^= src.charCodeAt(index);
-      hash = Math.imul(hash, 0x01000193) >>> 0;
-    }
-    return 'src:' + hash.toString(16).padStart(8, '0');
-  }
-
-  /** The URL's `v` param is the song id; the media source is the fallback. */
-  function songKeyFrom(href, mediaSrc) {
+  function songKeyFrom(href) {
     try {
       const parsed = new URL(String(href === undefined || href === null ? '' : href));
       const videoId = parsed.searchParams.get('v');
       if (typeof videoId === 'string' && videoId !== '') return videoId;
     } catch {
-      // Fall through to the media source.
+      return null;
     }
-    return sourceKey(mediaSrc);
+    return null;
   }
 
   function createSectionSession() {
     return {
       songKey: null,
       restoredSongKey: null,
+      identityKnown: false,
       startSeconds: null,
       endSeconds: null,
       pendingRestore: false,
@@ -468,8 +460,6 @@
 
     let started = false;
     let generation = 0;
-    let saved = [];
-    let savedLoaded = false;
     let session = createSectionSession();
     let active = true;
     let notice = null;
@@ -477,10 +467,11 @@
     let volume = 50;
     let hudTimer = null;
     let tickTimer = null;
-    let saveTimer = null;
+    let restoreTimer = null;
     let media = null;
     let mediaCleanup = [];
     let wheelInstalled = false;
+    let userInputInstalled = false;
     let songListenersInstalled = false;
     let accumulator = createWheelAccumulator();
     let ui = null;
@@ -490,8 +481,8 @@
     let seekRetryTimer = null;
     let seekRetryCount = 0;
     let seekToken = 0;
+    let seekOnLanded = null;
     let settleTimer = null;
-    let lastSeekTarget = null;
     let saveChain = Promise.resolve();
     let volumeSeq = 0;
 
@@ -509,6 +500,10 @@
       } catch {
         return '';
       }
+    }
+
+    function currentSongKey() {
+      return songKeyFrom(currentHref());
     }
 
     function isVisible() {
@@ -541,25 +536,18 @@
       const mine = ++generation;
       cancelSeekRetry();
       clearSettleCheck();
-      volumeSeq = 0;
       installWheel();
+      installUserInput();
       installUi();
       installSongListeners();
       bindMedia();
       refreshVolume();
-
-      savedLoaded = false;
-      try {
-        const stored = await readSaved();
-        if (!started || mine !== generation) return;
-        saved = stored;
-      } catch {
-        if (!started || mine !== generation) return;
-        saved = [];
-      }
-      savedLoaded = true;
-      syncSong();
+      // No saved-section snapshot: every restore reads storage fresh, so a save
+      // from another tab is visible on this tab's next visit.
+      await syncSong();
+      if (!started || mine !== generation) return;
       syncTick();
+      syncRestoreTimer();
       syncPanel();
     }
 
@@ -567,6 +555,7 @@
       generation += 1;
       started = false;
       stopTick();
+      stopRestoreTimer();
       cancelSeekRetry();
       clearSettleCheck();
       if (hudTimer !== null) {
@@ -577,16 +566,11 @@
         timers.clearTimeout(noticeTimer);
         noticeTimer = null;
       }
-      if (saveTimer !== null) {
-        timers.clearTimeout(saveTimer);
-        saveTimer = null;
-      }
       removeWheel();
+      removeUserInput();
       removeSongListeners();
       detachMedia();
       destroyUi();
-      saved = [];
-      savedLoaded = false;
       session = createSectionSession();
       active = true;
       notice = null;
@@ -594,7 +578,6 @@
       fromDirty = false;
       toDirty = false;
       everBound = false;
-      lastSeekTarget = null;
       saveChain = Promise.resolve();
     }
 
@@ -604,9 +587,11 @@
       if (!ui) installUi();
       bindMedia();
       refreshVolume();
-      syncSong();
+      const restore = syncSong();
       syncTick();
+      syncRestoreTimer();
       syncPanel();
+      if (restore) void restore;
     }
 
     // -- media -------------------------------------------------------------
@@ -626,17 +611,17 @@
       media = next || null;
       if (!media) return;
       everBound = true;
-      lastSeekTarget = null;
 
       if (replaced) {
         cancelSeekRetry();
         clearSettleCheck();
-        // Element replacement is a new song context: stale points must not fire.
         session.songKey = null;
         session.restoredSongKey = null;
+        session.identityKnown = false;
         session.startSeconds = null;
         session.endSeconds = null;
         clearPendingRestore(session);
+        syncRestoreTimer();
         fromDirty = false;
         toDirty = false;
         syncPanel();
@@ -646,7 +631,6 @@
       bindMediaListener('loadedmetadata', handleSourceChange);
       bindMediaListener('emptied', handleSourceChange);
       bindMediaListener('volumechange', refreshVolume);
-      bindMediaListener('seeked', handleSeeked);
     }
 
     function detachMedia() {
@@ -663,24 +647,19 @@
       media = null;
     }
 
-    /** A seek this controller did not write owns the position: stop fighting it. */
-    function handleSeeked() {
-      if (!media) return;
-      const at = Number(media.currentTime);
-      if (lastSeekTarget !== null && Number.isFinite(at) && Math.abs(at - lastSeekTarget) <= SEEK_TOLERANCE_SECONDS) return;
-      clearSettleCheck();
-      cancelSeekRetry();
-    }
-
     function handleSourceChange() {
       if (!started) return;
-      syncSong();
+      const restore = syncSong();
       syncTick();
+      syncRestoreTimer();
       syncPanel();
+      if (restore) void restore;
     }
 
     function handleEnded() {
       if (!media) return;
+      // Without an identity the points may belong to another song: never restart.
+      if (!session.identityKnown) return;
       const target = resolveEndSeekTarget(currentState(), media.duration);
       if (target === null) return;
       try {
@@ -694,12 +673,25 @@
 
     // -- song identity and restore ----------------------------------------
 
+    /**
+     * Adopts the URL's song id and restores its saved section. Returns the
+     * restore promise, if a restore was started.
+     *
+     * While the id is missing nothing may seek: the points are kept (the same
+     * song can come back) but the loop tick is stopped, and a pending restore
+     * waits on its own bounded timer instead.
+     */
     function syncSong() {
-      const key = songKeyFrom(currentHref(), media ? media.currentSrc : '');
+      const key = currentSongKey();
+      session.identityKnown = key !== null;
       if (key === null) {
-        // No authoritative id yet: defer, never restore the previous song.
+        cancelSeekRetry();
+        // Wait for the id on the bounded restore timer - never on a loop tick,
+        // and never with a seek.
         deferRestore(session, now());
-        return;
+        syncRestoreTimer();
+        syncTick();
+        return null;
       }
       if (beginSong(session, key)) {
         cancelSeekRetry();
@@ -709,21 +701,29 @@
         syncTick();
         syncPanel();
       }
-      if (!savedLoaded) {
-        deferRestore(session, now());
-        return;
-      }
       // One restore per song visit; a repeat event must not re-seek.
-      if (!songRestorePending(session, key)) return;
-      restoreForSong(key);
+      if (!songRestorePending(session, key)) return null;
+      return restoreForSong(key);
     }
 
-    /** Applies the saved section for one song visit and arms its start seek. */
-    function restoreForSong(key) {
-      const entry = lookupSaved(saved, key);
+    /** Reads the saved list fresh and applies this song's section. */
+    async function restoreForSong(key) {
+      const mine = generation;
+      let sections = [];
+      try {
+        sections = await readSections();
+      } catch {
+        sections = [];
+      }
+      // A stop, a restart or a song change owns the state now.
+      if (!started || mine !== generation) return;
+      if (session.songKey !== key) return;
+
+      const entry = lookupSaved(sections, key);
       if (entry === null) {
         markSongRestored(session, key);
         clearPendingRestore(session);
+        syncRestoreTimer();
         syncTick();
         syncPanel();
         return;
@@ -737,18 +737,73 @@
       toDirty = false;
       syncTick();
       syncPanel();
-
-      const start = entry.startSeconds === null ? 0 : entry.startSeconds;
-      if (media && requestSeek(start)) {
-        markSongRestored(session, key);
-        clearPendingRestore(session);
-        armSettleCheck(key, entry.startSeconds);
-        return;
-      }
-      deferRestore(session, now());
+      applyRestoreSeek(key, entry.startSeconds);
     }
 
-    // -- tick --------------------------------------------------------------
+    function applyRestoreSeek(key, startSeconds) {
+      const start = startSeconds === null ? 0 : startSeconds;
+      const onLanded = () => {
+        if (!started || session.songKey !== key) return;
+        // Landing on the 120 ms retry counts exactly like the first write.
+        markSongRestored(session, key);
+        clearPendingRestore(session);
+        syncRestoreTimer();
+        armSettleCheck(key, startSeconds);
+      };
+      if (media && requestSeek(start, onLanded)) return;
+      deferRestore(session, now());
+      syncRestoreTimer();
+    }
+
+    // -- restore retry (independent of the loop tick) ----------------------
+
+    function stopRestoreTimer() {
+      if (restoreTimer === null) return;
+      timers.clearInterval(restoreTimer);
+      restoreTimer = null;
+    }
+
+    function syncRestoreTimer() {
+      const wanted = started && session.pendingRestore && isVisible();
+      if (wanted) {
+        if (restoreTimer === null) restoreTimer = timers.setInterval(handleRestoreTick, RESTORE_RETRY_MS);
+        return;
+      }
+      stopRestoreTimer();
+    }
+
+    function handleRestoreTick() {
+      if (!started) return;
+      // Deadline first: with no media a pending restore would otherwise wake
+      // every interval forever instead of expiring.
+      if (restoreDeadlineReached(session, now())) {
+        if (session.songKey !== null) markSongRestored(session, session.songKey);
+        clearPendingRestore(session);
+        cancelSeekRetry();
+        syncRestoreTimer();
+        syncTick();
+        syncPanel();
+        return;
+      }
+      bindMedia();
+      if (!media) return;
+
+      const key = currentSongKey();
+      session.identityKnown = key !== null;
+      if (key === null) {
+        cancelSeekRetry();
+        return;
+      }
+      if (key !== session.songKey) {
+        beginSong(session, key);
+        clearSettleCheck();
+        syncTick();
+        syncPanel();
+      }
+      if (songRestorePending(session, key)) void restoreForSong(key);
+    }
+
+    // -- loop tick ---------------------------------------------------------
 
     function stopTick() {
       if (tickTimer === null) return;
@@ -757,9 +812,13 @@
     }
 
     function syncTick() {
-      // A pending restore needs the tick even while disarmed: the song id can
-      // arrive with no named event, and this is the only retry that sees it.
-      const wanted = started && (isLoopEngaged(currentState()) || session.pendingRestore) && isVisible();
+      // No identity means no loop: a stale range must never seek the media that
+      // happens to be loaded during a transition.
+      const wanted = started
+        && session.identityKnown
+        && session.songKey !== null
+        && isLoopEngaged(currentState())
+        && isVisible();
       if (wanted) {
         if (tickTimer === null) tickTimer = timers.setInterval(handleTick, TICK_MS);
         return;
@@ -772,27 +831,24 @@
       bindMedia();
       if (!media) return;
 
-      const key = songKeyFrom(currentHref(), media.currentSrc);
+      const key = currentSongKey();
+      session.identityKnown = key !== null;
+      if (key === null) {
+        cancelSeekRetry();
+        syncTick();
+        return;
+      }
       if (beginSong(session, key)) {
+        // A URL change with no delivered event: adopt it and never seek with
+        // the previous song's points.
+        cancelSeekRetry();
+        clearSettleCheck();
         fromDirty = false;
         toDirty = false;
         syncTick();
         syncPanel();
-      }
-
-      // A song visit that never restored is retried here: the id can arrive
-      // with no named event, and a swallowed restore seek needs another try.
-      if (savedLoaded && session.songKey !== null && songRestorePending(session, session.songKey)) {
-        restoreForSong(session.songKey);
-      }
-      if (session.pendingRestore && restoreDeadlineReached(session, now())) {
-        // Out of budget: stop retrying, cancel the seek ladder and stop the tick
-        // unless a loop is armed.
-        if (session.songKey !== null) markSongRestored(session, session.songKey);
-        clearPendingRestore(session);
-        cancelSeekRetry();
-        syncTick();
-        syncPanel();
+        void restoreForSong(key);
+        return;
       }
 
       const target = resolveSeekTarget(currentState(), {
@@ -836,8 +892,9 @@
     }
 
     function applyVolume(percent) {
-      // One sequence per write: a late reply, timeout or fallback from an older
-      // request must never overwrite the newest wheel action.
+      // One sequence per write, scoped by generation: a late reply from before a
+      // stop cannot overwrite the new session's volume.
+      const mine = generation;
       const seq = ++volumeSeq;
       showHud(percent);
       if (!pageHook || typeof pageHook.setVolume !== 'function') {
@@ -846,7 +903,7 @@
       }
       let pending = null;
       try {
-        pending = pageHook.setVolume(percent, Boolean(media && media.muted));
+        pending = pageHook.setVolume(percent);
       } catch {
         pending = null;
       }
@@ -855,7 +912,7 @@
         return;
       }
       pending.then((reply) => {
-        if (!started || seq !== volumeSeq) return;
+        if (!started || mine !== generation || seq !== volumeSeq) return;
         if (!reply || reply.applied === false || reply.source === 'none') {
           writeMediaVolume(percent);
           return;
@@ -866,7 +923,7 @@
           showHud(volume);
         }
       }).catch(() => {
-        if (!started || seq !== volumeSeq) return;
+        if (!started || mine !== generation || seq !== volumeSeq) return;
         writeMediaVolume(percent);
       });
     }
@@ -889,6 +946,108 @@
         hudTimer = null;
         if (ui) ui.hud.classList.remove('visible');
       }, HUD_VISIBLE_MS);
+    }
+
+    // -- user input --------------------------------------------------------
+
+    function installUserInput() {
+      if (userInputInstalled) return;
+      userInputInstalled = true;
+      for (const name of USER_INPUT_EVENTS) {
+        win.addEventListener(name, onUserInput, { capture: true, passive: true });
+      }
+    }
+
+    function removeUserInput() {
+      if (!userInputInstalled) return;
+      userInputInstalled = false;
+      for (const name of USER_INPUT_EVENTS) {
+        win.removeEventListener(name, onUserInput, { capture: true });
+      }
+    }
+
+    /**
+     * Real input disowns every position this controller asked for: a retry must
+     * not fight a user seek, and a settle must not drag playback back.
+     */
+    function onUserInput() {
+      cancelSeekRetry();
+      clearSettleCheck();
+    }
+
+    // -- seeking -----------------------------------------------------------
+
+    function cancelSeekRetry() {
+      seekToken += 1;
+      seekRetryCount = 0;
+      seekOnLanded = null;
+      if (seekRetryTimer !== null) {
+        timers.clearTimeout(seekRetryTimer);
+        seekRetryTimer = null;
+      }
+    }
+
+    /**
+     * Writes a position and retries a bounded number of times while the player
+     * ignores the write. `onLanded` runs whenever the position finally lands,
+     * first try or retry. A newer seek, user input, song change or stop cancels.
+     */
+    function requestSeek(target, onLanded) {
+      if (!media) return false;
+      const value = Number(target);
+      if (!Number.isFinite(value) || value < 0) return false;
+      cancelSeekRetry();
+      seekOnLanded = typeof onLanded === 'function' ? onLanded : null;
+      return writeSeek(value, seekToken);
+    }
+
+    function writeSeek(target, token) {
+      if (!started || token !== seekToken || !media) return false;
+      let wrote = false;
+      try {
+        media.currentTime = target;
+        wrote = true;
+      } catch {
+        wrote = false;
+      }
+      const actual = Number(media.currentTime);
+      if (wrote && Number.isFinite(actual) && Math.abs(actual - target) <= SEEK_TOLERANCE_SECONDS) {
+        const landed = seekOnLanded;
+        seekOnLanded = null;
+        if (landed) landed();
+        return true;
+      }
+      if (seekRetryCount >= SEEK_RETRY_ATTEMPTS) return false;
+      seekRetryCount += 1;
+      seekRetryTimer = timers.setTimeout(() => {
+        seekRetryTimer = null;
+        writeSeek(target, token);
+      }, SEEK_RETRY_MS);
+      return false;
+    }
+
+    function clearSettleCheck() {
+      if (settleTimer === null) return;
+      timers.clearTimeout(settleTimer);
+      settleTimer = null;
+    }
+
+    /**
+     * One late correction after a restore seek: YTM can apply its own startup
+     * position after ours lands. Re-apply the saved start once, and only when
+     * the URL still names the same song and the player reset to the top.
+     */
+    function armSettleCheck(key, startSeconds) {
+      clearSettleCheck();
+      if (!Number.isFinite(startSeconds) || startSeconds <= SETTLE_NEAR_ZERO_SECONDS) return;
+      settleTimer = timers.setTimeout(() => {
+        settleTimer = null;
+        if (!started || !media) return;
+        if (currentSongKey() !== key) return;
+        const at = Number(media.currentTime);
+        if (!Number.isFinite(at) || at > SETTLE_NEAR_ZERO_SECONDS) return;
+        requestSeek(startSeconds);
+      }, SETTLE_MS);
     }
 
     // -- UI ---------------------------------------------------------------
@@ -1091,6 +1250,8 @@
         text = 'Invalid range';
       } else if (notice === 'failed') {
         text = 'Save failed';
+      } else if (notice === 'no-song') {
+        text = 'Play a song to save';
       } else if (notice === 'saved') {
         text = 'Saved';
       } else if (notice === 'removed') {
@@ -1137,6 +1298,7 @@
       session.startSeconds = live.startSeconds;
       session.endSeconds = live.endSeconds;
       clearPendingRestore(session);
+      syncRestoreTimer();
       fromDirty = false;
       toDirty = false;
       ui.from.value = live.startSeconds === null ? '' : formatTime(live.startSeconds);
@@ -1146,98 +1308,23 @@
       // a known duration; To/clear never seek.
       if (source === 'from') {
         clearSettleCheck();
-        requestSeek(live.startSeconds === null ? 0 : live.startSeconds);
+        const key = session.songKey;
+        requestSeek(live.startSeconds === null ? 0 : live.startSeconds, () => {
+          if (!started || session.songKey !== key) return;
+          armSettleCheck(key, live.startSeconds);
+        });
       }
       syncTick();
       syncPanel();
     }
 
-    // -- seeking -----------------------------------------------------------
-
-    function cancelSeekRetry() {
-      seekToken += 1;
-      seekRetryCount = 0;
-      if (seekRetryTimer !== null) {
-        timers.clearTimeout(seekRetryTimer);
-        seekRetryTimer = null;
-      }
-    }
-
-    /**
-     * Writes a position and retries a bounded number of times while the player
-     * ignores the write (a <video> that drops currentTime until metadata is
-     * ready). A newer seek, a song change or stop cancels the retry.
-     */
-    function requestSeek(target) {
-      if (!media) return false;
-      const value = Number(target);
-      if (!Number.isFinite(value) || value < 0) return false;
-      cancelSeekRetry();
-      lastSeekTarget = value;
-      return writeSeek(value, seekToken);
-    }
-
-    function writeSeek(target, token) {
-      if (!started || token !== seekToken || !media) return false;
-      let wrote = false;
-      try {
-        media.currentTime = target;
-        wrote = true;
-      } catch {
-        wrote = false;
-      }
-      const actual = Number(media.currentTime);
-      if (wrote && Number.isFinite(actual) && Math.abs(actual - target) <= SEEK_TOLERANCE_SECONDS) return true;
-      if (seekRetryCount >= SEEK_RETRY_ATTEMPTS) return false;
-      seekRetryCount += 1;
-      seekRetryTimer = timers.setTimeout(() => {
-        seekRetryTimer = null;
-        writeSeek(target, token);
-      }, SEEK_RETRY_MS);
-      return false;
-    }
-
-    function clearSettleCheck() {
-      if (settleTimer === null) return;
-      timers.clearTimeout(settleTimer);
-      settleTimer = null;
-    }
-
-    /**
-     * One late correction after a restore seek: YTM can apply its own startup
-     * position after ours lands. Re-apply the saved start once, and only when
-     * the same song is current and the player reset to the top.
-     */
-    function armSettleCheck(key, startSeconds) {
-      clearSettleCheck();
-      if (!Number.isFinite(startSeconds) || startSeconds <= SETTLE_NEAR_ZERO_SECONDS) return;
-      settleTimer = timers.setTimeout(() => {
-        settleTimer = null;
-        if (!started || !media) return;
-        if (session.songKey !== key) return;
-        const at = Number(media.currentTime);
-        if (!Number.isFinite(at) || at > SETTLE_NEAR_ZERO_SECONDS) return;
-        requestSeek(startSeconds);
-      }, SETTLE_MS);
-    }
-
     // -- storage -----------------------------------------------------------
 
-    async function readSaved() {
+    async function readSections() {
       if (!storage || typeof storage.get !== 'function') return [];
       const result = await storage.get(STORAGE_KEY);
-      if (!result || typeof result !== 'object') return [];
-      const raw = result[STORAGE_KEY];
-      if (!raw || typeof raw !== 'object') return [];
-      return sanitizeSaved(raw.sections);
-    }
-
-    function requestSave() {
-      if (saveTimer !== null) timers.clearTimeout(saveTimer);
-      saveTimer = timers.setTimeout(() => {
-        saveTimer = null;
-        void save();
-      }, SAVE_DEBOUNCE_MS);
+      const raw = result && typeof result === 'object' ? result[STORAGE_KEY] : null;
+      return sanitizeSaved(raw ? raw.sections : undefined);
     }
 
     /**
@@ -1251,7 +1338,7 @@
       }
       saveChain = saveChain.catch(() => ({ ok: false, sections: [] })).then(async () => {
         if (!started || mine !== generation) return { ok: false, sections: null };
-        const current = await readSaved();
+        const current = await readSections();
         if (!started || mine !== generation) return { ok: false, sections: null };
         const next = capSaved(upsertSaved(current, entry), SAVED_LIMIT);
         if (storage && typeof storage.set === 'function') {
@@ -1264,26 +1351,42 @@
       return saveChain;
     }
 
-    async function save() {
-      if (!started || session.songKey === null) return;
-      const mine = generation;
+    function requestSave() {
+      if (!ui) return;
       const videoId = session.songKey;
+      if (videoId === null || !session.identityKnown) {
+        notice = 'no-song';
+        syncPanel();
+        return;
+      }
+      // Snapshot at the click: nothing that happens while the write is in
+      // flight can change what is being saved.
       const entry = {
         videoId: videoId,
         startSeconds: session.startSeconds,
         endSeconds: session.endSeconds,
       };
+      notice = null;
+      void save(entry);
+    }
+
+    async function save(entry) {
+      const mine = generation;
       const removed = entry.startSeconds === null && entry.endSeconds === null;
       try {
         const reply = await requestSectionSave(entry, mine);
         // A stop (or a new session) owns the state now: mutate nothing.
         if (!started || mine !== generation) return;
-        if (reply && Array.isArray(reply.sections)) saved = sanitizeSaved(reply.sections);
-
+        // `ok:false` is a storage failure, not a rejection: never claim a save.
+        if (!reply || reply.ok !== true) {
+          notice = 'failed';
+          syncPanel();
+          return;
+        }
         // A song change (or a changed range) also owns the state now; the
         // notice for the old compose would be stale.
         if (
-          session.songKey === videoId &&
+          session.songKey === entry.videoId &&
           session.startSeconds === entry.startSeconds &&
           session.endSeconds === entry.endSeconds
         ) {
@@ -1307,14 +1410,17 @@
 
     function onSongSignal() {
       if (!started) return;
-      syncSong();
+      const restore = syncSong();
       syncTick();
+      syncRestoreTimer();
       syncPanel();
+      if (restore) void restore;
     }
 
     function onVisibilityChange() {
       if (!started) return;
       syncTick();
+      syncRestoreTimer();
     }
 
     function installSongListeners() {
@@ -1338,14 +1444,13 @@
       sync: sync,
     };
   }
-
   const api = {
     WHEEL_PX_PER_STEP: WHEEL_PX_PER_STEP,
     VOLUME_STEP_PCT: VOLUME_STEP_PCT,
     TICK_MS: TICK_MS,
     HUD_VISIBLE_MS: HUD_VISIBLE_MS,
-    SAVE_DEBOUNCE_MS: SAVE_DEBOUNCE_MS,
     RESTORE_RETRY_BUDGET_MS: RESTORE_RETRY_BUDGET_MS,
+    RESTORE_RETRY_MS: RESTORE_RETRY_MS,
     SAVED_LIMIT: SAVED_LIMIT,
     STORAGE_KEY: STORAGE_KEY,
     parseTimeInput: parseTimeInput,
@@ -1358,7 +1463,6 @@
     upsertSaved: upsertSaved,
     capSaved: capSaved,
     songKeyFrom: songKeyFrom,
-    sourceKey: sourceKey,
     createSectionSession: createSectionSession,
     beginSong: beginSong,
     songRestorePending: songRestorePending,
