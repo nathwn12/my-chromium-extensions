@@ -35,17 +35,30 @@ function loadHook(options = {}) {
     queryAudioVideo: 0,
     queryAll: 0,
     tracksStopped: 0,
-    connects: [],
   };
   const parked = [];
   const streams = [];
+  const streamSources = [];
+  const edges = new Set();
+  const edgeKey = (from, to) => `${from}->${to}`;
   const documentListeners = {};
   const windowListeners = {};
 
   class FakeNode {
     constructor(context) { this.context = context || null; this._eid = FakeNode.next++; }
-    connect(dest) { if (dest) counters.connects.push([this._eid, dest._eid]); return dest; }
-    disconnect() { return undefined; }
+    connect(dest) {
+      if (dest && typeof dest._eid === 'number') edges.add(edgeKey(this._eid, dest._eid));
+      return dest;
+    }
+    disconnect(dest) {
+      if (dest && typeof dest._eid === 'number') {
+        edges.delete(edgeKey(this._eid, dest._eid));
+        return;
+      }
+      for (const entry of Array.from(edges)) {
+        if (entry.startsWith(`${this._eid}->`)) edges.delete(entry);
+      }
+    }
   }
   FakeNode.next = 1;
 
@@ -118,15 +131,13 @@ function loadHook(options = {}) {
     async resume() { this.state = 'running'; }
     async suspend() { this.state = 'suspended'; }
     close() { this.state = 'closed'; return Promise.resolve(); }
-    createGain() { return new FakeNode(this); }
+    createGain() {
+      const node = new FakeNode(this);
+      node.gain = { value: 1 };
+      return node;
+    }
     createAnalyser() {
-      const analyser = new FakeAnalyser(this);
-      // The analyser sees the stream the source carries; resolved lazily so a
-      // source created before the analyser still reports its signal.
-      const originalConnect = FakeNode.prototype.connect;
-      analyser._streamOf = null;
-      analyser.connect = originalConnect;
-      return analyser;
+      return new FakeAnalyser(this);
     }
     createMediaStreamSource(stream) {
       counters.mediaStreamSource += 1;
@@ -136,6 +147,7 @@ function loadHook(options = {}) {
         if (dest instanceof FakeAnalyser) dest._stream = stream;
         return connect(dest);
       };
+      streamSources.push(source);
       return source;
     }
     createMediaElementSource() {
@@ -276,6 +288,7 @@ function loadHook(options = {}) {
 
   return {
     sandbox, counters, streams, contexts, parked, FakeMediaElement,
+    edges, streamSources,
     control, start, stop, destroy, status, surface,
     fireDocument: (type) => {
       for (const fn of (documentListeners[type] || []).slice()) {
@@ -293,6 +306,11 @@ function park(hook, element) {
   return element;
 }
 
+/**
+ * The probe graph is proved in tests/probe-sink.test.js, which drives
+ * `probeStreamSignal` directly with an instrumented context (edge-by-edge,
+ * both the audible and the timeout path).
+ */
 test('normal media is routed through captureStream, never createMediaElementSource', async () => {
   const hook = loadHook();
   hook.start();
@@ -305,7 +323,9 @@ test('normal media is routed through captureStream, never createMediaElementSour
   assert.equal(hook.counters.mediaStreamSource, 1, 'through a MediaStreamSource');
   assert.equal(hook.counters.elementSource, 0, 'createMediaElementSource is never called');
   assert.equal(video.muted, true, 'the element is muted while the tap owns the output');
-  assert.ok(hook.counters.connects.some(([, to]) => to !== undefined), 'the tap is connected into the session');
+  const source = hook.streamSources[0];
+  assert.ok(Array.from(hook.edges).some((entry) => entry.startsWith(`${source._eid}->`)),
+    'the tap is connected into the session');
   assert.equal(hook.status().active, true);
 });
 
@@ -367,6 +387,18 @@ test('a CORS element whose stream is silent stays native: no mute, verdict repor
   assert.equal(video.muted, false, 'the page keeps its audio: never muted on a silent tap');
   assert.equal(video.__tnAttached !== true, true, 'and nothing was routed');
   assert.equal(hook.counters.elementSource, 0, 'no stolen element source');
+
+  // The timeout path is the same probe graph; see tests/probe-sink.test.js.
+});
+
+test('the silent-sink probe is in the source (static guard)', () => {
+  const hookSource = fs.readFileSync(path.join(ROOT, 'page-hook.js'), 'utf8');
+  assert.match(hookSource, /sink\.gain\.value = 0/, 'the probe sink is zero-gain');
+  assert.match(hookSource, /analyser\.connect\(sink\)/, 'the analyser is pulled by the sink');
+  assert.match(hookSource, /sink\.connect\(context\.destination\)/, 'the sink reaches the destination');
+  assert.match(hookSource, /source\.disconnect\(analyser\)/, 'the tap edge is released');
+  assert.match(hookSource, /analyser\.disconnect\(sink\)/, 'the analyser edge is released');
+  assert.match(hookSource, /sink\.disconnect\(context\.destination\)/, 'the sink edge is released');
 });
 
 test('a muted capture track is never routed (cross-origin protection)', async () => {

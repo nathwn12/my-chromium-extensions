@@ -1727,19 +1727,47 @@
    * stream is measured while the element still plays natively: non-zero peak
    * means the graph will be audible. Silent for the whole window → leave the
    * page native and record a verdict.
+   *
+   * The analyser is rendered, not read into the void: an AnalyserNode that
+   * nothing pulls is not guaranteed to process, and an unrendered analyser
+   * reports zeros — which would judge every CORS tap "protected". It is wired
+   * through a ZERO-GAIN sink to the destination (the steady-volume silent-sink
+   * pattern): rendered every quantum, audible to nobody. The element stays
+   * unmuted and the source is not connected to the session while probing, so
+   * there is no double.
    * @param {any} context
    * @param {any} source
    * @returns {Promise<boolean>}
    */
   function probeStreamSignal(context, source) {
-    if (!context || typeof context.createAnalyser !== 'function') return Promise.resolve(true);
+    if (!context || typeof context.createAnalyser !== 'function'
+      || typeof context.createGain !== 'function') {
+      return Promise.resolve(true);
+    }
+    /** @type {any} */
     let analyser = null;
+    /** @type {any} */
+    let sink = null;
+    let torn = false;
+    const teardown = () => {
+      if (torn) return;
+      torn = true;
+      try { source.disconnect(analyser); } catch {}
+      try { analyser.disconnect(sink); } catch {}
+      try { sink.disconnect(context.destination); } catch {}
+    };
     try {
       analyser = context.createAnalyser();
       analyser.fftSize = 256;
+      sink = context.createGain();
+      // Silent sink: the path exists so the analyser is pulled by the render
+      // graph, and the gain keeps it inaudible.
+      sink.gain.value = 0;
       source.connect(analyser);
+      analyser.connect(sink);
+      sink.connect(context.destination);
     } catch {
-      try { if (analyser) source.disconnect(analyser); } catch {}
+      teardown();
       return Promise.resolve(true);
     }
     const samples = new Float32Array(analyser.fftSize || 256);
@@ -1755,12 +1783,12 @@
           }
         } catch {}
         if (peak > 0) {
-          try { source.disconnect(analyser); } catch {}
+          teardown();
           resolve(true);
           return;
         }
         if (!state.active || Date.now() >= deadline) {
-          try { source.disconnect(analyser); } catch {}
+          teardown();
           resolve(false);
           return;
         }
