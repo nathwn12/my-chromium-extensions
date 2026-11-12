@@ -15,8 +15,56 @@
 
   const contentShared = globalThis.TabNormalizerShared;
 
+  // ---------------------------------------------------------------------------
+  // Backstop gate (layer 2).
+  //
+  // Registration-time exclusion (layer 1) keeps this file out of excluded
+  // hosts entirely, so this gate only has to cover the paths a registration
+  // cannot: a frame that was already open when the exclusion was written (the
+  // storage broadcast seeds the cache below), registration lag, and a
+  // re-injection of this file into a document whose cache already knows.
+  //
+  // It is deliberately read-free and create-free: `location.hostname` against
+  // a cached key list, before any listener, observer or timer exists. Storage
+  // cannot be read synchronously, so "unknown yet" is NEVER treated as
+  // excluded — it falls through to the ordinary async read, which decides.
+  // The cache is refreshed only by the storage broadcast that already exists;
+  // there is no polling.
+  // ---------------------------------------------------------------------------
+  const exclusionCache = globalThis.__tabNormalizerExclusionCache
+    || (globalThis.__tabNormalizerExclusionCache = { hosts: [] });
+
+  function currentHost() {
+    return contentShared.getSiteKey(
+      String(location.hostname || '') || contentShared.extractHostname(location.href),
+    );
+  }
+
+  function isExcludedByCache() {
+    const host = currentHost();
+    if (!host) return false;
+    return contentShared.isHostExcluded(host, exclusionCache.hosts);
+  }
+
+  function rememberExclusion(siteKey, excluded) {
+    const key = contentShared.getSiteKey(siteKey);
+    if (!key) return;
+    const hosts = exclusionCache.hosts.filter((entry) => entry !== key);
+    if (excluded) hosts.push(key);
+    exclusionCache.hosts = hosts;
+  }
+
+  if (isExcludedByCache()) {
+    // Nothing is installed on purpose: not even the re-injection hook. An
+    // excluded document carries no extension code at all until the background
+    // re-injects after the exclusion is cleared.
+    console.log('[cs] host excluded by registration cache, gated:', currentHost());
+    return;
+  }
+
   /** @type {{
    *   hostname: string, siteKey: string, enabled: boolean, gainDb: number,
+   *   excluded: boolean,
    *   injected: boolean, hookAlive: boolean,
    *   hookActive: boolean, injecting: boolean, injectStartedAt: number,
    *   lastError: string, lastStatusAt: number,
@@ -26,13 +74,15 @@
    *   syncInFlight: boolean, queuedSyncReason: string,
    *   activeSync: (Promise<void> | null), initialSyncDone: boolean,
    *   bootstrapped: boolean, activationRetryTimer: (number | null),
-   *   activationRetryCount: number, spaWatchTimer: (number | null)
+   *   activationRetryCount: number, spaWatchTimer: (number | null),
+   *   storageChangeTimer: (number | null), detached: boolean
    * }} */
   const state = {
     hostname: '',
     siteKey: '',
     enabled: false,
     gainDb: contentShared.DEFAULT_GAIN_DB,
+    excluded: false,
     injected: false,
     hookAlive: false,
     hookActive: false,
@@ -51,7 +101,14 @@
     activationRetryTimer: null,
     activationRetryCount: 0,
     spaWatchTimer: null,
+    storageChangeTimer: null,
+    detached: false,
   };
+
+  // Every listener this frame owns, so teardown can release all of them (an
+  // excluded frame must leave nothing behind that could do work).
+  /** @type {Array<() => void>} */
+  let listenerRemovers = [];
 
   globalThis.__tabNormalizerContentScriptV5 = {
     reinject: handleReinject,
@@ -72,14 +129,26 @@
   }
 
   function ensureBootstrapListeners() {
-    if (state.bootstrapped || !state.siteKey) return;
+    if (state.bootstrapped || !state.siteKey || state.detached) return;
 
-    let storageChangeTimer = null;
-
-    chrome.storage.onChanged.addListener((changes, area) => {
+    const onStorageChanged = (changes, area) => {
       if (area !== 'local') return;
       const perKey = state.siteKey ? contentShared.siteStorageKey(state.siteKey) : '';
-      if (!changes.activeSites && !changes.siteSettings && !changes.siteToggles && !(perKey && changes[perKey])) return;
+      // A parent-host record governs this frame too (exclusion covers
+      // subdomains), so its changes must not be filtered out.
+      const relevantAncestorChange = contentShared.ancestorSiteKeys(state.siteKey)
+        .some((key) => changes[contentShared.siteStorageKey(key)]);
+      if (!changes.activeSites && !changes.siteSettings && !changes.siteToggles
+        && !(perKey && changes[perKey]) && !relevantAncestorChange) return;
+      // Keep the synchronous gate's cache in step with persisted truth: this
+      // is the only refresh mechanism, there is no polling.
+      for (const [key, change] of Object.entries(changes)) {
+        if (!contentShared.isSiteStorageKey(key)) continue;
+        rememberExclusion(
+          contentShared.siteKeyFromStorageKey(key),
+          Boolean(change.newValue && change.newValue.excluded),
+        );
+      }
       // Persisted truth changed. Drop the transient session override
       // only when this tab's effective config actually changed, so an
       // unrelated site's save never cuts a transient session short — but the
@@ -88,15 +157,17 @@
       if (storageChangeAffectsThisSite(changes)) {
         state.transient = null;
       }
-      if (storageChangeTimer) return;
-      storageChangeTimer = setTimeout(() => {
-        storageChangeTimer = null;
+      if (state.storageChangeTimer) return;
+      state.storageChangeTimer = setTimeout(() => {
+        state.storageChangeTimer = null;
         console.log('[cs] storage changed, syncing');
         scheduleSync('storage');
       }, 50);
-    });
+    };
+    chrome.storage.onChanged.addListener(onStorageChanged);
+    listenerRemovers.push(() => chrome.storage.onChanged.removeListener?.(onStorageChanged));
 
-    chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    const onRuntimeMessage = (message, _sender, sendResponse) => {
       if (message?.type === 'GET_DOCUMENT_STATUS') {
         void getDocumentStatus().then(sendResponse);
         return true;
@@ -134,6 +205,21 @@
           sendResponse({ ok: false, error: 'site mismatch' });
           return true;
         }
+        // Live teardown: exclusion beats everything, so it never waits for a
+        // storage round trip. The MAIN-world patch cannot be removed (it is
+        // already in the page) — STOP puts it in pass-through: worklet
+        // disconnected, observer disconnected, 0 dB.
+        if (message.excluded === true) {
+          state.excluded = true;
+          state.transient = null;
+          teardown('excluded');
+          sendResponse({ ok: true, excluded: true });
+          return true;
+        }
+        if (message.excluded === false) {
+          rememberExclusion(state.siteKey, false);
+          state.excluded = false;
+        }
         if (message.enabled) {
           scheduleSync('toggle-changed');
           sendResponse({ ok: true });
@@ -158,26 +244,44 @@
         return true;
       }
       return false;
-    });
+    };
+    chrome.runtime.onMessage.addListener(onRuntimeMessage);
+    listenerRemovers.push(() => chrome.runtime.onMessage.removeListener?.(onRuntimeMessage));
 
-    window.addEventListener('message', (event) => {
+    const onPageMessage = (event) => {
       if (event.source !== window || event.data?.channel !== CHANNEL) return;
       handleHookMessage(event.data);
-    });
+    };
+    window.addEventListener('message', onPageMessage);
+    listenerRemovers.push(() => window.removeEventListener('message', onPageMessage));
 
-    document.addEventListener('visibilitychange', () => {
+    const onVisibilityChange = () => {
       if (!document.hidden) scheduleSync('visibilitychange');
-    });
-    window.addEventListener('pageshow', () => scheduleSync('pageshow'));
-    window.addEventListener('focus', () => scheduleSync('focus'));
-    window.addEventListener('popstate', () => {
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    listenerRemovers.push(() => document.removeEventListener('visibilitychange', onVisibilityChange));
+
+    const onPageShow = () => scheduleSync('pageshow');
+    window.addEventListener('pageshow', onPageShow);
+    listenerRemovers.push(() => window.removeEventListener('pageshow', onPageShow));
+
+    const onFocus = () => scheduleSync('focus');
+    window.addEventListener('focus', onFocus);
+    listenerRemovers.push(() => window.removeEventListener('focus', onFocus));
+
+    const onPopState = () => {
       refreshLocationState();
       if (state.siteKey) scheduleSync('popstate');
-    });
-    window.addEventListener('hashchange', () => {
+    };
+    window.addEventListener('popstate', onPopState);
+    listenerRemovers.push(() => window.removeEventListener('popstate', onPopState));
+
+    const onHashChange = () => {
       refreshLocationState();
       if (state.siteKey) scheduleSync('hashchange');
-    });
+    };
+    window.addEventListener('hashchange', onHashChange);
+    listenerRemovers.push(() => window.removeEventListener('hashchange', onHashChange));
 
     state.bootstrapped = true;
   }
@@ -202,7 +306,8 @@
           : null;
         if (!oldRec || !newRec) return true;
         return oldRec.enabled !== newRec.enabled
-          || oldRec.gainDb !== newRec.gainDb;
+          || oldRec.gainDb !== newRec.gainDb
+          || oldRec.excluded !== newRec.excluded;
       }
       // Legacy fallback: evaluate the effective config (settings + actives
       // + toggles, all normalised) on both sides. A `siteToggles` change for
@@ -236,10 +341,18 @@
    * `siteToggles` when present via the background migration) are the fallback
    * for data written before the per-site keys existed. Read-only: this file
    * performs NO storage write.
-   * @returns {Promise<{ enabled: boolean, gainDb: number }>}
+   *
+   * Exclusion is read from this host's record OR any parent host's record
+   * (the same `h === key || h.endsWith('.' + key)` rule), so one `get` with a
+   * handful of keys resolves a parent-level exclusion without scanning
+   * storage.
+   * @returns {Promise<{ enabled: boolean, gainDb: number, excluded: boolean }>}
    */
   async function readStoredConfig() {
     const perKey = contentShared.siteStorageKey(state.siteKey);
+    const ancestorKeys = contentShared.ancestorSiteKeys(state.siteKey)
+      .map((key) => contentShared.siteStorageKey(key))
+      .filter(Boolean);
     // Platform fact (measured Step 1 repro): an object-form `undefined`
     // default is dropped by the extension API's JSON marshal, so
     // `get({ [perKey]: undefined })` returns `{}` even when the key exists.
@@ -248,11 +361,31 @@
     /** @type {string[]} */
     const keys = ['activeSites', 'siteSettings', 'siteToggles'];
     if (perKey) keys.push(perKey);
+    for (const key of ancestorKeys) {
+      if (key !== perKey) keys.push(key);
+    }
     const stored = await chrome.storage.local.get(keys);
+
+    // Parent-host exclusion first: it outranks every `enabled` below.
+    const ancestorExcluded = ancestorKeys.some((key) => {
+      const value = stored[key];
+      return Boolean(value && typeof value === 'object' && value.excluded);
+    });
+    if (ancestorExcluded) {
+      rememberExclusion(state.siteKey, true);
+    }
+
+    const withExcluded = (rec) => ({
+      enabled: ancestorExcluded ? false : rec.enabled,
+      gainDb: rec.gainDb,
+      excluded: ancestorExcluded || rec.excluded,
+    });
+
     const perValue = perKey ? stored[perKey] : undefined;
     if (perValue && typeof perValue === 'object') {
       const rec = contentShared.normalizeSiteRecord(perValue);
-      return { enabled: rec.enabled, gainDb: rec.gainDb };
+      rememberExclusion(state.siteKey, rec.excluded);
+      return withExcluded(rec);
     }
     // Pre-full-key fallback (read-only here; the background migrates on its
     // next write): a collapsed per-site record (`site:github.io`) still
@@ -264,11 +397,17 @@
       ? sharedAny.legacySiteStorageKey(state.siteKey)
       : '';
     if (legacyPerKey && legacyPerKey !== perKey) {
-      const legacyStored = await chrome.storage.local.get([legacyPerKey]);
-      const legacyValue = legacyStored[legacyPerKey];
+      // The ancestor read above may already carry the legacy record; only a
+      // miss costs a second read.
+      let legacyValue = stored[legacyPerKey];
+      if (legacyValue === undefined) {
+        const legacyStored = await chrome.storage.local.get([legacyPerKey]);
+        legacyValue = legacyStored[legacyPerKey];
+      }
       if (legacyValue && typeof legacyValue === 'object') {
         const rec = contentShared.normalizeSiteRecord(legacyValue);
-        return { enabled: rec.enabled, gainDb: rec.gainDb };
+        rememberExclusion(state.siteKey, rec.excluded);
+        return withExcluded(rec);
       }
     }
     // Lossless legacy fallback: normalise every legacy shape (settings,
@@ -279,10 +418,10 @@
       stored.siteSettings, stored.activeSites, stored.siteToggles, state.siteKey,
     );
     if (migrated) {
-      return { enabled: migrated.enabled, gainDb: migrated.gainDb };
+      return withExcluded(migrated);
     }
     const config = contentShared.getSiteConfig(stored.siteSettings, stored.activeSites, state.siteKey);
-    return { enabled: config.enabled, gainDb: config.gainDb };
+    return withExcluded({ enabled: config.enabled, gainDb: config.gainDb, excluded: false });
   }
 
   function startSpaWatch() {
@@ -306,6 +445,14 @@
   function handleReinject() {
     refreshLocationState();
     console.log('[cs] reinjected on:', state.hostname, location.href);
+    // A re-injection is the background's decision (it refuses excluded hosts),
+    // so re-arm rather than trust a possibly stale cache: drop the detached
+    // state, re-install listeners and let the async read decide.
+    if (state.detached) {
+      state.detached = false;
+      state.bootstrapped = false;
+      state.initialSyncDone = false;
+    }
     ensureBootstrapListeners();
     if (!state.siteKey) return;
     scheduleSync('reinject');
@@ -403,6 +550,13 @@
     if (!intendedSite || intendedSite !== state.siteKey) {
       return { ok: false, error: 'site mismatch' };
     }
+    // Exclusion outranks every document-state path, transient or persisted:
+    // an excluded frame is torn down and stays down. The popup disables its
+    // controls in this state, so this only ever answers a stale caller.
+    if (state.excluded) {
+      teardown('excluded-document-state');
+      return { ok: true, excluded: true };
+    }
     // Genuine transient session state — the background flags its
     // pending-session apply with `transient: true` (`persist: false` is
     // accepted for the same contract). ONLY a flagged request installs the
@@ -491,6 +645,57 @@
     state.lastError = '';
   }
 
+  /**
+   * Live teardown for an excluded host (layer 2, immediate path).
+   *
+   * Everything this frame owns is released: the SPA watch, the activation
+   * retry chain, the storage debounce, any in-flight hook probe, and every
+   * listener. `STOP` puts the already-injected MAIN-world patch into
+   * pass-through: `bypassSession` disconnects the worklet and routes
+   * input -> output directly, the DOM observer is disconnected, the recovery
+   * burst is cancelled, and no gain is applied (0 dB by construction). The
+   * patch itself cannot be removed from a live document — that needs a
+   * reload — so "excluded" means neutralised, never un-patched.
+   * @param {string} reason
+   */
+  function teardown(reason) {
+    if (state.detached) return;
+    state.detached = true;
+    state.enabled = false;
+    state.transient = null;
+
+    clearPendingStart();
+    clearActivationRetry();
+    stopSpaWatch();
+    if (state.storageChangeTimer) {
+      clearTimeout(state.storageChangeTimer);
+      state.storageChangeTimer = null;
+    }
+    // A probe in flight would otherwise keep its 1 s timeout alive and write
+    // hook state after teardown.
+    if (state.pendingProbe) {
+      clearTimeout(state.pendingProbe.timeoutId);
+      state.pendingProbe.resolve(false);
+      state.pendingProbe = null;
+    }
+    state.popupProbe = null;
+
+    postToPage('STOP', { reason });
+    state.hookActive = false;
+    state.hookAlive = false;
+    state.lastError = '';
+
+    for (const remove of listenerRemovers) {
+      try {
+        remove();
+      } catch {}
+    }
+    listenerRemovers = [];
+    state.bootstrapped = false;
+    rememberExclusion(state.siteKey, true);
+    console.log('[cs] torn down (excluded):', state.siteKey, reason);
+  }
+
   async function handleSoftRecheckDocument() {
     const { enabled } = await getEffectiveDocumentState();
     if (!enabled) {
@@ -506,6 +711,9 @@
    */
   async function sync(reason) {
     refreshLocationState();
+    // A detached frame (excluded) owns no listeners and does no work until
+    // the background re-injects it.
+    if (state.detached) return;
     if (!state.siteKey) {
       clearPendingStart();
       clearActivationRetry();
@@ -530,10 +738,24 @@
       // persistence belongs to the background's single writer; this context
       // only reads.
       const config = await readStoredConfig();
-      // Finding 7: an active transient session override outranks stored
-      // settings for the live document until cleared (disable/clear-override).
-      const enabled = state.transient ? state.transient.enabled : config.enabled;
-      const gainDb = state.transient ? state.transient.gainDb : config.gainDb;
+      // Exclusion outranks the transient session override AND stored
+      // enablement: nothing runs on an excluded site, on any path.
+      state.excluded = config.excluded === true;
+      const enabled = config.excluded
+        ? false
+        : (state.transient ? state.transient.enabled : config.enabled);
+      const gainDb = config.excluded
+        ? contentShared.DEFAULT_GAIN_DB
+        : (state.transient ? state.transient.gainDb : config.gainDb);
+
+      if (config.excluded) {
+        // Live teardown, not a plain "disabled": an excluded frame releases
+        // its listeners entirely so it does no work at all.
+        state.enabled = false;
+        state.gainDb = gainDb;
+        teardown('excluded-sync');
+        return;
+      }
 
       state.enabled = enabled;
       state.gainDb = gainDb;
@@ -603,6 +825,8 @@
   }
 
   function inject() {
+    // Never inject for an excluded frame, on any path.
+    if (state.excluded || state.detached) return;
     if (state.injecting && (Date.now() - state.injectStartedAt) < INJECT_TIMEOUT_MS) return;
 
     if (state.injected) clearPendingStart();
@@ -688,6 +912,7 @@
   }
 
   async function evaluateHookHealth() {
+    if (state.excluded || state.detached) return false;
     if (!state.injected) return false;
     if (state.hookAlive && (Date.now() - state.lastStatusAt) < HOOK_FRESH_MS) return true;
     return probeHook();
@@ -709,10 +934,6 @@
   }
 
   function createProbe(requestId) {
-    if (state.pendingProbe?.timeoutId) {
-      clearTimeout(state.pendingProbe.timeoutId);
-    }
-
     /** @type {(v: boolean) => void} */
     let resolvePending = () => {};
     const pendingPromise = new Promise((resolve) => {
@@ -787,6 +1008,11 @@
     // A transient session override outranks stored settings for the live
     // document until cleared. The per-site record stays the persistence
     // authority; the transient only shapes what this tab applies and reports.
+    // Exclusion outranks both.
+    if (state.excluded) {
+      state.enabled = false;
+      return { enabled: false, gainDb: state.gainDb, excluded: true };
+    }
     if (state.transient) {
       state.enabled = state.transient.enabled;
       state.gainDb = state.transient.gainDb;
@@ -795,7 +1021,8 @@
     // The per-site record is the single authority (legacy maps are the
     // read fallback). No session snapshot outranks it.
     const config = await readStoredConfig();
-    const enabled = config.enabled;
+    state.excluded = config.excluded === true;
+    const enabled = config.excluded ? false : config.enabled;
     const gainDb = config.gainDb;
 
     state.enabled = enabled;
@@ -830,6 +1057,7 @@
       }
     }
 
+    const isExcluded = state.excluded === true;
     const indicator = contentShared.getPopupIndicator({
       enabled,
       hookAlive: state.hookAlive,
@@ -840,6 +1068,7 @@
     return {
       ok: true,
       enabled,
+      excluded: isExcluded,
       hostname: state.hostname,
       siteKey: state.siteKey,
       gainDb: state.gainDb,

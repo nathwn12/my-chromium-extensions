@@ -136,6 +136,85 @@
     return typeof key === 'string' && key.indexOf(SITE_KEY_PREFIX) === 0;
   }
 
+  // Exclusion is a property of a HOST, and it covers that host's subdomains:
+  // excluding `tiktok.com` must also exclude `www.tiktok.com`, and a rule on
+  // `www.tiktok.com` must never reach `tiktok.com`. Both sides are normalized
+  // through `getSiteKey` first (ports, case, trailing dots, brackets).
+  function hostMatchesSiteKey(hostname, siteKey) {
+    const host = getSiteKey(hostname);
+    const key = getSiteKey(siteKey);
+    if (!host || !key) return false;
+    return host === key || host.endsWith('.' + key);
+  }
+
+  function isHostExcluded(hostname, excludedKeys) {
+    if (!Array.isArray(excludedKeys) || excludedKeys.length === 0) return false;
+    for (const key of excludedKeys) {
+      if (hostMatchesSiteKey(hostname, key)) return true;
+    }
+    return false;
+  }
+
+  // Parent hosts, nearest first, self excluded. Only ancestors with at least
+  // two labels: `com` is never a site key.
+  function ancestorSiteKeys(hostname) {
+    const host = getSiteKey(hostname);
+    if (!host || /^[\d.:]+$/.test(host)) return [];
+    const parts = host.split('.').filter(Boolean);
+    const out = [];
+    for (let i = 1; i < parts.length - 1; i += 1) {
+      out.push(parts.slice(i).join('.'));
+    }
+    return out;
+  }
+
+  // Content-script match pattern for a host. `*.` also covers the bare host
+  // in Chrome's pattern grammar. A wildcard host is only valid for a real
+  // domain: localhost, IPv4 and IPv6 keys get an exact-host pattern (a
+  // rejected pattern would cost the whole registration).
+  function matchPatternFor(siteKey, wildcard) {
+    const host = getSiteKey(siteKey);
+    if (!host) return '';
+    if (host === 'localhost' || /^[\d.]+$/.test(host)) {
+      return `*://${host}/*`;
+    }
+    if (host.indexOf(':') !== -1) {
+      return `*://[${host}]/*`;
+    }
+    return wildcard ? `*://*.${host}/*` : `*://${host}/*`;
+  }
+
+  // Exclusion covers subdomains, so the pattern must too: `*://*.host/*`.
+  function siteExcludeMatchPattern(siteKey) {
+    return matchPatternFor(siteKey, true);
+  }
+
+  // Injection is per exact host: a record for `example.com` must not arm the
+  // content script on `sub.example.com`, which is a different site here.
+  function siteHostMatchPattern(siteKey) {
+    return matchPatternFor(siteKey, false);
+  }
+
+  function patternsFor(siteKeys, builder) {
+    const out = [];
+    const seen = new Set();
+    for (const key of siteKeys || []) {
+      const pattern = builder(key);
+      if (!pattern || seen.has(pattern)) continue;
+      seen.add(pattern);
+      out.push(pattern);
+    }
+    return out;
+  }
+
+  function siteExcludeMatchPatterns(siteKeys) {
+    return patternsFor(siteKeys, siteExcludeMatchPattern);
+  }
+
+  function siteHostMatchPatterns(siteKeys) {
+    return patternsFor(siteKeys, siteHostMatchPattern);
+  }
+
   function siteKeyFromStorageKey(key) {
     if (!isSiteStorageKey(key)) return '';
     return getSiteKey(key.slice(SITE_KEY_PREFIX.length));
@@ -173,6 +252,9 @@
       gainDb: clampGainDb(raw.gainDb),
       seq,
       mirror: Boolean(mirrorRaw),
+      // Missing field = not excluded: every record written before exclusion
+      // existed reads as `excluded: false`, so no migration is needed.
+      excluded: Boolean(raw.excluded),
     };
   }
 
@@ -424,6 +506,13 @@
     legacySiteStorageKey,
     isSiteStorageKey,
     siteKeyFromStorageKey,
+    hostMatchesSiteKey,
+    isHostExcluded,
+    ancestorSiteKeys,
+    siteExcludeMatchPattern,
+    siteExcludeMatchPatterns,
+    siteHostMatchPattern,
+    siteHostMatchPatterns,
     normalizeSiteRecord,
     migrateLegacyToRecord,
 

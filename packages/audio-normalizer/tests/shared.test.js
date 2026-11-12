@@ -206,6 +206,8 @@ test('migrateSiteSettings merges two raw keys that normalise to one site', () =>
 test('normalizeSiteRecord ignores an unknown legacy field on a stored record', () => {
   // A record persisted by an older version may carry fields this version no
   // longer knows. They are ignored on read and never emitted on write.
+  // `excluded` is the one field added since: it is emitted as `false` when a
+  // stored record predates it (no migration needed).
   assert.deepEqual(normalizeSiteRecord({
     enabled: true,
     gainDb: 3,
@@ -217,6 +219,7 @@ test('normalizeSiteRecord ignores an unknown legacy field on a stored record', (
     gainDb: 3,
     seq: 0,
     mirror: true,
+    excluded: false,
   });
 });
 

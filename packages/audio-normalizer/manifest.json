@@ -18,15 +18,6 @@
     "http://*/*",
     "https://*/*"
   ],
-  "content_scripts": [
-    {
-      "matches": ["<all_urls>"],
-      "js": ["shared.js", "content-script.js"],
-      "run_at": "document_start",
-      "all_frames": true,
-      "match_origin_as_fallback": true
-    }
-  ],
   "web_accessible_resources": [
     {
       "resources": ["audio/normalizer-worklet.js"],

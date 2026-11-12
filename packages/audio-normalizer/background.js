@@ -3,6 +3,7 @@ importScripts('shared.js');
 const backgroundShared = self.TabNormalizerShared;
 
 const INJECTABLE_FILES = ['shared.js', 'content-script.js'];
+const CONTENT_SCRIPT_ID = 'tab-normalizer-content-script';
 const SUPPORTED_PROTOCOL_PATTERN = /^https?:$/i;
 const RESTRICTED_URL_PATTERN = /^(chrome|chrome-extension|devtools|edge|about):/i;
 const WEBSTORE_URL_PATTERN = /^https?:\/\/(chrome\.google\.com\/webstore|microsoftedge\.microsoft\.com\/addons)\b/i;
@@ -71,7 +72,7 @@ const SITE_SEQ_KEY = 'siteSeq';
  * (the pre-fix historical diverge repair). Afterwards the per-site key
  * exists and is preferred, so a stale legacy mirror can never resurrect.
  * @param {string} siteKey normalized site key
- * @returns {Promise<{ record: { enabled: boolean, gainDb: number, seq: number, mirror: boolean }, fromLegacy: boolean }>}
+ * @returns {Promise<{ record: { enabled: boolean, gainDb: number, seq: number, mirror: boolean, excluded: boolean }, fromLegacy: boolean }>}
  */
 async function readSiteRecord(siteKey) {
   const perKey = backgroundShared.siteStorageKey(siteKey);
@@ -134,13 +135,38 @@ async function readSiteRecord(siteKey) {
  * Persist one per-site record with a SINGLE `set` carrying a SINGLE
  * top-level key. No other key is touched.
  * @param {string} siteKey normalized site key
- * @param {{ enabled: boolean, gainDb: number, seq: number, mirror: boolean }} record
+ * @param {{ enabled: boolean, gainDb: number, seq: number, mirror: boolean, excluded?: boolean }} record
  */
 async function writeSiteRecord(siteKey, record) {
   const perKey = backgroundShared.siteStorageKey(siteKey);
   await chrome.storage.local.set({
     [perKey]: backgroundShared.normalizeSiteRecord(record),
   });
+}
+
+/**
+ * Exclusion outranks everything else: an excluded site is inactive whatever
+ * `enabled`, browser site access, or a transient session override says.
+ * The rule is the host's own record OR any parent host's (`h === key ||
+ * h.endsWith('.' + key)`), so excluding `tiktok.com` also covers
+ * `www.tiktok.com`.
+ * @param {string} siteKey
+ * @returns {Promise<boolean>}
+ */
+async function isSiteExcluded(siteKey) {
+  if (!siteKey) return false;
+  const keys = [siteKey].concat(backgroundShared.ancestorSiteKeys(siteKey));
+  for (const key of keys) {
+    try {
+      const { record } = await readSiteRecord(key);
+      if (record.excluded === true) return true;
+    } catch {
+      // Unknown truth is not exclusion: the content script's own read is the
+      // backstop, and failing closed here would break a working site on a
+      // storage hiccup.
+    }
+  }
+  return false;
 }
 
 /**
@@ -160,12 +186,14 @@ function extractIntentSet(message) {
     const out = {};
     if (Object.prototype.hasOwnProperty.call(src, 'enabled')) out.enabled = Boolean(src.enabled);
     if (Object.prototype.hasOwnProperty.call(src, 'gainDb')) out.gainDb = backgroundShared.clampGainDb(src.gainDb);
+    if (Object.prototype.hasOwnProperty.call(src, 'excluded')) out.excluded = Boolean(src.excluded);
     return out;
   }
   /** @type {Record<string, unknown>} */
   const legacy = {};
   if (Object.prototype.hasOwnProperty.call(message, 'enabled')) legacy.enabled = Boolean(message.enabled);
   if (Object.prototype.hasOwnProperty.call(message, 'gainDb')) legacy.gainDb = backgroundShared.clampGainDb(message.gainDb);
+  if (Object.prototype.hasOwnProperty.call(message, 'excluded')) legacy.excluded = Boolean(message.excluded);
   return legacy;
 }
 
@@ -242,6 +270,157 @@ function canAccessTabUrl(url) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Registration-time enforcement (layer 1).
+//
+// The content script is no longer a static `<all_urls>` manifest entry: it is
+// registered dynamically and ONLY for hosts whose stored record can be active.
+// A host with no record, or a disabled one, gets no injection at all — the
+// twenty-four-hours-a-day `document_start` script on every page of every site
+// is gone. Excluded hosts are additionally listed in `excludeMatches`, so a
+// subdomain of an excluded host is refused by the browser itself.
+//
+// Re-registration is triggered by install, startup, and every storage change
+// that moves `enabled` or `excluded` (see the `site:<key>` change loop at the
+// bottom of this file). Gain changes never re-register: matches do not depend
+// on gain.
+// ---------------------------------------------------------------------------
+
+/**
+ * Every per-site record in storage, keyed by site key (full hostname).
+ * @param {Record<string, unknown>} all
+ */
+function collectPerSiteRecords(all) {
+  /** @type {Map<string, { enabled: boolean, gainDb: number, seq: number, mirror: boolean, excluded: boolean }>} */
+  const records = new Map();
+  for (const [key, value] of Object.entries(all || {})) {
+    if (!backgroundShared.isSiteStorageKey(key) || !value || typeof value !== 'object') continue;
+    const siteKey = backgroundShared.siteKeyFromStorageKey(key);
+    if (!siteKey) continue;
+    records.set(siteKey, backgroundShared.normalizeSiteRecord(value));
+  }
+  return records;
+}
+
+/**
+ * Legacy-only enables: a site switched on before per-site records existed and
+ * never written since. They keep working, and they keep the WILDCARD match
+ * (a collapsed `youtube.com` key legitimately covers every `*.youtube.com`
+ * host through the legacy read fallback), so registration loses nothing.
+ * @param {Record<string, unknown>} all
+ * @param {Map<string, unknown>} records
+ */
+function collectLegacyEnabledSiteKeys(all, records) {
+  /** @type {Set<string>} */
+  const out = new Set();
+  const siteSettings = /** @type {Record<string, unknown>} */ ((all && all.siteSettings) || {});
+  const activeSites = /** @type {Record<string, unknown>} */ ((all && all.activeSites) || {});
+  const siteToggles = /** @type {Record<string, unknown>} */ ((all && all.siteToggles) || {});
+  /** @type {Set<string>} */
+  const candidates = new Set();
+  for (const raw of Object.keys(siteSettings)) {
+    const k = backgroundShared.getSiteKey(raw);
+    if (k) candidates.add(k);
+  }
+  for (const [raw, value] of Object.entries(activeSites)) {
+    if (!Boolean(value)) continue;
+    const k = backgroundShared.getSiteKey(raw);
+    if (k) candidates.add(k);
+  }
+  for (const [raw, value] of Object.entries(siteToggles)) {
+    if (typeof value !== 'boolean') continue;
+    const k = backgroundShared.getSiteKey(raw);
+    if (k) candidates.add(k);
+  }
+  for (const candidate of candidates) {
+    if (records.has(candidate)) continue;
+    const migrated = backgroundShared.migrateLegacyToRecord(siteSettings, activeSites, siteToggles, candidate);
+    if (migrated && migrated.enabled) out.add(candidate);
+  }
+  return out;
+}
+
+/**
+ * The content-script registration implied by stored truth.
+ * @returns {Promise<{ matches: string[], excludeMatches: string[] }>}
+ */
+async function deriveContentScriptRegistration() {
+  const all = /** @type {Record<string, unknown>} */ (await chrome.storage.local.get(null));
+  const records = collectPerSiteRecords(all);
+  /** @type {string[]} */
+  const activeHosts = [];
+  /** @type {string[]} */
+  const excludedHosts = [];
+  for (const [siteKey, record] of records) {
+    if (record.excluded) {
+      excludedHosts.push(siteKey);
+      continue;
+    }
+    if (record.enabled) activeHosts.push(siteKey);
+  }
+  const matches = backgroundShared.siteHostMatchPatterns(activeHosts)
+    .concat(backgroundShared.siteExcludeMatchPatterns(Array.from(collectLegacyEnabledSiteKeys(all, records))));
+  return {
+    matches,
+    excludeMatches: backgroundShared.siteExcludeMatchPatterns(excludedHosts),
+  };
+}
+
+/**
+ * Bring `chrome.scripting` in line with stored truth. Registration failure is
+ * never fatal: it is logged and the remaining two layers (the content-script
+ * gate and the background's own injection refusal) still hold, so a browser
+ * that rejects a pattern degrades to "the script runs and immediately stops"
+ * rather than to "nothing works".
+ */
+async function syncContentScriptRegistration() {
+  try {
+    if (!chrome.scripting || typeof chrome.scripting.registerContentScripts !== 'function') return;
+    const { matches, excludeMatches } = await deriveContentScriptRegistration();
+    const existing = typeof chrome.scripting.getRegisteredContentScripts === 'function'
+      ? await chrome.scripting.getRegisteredContentScripts({ ids: [CONTENT_SCRIPT_ID] })
+      : [];
+    if (matches.length === 0) {
+      // Nothing can be active: leave no registration behind at all.
+      const known = typeof chrome.scripting.getRegisteredContentScripts === 'function'
+        ? (await chrome.scripting.getRegisteredContentScripts({ ids: [CONTENT_SCRIPT_ID] })).length > 0
+        : true;
+      if (known) await chrome.scripting.unregisterContentScripts({ ids: [CONTENT_SCRIPT_ID] });
+      return;
+    }
+    /** @type {chrome.scripting.RegisteredContentScript} */
+    const descriptor = {
+      id: CONTENT_SCRIPT_ID,
+      js: INJECTABLE_FILES,
+      matches,
+      excludeMatches,
+      runAt: 'document_start',
+      allFrames: true,
+      matchOriginAsFallback: true,
+      world: 'ISOLATED',
+      persistAcrossSessions: true,
+    };
+    if (existing.length > 0) {
+      await chrome.scripting.updateContentScripts([descriptor]);
+    } else {
+      await chrome.scripting.registerContentScripts([descriptor]);
+    }
+  } catch (e) {
+    console.warn('[bg] content-script registration failed, gate layer still enforces:', String(e));
+  }
+}
+
+// Coalesced re-registration: a burst of writes (toggle + gain + exclusion)
+// costs one registration pass, not one per write.
+let registrationSyncTimer = null;
+function scheduleRegistrationSync() {
+  if (registrationSyncTimer) return;
+  registrationSyncTimer = setTimeout(() => {
+    registrationSyncTimer = null;
+    void syncContentScriptRegistration();
+  }, 0);
+}
+
 function getTabSiteKey(tab) {
   if (!canAccessTabUrl(tab?.url)) {
     return '';
@@ -299,6 +478,9 @@ function flushSiteBroadcast(siteKey) {
             siteKey,
             enabled: current.enabled,
             gainDb: current.gainDb,
+            // Live teardown: the content script stops on this flag without a
+            // storage read. Exclusion outranks `enabled` at the tab.
+            excluded: current.excluded,
           }, { frameId: 0 }).catch(() => {});
         }
       });
@@ -368,6 +550,11 @@ async function prepareCurrentTabActivation(tabId, siteKey) {
     return { state: 'pending' };
   }
 
+  // Layer 3, enable path: an excluded host is never injected.
+  if (await isSiteExcluded(siteKey)) {
+    return { state: 'idle' };
+  }
+
   try {
     if (!await hasInjectedContentScript(tabId)) {
       await injectTabScripts(tabId);
@@ -406,6 +593,11 @@ async function tryApplyPendingSessionState(tabId, tab) {
   }
 
   if (getTabSiteKey(tab) !== entry.siteKey) {
+    return false;
+  }
+
+  // Exclusion outranks a transient session override.
+  if (await isSiteExcluded(entry.siteKey)) {
     return false;
   }
 
@@ -451,6 +643,11 @@ async function softRecheckDocument(tabId, siteKey) {
     return { ok: true, activation: { state: 'idle' } };
   }
 
+  // Exclusion beats a soft wake: nothing is injected, nothing runs.
+  if (await isSiteExcluded(siteKey || getTabSiteKey(tab))) {
+    return { ok: true, activation: { state: 'idle' } };
+  }
+
   try {
     if (!await hasInjectedContentScript(tabId)) {
       await injectTabScripts(tabId);
@@ -468,6 +665,12 @@ async function softRecheckDocument(tabId, siteKey) {
 
 async function syncExistingTabsForSite(siteKey) {
   if (!siteKey) {
+    return;
+  }
+
+  // Layer 3, batch path (enable, startup re-inject, un-exclude): an excluded
+  // host is never injected, not even with the ISOLATED pair.
+  if (await isSiteExcluded(siteKey)) {
     return;
   }
 
@@ -520,7 +723,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         // the same write. Last-accepted-write-wins: nothing is rejected on
         // ordering grounds; a delayed toggle that arrives later flips whatever
         // is live at arrival time (documented trade).
-        /** @type {{ seq: number, nextEnabled: boolean, gainDb: number }} */
+        /** @type {{ seq: number, nextEnabled: boolean, gainDb: number, excluded: boolean }} */
         const outcome = await withStorageWrite(async () => {
           const { record: storedRec } = await readSiteRecord(siteKey);
           const nextEnabled = !storedRec.enabled;
@@ -530,11 +733,14 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             gainDb: storedRec.gainDb,
             seq: nextSeq,
             mirror: nextEnabled,
+            // A toggle never clears an exclusion: exclusion is only changed by
+            // an explicit `excluded` intent.
+            excluded: storedRec.excluded,
           });
           // Single top-level key, single set: settings + mirror + sequence
           // can never diverge.
           await writeSiteRecord(siteKey, next);
-          return { seq: nextSeq, nextEnabled, gainDb: next.gainDb };
+          return { seq: nextSeq, nextEnabled, gainDb: next.gainDb, excluded: next.excluded };
         });
         if (outcome.nextEnabled) {
           await syncExistingTabsForSite(siteKey);
@@ -544,6 +750,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           ok: true,
           enabled: outcome.nextEnabled,
           gainDb: outcome.gainDb,
+          excluded: outcome.excluded,
           siteKey,
           seq: outcome.seq,
         };
@@ -559,7 +766,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         // sibling popup can never overwrite an unrelated newer field.
         const intent = extractIntentSet(/** @type {Record<string, unknown>} */ (message));
 
-        /** @type {{ seq: number, enabled: boolean, gainDb: number, enabledApplied: boolean }} */
+        /** @type {{ seq: number, enabled: boolean, gainDb: number, enabledApplied: boolean, excluded: boolean, exclusionChanged: boolean, previousExcluded: boolean }} */
         const applied = await withStorageWrite(async () => {
           const { record: storedRec } = await readSiteRecord(siteKey);
           // Last-accepted-write-wins: every intent field applies to the live
@@ -569,12 +776,20 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           // ignored (never compared, never persisted).
           let enabled = storedRec.enabled;
           let gainDb = storedRec.gainDb;
+          let excluded = storedRec.excluded;
           let enabledApplied = false;
           if (Object.prototype.hasOwnProperty.call(intent, 'enabled')) {
             enabled = Boolean(intent.enabled);
             enabledApplied = true;
           }
           if (Object.prototype.hasOwnProperty.call(intent, 'gainDb')) gainDb = backgroundShared.clampGainDb(intent.gainDb);
+          // Exclusion is a plain field of the same record: flipping it never
+          // rewrites `enabled` or `gainDb`, so undo restores them untouched.
+          const exclusionChanged = Object.prototype.hasOwnProperty.call(intent, 'excluded')
+            && Boolean(intent.excluded) !== storedRec.excluded;
+          if (Object.prototype.hasOwnProperty.call(intent, 'excluded')) {
+            excluded = Boolean(intent.excluded);
+          }
           const requestedEnabledChange = Object.prototype.hasOwnProperty.call(intent, 'enabled');
           const nextSeq = storedRec.seq + 1;
           const next = backgroundShared.normalizeSiteRecord({
@@ -584,6 +799,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             // The mirror follows `enabled` in the SAME per-site write; a
             // gain-only patch leaves it untouched.
             mirror: requestedEnabledChange ? enabled : storedRec.mirror,
+            excluded,
           });
 
           if (persist) {
@@ -596,10 +812,20 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             await writeSiteRecord(siteKey, next);
             await setPendingSessionState(message.tabId, null);
           }
-          return { seq: persist ? nextSeq : storedRec.seq, enabled: next.enabled, gainDb: next.gainDb, enabledApplied };
+          return {
+            seq: persist ? nextSeq : storedRec.seq,
+            enabled: next.enabled,
+            gainDb: next.gainDb,
+            enabledApplied,
+            excluded: next.excluded,
+            exclusionChanged,
+            previousExcluded: storedRec.excluded,
+          };
         });
 
-        const shouldActivateCurrentTab = applied.enabledApplied && applied.enabled;
+        // Exclusion beats enablement: activation is refused for an excluded
+        // host (layer 3), whatever the intent said.
+        const shouldActivateCurrentTab = applied.enabledApplied && applied.enabled && !applied.excluded;
         const activation = shouldActivateCurrentTab
           ? await prepareCurrentTabActivation(message.tabId, siteKey)
           : { state: 'idle' };
@@ -616,11 +842,19 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         if (shouldActivateCurrentTab && persist) {
           await syncExistingTabsForSite(siteKey);
         }
+        // Live teardown / revive for tabs that are already open. The storage
+        // broadcast (TOGGLE_CHANGED, carrying `excluded`) reaches frames whose
+        // listeners are still armed; an un-exclude must also re-inject, because
+        // the torn-down frames have no listeners left to hear it.
+        if (persist && applied.exclusionChanged && !applied.excluded && applied.enabled) {
+          await syncExistingTabsForSite(siteKey);
+        }
         console.log('[bg]', persist ? 'stored:' : 'transient:', siteKey, JSON.stringify(applied));
         return {
           ok: true,
           enabled: applied.enabled,
           gainDb: applied.gainDb,
+          excluded: applied.excluded,
           siteKey,
           seq: applied.seq,
           activation,
@@ -645,6 +879,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           ok: true,
           enabled: reconciled.enabled,
           gainDb: reconciled.gainDb,
+          excluded: reconciled.excluded,
           siteKey,
           seq: reconciled.seq,
         };
@@ -652,6 +887,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       case 'INJECT_PAGE_HOOK': {
         const tabId = _sender?.tab?.id;
         if (!tabId) throw new Error('No tab ID for page hook injection.');
+        // Layer 3: the MAIN-world patch is never written into an excluded
+        // host. This is the last line for every injection path — enable,
+        // startup re-inject, activation retry and SPA revive all arrive here.
+        const hookSiteKey = getTabSiteKey(_sender?.tab);
+        if (hookSiteKey && await isSiteExcluded(hookSiteKey)) {
+          return { ok: false, error: 'Site is excluded; page hook not injected.' };
+        }
         // Sender-frame targeting: content scripts in iframes carry their
         // frameId; tab-level calls have none and default to frame 0.
         const senderFrameId = (typeof _sender?.frameId === 'number' && Number.isFinite(_sender.frameId))
@@ -678,6 +920,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 });
 
 chrome.runtime.onStartup.addListener(async () => {
+  // Registration first: layer 1 must be correct before anything is injected.
+  await syncContentScriptRegistration();
   // Finding 3: a rejected migration write must not abort re-injection. The
   // migration is isolated in its own try/catch that reports and continues;
   // the injection union below always runs, and its own failures are reported
@@ -754,6 +998,13 @@ chrome.runtime.onStartup.addListener(async () => {
   }
 });
 
+// Install/update: the static `<all_urls>` entry is gone, so the dynamic
+// registration is the only thing that injects at `document_start`. Populate it
+// before the first navigation.
+chrome.runtime.onInstalled?.addListener?.(() => {
+  void syncContentScriptRegistration();
+});
+
 // Single storage listener: preserves the legacy `siteToggles` broadcast
 // contract AND carries the per-site broadcast. Reads prefer the per-site key,
 // so a delayed legacy mirror write that disagrees with the per-site record
@@ -778,6 +1029,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
                   siteKey,
                   enabled: newToggles[siteKey],
                   gainDb: record.gainDb,
+                  excluded: record.excluded,
                 }, { frameId: 0 }).catch(() => {});
               }
             });
@@ -804,8 +1056,16 @@ chrome.storage.onChanged.addListener((changes, area) => {
       ? backgroundShared.normalizeSiteRecord(change.newValue)
       : null;
     if (!newRec) continue;
+    // `enabled` and `excluded` both move the injection surface, so both
+    // re-register; a gain-only change never does.
+    if (!oldRec
+      || oldRec.enabled !== newRec.enabled
+      || oldRec.excluded !== newRec.excluded) {
+      scheduleRegistrationSync();
+    }
     if (oldRec && oldRec.enabled === newRec.enabled
-      && oldRec.gainDb === newRec.gainDb) continue;
+      && oldRec.gainDb === newRec.gainDb
+      && oldRec.excluded === newRec.excluded) continue;
     scheduleSiteBroadcast(siteKey);
   }
 });

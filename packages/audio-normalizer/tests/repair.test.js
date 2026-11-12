@@ -319,8 +319,17 @@ test('item6: legacy collapsed record migrates to the full key on first write', a
 
 // ============ item 2/8/9/10: manifest, policy, copy ============
 test('item2: content script covers opaque-origin iframes', () => {
+  // The content script is no longer a static `<all_urls>` manifest entry: it
+  // is registered dynamically (background.js `syncContentScriptRegistration`).
+  // The opaque-origin guarantee now lives on that descriptor, so assert both
+  // halves: the manifest no longer injects anywhere, and the registration
+  // carries `matchOriginAsFallback` with `all_frames`.
   const manifest = JSON.parse(read('manifest.json'));
-  assert.equal(manifest.content_scripts[0].match_origin_as_fallback, true);
+  assert.equal(manifest.content_scripts, undefined, 'no static injection left');
+  const bg = read('background.js');
+  assert.match(bg, /matchOriginAsFallback:\s*true/);
+  assert.match(bg, /allFrames:\s*true/);
+  assert.match(bg, /runAt:\s*'document_start'/);
 });
 
 test('item8: unused tabs permission gone from manifest and policy', () => {

@@ -4,6 +4,7 @@ const gainSlider = /** @type {HTMLInputElement} */ (document.getElementById('gai
 const gainValueEl = /** @type {HTMLElement} */ (document.getElementById('gain-value'));
 const hostnameEl = /** @type {HTMLElement} */ (document.getElementById('hostname'));
 const statusPillEl = /** @type {HTMLElement | null} */ (document.getElementById('status-pill'));
+const excludeBtnEl = /** @type {HTMLButtonElement | null} */ (document.getElementById('exclude-btn'));
 const statusTextEl = /** @type {HTMLElement} */ (document.getElementById('status-text'));
 /** @type {NodeListOf<HTMLButtonElement>} */
 const presetButtons = document.querySelectorAll('[data-preset]');
@@ -40,6 +41,13 @@ let persistTargetGain = null;
 let runtimeActivationState = 'idle';
 let runtimeActivationMessage = '';
 let softWakePromise = null;
+// Per-site exclusion, as stored. Outranks `enabled` entirely: while excluded
+// the switch and the slider are disabled and nothing runs on the site. Only
+// the flag is ever written, so undo restores the previous enabled/gainDb.
+let excluded = false;
+let excludeInFlight = false;
+let statusPollStarted = false;
+const EXCLUDED_TEXT = 'Excluded. Nothing runs on this site.';
 const ACTIVE_STALE_MS = 3000;
 
 // Single owner: the background owns persisted state and applies intents.
@@ -98,6 +106,8 @@ async function revertToStoredTruth() {
   applyControlState({ enabled: state.enabled, gainDb: state.gainDb });
   lastPersistedGain = popupShared.clampGainDb(state.gainDb);
   lastLiveSent = null;
+  excluded = Boolean(state.excluded);
+  applyExcludedState();
   return state;
 }
 
@@ -159,6 +169,12 @@ presetButtons.forEach((button) => {
   });
 });
 
+if (excludeBtnEl) {
+  excludeBtnEl.addEventListener('click', () => {
+    void toggleExclusion();
+  });
+}
+
 async function init() {
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -193,22 +209,101 @@ async function init() {
     renderGain(gainSlider.value);
     lastPersistedGain = popupShared.clampGainDb(state?.gainDb);
     lastLiveSent = null;
+    excluded = Boolean(state?.excluded);
     toggle.disabled = false;
+    applyExcludedState();
     syncGainControlState();
     syncPresetControlState();
 
-    if (toggle.checked) {
+    if (excluded) {
+      // No polling at all while excluded: nothing runs, nothing to poll.
+      renderStatus({ indicator: 'gray', text: EXCLUDED_TEXT, excluded: true });
+    } else if (toggle.checked) {
       await refreshDocumentStatus();
     } else {
       renderStatus({ indicator: 'gray', text: 'Off for this site.' });
     }
 
-    setInterval(() => {
-      void refreshDocumentStatus();
-    }, 750);
+    if (!excluded) startStatusPolling();
   } catch {
     hostnameEl.textContent = 'Unsupported';
     disableAll('Extension status unavailable.');
+  }
+}
+
+function startStatusPolling() {
+  if (statusPollStarted) return;
+  statusPollStarted = true;
+  setInterval(() => {
+    void refreshDocumentStatus();
+  }, 750);
+}
+
+/**
+ * Render the exclusion: the switch and the slider are disabled and the one
+ * quiet line says why. The button flips into its "stop excluding" state.
+ */
+function applyExcludedState() {
+  if (excludeBtnEl) {
+    excludeBtnEl.setAttribute('aria-pressed', excluded ? 'true' : 'false');
+    excludeBtnEl.setAttribute('aria-label', excluded ? 'Stop excluding this site' : 'Exclude this site');
+    excludeBtnEl.title = excluded ? 'Stop excluding this site' : 'Exclude this site';
+  }
+  if (excluded) {
+    toggle.disabled = true;
+    gainSlider.disabled = true;
+    syncPresetControlState();
+    renderStatus({ indicator: 'gray', text: EXCLUDED_TEXT, excluded: true });
+    return;
+  }
+  toggle.disabled = false;
+  syncGainControlState();
+  syncPresetControlState();
+}
+
+/**
+ * Flip the exclusion. ONE field-level intent: `{ excluded: boolean }`. The
+ * background owns the record, so `enabled` and `gainDb` are never sent and
+ * never touched — undo restores them exactly.
+ */
+async function toggleExclusion() {
+  if (!siteKey || excludeInFlight) return;
+  const wanted = !excluded;
+  excludeInFlight = true;
+  if (excludeBtnEl) excludeBtnEl.disabled = true;
+  try {
+    const res = await chrome.runtime.sendMessage({
+      type: 'SET_SITE_STATE',
+      siteKey,
+      tabId,
+      set: { excluded: wanted },
+    });
+    requireStoredTruth(res);
+    applyControlState({ enabled: res.enabled, gainDb: res.gainDb });
+    excluded = Boolean(res.excluded);
+    applyExcludedState();
+    if (excluded) {
+      runtimeActivationState = 'idle';
+      runtimeActivationMessage = '';
+      lastHookActive = false;
+      hookWasActiveAt = 0;
+      renderStatus({ indicator: 'gray', text: EXCLUDED_TEXT, excluded: true });
+    } else {
+      startStatusPolling();
+      await refreshDocumentStatus();
+    }
+  } catch {
+    let reverted = false;
+    try {
+      await revertToStoredTruth();
+      reverted = true;
+    } catch {}
+    reportWriteError(reverted
+      ? 'Could not save. Reverted.'
+      : 'Could not save. State unknown — reopen the popup and try again.');
+  } finally {
+    excludeInFlight = false;
+    if (excludeBtnEl) excludeBtnEl.disabled = false;
   }
 }
 
@@ -224,6 +319,13 @@ function disableAll(statusText) {
 async function toggleSite() {
   if (!siteKey) {
     toggle.checked = !toggle.checked;
+    return;
+  }
+  // Exclusion owns the switch: while excluded it is disabled, and a stale
+  // caller must not resurrect audio on the site.
+  if (excluded) {
+    toggle.checked = false;
+    applyExcludedState();
     return;
   }
 
@@ -467,6 +569,11 @@ function applyPreset(gainDb) {
 async function refreshDocumentStatus() {
   const requestToken = ++statusRequestToken;
 
+  if (excluded) {
+    renderStatus({ indicator: 'gray', text: EXCLUDED_TEXT, excluded: true });
+    return;
+  }
+
   if (!toggle.checked && runtimeActivationState !== 'pending' && runtimeActivationState !== 'active') {
     renderStatus({ indicator: 'gray', text: 'Off for this site.' });
     return;
@@ -582,9 +689,17 @@ function getStatusText({ enabled, hookActive, activating, lastError }) {
   return 'Off for this site.';
 }
 
-function renderStatus({ indicator, text }) {
+/**
+ * @param {{ indicator: string, text: string, excluded?: boolean }} status
+ */
+function renderStatus({ indicator, text, excluded: isExcluded }) {
   statusTextEl.textContent = text;
   if (!statusPillEl) return;
+  if (isExcluded) {
+    statusPillEl.textContent = 'Excluded';
+    statusPillEl.dataset.state = 'off';
+    return;
+  }
   if (indicator === 'green') {
     statusPillEl.textContent = 'Active';
     statusPillEl.dataset.state = 'connected';

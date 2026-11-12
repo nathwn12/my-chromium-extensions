@@ -47,13 +47,20 @@ interface TabNormalizerSharedApi {
   siteStorageKey: (siteKey: string) => string;
   isSiteStorageKey: (key: string) => boolean;
   siteKeyFromStorageKey: (key: string) => string;
-  normalizeSiteRecord: (value: unknown) => { siteKey?: string; enabled: boolean; gainDb: number; seq: number; mirror: boolean };
+  normalizeSiteRecord: (value: unknown) => { siteKey?: string; enabled: boolean; gainDb: number; seq: number; mirror: boolean; excluded: boolean };
   migrateLegacyToRecord: (
     siteSettings: Record<string, unknown>,
     activeSites: Record<string, unknown>,
     siteToggles: Record<string, unknown>,
     hostnameOrSiteKey: string
-  ) => { enabled: boolean; gainDb: number; seq: number; mirror: boolean } | null;
+  ) => { enabled: boolean; gainDb: number; seq: number; mirror: boolean; excluded: boolean } | null;
+  hostMatchesSiteKey: (hostname: string, siteKey: string) => boolean;
+  isHostExcluded: (hostname: string, excludedKeys: string[] | null | undefined) => boolean;
+  ancestorSiteKeys: (hostname: string) => string[];
+  siteExcludeMatchPattern: (siteKey: string) => string;
+  siteExcludeMatchPatterns: (siteKeys: string[]) => string[];
+  siteHostMatchPattern: (siteKey: string) => string;
+  siteHostMatchPatterns: (siteKeys: string[]) => string[];
 
 }
 
