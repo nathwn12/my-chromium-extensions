@@ -32,6 +32,7 @@ function loadHook(options = {}) {
     captureStream: 0,
     elementSource: 0,
     mediaStreamSource: 0,
+    probeRuns: 0,
     queryAudioVideo: 0,
     queryAll: 0,
     tracksStopped: 0,
@@ -39,6 +40,7 @@ function loadHook(options = {}) {
   const parked = [];
   const streams = [];
   const streamSources = [];
+  const worklets = [];
   const edges = new Set();
   const edgeKey = (from, to) => `${from}->${to}`;
   const documentListeners = {};
@@ -120,6 +122,7 @@ function loadHook(options = {}) {
   }
 
   const contexts = [];
+  let resumeStuck = false;
   class FakeAudioContext {
     constructor() {
       contexts.push(this);
@@ -128,7 +131,7 @@ function loadHook(options = {}) {
       this.destination = new FakeNode(this);
       this.audioWorklet = { addModule: async () => {} };
     }
-    async resume() { this.state = 'running'; }
+    async resume() { if (!resumeStuck) this.state = 'running'; }
     async suspend() { this.state = 'suspended'; }
     close() { this.state = 'closed'; return Promise.resolve(); }
     createGain() {
@@ -137,6 +140,7 @@ function loadHook(options = {}) {
       return node;
     }
     createAnalyser() {
+      counters.probeRuns += 1;
       return new FakeAnalyser(this);
     }
     createMediaStreamSource(stream) {
@@ -161,8 +165,12 @@ function loadHook(options = {}) {
   class FakeWorkletNode extends FakeNode {
     constructor() {
       super(null);
+      this._ope = null;
       this.port = { postMessage: () => {} };
+      worklets.push(this);
     }
+    set onprocessorerror(value) { this._ope = value; }
+    get onprocessorerror() { return this._ope; }
   }
 
   class FakeMutationObserver {
@@ -180,11 +188,13 @@ function loadHook(options = {}) {
       this.volume = 1;
       this.readyState = paused ? 0 : 4;
       this.preload = 'auto';
+      this.isConnected = true;
       this.src = src;
       this.currentSrc = src;
       this.crossOrigin = null;
       this.mediaKeys = null;
       this.srcObject = null;
+      this.capturedSrc = null;
       this._listeners = {};
       this._audio = audio;
       this._signal = signal;
@@ -196,6 +206,12 @@ function loadHook(options = {}) {
       this._listeners[type] = (this._listeners[type] || []).filter((entry) => entry !== fn);
     }
     dispatch(type) {
+      // The hook watches media events once, on the document, in the capture
+      // phase (they do not bubble). Model that path first, then the element's
+      // own listeners.
+      for (const fn of (documentListeners[type] || []).slice()) {
+        try { fn.call(documentStub, { type, target: this }); } catch {}
+      }
       for (const fn of (this._listeners[type] || []).slice()) {
         try { fn.call(this, { type, target: this }); } catch {}
       }
@@ -204,6 +220,7 @@ function loadHook(options = {}) {
     captureStream() {
       counters.captureStream += 1;
       this.captureStreamCalls += 1;
+      this.capturedSrc = this.currentSrc;
       const stream = new FakeStream({
         audio: this._audio,
         signal: this._signal,
@@ -288,7 +305,10 @@ function loadHook(options = {}) {
 
   return {
     sandbox, counters, streams, contexts, parked, FakeMediaElement,
-    edges, streamSources,
+    edges, streamSources, worklets,
+    // Model an autoplay-gated tab: a suspended context whose resume() never
+    // reaches `running`.
+    stickResume: () => { resumeStuck = true; },
     control, start, stop, destroy, status, surface,
     fireDocument: (type) => {
       for (const fn of (documentListeners[type] || []).slice()) {
@@ -452,6 +472,204 @@ test('page-owned, DRM and srcObject media are skipped, untouched and never muted
     assert.equal(element.__tnAttached !== true, true, 'never routed');
   }
   assert.equal(hook.status().unprocessed >= 2, true, 'the verdict counts the skipped media');
+});
+
+test('an audible blob: (MSE) tap is probed and routed', async () => {
+  const hook = loadHook();
+  hook.start();
+  await hook.ready();
+  const video = park(hook, new hook.FakeMediaElement({
+    paused: false,
+    src: 'blob:https://www.example.com/6f1e-4a2b',
+    signal: 0.3,
+  }));
+  await video.play();
+  await waitFor(() => video.__tnAttached === true, 10000, 'blob element routed');
+  assert.equal(hook.counters.probeRuns, 1, 'the tap is proven even for blob:');
+  assert.equal(video.muted, true, 'and muted only after the proof');
+  assert.equal(hook.status().protected, 0);
+});
+
+test('a silent blob: (MSE) tap is probed, never routed and never muted', async () => {
+  const hook = loadHook();
+  hook.start();
+  await hook.ready();
+  const video = park(hook, new hook.FakeMediaElement({
+    paused: false,
+    src: 'blob:https://www.tiktok.com/9a8b-7c6d',
+    signal: 0,
+  }));
+  await video.play();
+  await waitFor(() => hook.status().protected === 1, 10000, 'protected verdict for the silent blob tap');
+  assert.equal(hook.counters.probeRuns, 1, 'blob: is probed, not assumed audible');
+  assert.equal(video.muted, false, 'the page keeps its audio');
+  assert.equal(video.__tnAttached !== true, true, 'and nothing was routed');
+  assert.ok(hook.counters.tracksStopped >= 1, 'the dead tap is released');
+});
+
+test('every tap is probed, whatever its origin or scheme', async () => {
+  const hook = loadHook();
+  hook.start();
+  await hook.ready();
+  const sameOrigin = park(hook, new hook.FakeMediaElement({ paused: false, src: 'https://www.example.com/a.mp4', signal: 0.5 }));
+  await sameOrigin.play();
+  await waitFor(() => sameOrigin.__tnAttached === true, 10000, 'same-origin routed');
+  assert.equal(hook.counters.probeRuns, 1, 'same-origin tap is proven');
+
+  const blob = park(hook, new hook.FakeMediaElement({ paused: false, src: 'blob:https://www.example.com/x', signal: 0.5 }));
+  await blob.play();
+  await waitFor(() => blob.__tnAttached === true, 10000, 'blob routed');
+  assert.equal(hook.counters.probeRuns, 2, 'blob tap is proven too: the probe is not origin-gated');
+});
+
+test('a suspended context is never routed: the element stays native', async () => {
+  const hook = loadHook();
+  hook.start();
+  await hook.ready();
+  hook.stickResume();
+  hook.contexts[0].state = 'suspended';
+  const video = park(hook, new hook.FakeMediaElement({ paused: false }));
+  await video.play();
+  await sleep(500);
+  assert.equal(hook.counters.captureStream, 0, 'nothing is captured into a suspended context');
+  assert.equal(video.muted, false, 'the element keeps playing natively');
+  assert.equal(video.__tnAttached !== true, true, 'and is not owned');
+});
+
+test('a reused element with a new source hands back the old tap and re-evaluates', async () => {
+  const hook = loadHook();
+  hook.start();
+  await hook.ready();
+  const video = park(hook, new hook.FakeMediaElement({ paused: false, src: 'https://www.example.com/one.mp4' }));
+  await video.play();
+  await waitFor(() => video.__tnAttached === true, 10000, 'first source routed');
+  assert.equal(video.muted, true);
+  assert.equal(video.captureStreamCalls, 1);
+
+  // The feed reuses the element for the next item: a new source, the same node.
+  video.currentSrc = 'blob:https://www.example.com/two';
+  video.src = video.currentSrc;
+  video.dispatch('loadedmetadata');
+  // The stale tap is detached synchronously: the page has its own audio back
+  // before the new source is judged.
+  assert.equal(video.muted, false, 'native immediately after the source swap');
+  await waitFor(() => video.__tnAttached === true, 10000, 'the new source is routed');
+  assert.equal(video.captureStreamCalls, 2, 'a fresh tap for the new source');
+  assert.equal(video.capturedSrc, video.currentSrc, 'the live tap belongs to the current source');
+  assert.equal(hook.status().interrupted >= 1, true, 'the broken route is reported');
+});
+
+test('a 20-item feed with reused elements never double-taps and never leaves a stale mute', async () => {
+  const hook = loadHook();
+  hook.start();
+  await hook.ready();
+  const items = [];
+  for (let i = 0; i < 20; i += 1) {
+    items.push(park(hook, new hook.FakeMediaElement({ paused: false, src: `https://www.example.com/${i}.mp4` })));
+  }
+  // Each item plays once; the feed then swaps the source on whichever elements
+  // are routed, exactly like an infinite feed.
+  for (const item of items) await item.play();
+  await sleep(400);
+  for (const item of items) {
+    if (item.__tnAttached !== true) continue;
+    item.currentSrc = `blob:https://www.example.com/${item.currentSrc.length}-swap`;
+    item.src = item.currentSrc;
+    item.dispatch('loadedmetadata');
+  }
+  await sleep(600);
+
+  assert.equal(hook.counters.mediaStreamSource, hook.counters.captureStream,
+    'exactly one stream source per capture, never two for one element');
+  for (const item of items) {
+    if (item.muted === true) {
+      assert.equal(item.__tnAttached, true, 'a muted element is always the routed one');
+      assert.equal(item.capturedSrc, item.currentSrc, 'and its tap belongs to the current source');
+    }
+  }
+  const routed = items.filter((item) => item.__tnAttached === true).length;
+  assert.ok(routed <= 4, `the cap still holds under churn (got ${routed})`);
+});
+
+test('a context suspended mid-play fails open to native audio', async () => {
+  const hook = loadHook();
+  hook.start();
+  await hook.ready();
+  const video = park(hook, new hook.FakeMediaElement({ paused: false }));
+  await video.play();
+  await waitFor(() => video.__tnAttached === true, 10000, 'routed');
+  assert.equal(video.muted, true);
+
+  hook.stickResume();
+  hook.contexts[0].state = 'suspended';
+  hook.fireDocument('visibilitychange');
+  await waitFor(() => video.muted === false, 10000, 'the watchdog hands the element back');
+  assert.equal(video.__tnAttached, false, 'and the dead route is released');
+  assert.equal(hook.status().interrupted >= 1, true, 'reported, not silent');
+  assert.ok(hook.counters.tracksStopped >= 1, 'its tracks are stopped');
+});
+
+test('a worklet processor error fails open to native audio', async () => {
+  const hook = loadHook();
+  hook.start();
+  await hook.ready();
+  const video = park(hook, new hook.FakeMediaElement({ paused: false }));
+  await video.play();
+  await waitFor(() => video.__tnAttached === true, 10000, 'routed');
+  assert.ok(hook.worklets.length >= 1, 'a worklet exists');
+  // Every session has its own worklet; the one that owns the element is the one
+  // whose failure must hand the element back.
+  for (const worklet of hook.worklets) {
+    if (typeof worklet._ope === 'function') worklet._ope(new Error('boom'));
+  }
+  await sleep(80);
+  assert.equal(video.muted, false, 'the muted element is handed back at once');
+  assert.equal(video.__tnAttached, false, 'and the tap is released');
+  assert.equal(hook.status().interrupted >= 1, true, 'reported');
+});
+
+test('off/on during a source swap: no capture while off, a fresh one after', async () => {
+  const hook = loadHook();
+  hook.start();
+  await hook.ready();
+  const video = park(hook, new hook.FakeMediaElement({ paused: false, src: 'https://www.example.com/a.mp4' }));
+  await video.play();
+  await waitFor(() => video.__tnAttached === true, 10000, 'routed');
+  const capturesWhileOn = video.captureStreamCalls;
+
+  hook.stop();
+  await sleep(60);
+  assert.equal(video.muted, false, 'off is native');
+  video.currentSrc = 'https://www.example.com/b.mp4';
+  video.src = video.currentSrc;
+  video.dispatch('loadedmetadata');
+  await sleep(200);
+  assert.equal(video.captureStreamCalls, capturesWhileOn, 'nothing is captured while off');
+  assert.equal(video.muted, false, 'and the swapped element stays native');
+
+  hook.start();
+  await hook.ready();
+  video.dispatch('playing');
+  await waitFor(() => video.__tnAttached === true, 10000, 're-enabled on the new source');
+  assert.equal(video.captureStreamCalls, capturesWhileOn + 1, 'one fresh tap');
+  assert.equal(video.capturedSrc, video.currentSrc, 'for the source it is playing now');
+});
+
+test('a quiet passage with a running graph stays routed', async () => {
+  const hook = loadHook();
+  hook.start();
+  await hook.ready();
+  const video = park(hook, new hook.FakeMediaElement({ paused: false, signal: 0.4 }));
+  await video.play();
+  await waitFor(() => video.__tnAttached === true, 10000, 'routed');
+  // The passage goes quiet: the watchdog is mechanical, never amplitude-based.
+  for (const stream of hook.streams) stream.signal = 0;
+  video.dispatch('playing');
+  hook.fireDocument('visibilitychange');
+  await sleep(400);
+  assert.equal(video.muted, true, 'still routed through the graph');
+  assert.equal(video.__tnAttached, true, 'and still owned');
+  assert.equal(hook.status().interrupted, 0, 'a quiet passage is not a failure');
 });
 
 test('a feed of 20 paused videos costs nothing; only playing elements are capped at 4', async () => {

@@ -109,6 +109,29 @@ longer mean "nothing is installed".
 - **One scan.** A full document scan runs once per enable; recovery passes are
   rate-limited to one per 5 s, and the shadow-root walk is bounded (host cap,
   root cap, each root visited once).
+
+## Class-level churn: native audio always wins
+
+- **Source identity.** A stream tap is stored with the `currentSrc` /
+  `srcObject` it was captured from. On `playing`, `loadedmetadata`, `emptied` or
+  `seeking` (one document-level capture listener each, not four per element), a
+  changed source marks the tap stale: it is detached first (unmute → the page's
+  own audio), then the new source is evaluated on its own merits.
+- **Attach on `playing`.** A feed reuses one `<video>`; `playing` is the
+  reliable re-attach trigger, and it is also how an element that never went
+  through `play()` (autoplay) is picked up. `attachMediaElement` is deduped
+  (one attach in flight per element, cap 4), so a burst cannot double-tap.
+- **Fail-open watchdog.** A pass on the recovery burst checks, mechanically —
+  never by amplitude, so a quiet passage is not a failure: the context is
+  `running`, the tap source is still in the session, the worklet exists, and the
+  element is still in the document. Any failure detaches the tap, unmutes and
+  records `interrupted`; the element is retried on its next `playing`.
+- **Worklet error** on a stream route fails open the same way (a processor that
+  threw may be emitting silence), instead of trusting the bypass while the
+  element stays muted.
+- **Off is native under churn.** `STOP` detaches every stream route, stops its
+  tracks and unmutes; the document watchers are released by the same sweep and
+  no feed item is captured until the next enable.
 - **Enable.** `SET_SITE_STATE { enabled: true }` records the flag (and `seen`),
   the background answers `activation: { state: 'live' }`, and its
   `TOGGLE_CHANGED` broadcast makes the content script `START` the hook that is

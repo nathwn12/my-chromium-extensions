@@ -299,6 +299,10 @@
   // Elements left native because their captured stream carries no accessible
   // audio (CORS-protected) — a verdict, never a mute.
   const protectedMediaElements = new Set();
+  // Elements whose route broke underneath us (context lost, worklet error,
+  // source swapped, element removed). They were handed back to the page
+  // (native), and this is the verdict the popup shows.
+  const interruptedMediaElements = new Set();
   let recoveryBurstTimer = null;
   let recoveryBurstRemaining = 0;
 
@@ -462,6 +466,9 @@
     try {
       protectedMediaElements.clear();
     } catch {}
+    try {
+      interruptedMediaElements.clear();
+    } catch {}
   }
 
   function status() {
@@ -477,6 +484,8 @@
       unprocessed: unmanagedMediaElements.size,
       // Elements whose captured stream carried no accessible audio (CORS).
       protected: protectedMediaElements.size,
+      // Elements whose route broke and were handed back to the page (native).
+      interrupted: interruptedMediaElements.size,
     };
   }
 
@@ -570,6 +579,10 @@
     // DOM observer are the normal attach triggers after it).
     lastMediaScanAt = 0;
     attachExistingMediaElements();
+    // One capture listener per media event for the whole page: `playing` is the
+    // reliable re-attach trigger on a reused element, the rest carry identity
+    // changes. Registered for the enable, released by the stop sweep.
+    ensureMediaEventWatchers();
     rewatchAttachedMediaElements();
     routeSessions();
     updateSessionGains();
@@ -639,13 +652,14 @@
     teardownElementListeners();
     // Session context watchers survive: the sessions do (see watchSessionContext).
     untrackListeners((entry) => entry.keepOnStop === true);
-    // The armed flag must follow the sweep, or the next START would not re-add
-    // the document-level resume pair.
+    // The armed flags must follow the sweep, or the next START would not re-add
+    // the document-level listeners.
     if (attachedResumeArmed) {
       attachedResumeArmed = false;
       untrackListener(document, 'play', resumeAttachedSessions, true);
       untrackListener(document, 'playing', resumeAttachedSessions, true);
     }
+    mediaEventWatchersArmed = false;
     untrackAllTimers();
 
     reportStatus('HOOK_STOPPED');
@@ -1084,8 +1098,9 @@
       const raw = mediaElement.currentSrc || mediaElement.src || '';
       if (!raw) return false;
       const url = new URL(raw, location.href);
-      // blob:/data:/mediastream: URLs carry their own origin; MSE (YouTube's
-      // blob: URLs) is same-origin and must keep the element-source path.
+      // blob:/data:/mediastream: URLs carry their own origin, so they are not
+      // CORS-cross-origin for the fallback decision; the stream tap's probe is
+      // what decides whether such media is routable (an MSE tap can be silent).
       if (url.protocol !== 'http:' && url.protocol !== 'https:') return false;
       // `location.origin` is authoritative; the href fallback keeps the check
       // honest in worlds that expose only the URL.
@@ -1365,6 +1380,14 @@
         try { session.inputNode.connect(session.outputNode); } catch {}
         session.workletNode = null;
         session.processorFailures = (session.processorFailures || 0) + 1;
+        // A stream tap cannot rely on that bypass: a processor that threw may be
+        // emitting silence, and the element is muted. Fail open to the page's own
+        // audio instead (native over muted, always); `playing` retries the tap.
+        for (const mediaElement of Array.from(session.mediaElements)) {
+          if (elementSources.get(mediaElement)?.kind === 'stream') {
+            failOpenRoute(mediaElement, 'interrupted');
+          }
+        }
         setError('Audio processor error. Retrying…');
         if (!state.recovering) {
           state.recovering = true;
@@ -1836,13 +1859,15 @@
       stopTracks(stream);
       return { ok: false, reason: 'unavailable' };
     }
-    if (isCorsCrossOrigin(mediaElement)) {
-      const audible = await probeStreamSignal(session.context, source);
-      if (!audible) {
-        try { source.disconnect(); } catch {}
-        stopTracks(stream);
-        return { ok: false, reason: 'protected' };
-      }
+    // EVERY tap is proven before the element is muted — same-origin, cross-origin,
+    // and MSE (`blob:`) alike. The scheme says nothing about whether this graph
+    // will carry audio: an MSE tap can be silent, and a silent tap plus a muted
+    // element is the page muted. The probe decides, not the URL.
+    const audible = await probeStreamSignal(session.context, source);
+    if (!audible) {
+      try { source.disconnect(); } catch {}
+      stopTracks(stream);
+      return { ok: false, reason: 'protected' };
     }
     return { ok: true, stream, source };
   }
@@ -1872,12 +1897,151 @@
     // alive (suspend, never close) so a re-enable is fast.
     session.captured = true;
     try {
-      elementSources.set(mediaElement, { kind: 'stream', source: tap.source, session, stream: tap.stream });
+      const identity = sourceIdentity(mediaElement);
+      elementSources.set(mediaElement, {
+        kind: 'stream',
+        source: tap.source,
+        session,
+        stream: tap.stream,
+        src: identity.currentSrc,
+        srcObject: identity.srcObject,
+      });
       mediaElement.__tnAttached = true;
     } catch {}
     ensureAttachedResumeListeners();
     console.log('[hook] media element attached (stream tap):', mediaElement.tagName);
     reportStatus('HOOK_STATUS');
+  }
+
+  /**
+   * What media this element is playing right now. A feed reuses one <video> for
+   * the next item; the tap was bound to the previous source.
+   * @param {any} mediaElement
+   */
+  function sourceIdentity(mediaElement) {
+    try {
+      return {
+        srcObject: mediaElement.srcObject || null,
+        currentSrc: mediaElement.currentSrc || mediaElement.src || '',
+      };
+    } catch {
+      return { srcObject: null, currentSrc: '' };
+    }
+  }
+
+  /**
+   * A stream tap is bound to the element's source: when the source changes, the
+   * old tap's tracks end and the element stays muted for nobody. Detect that.
+   * @param {any} entry
+   * @param {any} mediaElement
+   */
+  function streamRouteIsStale(entry, mediaElement) {
+    if (!entry || entry.kind !== 'stream') return false;
+    const now = sourceIdentity(mediaElement);
+    if (now.srcObject !== (entry.srcObject || null)) return true;
+    // With a MediaStream source the element's currentSrc is empty; the object
+    // identity above is the whole answer.
+    if (now.srcObject) return false;
+    return now.currentSrc !== entry.src;
+  }
+
+  /**
+   * Is this route still able to carry audio? Deliberately mechanical — context
+   * state, source ownership, worklet liveness, element presence — never
+   * amplitude, so a quiet passage is not mistaken for a broken graph.
+   * @param {any} mediaElement
+   */
+  function routeIsHealthy(mediaElement) {
+    const entry = elementSources.get(mediaElement);
+    if (!entry) return false;
+    try {
+      if (mediaElement.isConnected === false) return false;
+    } catch {}
+    const session = entry.session;
+    if (!session || !session.context || session.context.state !== 'running') return false;
+    try {
+      if (!session.sources.has(entry.source)) return false;
+    } catch {
+      return false;
+    }
+    // A processor error nulls the worklet; the session may be passing audio
+    // through bypass, but a route we cannot vouch for is handed back instead.
+    if (entry.kind === 'stream' && session.readyResolved && !session.workletNode) return false;
+    return true;
+  }
+
+  /**
+   * Fail open. The page's own audio beats a processed stream we cannot vouch
+   * for: disconnect the tap, stop its tracks, unmute, and record the verdict.
+   * @param {any} mediaElement
+   * @param {'source'|'interrupted'} verdict
+   */
+  function failOpenRoute(mediaElement, verdict) {
+    if (!detachStreamRoute(mediaElement)) return;
+    try {
+      interruptedMediaElements.add(mediaElement);
+      mediaElement.__tnUnroutable = verdict;
+    } catch {}
+    console.log('[hook] route failed open to native audio:', verdict, mediaElement.tagName);
+  }
+
+  /**
+   * Document-level media event watchers (capture phase: `playing`,
+   * `loadedmetadata`, `emptied` and `seeking` do not bubble, but they all pass
+   * through the capture path). ONE listener per event for the whole page — not
+   * four per element on a feed of twenty.
+   *
+   * `playing` is the reliable (re)attach trigger on a reused element; the other
+   * three are the cheap source-identity signals. Everything the handler does is
+   * idempotent and deduped, so a burst of events cannot tap one element twice.
+   */
+  let mediaEventWatchersArmed = false;
+
+  function ensureMediaEventWatchers() {
+    if (mediaEventWatchersArmed) return;
+    mediaEventWatchersArmed = true;
+    const handler = (event) => {
+      const target = event && event.target;
+      if (target && isMediaElement(target)) handleElementSourceSignal(target);
+    };
+    trackListener(document, 'playing', handler, true);
+    trackListener(document, 'loadedmetadata', handler, true);
+    trackListener(document, 'emptied', handler, true);
+    trackListener(document, 'seeking', handler, true);
+  }
+
+  /** @param {any} mediaElement */
+  function handleElementSourceSignal(mediaElement) {
+    if (!state.active || !mediaElement) return;
+    const entry = elementSources.get(mediaElement);
+    if (entry) {
+      if (streamRouteIsStale(entry, mediaElement)) {
+        // Old tap → the page gets its audio back FIRST, then the new source is
+        // evaluated on its own merits (probe included).
+        failOpenRoute(mediaElement, 'source');
+      } else if (!routeIsHealthy(mediaElement)) {
+        failOpenRoute(mediaElement, 'interrupted');
+      } else {
+        return;
+      }
+    }
+    if (isPlayingMedia(mediaElement)) void attachMediaElement(mediaElement);
+  }
+
+  /**
+   * The watchdog pass, run on the recovery burst: an attached route that cannot
+   * carry audio is handed back (unmute → native) instead of muting the page.
+   * `guardedMediaElements` is the live element list (a stream route holds the
+   * guard for as long as it owns the output).
+   */
+  function verifyAttachedRoutes() {
+    if (!state.active) return;
+    for (const mediaElement of Array.from(guardedMediaElements)) {
+      const entry = elementSources.get(mediaElement);
+      if (!entry || entry.kind !== 'stream') continue;
+      if (mediaElement.paused) continue;
+      if (!routeIsHealthy(mediaElement)) failOpenRoute(mediaElement, 'interrupted');
+    }
   }
 
   /**
@@ -2185,6 +2349,7 @@
     }
 
     attachExistingMediaElements();
+    verifyAttachedRoutes();
     routeSessions();
     reportStatus('HOOK_STATUS');
   }
