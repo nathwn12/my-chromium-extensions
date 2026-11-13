@@ -33,13 +33,8 @@ function loadHook({ startHook = true, gate = null } = {}) {
     constructor() {
       this.tagName = 'VIDEO';
       this.muted = false;
-      // The page's own playing video: the sweep only routes elements that are
-      // actually playing, so the harness must say so.
       this.paused = false;
-      this.ended = false;
-      this.readyState = 4;
       this.src = '';
-      this.currentSrc = 'https://example.com/video.mp4';
       this.addListener = addListener(this);
       this.removeListener = removeListener(this);
     }

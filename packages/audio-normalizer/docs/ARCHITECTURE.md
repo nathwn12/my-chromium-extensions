@@ -74,76 +74,17 @@ longer mean "nothing is installed".
   which is all the one-`MediaElementSource`-per-element rule and the
   page-graph patches require, because both must exist before the page creates
   them. The page plays natively and the audio graph is untouched while off.
-
-## Media routing: the stream tap (not the stealing one)
-
-- **Default route: `captureStream()` + `createMediaStreamSource()`.** A
-  `MediaElementSource` permanently steals the element's native output, so a stop
-  into a suspended context is silence until reload — the exact failure a feed
-  produces. A stream tap does not steal: STOP disconnects the tap, stops its
-  tracks and unmutes the element, and the page is native again in the same tick.
-  Re-enable captures a fresh stream (no one-source wall).
-- **The element source is only a fallback** for engines without
-  `captureStream`, and only for same-origin / CORS-approved media (a
-  cross-origin no-CORS element would output silence through it).
-- **Never routed:** page-owned `__tnWebAudio` elements (the page's own graph is
-  handled by the `connect` patch), `mediaKeys` (DRM), `srcObject` (MediaStream),
-  and CORS-protected media whose tap carries no accessible audio — that last one
-  is measured, not assumed (see below).
-- **Mute discipline.** The element is muted only for as long as the tap owns the
-  output, and only *after* the tap is proven: `armHookGuard` → connect →
-  `holdHookGuard`. Any failure, STOP or destroy restores the pre-guard muted
-  value. Nothing is muted while waiting for a track, and nothing is muted on a
-  silent tap.
-- **CORS.** A cross-origin element without `crossOrigin` can be captured, but
-  what reaches Web Audio can be silence (mediacapture-fromelement §Security: a
-  `MediaStreamAudioSourceNode` fed from protected content "produces no
-  information to the document origin"). So the tap is measured with an
-  `AnalyserNode` for 600 ms *while the element still plays natively*: signal →
-  mute and route; silence → leave native, record a verdict. The page is never
-  muted on a silent tap.
-- **Playing-only, capped.** Only `!paused && !ended && readyState >= 2`
-  elements are routed, at most `MAX_ROUTED_MEDIA` (4) per document. A feed's
-  preloaded items cost nothing; the `play()` patch and the DOM observer are the
-  attach triggers after the one enable scan.
-- **One scan.** A full document scan runs once per enable; recovery passes are
-  rate-limited to one per 5 s, and the shadow-root walk is bounded (host cap,
-  root cap, each root visited once).
-
-## Class-level churn: native audio always wins
-
-- **Source identity.** A stream tap is stored with the `currentSrc` /
-  `srcObject` it was captured from. On `playing`, `loadedmetadata`, `emptied` or
-  `seeking` (one document-level capture listener each, not four per element), a
-  changed source marks the tap stale: it is detached first (unmute → the page's
-  own audio), then the new source is evaluated on its own merits.
-- **Attach on `playing`.** A feed reuses one `<video>`; `playing` is the
-  reliable re-attach trigger, and it is also how an element that never went
-  through `play()` (autoplay) is picked up. `attachMediaElement` is deduped
-  (one attach in flight per element, cap 4), so a burst cannot double-tap.
-- **Fail-open watchdog.** A pass on the recovery burst checks, mechanically —
-  never by amplitude, so a quiet passage is not a failure: the context is
-  `running`, the tap source is still in the session, the worklet exists, and the
-  element is still in the document. Any failure detaches the tap, unmutes and
-  records `interrupted`; the element is retried on its next `playing`.
-- **Worklet error** on a stream route fails open the same way (a processor that
-  threw may be emitting silence), instead of trusting the bypass while the
-  element stays muted.
-- **Off is native under churn.** `STOP` detaches every stream route, stops its
-  tracks and unmutes; the document watchers are released by the same sweep and
-  no feed item is captured until the next enable.
 - **Enable.** `SET_SITE_STATE { enabled: true }` records the flag (and `seen`),
   the background answers `activation: { state: 'live' }`, and its
   `TOGGLE_CHANGED` broadcast makes the content script `START` the hook that is
   already there: `attachExistingMediaElements` captures the playing elements,
   the pre-warmed session routes through the worklet, and one program
   generation is minted. No navigation; `currentTime` is never touched.
-- **Disable.** `STOP` disconnects every stream tap, stops its tracks and hands
-  the element back unmuted (native audio, no reload), then bypasses the graph;
-  the session, its context and its worklet are kept for a fast re-enable. For
-  the `captureStream` fallback (an engine without the API) an element source is
-  the one-way door: it keeps the live bypass instead. `destroy` — exclusion and
-  uninstall — releases everything.
+- **Disable.** `STOP` is a bypass: `input → output` at 0 dB, the worklet is
+  disconnected, the observer stops, and the sessions, sources and dispatcher
+  are **kept**. `destroy` is reserved for exclusion and uninstall, and is the
+  only path that releases captures — after which the element cannot be
+  recaptured in that document and only a reload restores it.
 - **First-ever enable.** A host with no hook in the loaded document is the one
   residual reload case, and it is **automatic**: the background records `seen`,
   answers `activation: { state: 'reloading' }`, waits ~500 ms so the popup can
@@ -156,6 +97,28 @@ longer mean "nothing is installed".
   on capture and is left unmuted and unmanaged (`__tnWebAudio`), never retried
   in a loop; a suspended context defers capture to the next gesture/play
   event rather than routing into a suspended graph.
+
+## Media routing (restored 5.5.0 architecture, 5.6.2)
+
+The 5.6.x `captureStream` live-tap experiment was reverted in full: it added a
+per-element stream tap, a signal probe, source-identity re-taps and a churn
+watchdog, and feeds became slow and sticky on scroll and on back-and-forth. The
+stable architecture is back:
+
+- **One `createMediaElementSource` per element, ever.** It is captured once,
+  cached in `elementSources` for the life of the document, and reused on every
+  re-attach (a second call throws `InvalidStateError`). Removed-then-reinserted
+  elements reuse the same node; nothing is re-captured.
+- **Page-owned media is skipped** (`__tnWebAudio`), and the page's own Web
+  Audio graph stays the `connect` patch's business.
+- **Disable is a bypass** (`input → output` at 0 dB); the session, its sources
+  and the dispatcher are kept, so re-enable is instant. `destroy` — exclusion
+  and uninstall — is the only path that releases captures.
+- **Known limitation, unchanged from 5.5.0:** cross-origin media without CORS
+  approval, DRM/EME media and `srcObject` streams are not routed (they play
+  native, or silent if the page's own graph takes them). There is no live
+  amplitude probe and no per-source re-tap; a route that cannot carry audio is
+  not detected at runtime.
 
 ## Session liveness (related)
 

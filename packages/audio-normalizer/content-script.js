@@ -78,7 +78,7 @@
    *   hostname: string, siteKey: string, enabled: boolean, gainDb: number,
    *   excluded: boolean, seen: boolean,
    *   injected: boolean, hookAlive: boolean, hookPresent: boolean,
-   *   hookActive: boolean, unprocessed: number, protectedCount: number, interruptedCount: number, injecting: boolean, injectStartedAt: number,
+   *   hookActive: boolean, unprocessed: number, injecting: boolean, injectStartedAt: number,
    *   lastError: string, lastStatusAt: number,
    *   transient: ({ enabled: boolean, gainDb: number } | null),
    *   syncInFlight: boolean, queuedSyncReason: string,
@@ -103,12 +103,6 @@
     hookPresent: false,
     // Elements the page owns, which we could never capture (verdict, not silence).
     unprocessed: 0,
-    // Elements left native because their captured stream carried no accessible
-    // audio (CORS-protected): a verdict, never a mute.
-    protectedCount: 0,
-    // Elements whose route broke (source swap, context lost, worklet error) and
-    // were handed back to the page: native, and said so.
-    interruptedCount: 0,
     hookActive: false,
     injecting: false,
     injectStartedAt: 0,
@@ -1213,8 +1207,6 @@
       state.hookAlive = true;
       state.hookActive = Boolean(response.active);
       state.unprocessed = Number(response.unprocessed) || 0;
-      state.protectedCount = Number(response.protected) || 0;
-      state.interruptedCount = Number(response.interrupted) || 0;
       state.lastError = state.enabled ? String(response.error || '') : '';
       state.lastStatusAt = Date.now();
       if (response.active && !state.enabled && !state.stopSent) {
@@ -1325,11 +1317,6 @@
       // Elements the page owns and we could never route: a verdict the popup
       // shows instead of claiming the page is normalized.
       unprocessed: state.unprocessed,
-      // Elements left native because their captured stream carried no
-      // accessible audio (CORS-protected) — audible, unprocessed, and said so.
-      protectedCount: state.protectedCount,
-      // Elements whose route broke and were handed back to the page.
-      interruptedCount: state.interruptedCount,
       activating: isActivationPending(),
       lastError: enabled ? state.lastError : '',
       // Why this frame is inert when it never got an answer: the bounded

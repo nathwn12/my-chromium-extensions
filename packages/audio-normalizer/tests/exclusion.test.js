@@ -1231,60 +1231,6 @@ test('popup: a page-owned graph gets a visible verdict, not a false Active', asy
   assert.equal(popup.els['status-pill'].textContent, 'Limited', 'the pill does not claim Active');
 });
 
-test('popup: cross-origin protected audio is named, not claimed as normalized', async () => {
-  const popup = loadPopup({
-    tabUrl: 'https://example.com/watch',
-    runtimeSendMessage: async (msg) => {
-      if (msg.type === 'GET_SITE_STATE') {
-        return { ok: true, enabled: true, gainDb: 0, excluded: false, siteKey: 'example.com', seq: 1 };
-      }
-      return { ok: true };
-    },
-    tabsSendMessage: async (_tabId, msg) => {
-      if (msg.type === 'GET_DOCUMENT_STATUS') {
-        return {
-          ok: true, siteKey: 'example.com', enabled: true, gainDb: 0,
-          hookAlive: true, hookActive: false, hookPresent: true, protectedCount: 1,
-          indicator: 'gray',
-        };
-      }
-      return { ok: true };
-    },
-  });
-  await settle(80);
-  const text = String(popup.els['status-text'].textContent);
-  assert.match(text, /cross-origin protected/i, 'the reason is stated');
-  assert.match(text, /plays unprocessed/i, 'and the consequence');
-  assert.equal(popup.els['status-pill'].textContent, 'Limited', 'still not an Active claim');
-});
-
-test('popup: a route that failed open is reported as native, not as Active', async () => {
-  const popup = loadPopup({
-    tabUrl: 'https://example.com/watch',
-    runtimeSendMessage: async (msg) => {
-      if (msg.type === 'GET_SITE_STATE') {
-        return { ok: true, enabled: true, gainDb: 0, excluded: false, siteKey: 'example.com', seq: 1 };
-      }
-      return { ok: true };
-    },
-    tabsSendMessage: async (_tabId, msg) => {
-      if (msg.type === 'GET_DOCUMENT_STATUS') {
-        return {
-          ok: true, siteKey: 'example.com', enabled: true, gainDb: 0,
-          hookAlive: true, hookActive: false, hookPresent: true, interruptedCount: 1,
-          indicator: 'gray',
-        };
-      }
-      return { ok: true };
-    },
-  });
-  await settle(80);
-  const text = String(popup.els['status-text'].textContent);
-  assert.match(text, /audio changed/i, 'the reason is stated');
-  assert.match(text, /playing unprocessed/i, 'native audio, named');
-  assert.equal(popup.els['status-pill'].textContent, 'Limited', 'not an Active claim');
-});
-
 test('popup: exclusion and the re-enable both say a reload restores the page, once and quietly', async () => {
   const popup = loadPopup({
     tabUrl: 'https://www.tiktok.com/foryou',

@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.6.2] - 2026-11-13
+
+### Changed
+
+- The media path returns to the stable 5.5.0 architecture: **one `createMediaElementSource` per element**, captured once and kept for the document, reused on every re-attach; removed-and-reinserted feed items reuse the same node and are never re-captured. The 5.6.x `captureStream` stream tap, its silent-sink probe, its source-identity re-taps and its churn watchdog are gone — feeds were slow and sticky on scroll and on back-and-forth.
+- Unchanged and kept from 5.6.0: live enable/disable on an already-loaded page (`seen` registration, the passive hook on seen-but-off hosts, live `START`/`STOP` with the session kept) and the automatic one-time reload on a host's first-ever enable.
+
+### Known limitation
+
+- Cross-origin media without CORS approval, DRM/EME media and `srcObject` streams are not routed, exactly as in 5.5.0: they play native — or silent if the page's own Web Audio graph takes them. There is no live amplitude probe, so a route that cannot carry audio is not detected at runtime; the fix for such a site is exclusion.
+
 ## [5.6.1] - 2026-11-12
 
 ### Fixed
@@ -29,26 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- `STOP` from the worker hands the page back to native. Media is routed through
-  a `captureStream()` tap, which does not steal the element's output, so a
-  disable disconnects the tap, stops its tracks and unmutes the element in the
-  same tick; a re-enable captures a fresh stream. `createMediaElementSource` is
-  now only a fallback for engines without `captureStream` (and never for
-  cross-origin no-CORS, DRM, `srcObject` or page-owned media). `destroy`
-  (exclusion, uninstall) releases everything and unmutes.
-
-### Fixed
-
-- A disabled or excluded page could be left silent: an element captured into a
-  suspended context has no native output left, so "bypass at 0 dB" was silence
-  until a reload. The non-stealing tap ends that — off is always native audio.
-- Infinite feeds froze and muted: every `<video>` on the page used to be
-  captured, including paused/preloaded items. Only `!paused && !ended &&
-  readyState >= 2` elements are routed now, at most four per document, and the
-  recovery burst no longer re-walks the document on every tick.
-- Cross-origin media without `crossOrigin` could be captured into a Web Audio
-  graph that outputs silence. The tap is now measured before the element is
-  muted; a silent tap leaves the page native and reports a verdict.
+- `STOP` from the worker is now a bypass, not a teardown. `destroy` (exclusion, uninstall) is the only path that releases a captured element or closes its context, because a captured element can never be captured a second time in the same document.
 
 ## [5.5.0] - 2026-11-12
 
