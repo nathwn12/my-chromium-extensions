@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.6.3] - 2026-11-14
+
+### Fixed
+
+- Attached sessions recover when their audio context suspends, including during tab dormancy. Failed resume attempts use a bounded retry burst and report when playback must resume the context.
+
 ## [5.6.2] - 2026-11-13
 
 ### Changed
