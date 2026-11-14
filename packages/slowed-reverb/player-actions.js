@@ -21,6 +21,13 @@
 
   const WHEEL_PX_PER_STEP = 100;
   const VOLUME_STEP_PCT = 5;
+  // YouTube Music's element volume is NOT player scale: `#movie_player.setVolume`
+  // writes `video.volume ~= player * 0.00741` (element max ~= 0.741, measured
+  // in-repo: 20 -> 0.148, 80 -> 0.593, 100 -> 0.741). The wheel cache below is
+  // player scale, so element reads convert through this slope and fallback
+  // writes scale into the element domain. Both uses are seeds only: the page's
+  // applied reply is the truth and self-corrects them on the next wheel notch.
+  const YTM_ELEMENT_PER_PLAYER = 0.00741;
   const TICK_MS = 100;
   const NOTICE_VISIBLE_MS = 1200;
   const SAVED_LIMIT = 100;
@@ -271,6 +278,18 @@
   }
 
   /**
+   * Converts an element volume (0-1) to player scale (0-100) through the
+   * measured YTM slope above. Only the vanilla seed before any applied page
+   * reply has been seen; the reply is the only truth after that.
+   */
+  function playerVolumeFromElement(elementVolume) {
+    const value = Number(elementVolume);
+    if (!Number.isFinite(value)) return null;
+    const clamped = Math.min(1, Math.max(0, value));
+    return Math.min(100, Math.max(0, Math.round(clamped / YTM_ELEMENT_PER_PLAYER)));
+  }
+
+  /**
    * Signed pixels accumulate; each crossed 100 px applies one 5 % step. Volume
    * is clamped at 0/100 and the accumulator is reset there, so running off the
    * end cannot bank steps for the way back.
@@ -484,6 +503,7 @@
     let notice = null;
     let noticeTimer = null;
     let volume = 50;
+    let hasVolumeTruth = false;
     let tickTimer = null;
     let media = null;
     let mediaCleanup = [];
@@ -530,6 +550,19 @@
       return songKeyFrom(currentHref());
     }
 
+    /**
+     * Adopts native player-scale truth pushed by the page (a YTM slider drag
+     * or keyboard step changes the player volume with no wheel involved). An
+     * absolute value, so last-writer-wins is exact; like an applied reply, it
+     * owns the cache from here on and syncs never overwrite it.
+     */
+    function setPlayerVolume(next) {
+      const value = Number(next);
+      if (!Number.isFinite(value)) return;
+      volume = Math.min(100, Math.max(0, Math.round(value)));
+      hasVolumeTruth = true;
+    }
+
     /** Adopts the id pushed by the page hook (null when no track is loaded). */
     function setSongId(next) {
       const normalized = typeof next === 'string' && next !== '' ? next : null;
@@ -552,19 +585,20 @@
     }
 
     /**
-     * The element volume is the actual playback volume and the gain source: the
-     * existing graph mirrors `media.volume` into its single output gain. The page
-     * player API is used for writes and slider truth only, never as a second
-     * read, so this stays the single seed for the wheel.
+     * The one-time vanilla seed: before any page reply has been applied, the
+     * element (converted to player scale) is all we know about the site volume.
+     * Afterwards the applied replies and the native volume pushes own the
+     * cache and the element must never overwrite it: on YTM the units differ,
+     * so re-seeding here ratchets every scroll-UP into a volume drop and then
+     * sticks at the floor.
      */
     function readMediaVolume() {
       if (!media) return null;
-      const value = Number(media.volume);
-      if (!Number.isFinite(value)) return null;
-      return Math.round(Math.min(1, Math.max(0, value)) * 100);
+      return playerVolumeFromElement(media.volume);
     }
 
     function refreshVolume() {
+      if (hasVolumeTruth) return volume;
       const next = readMediaVolume();
       if (next !== null) volume = next;
       return volume;
@@ -634,6 +668,7 @@
       active = true;
       notice = null;
       accumulator = createWheelAccumulator();
+      hasVolumeTruth = false;
       fromDirty = false;
       toDirty = false;
       everBound = false;
@@ -936,8 +971,12 @@
           return;
         }
         // The page's applied value is the truth; the element mirrors it.
+        // From here the cache follows replies only, never element re-reads.
         const applied = Number(reply.volume);
-        if (Number.isFinite(applied)) volume = Math.round(applied);
+        if (Number.isFinite(applied)) {
+          volume = Math.round(applied);
+          hasVolumeTruth = true;
+        }
       }).catch(() => {
         if (!started || mine !== generation || seq !== volumeSeq) return;
         writeMediaVolume(percent);
@@ -947,7 +986,7 @@
     function writeMediaVolume(percent) {
       if (media) {
         try {
-          media.volume = Math.min(1, Math.max(0, percent / 100));
+          media.volume = Math.min(1, Math.max(0, percent * YTM_ELEMENT_PER_PLAYER));
         } catch {
           // A detached element cannot be written.
         }
@@ -1506,11 +1545,14 @@
       stop: stop,
       sync: sync,
       setSongId: setSongId,
+      setPlayerVolume: setPlayerVolume,
     };
   }
   const api = {
     WHEEL_PX_PER_STEP: WHEEL_PX_PER_STEP,
     VOLUME_STEP_PCT: VOLUME_STEP_PCT,
+    YTM_ELEMENT_PER_PLAYER: YTM_ELEMENT_PER_PLAYER,
+    playerVolumeFromElement: playerVolumeFromElement,
     TICK_MS: TICK_MS,
     NOTICE_VISIBLE_MS: NOTICE_VISIBLE_MS,
     SAVED_LIMIT: SAVED_LIMIT,

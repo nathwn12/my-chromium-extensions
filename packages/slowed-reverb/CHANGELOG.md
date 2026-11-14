@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.2] - 2026-11-14
+
+- Fix: wheel volume over the player bar no longer moves the site volume the wrong way or stalls near 20. The wheel cache is player scale (0–100) and is seeded from the element only until the first applied page reply; afterwards it follows applied replies only, so the YTM element/player unit mismatch (element max ≈0.741) cannot re-seed it on every sync.
+- Fix: a native YTM slider drag or keyboard/media-key step is pushed from the page hook over the existing `SLRA_VOLUME_STATE` type (no new message type, no read-request surface) and adopted as the wheel base, so the next wheel notch starts from the real site volume; the push also re-settles the graph mute, since a native `setVolume` unmutes the element with no `volumechange`.
+- Fix: the hook-absent fallback element write now scales through the measured YTM slope instead of linear `percent/100`, so it matches the painted slider value.
+
 ## [1.2.1] - 2026-11-12
 
 - Fix: after a page-hook volume write, settle the graph and re-assert the mute. YouTube's player API unmutes the element and fires no `volumechange`, which could leave the old gain and the native element playing together — heard as louder at low slider values.

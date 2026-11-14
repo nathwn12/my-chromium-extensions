@@ -284,7 +284,8 @@ function createDom() {
     media.paused = false;
     media.seeking = false;
     media.muted = true;
-    media.volume = 0.5;
+    // Player 50 on the YTM element scale (element ~= player * 0.00741).
+    media.volume = 50 * YTM_SLOPE;
     media.play = function play() {
       media.playCalls += 1;
       return Promise.resolve();
@@ -1275,7 +1276,7 @@ test('controller: a page hook without a player API falls back to media.volume an
   await harness.start();
   harness.wheel(-100);
   await settle();
-  assert.equal(harness.media().volume, 0.55);
+  assert.ok(Math.abs(harness.media().volume - 55 * YTM_SLOPE) < 1e-9);
   // The hook could not paint the slider itself, so it is asked to.
   assert.deepEqual(harness.pageHook.uiSyncs, [55]);
 });
@@ -1309,11 +1310,11 @@ test('controller: guard - a stale volume reply cannot overwrite a newer write', 
   // A late failure from the oldest request must not rewrite media volume.
   pendingReplies[0].resolve({ volume: null, applied: false, source: 'none' });
   await settle();
-  assert.equal(harness.media().volume, 0.5);
+  assert.equal(harness.media().volume, 50 * YTM_SLOPE);
 });
 
 test('controller: the wheel writes the snapped value', async () => {
-  const harness = createHarness({ pageHook: createPageHook(37), mediaOptions: { volume: 0.37 } });
+  const harness = createHarness({ pageHook: createPageHook(37), mediaOptions: { volume: 37 * YTM_SLOPE } });
   await harness.start();
   harness.wheel(-100);
   await settle();
@@ -1323,12 +1324,12 @@ test('controller: the wheel writes the snapped value', async () => {
 test('controller: the fallback path ends on the snapped value too', async () => {
   const harness = createHarness({
     pageHook: createPageHook(37, { source: 'none' }),
-    mediaOptions: { volume: 0.37 },
+    mediaOptions: { volume: 37 * YTM_SLOPE },
   });
   await harness.start();
   harness.wheel(-100);
   await settle();
-  assert.equal(harness.media().volume, 0.4);
+  assert.ok(Math.abs(harness.media().volume - 40 * YTM_SLOPE) < 1e-9);
 });
 
 test('controller: the 100 ms tick exists only while a loop is engaged', async () => {
@@ -2580,6 +2581,7 @@ function createPageHookSandbox(options) {
     },
   };
 
+  const docListeners = new Map();
   const win = {
     addEventListener(type, fn) {
       const list = listeners.get(type) || [];
@@ -2594,8 +2596,17 @@ function createPageHookSandbox(options) {
   const sliders = settings.sliders || null;
   const document = {
     documentElement: { dataset: { slraToken: settings.token === undefined ? 'tok-1' : settings.token } },
-    addEventListener() {},
-    removeEventListener() {},
+    addEventListener(type, fn) {
+      const list = docListeners.get(type) || [];
+      list.push(fn);
+      docListeners.set(type, list);
+    },
+    removeEventListener(type, fn) {
+      const list = docListeners.get(type);
+      if (!list) return;
+      const index = list.indexOf(fn);
+      if (index >= 0) list.splice(index, 1);
+    },
     querySelector(selector) {
       if (selector === '#movie_player') return settings.noPlayer ? null : player;
       if (selector === 'video') return settings.video || null;
@@ -2605,6 +2616,7 @@ function createPageHookSandbox(options) {
   };
 
   const timers = [];
+  const intervals = [];
   let timerId = 1;
 
   const sandbox = {
@@ -2620,6 +2632,15 @@ function createPageHookSandbox(options) {
     clearTimeout(id) {
       const index = timers.findIndex((timer) => timer.id === id);
       if (index >= 0) timers.splice(index, 1);
+    },
+    setInterval(fn, ms) {
+      const id = timerId++;
+      intervals.push({ id, fn, ms });
+      return id;
+    },
+    clearInterval(id) {
+      const index = intervals.findIndex((timer) => timer.id === id);
+      if (index >= 0) intervals.splice(index, 1);
     },
   };
   sandbox.globalThis = sandbox;
@@ -2638,10 +2659,25 @@ function createPageHookSandbox(options) {
       for (const timer of pending) timer.fn();
     },
     replies() {
-      return posted.filter((message) => message && message.type === 'SLRA_VOLUME_STATE');
+      // Replies carry the request id; id-less native pushes are separate.
+      return posted.filter(
+        (message) => message && message.type === 'SLRA_VOLUME_STATE' && message.id !== undefined,
+      );
+    },
+    pushes() {
+      return posted.filter(
+        (message) => message && message.type === 'SLRA_VOLUME_STATE' && message.id === undefined,
+      );
     },
     fire(data) {
       for (const fn of listeners.get('message') || []) fn({ source: win, data });
+    },
+    fireDoc(type, event) {
+      for (const fn of docListeners.get(type) || []) fn(event);
+    },
+    intervals,
+    runIntervals() {
+      for (const timer of [...intervals]) timer.fn();
     },
   };
 }
@@ -2817,4 +2853,165 @@ test('static: content-script is the single writer of media.muted', () => {
   assert.equal(/\.muted\s*=/.test(playerActionsSource), false);
   assert.equal(/\.muted\s*=/.test(contentScriptSource), true);
   assert.equal(/\.muted\s*=/.test(pageHookSource), false);
+});
+
+// ---------------------------------------------------------------------------
+// YTM volume scale: the element is NOT player scale. Measured in-repo
+// (mute-enforce.test.js, SYSTEM.md YTM table): element ~= player * 0.00741
+// (20 -> 0.148, 80 -> 0.593, 100 -> 0.741). The wheel cache is player scale;
+// these tests pin real units so an identity-mapped fake cannot hide a
+// unit mismatch again.
+// ---------------------------------------------------------------------------
+
+const YTM_SLOPE = 0.00741;
+const ytmElement = (player) => player * YTM_SLOPE;
+
+test('controller: YTM scale - the first up-notch from vanilla 60 requests 65', async () => {
+  const harness = createHarness({ mediaOptions: { volume: ytmElement(60) } });
+  await harness.start();
+  harness.wheel(-100);
+  await settle();
+  assert.deepEqual(harness.pageHook.calls.at(-1), { percent: 65 });
+});
+
+test('controller: YTM scale - repeated up-notches with sync reseeds strictly raise site volume', async () => {
+  const harness = createHarness({ mediaOptions: { volume: ytmElement(60) } });
+  await harness.start();
+  let site = 60;
+  for (let notch = 0; notch < 8; notch += 1) {
+    harness.wheel(-100);
+    await settle();
+    const requested = harness.pageHook.calls.at(-1).percent;
+    assert.ok(requested > site,
+      'notch ' + (notch + 1) + ': an up-notch must raise the site volume (site=' + site + ' req=' + requested + ')');
+    // YTM applies the player volume and the element follows on its own scale.
+    site = requested;
+    harness.media().volume = ytmElement(site);
+    // The 5 s safety poll re-syncs between notches; it must not corrupt the cache.
+    harness.controller.sync();
+  }
+  assert.equal(site, 100);
+});
+
+test('controller: YTM scale - from site 20 an up-notch raises instead of sticking', async () => {
+  const harness = createHarness({ mediaOptions: { volume: ytmElement(20) } });
+  await harness.start();
+  harness.wheel(-100);
+  await settle();
+  assert.deepEqual(harness.pageHook.calls.at(-1), { percent: 25 });
+});
+
+test('controller: YTM scale - sync with no wheel never touches the site volume', async () => {
+  const harness = createHarness({ mediaOptions: { volume: ytmElement(60) } });
+  await harness.start();
+  const before = harness.media().volume;
+  harness.controller.sync();
+  harness.controller.sync();
+  harness.controller.sync();
+  await settle();
+  assert.equal(harness.pageHook.calls.length, 0);
+  assert.equal(harness.media().volume, before);
+});
+
+test('controller: a collapsed player bar still owns the wheel (no page scroll)', async () => {
+  const harness = createHarness({ mediaOptions: { volume: ytmElement(60) } });
+  await harness.start();
+  harness.dom.mainPanel.computedVisibility = 'hidden';
+  const event = harness.wheel(-100);
+  assert.equal(event.defaultPrevented, true);
+  await settle();
+  assert.deepEqual(harness.pageHook.calls.at(-1), { percent: 65 });
+});
+
+test('controller: a wheel outside the player bar keeps native scroll (no volume write)', async () => {
+  const harness = createHarness({ mediaOptions: { volume: ytmElement(60) } });
+  await harness.start();
+  const callsBefore = harness.pageHook.calls.length;
+  const event = harness.dom.win.dispatch('wheel', { deltaY: -100, target: harness.dom.document.body });
+  assert.equal(event.defaultPrevented, false);
+  await settle();
+  assert.equal(harness.pageHook.calls.length, callsBefore);
+  assert.equal(harness.media().volume, ytmElement(60));
+});
+
+test('controller: YTM scale - the fallback writes the element at YTM scale', async () => {
+  const pageHook = createPageHook(50, { source: 'none' });
+  const harness = createHarness({ pageHook, mediaOptions: { volume: ytmElement(50) } });
+  await harness.start();
+  harness.wheel(-100);
+  await settle();
+  assert.ok(Math.abs(harness.media().volume - ytmElement(55)) < 1e-9,
+    'expected ~' + ytmElement(55) + ', got ' + harness.media().volume);
+  assert.deepEqual(harness.pageHook.uiSyncs, [55]);
+});
+
+// ---------------------------------------------------------------------------
+// Native volume truth: a YTM slider drag (or keyboard step) changes the
+// player volume without any wheel. The page pushes the player-scale value
+// over the existing SLRA_VOLUME_STATE type (no id, applied false); the
+// controller adopts it as truth so the next wheel starts from the site
+// value instead of jumping from a stale cache. Media swaps never touch
+// player-scale truth: the site volume survives element replacement.
+// ---------------------------------------------------------------------------
+
+test('controller: a native volume push becomes truth - the next wheel starts from it', async () => {
+  const harness = createHarness({ mediaOptions: { volume: ytmElement(60) } });
+  await harness.start();
+  // Native slider drag to 35: the page pushes player-scale truth.
+  harness.controller.setPlayerVolume(35);
+  // The safety poll re-syncs between the drag and the wheel: no clobber.
+  harness.controller.sync();
+  harness.controller.sync();
+  harness.controller.sync();
+  const callsBefore = harness.pageHook.calls.length;
+  harness.wheel(-100);
+  await settle();
+  // A push is truth, not a request: nothing was written before the wheel.
+  assert.equal(harness.pageHook.calls.length, callsBefore + 1);
+  assert.deepEqual(harness.pageHook.calls.at(-1), { percent: 40 });
+});
+
+test('controller: a media swap keeps player truth - the element must not re-seed', async () => {
+  const harness = createHarness({ mediaOptions: { volume: ytmElement(60) } });
+  await harness.start();
+  harness.controller.setPlayerVolume(80);
+  // YTM replaces the element on track change; the fresh element may even
+  // carry a stale element-scale value. Player truth (80) must win.
+  harness.setMedia(harness.dom.makeMedia('song-b', { volume: ytmElement(20) }));
+  harness.controller.sync();
+  harness.wheel(-100);
+  await settle();
+  assert.deepEqual(harness.pageHook.calls.at(-1), { percent: 85 });
+});
+
+test('page-hook: install posts the current player volume as an id-less push', () => {
+  const hook = createPageHookSandbox({ volume: 40 });
+  const pushes = hook.pushes();
+  assert.equal(pushes.length, 1);
+  assert.equal(pushes[0].volume, 40);
+  assert.equal(pushes[0].applied, false);
+  assert.equal(pushes[0].source, 'player');
+  assert.equal(pushes[0].id, undefined);
+  assert.equal(pushes[0].token, 'tok-1');
+  // A push is not a reply: the reply lane stays empty.
+  assert.equal(hook.replies().length, 0);
+});
+
+test('page-hook: slider input and the poll post player truth, deduped', () => {
+  const sliders = createSliderSet();
+  const slider = sliders['#volume-slider'];
+  slider.closest = (selector) => (String(selector).includes('#volume-slider') ? slider : null);
+  const hook = createPageHookSandbox({ sliders, volume: 40 });
+  assert.deepEqual(hook.pushes().map((push) => push.volume), [40]);
+  // A native drag moves the player; the slider input posts it at once.
+  hook.player.volume = 55;
+  hook.fireDoc('input', { target: slider });
+  assert.deepEqual(hook.pushes().map((push) => push.volume), [40, 55]);
+  // The poll backstop re-reads but emits nothing when nothing changed.
+  hook.runIntervals();
+  assert.deepEqual(hook.pushes().map((push) => push.volume), [40, 55]);
+  // ...and posts exactly once when the player moved again.
+  hook.player.volume = 57;
+  hook.runIntervals();
+  assert.deepEqual(hook.pushes().map((push) => push.volume), [40, 55, 57]);
 });

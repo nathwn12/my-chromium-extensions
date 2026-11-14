@@ -291,6 +291,24 @@
           applied: data.applied === true,
           source: data.source || 'none',
         });
+        // Native push (no request id): absolute player-scale truth from a
+        // slider drag or keyboard step. Replies carry the SET id; pushes do
+        // not. Settle the mute contract and the gain like an applied reply -
+        // a native setVolume unmutes the element and fires no volumechange -
+        // and adopt the value as the wheel base. Never a page request.
+        if ((data.id === undefined || data.id === null) && data.source === 'player') {
+          const pushed = Number(data.volume);
+          if (Number.isFinite(pushed)) {
+            settleAttachedVolume();
+            if (playerActions) {
+              try {
+                playerActions.setPlayerVolume(pushed);
+              } catch {
+                // Best effort: the cache follows on the next push.
+              }
+            }
+          }
+        }
       }
     });
 
