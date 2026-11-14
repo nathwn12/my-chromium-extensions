@@ -26,7 +26,7 @@ function fnSrc(src, name) {
 // Churn harness: the one-shot capture registry is shared across contexts in
 // the sandbox, mirroring the Web Audio rule that a second
 // createMediaElementSource on one element throws InvalidStateError.
-function loadHook() {
+function loadHook({ rejectResume = false } = {}) {
   const src = read('page-hook.js');
   const posted = [];
   const windowListeners = {};
@@ -38,6 +38,7 @@ function loadHook() {
   let createCalls = 0;
   let closeCalls = 0;
   let suspendCalls = 0;
+  let resumeCalls = 0;
   let eid = 1;
 
   class FakeElement {
@@ -83,7 +84,11 @@ function loadHook() {
       this.audioWorklet = { addModule: async () => {} };
       contexts.push(this);
     }
-    async resume() { if (this.state !== 'closed') this.state = 'running'; }
+    async resume() {
+      resumeCalls++;
+      if (rejectResume) throw new Error('autoplay policy');
+      if (this.state !== 'closed') this.state = 'running';
+    }
     async suspend() { suspendCalls++; if (this.state === 'running') this.state = 'suspended'; }
     close() { closeCalls++; this.state = 'closed'; return Promise.resolve(); }
     createGain() { const n = new FakeAudioNode(); n.context = this; return n; }
@@ -95,8 +100,14 @@ function loadHook() {
       createdSources.push(s);
       return s;
     }
-    addEventListener() {}
-    removeEventListener() {}
+    addEventListener(type, fn) { (this._listeners ||= {})[type] = (this._listeners[type] || []).concat(fn); }
+    removeEventListener(type, fn) {
+      if (this._listeners && this._listeners[type]) this._listeners[type] = this._listeners[type].filter((listener) => listener !== fn);
+    }
+    transition(state) {
+      this.state = state;
+      for (const fn of (this._listeners?.statechange || []).slice()) fn.call(this, { type: 'statechange', target: this });
+    }
   }
   class FakeWorkletNode {
     constructor() {
@@ -120,6 +131,7 @@ function loadHook() {
     removeAttribute(k) { delete this._attrs[k]; },
   };
   const documentStub = {
+    visibilityState: 'visible',
     documentElement: docEl,
     querySelectorAll() { return []; },
     addEventListener(t, fn) { (docListeners[t] = docListeners[t] || []).push(fn); },
@@ -161,7 +173,7 @@ function loadHook() {
   startHook();
   return {
     sandbox, posted, contexts, createdSources, FakeMediaElement,
-    counts: () => ({ createCalls, closeCalls, suspendCalls }),
+    counts: () => ({ createCalls, closeCalls, suspendCalls, resumeCalls }),
     control,
     status: () => control('status', {}),
     startHook,
@@ -176,6 +188,84 @@ function loadHook() {
     consumeCapture: (el) => { captured.add(el); },
   };
 }
+
+test('an attached session recovers when its context suspends during dormancy without media events', async () => {
+  for (const visibilityState of ['hidden', 'visible']) {
+    const h = loadHook();
+    await sleep(250);
+    const media = new h.FakeMediaElement();
+    await media.play();
+    await sleep(1700);
+    assert.equal(media.__tnAttached, true, 'session is processing before dormancy');
+
+    const context = h.contexts[0];
+    const resumesBefore = h.counts().resumeCalls;
+    h.sandbox.document.visibilityState = visibilityState;
+    context.transition('suspended');
+    await sleep(40);
+
+    assert.ok(h.counts().resumeCalls > resumesBefore, `${visibilityState} statechange initiates bounded resume recovery`);
+    assert.equal(context.state, 'running', 'the same captured context resumes');
+    assert.equal(media.__tnAttached, true, 'the existing media session remains attached');
+    assert.equal(h.contexts.length, 1, 'recovery creates no duplicate context');
+    assert.equal(h.counts().createCalls, 1, 'recovery never recaptures the media element');
+    await sleep(1600);
+    const resumesAfterBurst = h.counts().resumeCalls;
+    await sleep(300);
+    assert.equal(h.counts().resumeCalls, resumesAfterBurst, 'recovery stops after its bounded burst');
+  }
+});
+
+test('autoplay rejection is reported and repeated suspension cannot extend the bounded retry burst', async () => {
+  const h = loadHook({ rejectResume: true });
+  await sleep(250);
+  const media = new h.FakeMediaElement();
+  await media.play();
+  await sleep(1700);
+  assert.equal(media.__tnAttached, true, 'session is attached before dormancy');
+  const context = h.contexts[0];
+  const resumesBefore = h.counts().resumeCalls;
+  context.transition('suspended');
+  await sleep(1600);
+  const resumesAfterBurst = h.counts().resumeCalls;
+  assert.ok(resumesAfterBurst > resumesBefore, 'statechange attempts resume');
+  assert.ok(resumesAfterBurst <= resumesBefore + 6, 'failed resume uses at most one bounded burst');
+  assert.equal(context.state, 'suspended', 'a rejected resume does not claim success');
+  assert.equal(h.status().error, 'Audio context remains suspended. Resume playback to restore audio.',
+    'a blocked resume is reported instead of silently claiming recovery');
+  for (let i = 0; i < 4; i++) context.transition('suspended');
+  await sleep(400);
+  assert.equal(h.counts().resumeCalls, resumesAfterBurst, 'recovery stops after its bounded burst');
+  assert.equal(h.contexts.length, 1, 'failure never creates another context');
+  assert.equal(h.counts().createCalls, 1, 'failure never recaptures the element');
+  context.transition('running');
+  assert.equal(h.status().error, '', 'a later running transition clears only the recovery warning');
+});
+
+test('STOP and closed-session statechanges cannot schedule suspended recovery', async () => {
+  const h = loadHook();
+  await sleep(250);
+  const media = new h.FakeMediaElement();
+  await media.play();
+  await sleep(1700);
+  const context = h.contexts[0];
+
+  h.stopHook();
+  const stoppedResumes = h.counts().resumeCalls;
+  context.transition('suspended');
+  await sleep(50);
+  assert.equal(h.counts().resumeCalls, stoppedResumes, 'STOP leaves the context watcher inert');
+
+  h.startHook();
+  await sleep(50);
+  context.transition('closed');
+  await sleep(50);
+  const closedResumes = h.counts().resumeCalls;
+  context.transition('suspended');
+  await sleep(300);
+  assert.equal(h.counts().resumeCalls, closedResumes, 'a closed or torn-down session cannot recover');
+  assert.equal(h.contexts.length, 1, 'closed state does not create duplicate contexts');
+});
 
 test('remove + re-insert reuses the one source with zero re-capture', async () => {
   const h = loadHook();

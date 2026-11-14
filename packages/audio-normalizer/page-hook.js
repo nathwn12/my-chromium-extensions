@@ -290,6 +290,7 @@
   const unmanagedMediaElements = new Set();
   let recoveryBurstTimer = null;
   let recoveryBurstRemaining = 0;
+  let recoveryBurstRunning = false;
 
   // Program-boundary tracking (feed fix, page-hook half): exactly one
   // {type:'reset-program', generation} per new program to each active
@@ -1115,12 +1116,26 @@
     // survive it too. Without this a re-enabled hook would stop noticing a
     // closed or interrupted context until the next recovery pass.
     trackListener(context, 'statechange', () => {
+      if (!sessions.has(session) || session.context !== context) return;
       if (!state.active) return;
       if (context.state === 'closed') {
         setError('Audio context closed. Reconnecting…');
         teardownSession(session);
         void recoverAudio();
         return;
+      }
+      if (context.state === 'running') {
+        session.suspensionRecoveryPending = false;
+        if (state.lastError === 'Audio context remains suspended. Resume playback to restore audio.') {
+          state.lastError = '';
+        }
+      }
+      if (context.state === 'suspended' && session.mediaElements.size > 0
+        && !session.suspensionRecoveryPending) {
+        // Context lifecycle is independent of page visibility: interruptions
+        // can suspend a live graph in either a visible or dormant tab.
+        session.suspensionRecoveryPending = true;
+        scheduleRecoveryBurst();
       }
       reportStatus('HOOK_STATUS');
     }, undefined, true);
@@ -1150,6 +1165,7 @@
       kind,
       captured: false,
       processorFailures: 0,
+      suspensionRecoveryPending: false,
       lastResetGeneration: null,
       pendingResetGeneration: null,
     };
@@ -1710,6 +1726,9 @@
       }
 
       await resumeWithTimeout(session.context, RESUME_TIMEOUT_MS);
+      if (session.context.state === 'running') {
+        session.suspensionRecoveryPending = false;
+      }
 
       if (session.readyResolved && !session.workletNode) {
         attachWorklet(session);
@@ -1722,7 +1741,7 @@
   }
 
   function scheduleRecoveryBurst() {
-    if (!state.active || recoveryBurstTimer) return;
+    if (!state.active || recoveryBurstTimer || recoveryBurstRunning) return;
 
     recoveryBurstRemaining = RECOVERY_BURST_COUNT;
 
@@ -1734,14 +1753,21 @@
         return;
       }
 
+      recoveryBurstRunning = true;
       try {
         await recoverAudio();
       } catch {}
+      recoveryBurstRunning = false;
 
       recoveryBurstRemaining -= 1;
       if (state.active && recoveryBurstRemaining > 0) {
         recoveryBurstTimer = trackTimeout(tick, RECOVERY_BURST_MS);
       } else {
+        if (state.active && Array.from(sessions).some((session) => (
+          session.suspensionRecoveryPending && session.context.state === 'suspended'
+        ))) {
+          setError('Audio context remains suspended. Resume playback to restore audio.');
+        }
         recoveryBurstRemaining = 0;
       }
     };
@@ -1755,6 +1781,7 @@
       recoveryBurstTimer = null;
     }
     recoveryBurstRemaining = 0;
+    recoveryBurstRunning = false;
   }
 
   function teardownSession(session) {
