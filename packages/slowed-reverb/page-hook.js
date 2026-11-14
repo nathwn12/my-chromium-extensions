@@ -28,6 +28,9 @@
     // A re-bind is the normal case here (element replacement, SPA navigation):
     // re-state the id on every revive; deduped when it has not changed.
     postSong('revive:' + String(reason || ''), false);
+    // Same for volume: the player value survives element replacement, and a
+    // native drag between revives is exactly what the wheel cache must follow.
+    postVolume('revive:' + String(reason || ''));
   }
 
   // Volume only. This hook never writes `muted`: the content script is the only
@@ -94,6 +97,30 @@
     emit('SLRA_SONG', reason, { token: pageToken(), videoId, title: song ? song.title : '' });
   }
 
+  /**
+   * Native volume truth, pushed. A YTM slider drag or keyboard step changes
+   * the player volume with no wheel involved; the page volunteers the
+   * player-scale value over the existing SLRA_VOLUME_STATE type (no id, so
+   * the content script never confuses it with a SET reply). No new message
+   * type and no read-request surface: the volume GET ban stays intact, and the
+   * read below is the same getter the SET reply already uses.
+   */
+  function postVolume(reason) {
+    const reading = readPlayerVolume();
+    if (reading.source !== 'player') return;
+    if (!Number.isFinite(reading.volume)) return;
+    const value = Math.round(reading.volume);
+    if (value === state.lastPostedVolume) return;
+    state.lastPostedVolume = value;
+    emit('SLRA_VOLUME_STATE', reason, {
+      token: pageToken(),
+      volume: value,
+      applied: false,
+      source: 'player',
+    });
+  }
+
+
   // --- YTM's own slider, tooltip and hover state -------------------------
   // setVolume() changes playback but not the rendered control; without this the
   // slider sits where the user left it while the audio moves. Mirrors pear's
@@ -108,6 +135,11 @@
     '#expand-volume',
   ];
   const VOLUME_SLIDER_HIDE_MS = 2500;
+  // Backstop cadence for native player-volume changes no slider event or
+  // navigation signal carries (media-key steps, programmatic writes). Slider
+  // input posts at once; this only re-reads a cheap getter every two seconds
+  // and the dedup below drops the no-change polls.
+  const VOLUME_POLL_MS = 2000;
 
   function setSliderValue(selector, percent) {
     try {
@@ -202,6 +234,7 @@
     // The read-back is the truth: the page may land on its own value.
     const reading = readPlayerVolume();
     const applied = reading.volume === null ? target : Math.round(reading.volume);
+    state.lastPostedVolume = applied;
     syncVolumeUi(applied);
     replyVolume(data, applied, true, 'player');
   }
@@ -216,6 +249,8 @@
     lastSongId: null,
     songPosted: false,
     sliderHideTimer: null,
+    lastPostedVolume: null,
+    volumePollTimer: null,
   };
 
   function ensureListeners() {
@@ -254,6 +289,29 @@
     ['yt-navigate-start', 'yt-navigate-finish', 'yt-page-data-updated', 'spfdone'].forEach((eventName) => {
       window.addEventListener(eventName, () => reviveNow(eventName), true);
     });
+
+    // A native slider drag writes the player volume with no wheel involved:
+    // the slider's own input posts it at once. `closest` covers shadow guts;
+    // anything without it is not our slider.
+    const sliderHit = (target) => {
+      try {
+        if (target && typeof target.closest === 'function') {
+          return Boolean(target.closest(VOLUME_SLIDER + ',' + EXPAND_VOLUME_SLIDER));
+        }
+      } catch {
+        return false;
+      }
+      return false;
+    };
+    document.addEventListener('input', (event) => {
+      if (sliderHit(event && event.target)) postVolume('slider');
+    }, true);
+    document.addEventListener('change', (event) => {
+      if (sliderHit(event && event.target)) postVolume('slider');
+    }, true);
+    if (state.volumePollTimer === null) {
+      state.volumePollTimer = setInterval(() => postVolume('poll'), VOLUME_POLL_MS);
+    }
 
     // `videodatachange` is dispatched on document and may not bubble; capture
     // catches both. `loadedmetadata` fires on the replaced <video> and does not

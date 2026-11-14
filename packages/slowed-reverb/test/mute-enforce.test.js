@@ -2142,6 +2142,53 @@ async function main() {
     'muted=' + mv.muted + ' captures +' + (env.stats.captureCalls - mvCaps)
   );
 
+  // --- native volume push: a YTM slider drag changes player volume without
+  // any wheel. The page pushes player-scale truth (an id-less
+  // SLRA_VOLUME_STATE); the content script settles the mute contract and the
+  // gain from it, and never sends a page volume request of its own.
+  const pushToken = globalThis.__slowedReverbAudioContent.__testGetHookToken();
+  const pushed = env.addMedia();
+  pushed.volume = 0.3;
+  env.fireDoc('play', pushed);
+  for (let i = 0; i < 40 && pushed.muted !== true; i++) {
+    await env.settle(2);
+    env.runTimers(50);
+  }
+  check('setup: push probe attached muted', pushed.muted === true);
+  // Native drag side effects: new element volume, unmuted, NO volumechange.
+  pushed.volume = 0.21;
+  pushed.muted = false;
+  const pagePosts = [];
+  globalThis.window.postMessage = (message) => { pagePosts.push(message); };
+  const rampsBeforePush = env.stats.rampedValues.length;
+  env.fireWin('message', {
+    source: globalThis.window,
+    origin: 'https://music.youtube.com',
+    data: {
+      __slra: true,
+      type: 'SLRA_VOLUME_STATE',
+      token: pushToken,
+      volume: 28,
+      applied: false,
+      source: 'player',
+    },
+  });
+  delete globalThis.window.postMessage;
+  check(
+    'a native push re-mutes the element synchronously',
+    pushed.muted === true,
+    'expected muted=true right after the push, got ' + pushed.muted
+  );
+  check(
+    'a native push ramps the graph to the new element volume',
+    env.stats.rampedValues.slice(rampsBeforePush).includes(0.21),
+    'ramps=' + JSON.stringify(env.stats.rampedValues.slice(rampsBeforePush))
+  );
+  check(
+    'a native push never sends a page volume request of its own',
+    pagePosts.length === 0,
+    'posted=' + JSON.stringify(pagePosts)
+  );
   // M3 prod copy: internal errors never reach the popup, neutral is Active.
   const StatusShared = globalThis.SlowedReverbShared;
   const friendlyStatus = StatusShared && typeof StatusShared.friendlyStatus === 'function'

@@ -550,6 +550,19 @@
       return songKeyFrom(currentHref());
     }
 
+    /**
+     * Adopts native player-scale truth pushed by the page (a YTM slider drag
+     * or keyboard step changes the player volume with no wheel involved). An
+     * absolute value, so last-writer-wins is exact; like an applied reply, it
+     * owns the cache from here on and syncs never overwrite it.
+     */
+    function setPlayerVolume(next) {
+      const value = Number(next);
+      if (!Number.isFinite(value)) return;
+      volume = Math.min(100, Math.max(0, Math.round(value)));
+      hasVolumeTruth = true;
+    }
+
     /** Adopts the id pushed by the page hook (null when no track is loaded). */
     function setSongId(next) {
       const normalized = typeof next === 'string' && next !== '' ? next : null;
@@ -574,9 +587,10 @@
     /**
      * The one-time vanilla seed: before any page reply has been applied, the
      * element (converted to player scale) is all we know about the site volume.
-     * Afterwards the applied replies own the cache and the element must never
-     * overwrite it: on YTM the units differ, so re-seeding here ratchets every
-     * scroll-UP into a volume drop and then sticks at the floor.
+     * Afterwards the applied replies and the native volume pushes own the
+     * cache and the element must never overwrite it: on YTM the units differ,
+     * so re-seeding here ratchets every scroll-UP into a volume drop and then
+     * sticks at the floor.
      */
     function readMediaVolume() {
       if (!media) return null;
@@ -1531,6 +1545,7 @@
       stop: stop,
       sync: sync,
       setSongId: setSongId,
+      setPlayerVolume: setPlayerVolume,
     };
   }
   const api = {

@@ -26,6 +26,8 @@ const read = (f) => fs.readFileSync(path.join(PKG, f), 'utf8');
 function loadPageHook() {
   const posted = [];
   const listeners = [];
+  const timers = [];
+  let timerId = 1;
   const sandbox = {
     console,
     Uint8Array,
@@ -33,6 +35,25 @@ function loadPageHook() {
     Math,
     JSON,
     String,
+    // A real MAIN world always has timers; the hook polls player volume on one.
+    setTimeout(fn, ms) {
+      const id = timerId++;
+      timers.push({ id, fn, ms, repeat: false });
+      return id;
+    },
+    clearTimeout(id) {
+      const index = timers.findIndex((timer) => timer.id === id);
+      if (index >= 0) timers.splice(index, 1);
+    },
+    setInterval(fn, ms) {
+      const id = timerId++;
+      timers.push({ id, fn, ms, repeat: true });
+      return id;
+    },
+    clearInterval(id) {
+      const index = timers.findIndex((timer) => timer.id === id);
+      if (index >= 0) timers.splice(index, 1);
+    },
   };
   sandbox.window = {
     postMessage(msg) {
