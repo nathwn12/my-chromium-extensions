@@ -284,7 +284,8 @@ function createDom() {
     media.paused = false;
     media.seeking = false;
     media.muted = true;
-    media.volume = 0.5;
+    // Player 50 on the YTM element scale (element ~= player * 0.00741).
+    media.volume = 50 * YTM_SLOPE;
     media.play = function play() {
       media.playCalls += 1;
       return Promise.resolve();
@@ -1275,7 +1276,7 @@ test('controller: a page hook without a player API falls back to media.volume an
   await harness.start();
   harness.wheel(-100);
   await settle();
-  assert.equal(harness.media().volume, 0.55);
+  assert.ok(Math.abs(harness.media().volume - 55 * YTM_SLOPE) < 1e-9);
   // The hook could not paint the slider itself, so it is asked to.
   assert.deepEqual(harness.pageHook.uiSyncs, [55]);
 });
@@ -1309,11 +1310,11 @@ test('controller: guard - a stale volume reply cannot overwrite a newer write', 
   // A late failure from the oldest request must not rewrite media volume.
   pendingReplies[0].resolve({ volume: null, applied: false, source: 'none' });
   await settle();
-  assert.equal(harness.media().volume, 0.5);
+  assert.equal(harness.media().volume, 50 * YTM_SLOPE);
 });
 
 test('controller: the wheel writes the snapped value', async () => {
-  const harness = createHarness({ pageHook: createPageHook(37), mediaOptions: { volume: 0.37 } });
+  const harness = createHarness({ pageHook: createPageHook(37), mediaOptions: { volume: 37 * YTM_SLOPE } });
   await harness.start();
   harness.wheel(-100);
   await settle();
@@ -1323,12 +1324,12 @@ test('controller: the wheel writes the snapped value', async () => {
 test('controller: the fallback path ends on the snapped value too', async () => {
   const harness = createHarness({
     pageHook: createPageHook(37, { source: 'none' }),
-    mediaOptions: { volume: 0.37 },
+    mediaOptions: { volume: 37 * YTM_SLOPE },
   });
   await harness.start();
   harness.wheel(-100);
   await settle();
-  assert.equal(harness.media().volume, 0.4);
+  assert.ok(Math.abs(harness.media().volume - 40 * YTM_SLOPE) < 1e-9);
 });
 
 test('controller: the 100 ms tick exists only while a loop is engaged', async () => {
@@ -2817,4 +2818,94 @@ test('static: content-script is the single writer of media.muted', () => {
   assert.equal(/\.muted\s*=/.test(playerActionsSource), false);
   assert.equal(/\.muted\s*=/.test(contentScriptSource), true);
   assert.equal(/\.muted\s*=/.test(pageHookSource), false);
+});
+
+// ---------------------------------------------------------------------------
+// YTM volume scale: the element is NOT player scale. Measured in-repo
+// (mute-enforce.test.js, SYSTEM.md YTM table): element ~= player * 0.00741
+// (20 -> 0.148, 80 -> 0.593, 100 -> 0.741). The wheel cache is player scale;
+// these tests pin real units so an identity-mapped fake cannot hide a
+// unit mismatch again.
+// ---------------------------------------------------------------------------
+
+const YTM_SLOPE = 0.00741;
+const ytmElement = (player) => player * YTM_SLOPE;
+
+test('controller: YTM scale - the first up-notch from vanilla 60 requests 65', async () => {
+  const harness = createHarness({ mediaOptions: { volume: ytmElement(60) } });
+  await harness.start();
+  harness.wheel(-100);
+  await settle();
+  assert.deepEqual(harness.pageHook.calls.at(-1), { percent: 65 });
+});
+
+test('controller: YTM scale - repeated up-notches with sync reseeds strictly raise site volume', async () => {
+  const harness = createHarness({ mediaOptions: { volume: ytmElement(60) } });
+  await harness.start();
+  let site = 60;
+  for (let notch = 0; notch < 8; notch += 1) {
+    harness.wheel(-100);
+    await settle();
+    const requested = harness.pageHook.calls.at(-1).percent;
+    assert.ok(requested > site,
+      'notch ' + (notch + 1) + ': an up-notch must raise the site volume (site=' + site + ' req=' + requested + ')');
+    // YTM applies the player volume and the element follows on its own scale.
+    site = requested;
+    harness.media().volume = ytmElement(site);
+    // The 5 s safety poll re-syncs between notches; it must not corrupt the cache.
+    harness.controller.sync();
+  }
+  assert.equal(site, 100);
+});
+
+test('controller: YTM scale - from site 20 an up-notch raises instead of sticking', async () => {
+  const harness = createHarness({ mediaOptions: { volume: ytmElement(20) } });
+  await harness.start();
+  harness.wheel(-100);
+  await settle();
+  assert.deepEqual(harness.pageHook.calls.at(-1), { percent: 25 });
+});
+
+test('controller: YTM scale - sync with no wheel never touches the site volume', async () => {
+  const harness = createHarness({ mediaOptions: { volume: ytmElement(60) } });
+  await harness.start();
+  const before = harness.media().volume;
+  harness.controller.sync();
+  harness.controller.sync();
+  harness.controller.sync();
+  await settle();
+  assert.equal(harness.pageHook.calls.length, 0);
+  assert.equal(harness.media().volume, before);
+});
+
+test('controller: a collapsed player bar still owns the wheel (no page scroll)', async () => {
+  const harness = createHarness({ mediaOptions: { volume: ytmElement(60) } });
+  await harness.start();
+  harness.dom.mainPanel.computedVisibility = 'hidden';
+  const event = harness.wheel(-100);
+  assert.equal(event.defaultPrevented, true);
+  await settle();
+  assert.deepEqual(harness.pageHook.calls.at(-1), { percent: 65 });
+});
+
+test('controller: a wheel outside the player bar keeps native scroll (no volume write)', async () => {
+  const harness = createHarness({ mediaOptions: { volume: ytmElement(60) } });
+  await harness.start();
+  const callsBefore = harness.pageHook.calls.length;
+  const event = harness.dom.win.dispatch('wheel', { deltaY: -100, target: harness.dom.document.body });
+  assert.equal(event.defaultPrevented, false);
+  await settle();
+  assert.equal(harness.pageHook.calls.length, callsBefore);
+  assert.equal(harness.media().volume, ytmElement(60));
+});
+
+test('controller: YTM scale - the fallback writes the element at YTM scale', async () => {
+  const pageHook = createPageHook(50, { source: 'none' });
+  const harness = createHarness({ pageHook, mediaOptions: { volume: ytmElement(50) } });
+  await harness.start();
+  harness.wheel(-100);
+  await settle();
+  assert.ok(Math.abs(harness.media().volume - ytmElement(55)) < 1e-9,
+    'expected ~' + ytmElement(55) + ', got ' + harness.media().volume);
+  assert.deepEqual(harness.pageHook.uiSyncs, [55]);
 });
