@@ -1,8 +1,7 @@
 name: release
 
-# One release per extension, overwritten in place. Never a new release per
-# version: the four tags below are stable identities, and every run replaces the
-# asset on the existing release with --clobber.
+# One release per extension, overwritten in place. A run builds and replaces only
+# the product named by its stable tag or manual product choice.
 on:
   push:
     tags:
@@ -11,12 +10,21 @@ on:
       - crunchy-presence
       - web-discord-rpc
   workflow_dispatch:
+    inputs:
+      product:
+        description: Product to release
+        required: true
+        type: choice
+        options:
+          - audio-normalizer
+          - slowed-reverb
+          - crunchy-presence
+          - web-discord-rpc
 
 permissions:
   contents: write
 
-# One release run at a time: a tag push rebuilds all four assets, so two runs
-# racing would clobber the same uploads. Queued, never cancelled.
+# One release run at a time. Queued, never cancelled.
 concurrency:
   group: release
   cancel-in-progress: false
@@ -30,21 +38,39 @@ jobs:
         with:
           node-version-file: .nvmrc
 
-      - name: Zip loadable extensions
+      - name: Zip selected extension
+        env:
+          PRODUCT: ${{ github.event_name == 'workflow_dispatch' && inputs.product || github.ref_name }}
         run: |
           set -euo pipefail
           rm -rf dist && mkdir -p dist
-          (cd packages/audio-normalizer && zip -r ../../dist/audio-normalizer.zip manifest.json background.js shared.js content-script.js page-hook.js audio/normalizer-worklet.js popup.html popup.css popup.js icons/icon16.png icons/icon24.png icons/icon32.png icons/icon48.png icons/icon128.png)
-          (cd packages/slowed-reverb && zip -r ../../dist/slowed-reverb.zip manifest.json background.js shared.js player-actions.js content-script.js page-hook.js dattorro-worklet.js popup.html popup.css popup.js icons/icon16.png icons/icon24.png icons/icon32.png icons/icon48.png icons/icon128.png)
-          (cd packages/crunchy-presence && zip -r ../../dist/crunchy-presence.zip manifest.json background.js bridge-status.js config.js extract.js content.js popup.html popup.css popup.js options.html options.css options.js icons/icon16.png icons/icon24.png icons/icon32.png icons/icon48.png icons/icon128.png)
-          (cd packages/web-discord-rpc && zip -r ../../dist/web-discord-rpc.zip manifest.json background.js config.js activity.js bridge-status.js content.js extract-youtube.js popup.html popup.css popup.js options.html options.css options.js icons/icon16.png icons/icon24.png icons/icon32.png icons/icon48.png icons/icon128.png)
-          for f in dist/*.zip; do echo "$f"; unzip -l "$f" | tail -n +4 | head -n -2 | awk '{print "  " $4}'; done
+          case "$PRODUCT" in
+            audio-normalizer)
+              (cd packages/audio-normalizer && zip -r ../../dist/audio-normalizer.zip manifest.json background.js shared.js content-script.js page-hook.js audio/normalizer-worklet.js popup.html popup.css popup.js icons/icon16.png icons/icon24.png icons/icon32.png icons/icon48.png icons/icon128.png)
+              ;;
+            slowed-reverb)
+              (cd packages/slowed-reverb && zip -r ../../dist/slowed-reverb.zip manifest.json background.js shared.js player-actions.js content-script.js page-hook.js dattorro-worklet.js popup.html popup.css popup.js icons/icon16.png icons/icon24.png icons/icon32.png icons/icon48.png icons/icon128.png)
+              ;;
+            crunchy-presence)
+              (cd packages/crunchy-presence && zip -r ../../dist/crunchy-presence.zip manifest.json background.js bridge-status.js config.js extract.js content.js popup.html popup.css popup.js options.html options.css options.js icons/icon16.png icons/icon24.png icons/icon32.png icons/icon48.png icons/icon128.png)
+              ;;
+            web-discord-rpc)
+              (cd packages/web-discord-rpc && zip -r ../../dist/web-discord-rpc.zip manifest.json background.js config.js activity.js bridge-status.js content.js extract-youtube.js popup.html popup.css popup.js options.html options.css options.js icons/icon16.png icons/icon24.png icons/icon32.png icons/icon48.png icons/icon128.png)
+              ;;
+            *) echo "Unsupported product: $PRODUCT" >&2; exit 1 ;;
+          esac
+          unzip -l "dist/$PRODUCT.zip"
 
-      - name: Overwrite the four releases
+      - name: Overwrite selected release
         env:
+          PRODUCT: ${{ github.event_name == 'workflow_dispatch' && inputs.product || github.ref_name }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+          case "$PRODUCT" in
+            audio-normalizer|slowed-reverb|crunchy-presence|web-discord-rpc) ;;
+            *) echo "Unsupported product: $PRODUCT" >&2; exit 1 ;;
+          esac
 
           version() { node -p "require('./packages/$1/manifest.json').version"; }
           name() { node -p "require('./packages/$1/manifest.json').name"; }
@@ -68,7 +94,4 @@ jobs:
             gh release upload "$tag" "dist/$pkg.zip" --clobber
           }
 
-          publish audio-normalizer audio-normalizer
-          publish slowed-reverb slowed-reverb
-          publish crunchy-presence crunchy-presence
-          publish web-discord-rpc web-discord-rpc
+          publish "$PRODUCT" "$PRODUCT"
