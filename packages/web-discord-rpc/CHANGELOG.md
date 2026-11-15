@@ -2,6 +2,10 @@
 
 Notable changes to this package. Dates are ISO 8601. This package is local-only and is not published to a registry.
 
+## [1.1.10] - 2026-11-16
+
+- Native host startup clears inherited `NODE_OPTIONS` so a stale preload cannot prevent Node from starting.
+
 ## [1.1.9] - 2026-11-16
 
 - A delayed disconnect from a replaced native port no longer tears down its replacement or schedules another reconnect.

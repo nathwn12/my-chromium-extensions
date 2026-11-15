@@ -60,7 +60,7 @@ export function installPaths({ root = REPO_ROOT, localAppData = process.env.LOCA
 }
 
 export function buildHostCmd({ nodePath, hostScript }) {
-  return `@echo off\r\nrem Chrome native messaging host for web-discord-rpc\r\n"${nodePath}" "${hostScript}" %*\r\n`;
+  return `@echo off\r\nrem Chrome native messaging host for web-discord-rpc\r\nset "NODE_OPTIONS="\r\n"${nodePath}" "${hostScript}" %*\r\n`;
 }
 
 export function buildHostManifest({ hostPath, extensionId }) {
