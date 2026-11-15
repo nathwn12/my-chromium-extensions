@@ -4,6 +4,10 @@ Notable changes to this project. Dates are ISO 8601. This package is local-only 
 
 ## [Unreleased]
 
+## [1.2.2] - 2026-11-16
+
+- Native host startup clears inherited `NODE_OPTIONS` so a stale preload cannot prevent Node from starting.
+
 ## [1.2.1] - 2026-11-12
 
 - The one-second watch check stops while presence is off and starts again the moment you turn it back on, so a disabled extension does no repeating work in the background.

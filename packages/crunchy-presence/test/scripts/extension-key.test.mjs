@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
@@ -170,9 +170,25 @@ test('host manifest and launcher are built from absolute paths', () => {
 
   const cmd = buildHostCmd({ nodePath: paths.node, hostScript: paths.hostScript });
   assert.match(cmd, /^@echo off\r\n/);
+  assert.match(cmd, /set "NODE_OPTIONS="\r\n/);
   assert.ok(cmd.includes(`"${process.execPath}"`));
   assert.match(cmd, /native[\\/]host\.mjs/);
   assert.ok(cmd.trimEnd().endsWith('%*'));
+});
+
+test('generated Windows launcher starts Node with stale NODE_OPTIONS cleared and other env preserved', async (t) => {
+  if (process.platform !== 'win32') return t.skip('requires Windows cmd.exe');
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'crp-host-cmd-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const script = path.join(dir, 'probe.mjs');
+  const launcher = path.join(dir, 'host.cmd');
+  await writeFile(script, 'console.log(JSON.stringify({ nodeOptions: process.env.NODE_OPTIONS ?? null, marker: process.env.HOST_TEST_MARKER, args: process.argv.slice(2) }));');
+  await writeFile(launcher, buildHostCmd({ nodePath: process.execPath, hostScript: script }));
+  const output = execFileSync('cmd.exe', ['/d', '/c', launcher, 'argument'], {
+    encoding: 'utf8',
+    env: { ...process.env, NODE_OPTIONS: '--require C:\\missing\\preload.cjs', HOST_TEST_MARKER: 'preserved' },
+  });
+  assert.deepEqual(JSON.parse(output), { nodeOptions: null, marker: 'preserved', args: ['argument'] });
 });
 
 test('registry argv pins the default value to the host manifest', () => {
