@@ -2,6 +2,10 @@
 
 Notable changes to this package. Dates are ISO 8601. This package is local-only and is not published to a registry.
 
+## [1.1.9] - 2026-11-16
+
+- A delayed disconnect from a replaced native port no longer tears down its replacement or schedules another reconnect.
+
 ## [1.1.8] - 2026-11-12
 
 - The media poll stops entirely while the presence switch is off and starts again the moment you turn it back on, so a disabled extension does no repeating work in the background.

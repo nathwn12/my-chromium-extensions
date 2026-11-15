@@ -358,6 +358,7 @@ export function createWorker({
 
   let sequence = 0;
   let port = null;
+  let portDisconnectHandler = null;
   const clientId = DEFAULT_CLIENT_ID;
   const transportPreference = DEFAULT_TRANSPORT;
   let chosenTransport = null;
@@ -528,6 +529,8 @@ export function createWorker({
     if (!port) return;
     const dying = port;
     port = null;
+    const disconnectHandler = portDisconnectHandler;
+    portDisconnectHandler = null;
     // A dead port has no chosen transport; the next status frame names one.
     chosenTransport = null;
     try {
@@ -536,7 +539,7 @@ export function createWorker({
       /* already torn down */
     }
     try {
-      dying.onDisconnect.removeListener(onPortDisconnect);
+      dying.onDisconnect.removeListener(disconnectHandler);
     } catch {
       /* already torn down */
     }
@@ -638,7 +641,8 @@ export function createWorker({
     }
   }
 
-  function onPortDisconnect() {
+  function onPortDisconnect(owner) {
+    if (port !== owner) return;
     const message = api.runtime?.lastError?.message;
     dropPort();
     // A payload queued for a dead port is stale by definition: `push(true)` on
@@ -671,7 +675,8 @@ export function createWorker({
     }
     port = fresh;
     port.onMessage.addListener(onNativeMessage);
-    port.onDisconnect.addListener(onPortDisconnect);
+    portDisconnectHandler = () => onPortDisconnect(fresh);
+    port.onDisconnect.addListener(portDisconnectHandler);
     setBridge(BRIDGE.CONNECTING, null, {
       availability: AVAILABILITY.UNKNOWN,
       reason: null,
