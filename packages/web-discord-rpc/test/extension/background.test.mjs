@@ -40,6 +40,9 @@ function signal() {
     get size() {
       return handlers.size;
     },
+    snapshot() {
+      return [...handlers];
+    },
   };
 }
 
@@ -714,6 +717,57 @@ test("a port loss drops the deferred payload and the reconnect sends only the cu
   const replay = activities(reconnected);
   assert.equal(replay.length, 1);
   assert.equal(replay[0].activity.timestamps.start, Math.floor((BASE + 200) / 1000) - 190);
+});
+
+test("a delayed close from the replaced port cannot disconnect its replacement", async () => {
+  const { chrome, clock, worker, port: oldPort } = await boot();
+  connect(oldPort);
+  sendState(chrome, 1, musicState());
+  const delayedClose = oldPort.onDisconnect.snapshot()[0];
+  oldPort.onDisconnect.fire();
+  clock.advance(BACKOFF_MIN_MS);
+
+  const replacement = chrome.ports[1];
+  assert.ok(replacement);
+  delayedClose(); // a queued old-socket close runs after the replacement exists
+  connect(replacement);
+
+  assert.equal(worker.status().bridgeState, "connected");
+  clock.advance(BACKOFF_MIN_MS);
+  assert.equal(chrome.ports.length, 2, "the stale close must not schedule another reconnect");
+});
+
+test("a clear while reconnect handshake is held is what the replacement publishes", async () => {
+  const { chrome, clock, port: oldPort } = await boot();
+  connect(oldPort);
+  sendState(chrome, 1, musicState({ title: "Old song" }));
+  oldPort.onDisconnect.fire();
+  clock.advance(BACKOFF_MIN_MS);
+
+  const replacement = chrome.ports[1];
+  assert.equal(replacement.sent[0].t, "hello");
+  sendGone(chrome, 1);
+  connect(replacement);
+
+  const sent = activities(replacement);
+  assert.equal(sent.at(-1).activity, null);
+  assert.equal(sent.some((frame) => frame.activity?.details === "Old song"), false);
+});
+
+test("a changed activity while reconnect handshake is held replaces the stale one", async () => {
+  const { chrome, clock, port: oldPort } = await boot();
+  connect(oldPort);
+  sendState(chrome, 1, musicState({ title: "Old song" }));
+  oldPort.onDisconnect.fire();
+  clock.advance(BACKOFF_MIN_MS);
+
+  const replacement = chrome.ports[1];
+  sendState(chrome, 1, musicState({ title: "New song" }));
+  connect(replacement);
+
+  const sent = activities(replacement);
+  assert.equal(sent.at(-1).activity.details, "New song");
+  assert.equal(sent.some((frame) => frame.activity?.details === "Old song"), false);
 });
 
 test("a tab-scoped gone clears Music presence", async () => {

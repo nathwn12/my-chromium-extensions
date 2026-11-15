@@ -44,16 +44,16 @@ test("timestamp documentation requires real media position and duration", () => 
   }
 });
 
-test("version 1.1.8 is aligned across package, manifest, root index and changelog", () => {
+test("version 1.1.9 is aligned across package, manifest, lockfile, root index and changelog", () => {
   const pkg = JSON.parse(read("package.json"));
   const manifest = JSON.parse(read("manifest.json"));
-  assert.equal(pkg.version, "1.1.8");
-  assert.equal(manifest.version, "1.1.8");
+  assert.equal(pkg.version, "1.1.9");
+  assert.equal(manifest.version, "1.1.9");
   // bun.lock is JSONC: the workspace block carries the resolved version.
   const locked = rootLock.match(/"packages\/web-discord-rpc":\s*\{[^}]*?"version":\s*"([^"]+)"/);
-  assert.equal(locked?.[1], "1.1.8", "bun.lock workspace version matches");
-  assert.match(changelog, /\[1\.1\.8\]/);
-  assert.match(rootReadme, /YouTube Music.*\| 1\.1\.8/);
+  assert.equal(locked?.[1], "1.1.9", "bun.lock workspace version matches");
+  assert.match(changelog, /\[1\.1\.9\]/);
+  assert.match(rootReadme, /YouTube Music.*\| 1\.1\.9/);
   assert.equal(DEFAULT_CLIENT_ID, "1566530911514923188");
 });
 
