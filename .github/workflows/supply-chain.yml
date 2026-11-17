@@ -1,0 +1,27 @@
+name: supply-chain
+
+# Free-tier GitHub-hosted check on a public repository. No paid service.
+on:
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: supply-chain
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - name: Install from the lockfile
+        run: bun install --frozen-lockfile
+      - name: Audit dependencies
+        run: bun audit --audit-level=high
