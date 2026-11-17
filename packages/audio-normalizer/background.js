@@ -95,12 +95,7 @@ async function readSiteRecord(siteKey) {
   // Pre-full-key data lives under the collapsed per-site key
   // (`site:github.io`). Read it as a legacy fallback; callers persist the
   // migrated record under the FULL key on their next write (`fromLegacy`).
-  // (`legacySiteStorageKey` is new in shared.js; the any-alias keeps this
-  // file green until the type declaration catches up.)
-  const sharedAny = /** @type {any} */ (backgroundShared);
-  const legacyPerKey = typeof sharedAny.legacySiteStorageKey === 'function'
-    ? sharedAny.legacySiteStorageKey(siteKey)
-    : '';
+  const legacyPerKey = backgroundShared.legacySiteStorageKey(siteKey);
   if (legacyPerKey && legacyPerKey !== perKey) {
     const legacyStored = await chrome.storage.local.get([legacyPerKey]);
     const legacyExisting = legacyStored[legacyPerKey];

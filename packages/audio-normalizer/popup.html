@@ -23,9 +23,9 @@
     <p id="hostname" class="detail">...</p>
 
     <section class="card" aria-label="Gain">
-      <p class="gain-readout" id="gain-value">+0 dB</p>
+      <p class="gain-readout" id="gain-value" aria-live="polite">+0 dB</p>
       <input type="range" id="gain-slider" min="-12" max="12" step="0.5" value="0" aria-label="Adjust gain">
-      <div class="preset-row" aria-label="Quick gain presets">
+      <div class="preset-row" role="group" aria-label="Quick gain presets">
         <button type="button" class="preset-button" data-preset="speech">Speech</button>
         <button type="button" class="preset-button" data-preset="music">Music</button>
         <button type="button" class="preset-button" data-preset="boost">Boost</button>
@@ -33,7 +33,7 @@
     </section>
 
     <label class="toggle" for="toggle">
-      <input type="checkbox" id="toggle" aria-label="Toggle normalizer" role="switch">
+      <input type="checkbox" id="toggle" role="switch">
       <span>Active</span>
     </label>
 
@@ -43,7 +43,7 @@
       <button type="button" id="reset-btn">Reset</button>
     </footer>
 
-    <p id="status-text" class="detail">Checking…</p>
+    <p id="status-text" class="detail" role="status">Checking…</p>
   </main>
   <script src="shared.js"></script>
   <script src="popup.js"></script>
