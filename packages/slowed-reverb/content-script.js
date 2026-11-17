@@ -815,7 +815,36 @@ function applyRuntimeState(runtime) {
     controller.rateHandler = () => {
       if (controller.internalRateWrite) return;
       if (shouldBeActiveForController(controller)) {
-        setMediaPlaybackState(controller, state.settings.slow);
+        const intended = intendedPlaybackState(controller, state.settings.slow);
+        const rateDiffers = media.playbackRate !== intended.intendedRate || !pitchStateMatches(media, intended.intendedPitch);
+        // Our own rate write echoes back as a queued `ratechange` after the
+        // guard flag is gone; that echo is not a page write and must not fade
+        // anything.
+        if (!rateDiffers && media.muted === isAudible(controller)) return;
+        // The page replaced our rate. Cover the correction: fade the graph to
+        // zero over ~5 ms, restore the slowed rate, then ramp back, so the
+        // page's own speed never reaches the output. A stale tap is already at
+        // zero, so it only needs the write.
+        const coverParam = rateDiffers && !controller.sourceStale && controller.masterGain ? controller.masterGain.gain : null;
+        if (coverParam) {
+          const now = state.context ? state.context.currentTime : 0;
+          try {
+            coverParam.cancelScheduledValues(now);
+          } catch {
+            // No scheduled values.
+          }
+          coverParam.setValueAtTime(coverParam.value, now);
+          if (typeof coverParam.linearRampToValueAtTime === 'function') {
+            coverParam.linearRampToValueAtTime(0, now + 0.005);
+          }
+        }
+        writeIntendedRate(controller, state.settings.slow);
+        // Same mute seam and budget as setMediaPlaybackState: a page can restore
+        // its rate and fire `ratechange` as easily as `volumechange`.
+        enforceElementMute(controller);
+        if (coverParam && !controller.budgetBypassed) {
+          rampGain(controller.masterGain.gain, media.volume);
+        }
       } else {
         controller.originalRate = media.playbackRate;
         controller.originalPitch = readPitchState(media);
@@ -917,6 +946,11 @@ function applyRuntimeState(runtime) {
       if (controller.attached) {
         // The graph stays owned and muted while the new source loads; retry at
         // the ceiling instead of tearing a live graph down mid-song.
+        if (controller.sourceStale) {
+          // Rate only: the element must carry the slowed rate through the swap
+          // window even while the graph is parked at zero. Never unmute here.
+          writeIntendedRate(controller, state.settings.slow);
+        }
         scheduleAttachRetry(controller, retryCount);
         return;
       }
@@ -1092,8 +1126,6 @@ function applyRuntimeState(runtime) {
       // (`enforceElementMute` gates on `attached`). The budget is cleared just
       // below, so this single write never eats into the correction allowance.
       controller.media.muted = true;
-      rampGain(dryGain.gain, Math.sqrt(Math.max(0, 1 - initialParams.wetGain * initialParams.wetGain)));
-      rampGain(masterGain.gain, controller.media.volume);
 
       controller.stream = stream;
       controller.source = source;
@@ -1102,7 +1134,9 @@ function applyRuntimeState(runtime) {
       controller.dattorroNode = dattorroNode;
       controller.attached = true;
       controller.attachedSrc = controller.media.currentSrc;
-      controller.sourceStale = false;
+      // The initial unmute goes through the same gate as a source swap: the
+      // intended rate must be on the element before the graph may carry audio.
+      alignBeforeAudible(controller);
       resetMuteDampener(controller);
       controller.lastPostedParams = JSON.stringify(initialParams);
       controller.attachError = '';
@@ -1186,7 +1220,6 @@ function applyRuntimeState(runtime) {
       controller.source = source;
       controller.stream = stream;
       controller.attachedSrc = controller.media.currentSrc;
-      controller.sourceStale = false;
       controller.failed = false;
       controller.attachError = '';
 
@@ -1203,14 +1236,11 @@ function applyRuntimeState(runtime) {
         });
       }
 
+      // The new source may only become audible once the element already carries
+      // the intended rate; otherwise the graph plays the page's own speed until
+      // the write lands.
       resetMuteDampener(controller);
-      if (controller.dryGain) {
-        const params = computePostParams(state.settings.reverbIntensity);
-        rampGain(controller.dryGain.gain, Math.sqrt(Math.max(0, 1 - params.wetGain * params.wetGain)));
-      }
-      if (controller.masterGain) {
-        rampGain(controller.masterGain.gain, controller.media.volume);
-      }
+      alignBeforeAudible(controller);
       return true;
     } catch (error) {
       // Never leave the element muted without an audio path: drop the stale
@@ -1509,22 +1539,29 @@ function applyRuntimeState(runtime) {
     }
   }
 
-  function setMediaPlaybackState(controller, rate) {
-    const media = controller.media;
+  // Speed and pitch move together: a non-neutral rate write always forces
+  // pitch-preservation OFF across all three vendor spellings (and the guard
+  // below re-asserts it after the page player writes the aliases); only the
+  // neutral restore puts the element's own pitch state back.
+  function intendedPlaybackState(controller, rate) {
     const neutral = Math.abs(rate - 1) < 0.001;
-    const intendedRate = neutral ? controller.originalRate : parseFloat(rate.toFixed(2));
-    // Speed and pitch move together: a non-neutral rate write always forces
-    // pitch-preservation OFF across all three vendor spellings (and the guard
-    // below re-asserts it after the page player writes the aliases); only the
-    // neutral restore puts the element's own pitch state back.
-    const intendedPitch = neutral
-      ? controller.originalPitch
-      : { preservesPitch: false, mozPreservesPitch: false, webkitPreservesPitch: false };
-    const intendedMuted = isAudible(controller);
+    return {
+      neutral,
+      intendedRate: neutral ? controller.originalRate : parseFloat(rate.toFixed(2)),
+      intendedPitch: neutral
+        ? controller.originalPitch
+        : { preservesPitch: false, mozPreservesPitch: false, webkitPreservesPitch: false },
+    };
+  }
 
-    if (media.playbackRate === intendedRate && media.muted === intendedMuted && pitchStateMatches(media, intendedPitch)) {
-      return;
-    }
+  // Rate/pitch half of `setMediaPlaybackState`, on its own so a source swap or
+  // a page rate write can put the intended rate on the element through the
+  // silent window. Never touches `media.muted` or any gain, so it cannot
+  // unmute anything. Returns whether the element now carries the slow value.
+  function writeIntendedRate(controller, rate) {
+    const media = controller.media;
+    const { neutral, intendedRate, intendedPitch } = intendedPlaybackState(controller, rate);
+    if (media.playbackRate === intendedRate && pitchStateMatches(media, intendedPitch)) return true;
 
     controller.internalRateWrite = true;
 
@@ -1536,18 +1573,57 @@ function applyRuntimeState(runtime) {
         setPreservesPitch(media, false);
         media.playbackRate = parseFloat(rate.toFixed(2));
       }
-      if (intendedMuted) {
-        // Same budget as the volumechange path: a page can restore its rate and
-        // fire `ratechange` as easily as `volumechange`, so this write must not
-        // be a free extra correction. Only the deliberate unmute is direct.
-        enforceElementMute(controller);
-      } else {
-        media.muted = false;
-      }
     } finally {
       queueMicrotask(() => {
         controller.internalRateWrite = false;
       });
+    }
+    return media.playbackRate === intendedRate && pitchStateMatches(media, intendedPitch);
+  }
+
+  // The gate between "the graph is wired" and "the graph may be audible": the
+  // element must already carry the intended rate and pitch, or the first
+  // samples of a fresh source play at the page's own speed and are corrected
+  // afterwards. Aligned opens the graph; not aligned parks it at zero and keeps
+  // the tap stale so the next sync retries the write.
+  function alignBeforeAudible(controller) {
+    if (!controller.attached) return false;
+
+    if (!writeIntendedRate(controller, state.settings.slow)) {
+      if (controller.masterGain) hardZero(controller.masterGain.gain);
+      controller.sourceStale = true;
+      return false;
+    }
+
+    controller.sourceStale = false;
+    if (controller.dryGain) {
+      const params = computePostParams(state.settings.reverbIntensity);
+      rampGain(controller.dryGain.gain, Math.sqrt(Math.max(0, 1 - params.wetGain * params.wetGain)));
+    }
+    if (controller.masterGain) {
+      rampGain(controller.masterGain.gain, controller.media.volume);
+    }
+    return true;
+  }
+
+  function setMediaPlaybackState(controller, rate) {
+    const media = controller.media;
+    const { intendedRate, intendedPitch } = intendedPlaybackState(controller, rate);
+    const intendedMuted = isAudible(controller);
+
+    if (media.playbackRate === intendedRate && media.muted === intendedMuted && pitchStateMatches(media, intendedPitch)) {
+      return;
+    }
+
+    writeIntendedRate(controller, rate);
+
+    if (intendedMuted) {
+      // Same budget as the volumechange path: a page can restore its rate and
+      // fire `ratechange` as easily as `volumechange`, so this write must not
+      // be a free extra correction. Only the deliberate unmute is direct.
+      enforceElementMute(controller);
+    } else {
+      media.muted = false;
     }
   }
 

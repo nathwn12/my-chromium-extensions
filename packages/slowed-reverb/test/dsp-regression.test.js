@@ -242,29 +242,37 @@ function main() {
   check('2. capped *0.42 wet mapping is gone', csrc.indexOf('* 0.42') === -1);
   const wetSrc = (csrc.match(/wetGain:\s*(Math\.pow\(i, 0\.75\)[^,\n]*),/) || [])[1] || '';
   const wetFn = new Function('I', 'return (' + wetSrc.replace(/\bi\b/g, 'I') + ');');
-  const drySrcs = [
-    (csrc.match(/rampGain\(dryGain\.gain,\s*([^;]+)\);/) || [])[1] || '',
-    (csrc.match(/rampGain\(controller\.dryGain\.gain,\s*([^;]+)\);/) || [])[1] || '',
-  ];
-  check('2. both dry sites use the equal-power complement', drySrcs.every((s) => s.indexOf('Math.sqrt') !== -1), drySrcs.join(' | '));
+  // Every dry-gain ramp (updateWetChain and alignBeforeAudible) must use the
+  // equal-power complement of the wet gain.
+  const drySrcs = [];
+  const dryRe = /rampGain\(controller\.dryGain\.gain,\s*([^;]+)\);/g;
+  for (let dryMatch = dryRe.exec(csrc); dryMatch; dryMatch = dryRe.exec(csrc)) {
+    drySrcs.push(dryMatch[1]);
+  }
+  check(
+    '2. both dry sites use the equal-power complement',
+    drySrcs.length >= 2 && drySrcs.every((s) => s.indexOf('Math.sqrt') !== -1),
+    drySrcs.join(' | ')
+  );
   const dryFns = drySrcs.map(
     (s) => new Function('W', 'return (' + s.replace(/initialParams\.wetGain/g, 'W').replace(/params\.wetGain/g, 'W') + ');')
   );
+  const dry = dryFns.length > 0 ? dryFns[dryFns.length - 1] : () => NaN;
   let worstDip = 0;
   for (let k = 0; k <= 100; k++) {
     const i = k / 100;
     const w = wetFn(i);
-    const d = dryFns[1](w);
+    const d = dry(w);
     const dip = db(Math.sqrt(w * w + d * d));
     if (dip < worstDip) worstDip = dip;
   }
   console.log(
     '     wet(0)=' + wetFn(0).toFixed(3) + ' wet(1)=' + wetFn(1).toFixed(3) +
-    ' dry(0)=' + dryFns[1](wetFn(0)).toFixed(3) + ' dry(1)=' + dryFns[1](wetFn(1)).toFixed(3) +
+    ' dry(0)=' + dry(wetFn(0)).toFixed(3) + ' dry(1)=' + dry(wetFn(1)).toFixed(3) +
     ' worst dip=' + worstDip.toFixed(3) + ' dB'
   );
-  check('2. i=0 fully dry (wet 0, dry 1)', wetFn(0) === 0 && dryFns[1](0) === 1);
-  check('2. i=1 fully wet (wet 1, dry 0)', wetFn(1) === 1 && dryFns[1](1) === 0);
+  check('2. i=0 fully dry (wet 0, dry 1)', wetFn(0) === 0 && dry(0) === 1);
+  check('2. i=1 fully wet (wet 1, dry 0)', wetFn(1) === 1 && dry(1) === 0);
   check('2. level dip < 1 dB across 0..1', worstDip > -1, 'worst dip ' + worstDip.toFixed(2) + ' dB');
 
   // --- 3. DENORMALS: 40 s of silence leaves nothing below 1e-20 ---
