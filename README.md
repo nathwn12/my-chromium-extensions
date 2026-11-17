@@ -1,83 +1,67 @@
-# my-chromium-extensions
+<h1 align="center">my-chromium-extensions</h1>
+<p align="center"><strong>Four Chromium extensions for loudness levelling, slowed reverb, and Discord presence in Crunchyroll and YouTube Music.</strong></p>
+
+## Install
+
+```bash
+git clone https://github.com/nathwn12/my-chromium-extensions.git
+```
+
+Open `chrome://extensions`, turn on **Developer mode**, click **Load unpacked**, and select `packages/<name>` — the folder that holds that extension's `manifest.json`. There is no build step and no store listing.
+
+The two presence extensions reach Discord through a local native messaging host. Register it once from the repository root:
+
+```bash
+node packages/crunchy-presence/scripts/install-host.mjs
+node packages/web-discord-rpc/scripts/install-host.mjs
+```
+
+Add `--check` to either command to verify a registration without writing.
+
+## Use it
 
 Four Chromium extensions, loaded unpacked from this repository. Nothing is published to a store.
 
 | Extension | What it does | Version |
 | --- | --- | --- |
-| [Audio Normalizer](packages/audio-normalizer) | Applies one target loudness to every site through a local audio graph. | 5.6.3 |
+| [Audio Normalizer](packages/audio-normalizer) | Brings every site you switch on to one target loudness through a local audio graph. | 5.6.3 |
 | [Slowed Reverb](packages/slowed-reverb) | Slows YouTube Music playback and adds plate reverb in a local audio graph. | 1.2.2 |
-| [Crunchy Presence](packages/crunchy-presence) | Reports the Crunchyroll episode being watched as Discord rich presence. | 1.2.2 |
+| [Crunchy Presence](packages/crunchy-presence) | Reports the Crunchyroll episode you are watching as Discord rich presence. | 1.2.2 |
 | [YouTube Presence](packages/web-discord-rpc) | Reports YouTube Music only to Discord desktop rich presence. | 1.1.10 |
 
-## Install
+Then, per extension:
 
-1. Clone the repository.
-2. Open `chrome://extensions`.
-3. Turn on **Developer mode**.
-4. Click **Load unpacked** and select `packages/<name>`.
+- **Audio Normalizer** — open a page that plays audio, click the icon, and switch **Active** on for that site. The gain slider runs -12 to +12 dB; Speech, Music and Boost are presets.
+- **Slowed Reverb** — start a track on YouTube Music, then click the icon. Speed runs 0.7x to 1.3x, reverb 0 to 100 percent.
+- **Crunchy Presence** — with Discord desktop running, open an episode; the popup shows bridge status.
+- **YouTube Presence** — with Discord desktop running, open YouTube Music and turn presence on with the popup switch. The choice persists across refreshes and Discord reconnects.
 
-Each package folder holds its own `manifest.json`; there is no build step.
+## Requirements
 
-## Crunchy Presence
-
-A browser cannot open a Discord named pipe, so the extension passes watch state to a native messaging host that connects to Discord IPC itself. From the repository root:
-
-```
-node packages/crunchy-presence/scripts/install-host.mjs
-```
-
-Verify the registration without writing:
-
-```
-node packages/crunchy-presence/scripts/install-host.mjs --check
-```
-
-The host scans `\\.\pipe\discord-ipc-0` through `-9`.
+- A Chromium browser: Chrome, Edge or Brave.
+- Node 26, the version in `.nvmrc` and the root `engines` field, to run the host installers, the native hosts and the tests.
+- Windows 10 or 11 for the two presence extensions: their hosts write registry entries and talk to Discord's local named pipe.
+- Discord desktop installed, signed in and running, for the two presence extensions only.
+- Chrome 120 or newer for the two presence extensions; both pin `minimum_chrome_version`. The two audio extensions declare no minimum.
 
 ## Development
 
-```
-node --test packages/crunchy-presence/test/
-node --test packages/web-discord-rpc/test/
-cd packages/audio-normalizer && node --test tests/
-cd packages/slowed-reverb && node test/mute-enforce.test.js
-```
-
-QA is browser-free and silent: no Playwright dependency is installed here, and
-every check above runs in Node. Gladius is the only browser tester.
-
-## Release
-
-```
-node scripts/release.mjs <package> <major|minor|patch|x.y.z> [--dry-run]
-git commit -m "<package>: release <version>"
-git tag v<version>
-git push origin HEAD v<version>
+```bash
+bun install
+bun run test                          # every workspace suite
+node scripts/verify-integration.mjs   # wiring check, reads the tree and installs nothing
+bun run lint                          # slowed-reverb ESLint
+bun run typecheck                     # audio-normalizer tsc
 ```
 
-The script bumps `manifest.json`, `package.json` and the `CHANGELOG`, and prints these exact commands without running them. Pushing the `v*` tag makes CI attach the four extension zips to a GitHub release.
-
-## Layout
-
-```
-packages/
-  audio-normalizer/   per-site loudness levelling
-  crunchy-presence/   Crunchyroll watch state to Discord
-  slowed-reverb/      YouTube slowdown and plate reverb
-  web-discord-rpc/    YouTube watch state to Discord
-```
-
-## Scope
-
-Local-first: unpacked loading only, no store listing, no npm release, no telemetry.
+Tests run in Node on `node --test`, never in a browser: no Playwright dependency exists here, and `verify-integration.mjs` fails if one is added. CI runs those commands per package and adds the audio QA scripts (`qa/feed-transition-qa.cjs`, `qa/program-boundary-qa.cjs`) plus both native host selftests.
 
 ## Status
 
-Experimental and still moving. It works today, but it is not a finished
-product: interfaces may change, features may be improved or removed, and a
-release can break the one before it. This is maintained by one person, not a
-team. If it breaks, open an issue with the command you ran and what you saw.
+**Experimental** — pre-release; interfaces may change.
 
 ## Links
 
+- [Issues](https://github.com/nathwn12/my-chromium-extensions/issues)
+- [Releases](https://github.com/nathwn12/my-chromium-extensions/releases) — the extension zips attached to each tag.
 - [MIT](LICENSE)
