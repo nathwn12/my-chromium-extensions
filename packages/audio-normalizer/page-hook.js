@@ -54,7 +54,7 @@
   }
 
   function trackTimeout(fn, ms) {
-    let id = null;
+    let id = 0;
     id = setTimeout(() => {
       trackedTimers.delete(id);
       try {
@@ -201,6 +201,7 @@
   /** @param {unknown} value */
   function isValidWorkletUrl(value) {
     if (typeof value !== 'string' || !pinnedWorkletOrigin) return false;
+    /** @type {URL | null} */
     let parsed = null;
     try {
       parsed = new URL(value);
@@ -211,6 +212,7 @@
       && parsed.pathname === WORKLET_SUFFIX;
   }
   function readWorkletUrlAttribute() {
+    /** @type {string | null} */
     let value = null;
     try {
       value = document.documentElement?.getAttribute(WORKLET_ATTR);
@@ -282,12 +284,14 @@
   const sessions = new Set();
   const contextSessions = new WeakMap();
   const mediaSessions = new WeakMap();
+  /** @type {ReturnType<typeof createMediaSession> | null} */
   let mediaSessionPromise = null;
   const guardedMediaElements = new Set();
   // Elements the page wired into its own Web Audio graph. They cannot be
   // captured by us (one MediaElementSource per element, ever) and are left
   // playing untouched; the set is what turns that into a visible verdict.
   const unmanagedMediaElements = new Set();
+  /** @type {ReturnType<typeof trackTimeout> | null} */
   let recoveryBurstTimer = null;
   let recoveryBurstRemaining = 0;
   let recoveryBurstRunning = false;
@@ -492,6 +496,7 @@
     untrackListener(window, 'pageshow', handleLifecycleEvent);
   }
 
+  /** @type {ReturnType<typeof trackTimeout> | null} */
   let lifecycleTimer = null;
 
   function handleLifecycleEvent() {
@@ -758,7 +763,7 @@
     if (AudioNode.prototype.__tnConnect) return;
     AudioNode.prototype.__tnConnect = true;
 
-    AudioNode.prototype.connect = function (dest, out, inp) {
+    AudioNode.prototype.connect = function (dest, out = undefined, inp = undefined) {
       if (!state.internalWiring && state.active && this.context && dest === this.context.destination) {
         const s = ensureContextSession(this.context);
         if (s) return originalConnect.call(this, s.inputNode, out, inp);
@@ -817,6 +822,7 @@
 
     HTMLMediaElement.prototype.play = function (...args) {
       const managed = state.active && (!this.__tnWebAudio || this.__tnAttached);
+      /** @type {ReturnType<typeof beginPlayAttempt> | null} */
       let attempt = null;
       if (managed) {
         watchProgramBoundaries(this);
@@ -871,6 +877,7 @@
       return;
     }
 
+    /** @type {ReturnType<typeof trackTimeout> | null} */
     let observerTimer = null;
     let pendingBatches = [];
     // Feed-starvation guard: one flush never walks an unbounded queue.
@@ -1677,7 +1684,8 @@
       // internalWiring.
       {
         state.internalWiring = true;
-        let source = null;
+        /** @type {MediaElementAudioSourceNode} */
+        let source;
         try {
           source = session.context.createMediaElementSource(mediaElement);
         } finally {
