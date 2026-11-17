@@ -13,7 +13,7 @@ The two presence extensions reach Discord through a local native messaging host.
 
 ```bash
 node packages/crunchy-presence/scripts/install-host.mjs
-node packages/web-discord-rpc/scripts/install-host.mjs
+node packages/youtube-music-presence/scripts/install-host.mjs
 ```
 
 Add `--check` to either command to verify a registration without writing.
@@ -24,17 +24,17 @@ Four Chromium extensions, loaded unpacked from this repository. Nothing is publi
 
 | Extension | What it does | Version |
 | --- | --- | --- |
-| [Audio Normalizer](packages/audio-normalizer) | Brings every site you switch on to one target loudness through a local audio graph. | 5.6.3 |
+| [Audio Normalizer](packages/audio-normalizer) | Brings every site you switch on to one target loudness through a local audio graph. | 5.6.4 |
 | [Slowed Reverb](packages/slowed-reverb) | Slows YouTube Music playback and adds plate reverb in a local audio graph. | 1.2.3 |
-| [Crunchy Presence](packages/crunchy-presence) | Reports the Crunchyroll episode you are watching as Discord rich presence. | 1.2.2 |
-| [YouTube Presence](packages/web-discord-rpc) | Reports YouTube Music only to Discord desktop rich presence. | 1.1.10 |
+| [Crunchy Presence](packages/crunchy-presence) | Reports the Crunchyroll episode you are watching as Discord rich presence. | 1.2.3 |
+| [YouTube Music Presence](packages/youtube-music-presence) | Reports YouTube Music only to Discord desktop rich presence. | 1.1.11 |
 
 Then, per extension:
 
 - **Audio Normalizer** — open a page that plays audio, click the icon, and switch **Active** on for that site. The gain slider runs -12 to +12 dB; Speech, Music and Boost are presets.
 - **Slowed Reverb** — start a track on YouTube Music, then click the icon. Speed runs 0.7x to 1.3x, reverb 0 to 100 percent.
 - **Crunchy Presence** — with Discord desktop running, open an episode; the popup shows bridge status.
-- **YouTube Presence** — with Discord desktop running, open YouTube Music and turn presence on with the popup switch. The choice persists across refreshes and Discord reconnects.
+- **YouTube Music Presence** — with Discord desktop running, open YouTube Music and turn presence on with the popup switch. The choice persists across refreshes and Discord reconnects.
 
 ## Requirements
 

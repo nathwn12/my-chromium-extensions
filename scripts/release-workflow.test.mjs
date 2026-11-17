@@ -17,5 +17,5 @@ test("release workflow builds and publishes only the selected product", () => {
   assert.doesNotMatch(workflow, /publish audio-normalizer audio-normalizer/);
   assert.doesNotMatch(workflow, /publish slowed-reverb slowed-reverb/);
   assert.doesNotMatch(workflow, /publish crunchy-presence crunchy-presence/);
-  assert.doesNotMatch(workflow, /publish web-discord-rpc web-discord-rpc/);
+  assert.doesNotMatch(workflow, /publish youtube-music-presence youtube-music-presence/);
 });

@@ -109,7 +109,7 @@ The report prints the actual arrays for every phase, not just a verdict.
   `--disable-features=DisableLoadExtensionCommandLineSwitch` does not restore
   it). The harness loads through CDP `Extensions.loadUnpacked` and reads the
   assigned ids back from `Extensions.getExtensions`.
-- **Host-pinned extensions:** `slowed-reverb` and `web-discord-rpc` match
+- **Host-pinned extensions:** `slowed-reverb` and `youtube-music-presence` match
   `https://music.youtube.com/*`, so their real origin cannot be exercised from
   `127.0.0.1`. The harness mints a throwaway self-signed cert (openssl, into a
   temp dir that is deleted), serves the same fixture over https and maps the host

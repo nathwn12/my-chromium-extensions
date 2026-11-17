@@ -50,7 +50,7 @@ const SCRATCH = "C:\\Users\\nathan\\AppData\\Local\\Temp\\opencode\\cx";
 const PACKAGES = [
   { name: "audio-normalizer", dir: join(REPO_ROOT, "packages", "audio-normalizer") },
   { name: "slowed-reverb", dir: join(REPO_ROOT, "packages", "slowed-reverb") },
-  { name: "web-discord-rpc", dir: join(REPO_ROOT, "packages", "web-discord-rpc") },
+  { name: "youtube-music-presence", dir: join(REPO_ROOT, "packages", "youtube-music-presence") },
   { name: "crunchy-presence", dir: join(REPO_ROOT, "packages", "crunchy-presence") },
 ];
 
@@ -118,7 +118,7 @@ function usage() {
     "  --assert          exit 1 when any assertion fails",
     "  --json <path>     write the full report to <path>",
     "  --package <name>  load only this extension (audio-normalizer, slowed-reverb,",
-    "                    web-discord-rpc, crunchy-presence); repeatable",
+    "                    youtube-music-presence, crunchy-presence); repeatable",
     "  --settle <ms>     extra wait after each page load (default 1400)",
     "  --silent-check    verify every launch argv is muted and headless, then exit",
     "                    without starting a browser (exit 1 if any argv could be audible)",
@@ -140,7 +140,7 @@ function seedItems(pkg, { host, excluded = false, seen = false }) {
       siteSettings: { [host]: { slow: 1.2, reverbIntensity: 0.3 } },
     };
   }
-  if (pkg === "web-discord-rpc") return { enabled: true };
+  if (pkg === "youtube-music-presence") return { enabled: true };
   return {};
 }
 
@@ -551,7 +551,7 @@ async function main() {
     }
 
     // ---- scenario: coexistence on one host --------------------------------
-    const coexistencePackages = ["audio-normalizer", "slowed-reverb", "web-discord-rpc"].filter((pkg) => byName.has(pkg));
+    const coexistencePackages = ["audio-normalizer", "slowed-reverb", "youtube-music-presence"].filter((pkg) => byName.has(pkg));
     if (servers.httpsPort) {
       for (const pkg of coexistencePackages) {
         const ext = byName.get(pkg);
@@ -587,7 +587,7 @@ async function main() {
       });
     } else {
       notes.push(
-        `coexistence did not run: ${servers.problems.join("; ") || "no https origin available"} — slowed-reverb and web-discord-rpc are pinned to https://music.youtube.com/* by manifest`,
+        `coexistence did not run: ${servers.problems.join("; ") || "no https origin available"} — slowed-reverb and youtube-music-presence are pinned to https://music.youtube.com/* by manifest`,
       );
     }
   } finally {
