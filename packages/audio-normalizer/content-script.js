@@ -494,7 +494,7 @@
     // Parent-host exclusion first: it outranks every `enabled` below.
     const ancestorExcluded = ancestorKeys.some((key) => {
       const value = stored[key];
-      return Boolean(value && typeof value === 'object' && value.excluded);
+      return Boolean(value && typeof value === 'object' && 'excluded' in value && value.excluded);
     });
     if (ancestorExcluded) {
       rememberExclusion(state.siteKey, true);

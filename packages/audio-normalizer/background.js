@@ -296,7 +296,7 @@ async function isSiteBlocked(siteKey) {
   }
   return keys.some((key) => {
     const value = stored[key];
-    return Boolean(value && typeof value === 'object' && value.excluded === true);
+    return Boolean(value && typeof value === 'object' && 'excluded' in value && value.excluded === true);
   });
 }
 
@@ -749,6 +749,7 @@ function scheduleRegistrationRetry() {
 
 // Coalesced re-registration: a burst of writes (toggle + gain + exclusion)
 // costs one registration pass, not one per write.
+/** @type {ReturnType<typeof setTimeout> | null} */
 let registrationSyncTimer = null;
 /** @type {Promise<unknown>} */
 let registrationChain = Promise.resolve();
@@ -790,6 +791,7 @@ function tabMatchesSiteKey(tabUrl, siteKey) {
 // produces exactly ONE broadcast per site with the re-read truth. Rapid
 // slider persists collapse here instead of fanning out per write.
 const pendingBroadcastSites = new Set();
+/** @type {ReturnType<typeof setTimeout> | null} */
 let broadcastFlushTimer = null;
 function scheduleSiteBroadcast(siteKey) {
   if (!siteKey) return;
@@ -978,6 +980,7 @@ async function softRecheckDocument(tabId, siteKey) {
     return { ok: false, error: 'Missing tabId.' };
   }
 
+  /** @type {chrome.tabs.Tab | null} */
   let tab = null;
   try {
     tab = await chrome.tabs.get(tabId);

@@ -19,6 +19,7 @@ const PRESETS = {
 
 let hostname = '';
 let siteKey = '';
+/** @type {number | null} */
 let tabId = null;
 let hookWasActiveAt = 0;
 let lastHookActive = false;
@@ -37,9 +38,11 @@ let livePreviewInFlight = false;
 // back-to-back on a mouse release while the first persist is still in
 // flight (baseline updates only on success), so the baseline alone cannot
 // dedupe the pair — the in-flight target can.
+/** @type {number | null} */
 let persistTargetGain = null;
 let runtimeActivationState = 'idle';
 let runtimeActivationMessage = '';
+/** @type {Promise<void> | null} */
 let softWakePromise = null;
 // Per-site exclusion, as stored. Outranks `enabled` entirely: while excluded
 // the switch and the slider are disabled and nothing runs on the site. Only
