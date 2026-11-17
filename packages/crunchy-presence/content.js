@@ -37,15 +37,20 @@
   let lastReportAt = 0;
   let settleTimer = null;
   let pollTimer = null;
-  // While disabled the poll is not merely idle: it is stopped, so a switched-off
-  // extension costs no timer at all. The storage listener below re-arms it.
-  let enabled = true;
+  // Start conservative: nothing reports or polls until storage answers, so a
+  // switched-off extension sends zero messages and holds zero timers even on a
+  // cold boot. The storage listener below re-arms it.
+  let enabled = false;
+  let enabledKnown = false;
+  let bootReported = false;
   try {
     chrome.storage?.local?.get?.(["enabled"], (stored) => {
+      enabledKnown = true;
       setEnabled(!stored || stored.enabled !== false);
     });
   } catch {
-    /* storage unavailable — stay enabled */
+    enabledKnown = true;
+    setEnabled(true);
   }
   try {
     chrome.storage?.onChanged?.addListener?.((changes, area) => {
@@ -58,7 +63,7 @@
   }
 
   function startPoll() {
-    if (!enabled || pollTimer !== null) return;
+    if (!enabledKnown || !enabled || pollTimer !== null) return;
     pollTimer = setInterval(tick, URL_POLL_MS);
   }
 
@@ -77,6 +82,7 @@
       stopPoll();
       return;
     }
+    bootReported = true;
     report(false);
     startPoll();
   }
@@ -171,11 +177,12 @@
   });
 
   // bfcache restore fires pageshow (persisted) without a fresh load: report
-  // again so a back/forward restore republishes within one tick.
+  // again and restart the poll that pagehide stopped.
   window.addEventListener("pageshow", () => {
     lastHref = location.href;
-    if (!enabled) return;
+    if (!enabledKnown || !enabled) return;
     report(false);
+    startPoll();
   });
 
   function checkUrl() {
@@ -231,9 +238,15 @@
     /* MutationObserver unavailable — the poll still covers URL changes */
   }
 
-  if (document.readyState === "complete" || document.readyState === "interactive") {
+  function initialReport() {
+    if (!enabledKnown || !enabled || bootReported) return;
+    bootReported = true;
     report();
+  }
+
+  if (document.readyState === "complete" || document.readyState === "interactive") {
+    initialReport();
   } else {
-    document.addEventListener("DOMContentLoaded", report, { once: true });
+    document.addEventListener("DOMContentLoaded", initialReport, { once: true });
   }
 })();

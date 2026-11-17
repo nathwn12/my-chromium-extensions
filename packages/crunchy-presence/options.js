@@ -2,7 +2,7 @@
  * Options page controller. Plain ES module, no framework.
  */
 
-import { clientIdToPersist, resolveClientId } from "./config.js";
+import { clientIdToPersist } from "./config.js";
 import { presentStatus } from "./bridge-status.js";
 
 const el = (id) => document.getElementById(id);
@@ -101,10 +101,12 @@ function showError(message) {
 
 async function load() {
   const stored = await chrome.storage.local.get(["clientId", "enabled", "synopsis"]);
-  clientInput.value = resolveClientId(stored.clientId);
+  // Show the override, not the effective built-in id: an empty field is the
+  // truthful fresh-install state and the label names the built-in application.
+  clientInput.value = stored.clientId || "";
   status.enabled = stored.enabled !== false;
   synopsisEl.checked = stored.synopsis === true;
-  status.clientIdPresent = true;
+  status.clientIdPresent = Boolean(stored.clientId);
 
   const session = await chrome.storage.session.get(["crpStatus", "crpLastExtract"]);
   const local = await chrome.storage.local.get(["crpStatus"]);
@@ -129,8 +131,8 @@ clientForm.addEventListener("submit", async (event) => {
   try {
     if (next) await chrome.storage.local.set({ clientId: next });
     else await chrome.storage.local.remove("clientId");
-    status.clientIdPresent = true;
-    clientInput.value = resolveClientId(next);
+    status.clientIdPresent = Boolean(next);
+    clientInput.value = next || "";
     await ask({ kind: "crp-refresh" });
     testResult.textContent = next
       ? "Saved. Reconnecting to Discord with your application."
@@ -195,7 +197,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
     render();
   }
   if (area === "local" && changes.clientId) {
-    status.clientIdPresent = Boolean(resolveClientId(changes.clientId.newValue));
+    status.clientIdPresent = Boolean(changes.clientId.newValue);
     render();
   }
 });

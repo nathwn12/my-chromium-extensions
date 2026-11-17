@@ -44,11 +44,22 @@ Press the **Reset** button to return to 1.00x and 0 percent.
 
 Your per-site speed, reverb, and Active state persist across restart and apply again on first play.
 
+### Section repeat
+
+Open the **Repeat** panel on the player, type **From** and **To**, or press **Now** at the point you want. The range saves as soon as it is valid: Now, Enter, leaving the field, and Clear all save without a separate click. A saved range comes back armed on the next visit to that song.
+
+The `↺` button restores the previous range for the current song, including after a mistaken Clear; it is disabled when there is nothing to restore.
+
+### Wheel volume
+
+Scroll over the player bar or the player panel to move YouTube Music's own volume in 5 percent steps. A small percentage appears above the player while you scroll and fades after a moment.
+
 ## What you get
 
 - You slow audio from 0.7x to 1.3x in 0.01 steps without pitch distortion.
 - You dial Dattorro plate reverb from 0 to 100 percent.
 - You keep per-site memory: speed, reverb, and Active state persist.
+- You repeat a saved From-To section per song, with one-step restore.
 - You read a dark popup with a live tab-status indicator.
 - You stay local: audio never leaves your machine, with no uploads and no accounts.
 
@@ -57,7 +68,7 @@ Your per-site speed, reverb, and Active state persist across restart and apply a
 - You run Chrome or Brave on desktop with Developer mode access.
 - You listen on `music.youtube.com`.
 - You skip the build step: there is none, and you need no account.
-- You install Node.js with npm only if you want the optional `npm run lint` check.
+- You install Node 26 only if you want to run the optional `bun run lint` and `bun run test` checks.
 
 ## Links
 

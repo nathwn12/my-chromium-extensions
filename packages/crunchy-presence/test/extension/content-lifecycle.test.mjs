@@ -15,16 +15,24 @@ import { createContext, runInContext } from "node:vm";
 const here = dirname(fileURLToPath(import.meta.url));
 const contentSource = readFileSync(join(here, "..", "..", "content.js"), "utf8");
 
-/** The stored master switch plus the onChanged fan-out the test drives. */
-function fakeStorage(initial) {
+/**
+ * The stored master switch plus the onChanged fan-out the test drives.
+ *
+ * `deferred` models Chrome's real async answer: the callback is held until the
+ * test releases it, so the boot-before-storage window can be observed.
+ */
+function fakeStorage(initial, { deferred = false } = {}) {
   const state = { ...initial };
   const listeners = [];
+  const held = [];
   return {
     local: {
       get(keys, callback) {
         const out = {};
         for (const key of [].concat(keys)) if (key in state) out[key] = state[key];
-        if (typeof callback === "function") callback(out);
+        if (typeof callback !== "function") return;
+        if (deferred) held.push(() => callback(out));
+        else callback(out);
       }
     },
     onChanged: {
@@ -34,6 +42,16 @@ function fakeStorage(initial) {
     },
     emit(changes) {
       for (const fn of listeners) fn(changes, "local");
+    },
+    /** Callbacks still waiting for the storage answer. */
+    waiting() {
+      return held.length;
+    },
+    /** Release the held callbacks, as the real storage API would. */
+    answer() {
+      const pending = held.splice(0);
+      for (const fn of pending) fn();
+      return pending.length;
     }
   };
 }
@@ -43,7 +61,7 @@ function fakeStorage(initial) {
  * MutationObserver is provided, so content.js takes its documented fallback
  * (the poll plus the URL events) and the poll is the only timer to observe.
  */
-function boot({ enabled = true, hasVideo = true } = {}) {
+function boot({ enabled = true, hasVideo = true, asyncStorage = false } = {}) {
   const messages = [];
   const intervals = new Map();
   const docListeners = new Map();
@@ -53,7 +71,7 @@ function boot({ enabled = true, hasVideo = true } = {}) {
     if (!bag.has(type)) bag.set(type, []);
     bag.get(type).push(fn);
   };
-  const storage = fakeStorage({ enabled });
+  const storage = fakeStorage({ enabled }, { deferred: asyncStorage });
 
   const document = {
     readyState: "complete",
@@ -162,4 +180,38 @@ test("pagehide clears the poll", () => {
   const handle = boot();
   handle.fireWin("pagehide");
   assert.deepEqual(handle.intervalDelays(), []);
+});
+
+/* ------------------------------------------- the storage answer comes first */
+
+test("a disabled boot sends nothing and holds no timer before storage answers", () => {
+  const handle = boot({ enabled: false, asyncStorage: true });
+  assert.equal(handle.storage.waiting(), 1, "the boot asks storage before anything else");
+  assert.deepEqual(handle.messages, [], "no message while the switch is unknown");
+  assert.deepEqual(handle.intervalDelays(), [], "no timer while the switch is unknown");
+
+  assert.equal(handle.storage.answer(), 1);
+  assert.deepEqual(handle.messages, [], "the stored off sends nothing");
+  assert.deepEqual(handle.intervalDelays(), [], "and holds no timer");
+});
+
+test("an enabled boot reports and polls only after storage answers", () => {
+  const handle = boot({ enabled: true, asyncStorage: true });
+  assert.deepEqual(handle.messages, [], "nothing reports before the answer");
+  assert.deepEqual(handle.intervalDelays(), [], "nothing polls before the answer");
+
+  assert.equal(handle.storage.answer(), 1);
+  assert.equal(handle.messages.length, 1, "the answer arms exactly one report");
+  assert.equal(handle.messages[0].kind, "crp-state");
+  assert.equal(handle.messages[0].series, "A Series");
+  assert.deepEqual(handle.intervalDelays(), [1000], "and one poll");
+});
+
+test("pageshow restarts the poll pagehide stopped", () => {
+  const handle = boot();
+  handle.fireWin("pagehide");
+  assert.deepEqual(handle.intervalDelays(), [], "pagehide stopped the poll");
+
+  handle.fireWin("pageshow");
+  assert.deepEqual(handle.intervalDelays(), [1000], "a bfcache restore resumes polling");
 });

@@ -520,12 +520,7 @@
     // Pre-full-key fallback (read-only here; the background migrates on its
     // next write): a collapsed per-site record (`site:github.io`) still
     // authorizes every full host it used to cover.
-    // (`legacySiteStorageKey` is new in shared.js; the any-alias keeps this
-    // file green until the type declaration catches up.)
-    const sharedAny = /** @type {any} */ (contentShared);
-    const legacyPerKey = typeof sharedAny.legacySiteStorageKey === 'function'
-      ? sharedAny.legacySiteStorageKey(state.siteKey)
-      : '';
+    const legacyPerKey = contentShared.legacySiteStorageKey(state.siteKey);
     if (legacyPerKey && legacyPerKey !== perKey) {
       // The ancestor read above may already carry the legacy record; only a
       // miss costs a second read.

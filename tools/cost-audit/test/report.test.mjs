@@ -9,7 +9,7 @@ import { buildAssertions, renderTable, exitCodeFor, tally, grepEvidence, EXIT_OK
 const EXTENSIONS = [
   { package: "audio-normalizer", id: "phcngmelnemgjdncncndlnpfcoknfhma", name: "Audio Normalizer", version: "5.4.3" },
   { package: "slowed-reverb", id: "ajbnohgeoaoajfgojnjbmclfjjcpnhjp", name: "Slowed Reverb", version: "1.1.0" },
-  { package: "web-discord-rpc", id: "mnmmfbjinpokfnendlbhbbdmfjidgikf", name: "YouTube Music Presence", version: "1.1.7" },
+  { package: "youtube-music-presence", id: "mnmmfbjinpokfnendlbhbbdmfjidgikf", name: "YouTube Music Presence", version: "1.1.7" },
   { package: "crunchy-presence", id: "afghbfidjjlgnhaacaiiakmknffnmiom", name: "Crunchy Presence", version: "1.2.0" },
 ];
 
@@ -260,10 +260,10 @@ test("a presence-only extension in the coexistence run is asserted to cost nothi
     expectInert: false,
     graphExpected: [],
     probe: { patches: [], scriptElements: [], uncaught: [], mediaElementCurrentTime: 0.8, doubledWiring: [] },
-    extensions: extensionsAll({ "web-discord-rpc": { scripts: 1, listenerRegistrations: 2 } }),
+    extensions: extensionsAll({ "youtube-music-presence": { scripts: 1, listenerRegistrations: 2 } }),
   });
   const assertions = buildAssertions(report({ scenarios: [coexist] }));
-  const cost = assertions.find((a) => a.id === "coexistence-page-cost/web-discord-rpc");
+  const cost = assertions.find((a) => a.id === "coexistence-page-cost/youtube-music-presence");
   assert.equal(cost.verdict, "fail");
   assert.match(cost.message, /listenerRegistrations=2/);
 
@@ -274,9 +274,9 @@ test("a presence-only extension in the coexistence run is asserted to cost nothi
     expectInert: false,
     graphExpected: [],
     probe: { patches: [], scriptElements: [], uncaught: [], mediaElementCurrentTime: 0.8, doubledWiring: [] },
-    extensions: extensionsAll({ "web-discord-rpc": { scripts: 1 } }),
+    extensions: extensionsAll({ "youtube-music-presence": { scripts: 1 } }),
   });
-  const ok = buildAssertions(report({ scenarios: [clean] })).find((a) => a.id === "coexistence-page-cost/web-discord-rpc");
+  const ok = buildAssertions(report({ scenarios: [clean] })).find((a) => a.id === "coexistence-page-cost/youtube-music-presence");
   assert.equal(ok.verdict, "pass");
 });
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Verify the root workspace wires in packages/web-discord-rpc.
+// Verify the root workspace wires in packages/youtube-music-presence.
 // Each wiring point is a predicate with a negative self-test, so a check
 // that cannot go red cannot ship: breaking any wiring point fails this script.
 // Usage: node scripts/verify-integration.mjs [--prove-red]
@@ -22,7 +22,7 @@ import { fileURLToPath } from "node:url";
 let ROOT = process.env.WDR_VERIFY_ROOT
   ? resolve(process.env.WDR_VERIFY_ROOT)
   : resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const WDR = "web-discord-rpc";
+const WDR = "youtube-music-presence";
 
 function read(rel) {
   try {
@@ -213,7 +213,7 @@ const predicates = {
       (w) => w === "packages/*" || w === `packages/${WDR}`
     );
   },
-  "root test script runs the web-discord-rpc workspace": ({ rootPkg }) =>
+  "root test script runs the youtube-music-presence workspace": ({ rootPkg }) =>
     typeof rootPkg?.scripts?.test === "string" &&
     rootPkg.scripts.test.includes(WDR),
   "package test script runs every test under test/": ({ wdrPkg }) => {
@@ -255,7 +255,7 @@ const predicates = {
       .map((pkg) => `${pkg.name}: README ${rows.get(pkg.name) ?? "missing"} vs manifest ${pkg.version}`);
     return bad.length === 0 ? true : bad.join("; ");
   },
-  "CI defines a web-discord-rpc job that runs tests": ({ ci }) => {
+  "CI defines a youtube-music-presence job that runs tests": ({ ci }) => {
     if (typeof ci !== "string" || !ci.includes(`${WDR}:`)) return false;
     const job = ci.slice(ci.indexOf(`${WDR}:`));
     return (

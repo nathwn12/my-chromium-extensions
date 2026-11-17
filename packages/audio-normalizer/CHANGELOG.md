@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.6.4] - 2026-11-18
+
+### Fixed
+
+- The legacy collapsed-key read is typed end to end. `global.d.ts` declares `legacySiteStorageKey`, and `background.js` / `content-script.js` call it directly; the local `sharedAny` `any` aliases and their `typeof` guards are gone, so `tsc --checkJs` covers the legacy fallback instead of stepping around it.
+- `AGENTS.md` matches the code again: the popup's status element is named `#status-pill` (not `#status-dot`), the shared unit suite is reported at its current 22/22, the whole-package suite command is documented, and `tests/` is no longer listed as gitignored — it is tracked and `git check-ignore` does not match it.
+- `PRIVACY_POLICY.md` documents the `scripting` permission and the local per-site preferences record it backs.
+
+### Changed
+
+- Popup semantics: the preset row is a named group, the **Active** switch takes its accessible name from its visible label instead of a duplicate `aria-label`, the gain readout is a polite live region, and the status line is a status region.
+
 ## [5.6.3] - 2026-11-14
 
 ### Fixed

@@ -8,7 +8,7 @@ on:
       - audio-normalizer
       - slowed-reverb
       - crunchy-presence
-      - web-discord-rpc
+      - youtube-music-presence
   workflow_dispatch:
     inputs:
       product:
@@ -19,7 +19,7 @@ on:
           - audio-normalizer
           - slowed-reverb
           - crunchy-presence
-          - web-discord-rpc
+          - youtube-music-presence
 
 permissions:
   contents: write
@@ -54,8 +54,8 @@ jobs:
             crunchy-presence)
               (cd packages/crunchy-presence && zip -r ../../dist/crunchy-presence.zip manifest.json background.js bridge-status.js config.js extract.js content.js popup.html popup.css popup.js options.html options.css options.js icons/icon16.png icons/icon24.png icons/icon32.png icons/icon48.png icons/icon128.png)
               ;;
-            web-discord-rpc)
-              (cd packages/web-discord-rpc && zip -r ../../dist/web-discord-rpc.zip manifest.json background.js config.js activity.js bridge-status.js content.js extract-youtube.js popup.html popup.css popup.js options.html options.css options.js icons/icon16.png icons/icon24.png icons/icon32.png icons/icon48.png icons/icon128.png)
+            youtube-music-presence)
+              (cd packages/youtube-music-presence && zip -r ../../dist/youtube-music-presence.zip manifest.json background.js config.js activity.js bridge-status.js content.js extract-youtube.js popup.html popup.css popup.js options.html options.css options.js icons/icon16.png icons/icon24.png icons/icon32.png icons/icon48.png icons/icon128.png)
               ;;
             *) echo "Unsupported product: $PRODUCT" >&2; exit 1 ;;
           esac
@@ -68,7 +68,7 @@ jobs:
         run: |
           set -euo pipefail
           case "$PRODUCT" in
-            audio-normalizer|slowed-reverb|crunchy-presence|web-discord-rpc) ;;
+            audio-normalizer|slowed-reverb|crunchy-presence|youtube-music-presence) ;;
             *) echo "Unsupported product: $PRODUCT" >&2; exit 1 ;;
           esac
 

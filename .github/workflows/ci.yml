@@ -214,7 +214,7 @@ jobs:
         run: |
           echo "scope: ${{ steps.scope.outputs.code == 'true' && 'code changed - the full gate ran' || 'docs-only - build skipped, the check stays green' }}"
 
-  web-discord-rpc:
+  youtube-music-presence:
     runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
@@ -253,19 +253,19 @@ jobs:
         run: bun install --frozen-lockfile
       - name: Tests
         if: steps.scope.outputs.code == 'true'
-        working-directory: packages/web-discord-rpc
+        working-directory: packages/youtube-music-presence
         run: bun run test
       - name: Native host selftest
         if: steps.scope.outputs.code == 'true'
-        working-directory: packages/web-discord-rpc
+        working-directory: packages/youtube-music-presence
         run: node native/host.mjs --selftest
       - name: arRPC e2e
         if: steps.scope.outputs.code == 'true'
-        working-directory: packages/web-discord-rpc
+        working-directory: packages/youtube-music-presence
         run: node scripts/e2e-arrpc.mjs
       - name: Discord IPC e2e (self-skips off Windows)
         if: steps.scope.outputs.code == 'true'
-        working-directory: packages/web-discord-rpc
+        working-directory: packages/youtube-music-presence
         run: node scripts/e2e-ipc.mjs
 
       - name: Scope

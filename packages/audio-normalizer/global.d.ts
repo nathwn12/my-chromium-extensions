@@ -46,6 +46,7 @@ interface TabNormalizerSharedApi {
   // deleted to close the recurrence path. It is deliberately absent here.
   SITE_KEY_PREFIX: string;
   siteStorageKey: (siteKey: string) => string;
+  legacySiteStorageKey: (siteKey: string) => string;
   isSiteStorageKey: (key: string) => boolean;
   siteKeyFromStorageKey: (key: string) => string;
   normalizeSiteRecord: (value: unknown) => { siteKey?: string; enabled: boolean; gainDb: number; seq: number; mirror: boolean; excluded: boolean; seen: boolean };

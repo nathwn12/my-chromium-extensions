@@ -5,7 +5,8 @@
 - Entrypoints: `background.js` (service worker, `importScripts('shared.js')`), `content-script.js` + `shared.js` (ISOLATED, `document_start`, all frames per `manifest.json`), `page-hook.js` (MAIN world via `chrome.scripting.executeScript`, patches `AudioContext` / `AudioNode.connect` / `HTMLMediaElement.play`), `popup.html`/`popup.js`, `audio/normalizer-worklet.js` (AudioWorkletProcessor loaded by `page-hook.js`).
 
 ## Commands
-- `node tests/shared.test.js` — unit tests; run when touching `shared.js`. Currently 19/19 pass.
+- `node tests/shared.test.js` — unit tests; run when touching `shared.js`. Currently 22/22 pass.
+- `node ../../scripts/run-tests.mjs tests` (`npm test`) — the whole package suite (170 tests at this version); run before a release.
 - `node qa/feed-transition-qa.cjs` — feed-boundary (reset-program) transitions; pure Node, allowed.
 - `node qa/program-boundary-qa.cjs` — page-hook program handoff; pure Node, allowed.
 - `npm run typecheck` — `tsc --noEmit` with `checkJs`. Needs `npm install` first (`package.json`/`tsconfig.json` are tracked; only `package-lock.json` is gitignored local-only). Only root `*.js` + `*.d.ts` are checked; `tests/` excluded, `qa/*.cjs` never typechecked.
@@ -23,11 +24,11 @@
 - Feed reset (5.4.2, `docs/SPEC_FEED.md`): the worklet's `reset-program` contract folds `currentAgcDb` into `currentLoudnessDb` (total-clamp bound), zeroes AGC, clears meters/probe/pre-cut/warm, and preserves slow gain/trim/delay/limiter/TP histories/`totalFrames`/target/mode — applied gain never moves at the reset instant. `page-hook.js` sends exactly one `reset-program` per program via generation tokens (`__tnProgramGen` + `elementProgramGenerations` WeakMap, tab-wide `currentProgramGeneration`, per-session `lastResetGeneration`/`pendingResetGeneration`, flushed in `attachWorklet`/`notifySessionStart`). Cold probe is `FAST_ONSET_SECONDS` 0.05 / `FAST_ONSET_TC_SECONDS` 0.08, cut-only `desired = min(slow, probe)`. Never reset at attach time.
 
 ## Popup / QA Constraints
-- Preserve popup IDs — QA reads them directly: `#hostname`, `#status-dot`, `#status-text`, `#toggle`, `#gain-slider`, `#gain-value`, `#reset-btn`.
+- Preserve popup IDs — QA reads them directly: `#hostname`, `#status-pill`, `#status-text`, `#toggle`, `#gain-slider`, `#gain-value`, `#reset-btn`.
 - Popup disables gain/preset controls unless the per-site toggle is on.
 
 ## Git Hygiene
-- Run `git status` before committing. `.gitignore` is aggressive (`*.json`, `tests/`, `qa/`) — new docs/config are silently ignored; only already-tracked files stay tracked.
+- Run `git status` before committing. `.gitignore` is aggressive (`*.json` outside `package.json`, `qa/`) — new docs/config are silently ignored; only already-tracked files stay tracked (`tests/` is tracked and not ignored).
 - Tracked extension files: `background.js`, `content-script.js`, `page-hook.js`, `popup.js`, `popup.html`, `shared.js`, `manifest.json`, `audio/`, `global.d.ts`, `README.md`, `PRIVACY_POLICY.md`, `STORE_SUBMISSION.md`, `tests/`. `package-lock.json`, `qa/` (except tracked exceptions), `.opencode/`, `node_modules/` stay local (`package.json` / `tsconfig.json` are tracked).
 - Tracked QA exceptions: `qa/loudness-verify.cjs` (release gate), `qa/feed-transition-qa.cjs`, `qa/program-boundary-qa.cjs` — the `.gitignore` exceptions keep exactly these three tracked; fixtures/outputs stay ignored.
 - Consult `docs/DELETION_LOG.md` before deleting code — it records prior dead-code removals and ISOLATED/MAIN duplication rationale.

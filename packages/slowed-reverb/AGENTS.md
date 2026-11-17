@@ -38,9 +38,10 @@ Plain MV3 extension. No build/bundle. No TS. Vanilla ES2020. Files are the sourc
 
 ## Storage
 
-- `chrome.storage.local` only (no `session`). Persistent keys: `siteSettings`, `siteToggles`. Read-modify-write, not atomic (`getStoredSiteSettings`/`setStoredSiteSettings` do `get` then `set`).
+- `chrome.storage.local` only (no `session`). Persistent keys: `siteSettings`, `siteToggles`, `playerActions` (saved From-To sections), plus the local operator marker `devSectionImport` and receipt `devSectionImportSummary`. Read-modify-write, not atomic (`getStoredSiteSettings`/`setStoredSiteSettings` do `get` then `set`); section saves are serialized by `playerSectionSaveChain`.
 - Tab bypass + per-tab session settings are **in-memory `Map`s** in `background.js` (`tabBypassById`, `tabSessionById`) — lost on service-worker restart. The `TAB_BYPASS_KEY`/`TAB_SESSION_KEY` consts are unused labels, not storage keys.
 - `popup.js` sends `persist: true` in `SET_SITE_SETTINGS` messages; `background.js` never reads it. Dead field — harmless, leave it.
+- **Local section import (operator only):** drop a gitignored `.dev/section-import.json` (`{ "sections": [...] }`) into this package and reload the unpacked extension. The worker merges it once at startup, keyed by the file's SHA-256 in `chrome.storage.local.devSectionImport`. It preserves every existing id, refuses an invalid entry or a merge past 100, and injects a hidden `documentElement.dataset.slraImportSummary` receipt (counts and digest, never ids) into an open `music.youtube.com` tab. No runtime message, page or popup route reaches it. Never commit the file or a song id.
 
 ## Tab rehydration
 
