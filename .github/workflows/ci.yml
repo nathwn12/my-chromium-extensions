@@ -1,3 +1,4 @@
+# A docs-only change (*.md, docs/, LICEN[CS]E) keeps the required check green and runs no build.
 name: ci
 on:
   push:
@@ -17,96 +18,237 @@ jobs:
     runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
+      - name: Detect a docs-only change
+        id: scope
+        shell: bash
+        run: |
+          docs='^(.*\.md|docs/.*|LICEN[CS]E(\.md)?)$'
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
+            changed=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD")
+          elif [ "${{ github.event_name }}" = "push" ] && [ -n "${{ github.event.before }}" ]; then
+            changed=$(git diff --name-only "${{ github.event.before }}" HEAD || true)
+          else
+            changed=$(git ls-files)
+          fi
+          if [ -n "$changed" ] && ! printf '%s\n' "$changed" | grep -qvE "$docs"; then
+            echo "code=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/setup-node@v7
+        if: steps.scope.outputs.code == 'true'
         with:
           node-version-file: .nvmrc
       - name: Verify integration (reads the tree, installs nothing)
+        if: steps.scope.outputs.code == 'true'
         run: node scripts/verify-integration.mjs
+
+      - name: Scope
+        if: always()
+        run: |
+          echo "scope: ${{ steps.scope.outputs.code == 'true' && 'code changed - the full gate ran' || 'docs-only - build skipped, the check stays green' }}"
 
   audio-normalizer:
     runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
+      - name: Detect a docs-only change
+        id: scope
+        shell: bash
+        run: |
+          docs='^(.*\.md|docs/.*|LICEN[CS]E(\.md)?)$'
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
+            changed=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD")
+          elif [ "${{ github.event_name }}" = "push" ] && [ -n "${{ github.event.before }}" ]; then
+            changed=$(git diff --name-only "${{ github.event.before }}" HEAD || true)
+          else
+            changed=$(git ls-files)
+          fi
+          if [ -n "$changed" ] && ! printf '%s\n' "$changed" | grep -qvE "$docs"; then
+            echo "code=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          fi
       - uses: oven-sh/setup-bun@v2
+        if: steps.scope.outputs.code == 'true'
         with:
           bun-version: 1.4.4
       - uses: actions/setup-node@v7
+        if: steps.scope.outputs.code == 'true'
         with:
           node-version-file: .nvmrc
       - name: Install (root lockfile)
+        if: steps.scope.outputs.code == 'true'
         run: bun install --frozen-lockfile
       - name: Tests
+        if: steps.scope.outputs.code == 'true'
         working-directory: packages/audio-normalizer
         run: bun run test
       - name: Feed transition QA
+        if: steps.scope.outputs.code == 'true'
         working-directory: packages/audio-normalizer
         run: node qa/feed-transition-qa.cjs
       - name: Program boundary QA
+        if: steps.scope.outputs.code == 'true'
         working-directory: packages/audio-normalizer
         run: node qa/program-boundary-qa.cjs
       - name: Typecheck
+        if: steps.scope.outputs.code == 'true'
         working-directory: packages/audio-normalizer
         run: bun run typecheck
+
+      - name: Scope
+        if: always()
+        run: |
+          echo "scope: ${{ steps.scope.outputs.code == 'true' && 'code changed - the full gate ran' || 'docs-only - build skipped, the check stays green' }}"
 
   slowed-reverb:
     runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
+      - name: Detect a docs-only change
+        id: scope
+        shell: bash
+        run: |
+          docs='^(.*\.md|docs/.*|LICEN[CS]E(\.md)?)$'
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
+            changed=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD")
+          elif [ "${{ github.event_name }}" = "push" ] && [ -n "${{ github.event.before }}" ]; then
+            changed=$(git diff --name-only "${{ github.event.before }}" HEAD || true)
+          else
+            changed=$(git ls-files)
+          fi
+          if [ -n "$changed" ] && ! printf '%s\n' "$changed" | grep -qvE "$docs"; then
+            echo "code=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          fi
       - uses: oven-sh/setup-bun@v2
+        if: steps.scope.outputs.code == 'true'
         with:
           bun-version: 1.4.4
       - uses: actions/setup-node@v7
+        if: steps.scope.outputs.code == 'true'
         with:
           node-version-file: .nvmrc
       - name: Install (root lockfile)
+        if: steps.scope.outputs.code == 'true'
         run: bun install --frozen-lockfile
       - name: Lint
+        if: steps.scope.outputs.code == 'true'
         working-directory: packages/slowed-reverb
         run: bun run lint
       - name: Tests
+        if: steps.scope.outputs.code == 'true'
         working-directory: packages/slowed-reverb
         run: bun run test
+
+      - name: Scope
+        if: always()
+        run: |
+          echo "scope: ${{ steps.scope.outputs.code == 'true' && 'code changed - the full gate ran' || 'docs-only - build skipped, the check stays green' }}"
 
   crunchy-presence:
     runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
+      - name: Detect a docs-only change
+        id: scope
+        shell: bash
+        run: |
+          docs='^(.*\.md|docs/.*|LICEN[CS]E(\.md)?)$'
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
+            changed=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD")
+          elif [ "${{ github.event_name }}" = "push" ] && [ -n "${{ github.event.before }}" ]; then
+            changed=$(git diff --name-only "${{ github.event.before }}" HEAD || true)
+          else
+            changed=$(git ls-files)
+          fi
+          if [ -n "$changed" ] && ! printf '%s\n' "$changed" | grep -qvE "$docs"; then
+            echo "code=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          fi
       - uses: oven-sh/setup-bun@v2
+        if: steps.scope.outputs.code == 'true'
         with:
           bun-version: 1.4.4
       - uses: actions/setup-node@v7
+        if: steps.scope.outputs.code == 'true'
         with:
           node-version-file: .nvmrc
       - name: Install (root lockfile)
+        if: steps.scope.outputs.code == 'true'
         run: bun install --frozen-lockfile
       - name: Tests
+        if: steps.scope.outputs.code == 'true'
         working-directory: packages/crunchy-presence
         run: bun run test
       - name: Native host selftest
+        if: steps.scope.outputs.code == 'true'
         working-directory: packages/crunchy-presence
         run: bun run selftest
+
+      - name: Scope
+        if: always()
+        run: |
+          echo "scope: ${{ steps.scope.outputs.code == 'true' && 'code changed - the full gate ran' || 'docs-only - build skipped, the check stays green' }}"
 
   web-discord-rpc:
     runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
+      - name: Detect a docs-only change
+        id: scope
+        shell: bash
+        run: |
+          docs='^(.*\.md|docs/.*|LICEN[CS]E(\.md)?)$'
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
+            changed=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD")
+          elif [ "${{ github.event_name }}" = "push" ] && [ -n "${{ github.event.before }}" ]; then
+            changed=$(git diff --name-only "${{ github.event.before }}" HEAD || true)
+          else
+            changed=$(git ls-files)
+          fi
+          if [ -n "$changed" ] && ! printf '%s\n' "$changed" | grep -qvE "$docs"; then
+            echo "code=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          fi
       - uses: oven-sh/setup-bun@v2
+        if: steps.scope.outputs.code == 'true'
         with:
           bun-version: 1.4.4
       - uses: actions/setup-node@v7
+        if: steps.scope.outputs.code == 'true'
         with:
           node-version-file: .nvmrc
       - name: Install (root lockfile)
+        if: steps.scope.outputs.code == 'true'
         run: bun install --frozen-lockfile
       - name: Tests
+        if: steps.scope.outputs.code == 'true'
         working-directory: packages/web-discord-rpc
         run: bun run test
       - name: Native host selftest
+        if: steps.scope.outputs.code == 'true'
         working-directory: packages/web-discord-rpc
         run: node native/host.mjs --selftest
       - name: arRPC e2e
+        if: steps.scope.outputs.code == 'true'
         working-directory: packages/web-discord-rpc
         run: node scripts/e2e-arrpc.mjs
       - name: Discord IPC e2e (self-skips off Windows)
+        if: steps.scope.outputs.code == 'true'
         working-directory: packages/web-discord-rpc
         run: node scripts/e2e-ipc.mjs
+
+      - name: Scope
+        if: always()
+        run: |
+          echo "scope: ${{ steps.scope.outputs.code == 'true' && 'code changed - the full gate ran' || 'docs-only - build skipped, the check stays green' }}"
