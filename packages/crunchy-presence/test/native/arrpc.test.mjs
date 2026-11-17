@@ -124,6 +124,32 @@ function makeClient(impl, extra = {}) {
   return { client, statuses };
 }
 
+function fakeTimers() {
+  let now = 0;
+  let id = 0;
+  const timers = new Map();
+  return {
+    now: () => now,
+    setTimeout(fn, ms) {
+      const key = ++id;
+      timers.set(key, { at: now + ms, fn });
+      return key;
+    },
+    clearTimeout(key) {
+      timers.delete(key);
+    },
+    advance(ms) {
+      now += ms;
+      for (;;) {
+        const due = [...timers.entries()].find(([, timer]) => timer.at <= now);
+        if (!due) break;
+        timers.delete(due[0]);
+        due[1].fn();
+      }
+    },
+  };
+}
+
 /** Auto-answer SET_ACTIVITY so a test can await a reply without a timer. */
 function answerActivity(socket) {
   socket.onSend = (frame) => {
@@ -192,9 +218,13 @@ test('no listener rejects with an arrpc diagnostic and never fatal', async () =>
 
 test('a listener that never sends READY times out instead of hanging the hello', async () => {
   const { impl, sockets } = makeTransport(() => {});
-  const { client } = makeClient(impl, { connectTimeoutMs: 40 });
+  const timers = fakeTimers();
+  const { client } = makeClient(impl, { connectTimeoutMs: 40, timers });
 
-  await assert.rejects(client.connect(), /arrpc.*(timeout|timed out)/i);
+  const connecting = client.connect();
+  await new Promise((resolve) => queueMicrotask(resolve)); // let the fake socket open silently
+  timers.advance(40);
+  await assert.rejects(connecting, /arrpc.*(timeout|timed out)/i);
   assert.equal(sockets[0].closed, true);
   assert.equal(client.ready, false);
   client.close();
