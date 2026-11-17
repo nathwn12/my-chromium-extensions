@@ -231,6 +231,19 @@
       replyVolume(data, null, false, 'none');
       return;
     }
+    // `setVolume` unmutes the element as a side effect and fires no
+    // volumechange. When the content script owns the audio graph it asks for
+    // its mute back in the same task, so the element never plays alongside the
+    // graph for even one notch. Never unmute here: the content script decides
+    // mute policy, this only restores the state it already held.
+    if (data.keepMuted === true) {
+      try {
+        const media = document.querySelector('video');
+        if (media) media.muted = true;
+      } catch {
+        // Detached document: the reply settle will try again.
+      }
+    }
     // The read-back is the truth: the page may land on its own value.
     const reading = readPlayerVolume();
     const applied = reading.volume === null ? target : Math.round(reading.volume);

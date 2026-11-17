@@ -398,9 +398,10 @@ async function main() {
   // must settle them.
   const hookSource = fs.readFileSync(path.join(__dirname, '..', 'page-hook.js'), 'utf8');
   check(
-    'page-hook.js still has no muted assignment (volume only)',
-    !/\.muted\s*=/.test(hookSource),
-    'page-hook.js writes muted'
+    'page-hook.js only restores a requested mute (never unmutes)',
+    (hookSource.match(/\.muted\s*=\s*[^;]+;/g) || []).join('') === '.muted = true;'
+      && hookSource.includes('keepMuted === true'),
+    'page-hook.js must restore mute only when asked'
   );
 
   const applyPageVolume = (applied) => {

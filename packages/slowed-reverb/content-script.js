@@ -523,7 +523,9 @@ function applyRuntimeState(runtime) {
         resolve({ volume: null, applied: false, source: 'none' });
       }, VOLUME_REPLY_TIMEOUT_MS);
       pendingVolumeRequests.set(id, { resolve, timer });
-      const message = { __slra: true, type: 'SLRA_SET_VOLUME', id, token, percent };
+      // The graph owns the output, so the page hook restores the element mute
+      // immediately after `setVolume` (which unmutes as a side effect).
+      const message = { __slra: true, type: 'SLRA_SET_VOLUME', id, token, percent, keepMuted: true };
       try {
         window.postMessage(message, '*');
       } catch {
