@@ -1668,23 +1668,17 @@ test('controller: guard - save composes from fresh storage and keeps other songs
   assert.equal(harness.status(), 'Saved');
 });
 
-test('controller: guard - the save notice is gated on the same song and points', async () => {
+test('controller: a committed range saves without a Save click', async () => {
   const storage = createStorage();
   const harness = createHarness({ storage });
   await harness.start();
-  harness.commit('From', '0:10');
+  harness.typeInto('From', '0:10');
   harness.commit('To', '0:20');
-  const release = storage.hold();
-  harness.click('Save section');
-  harness.timers.flushTimeouts();
-  await settle(2);
-  harness.commit('To', '0:30');
-  release();
   await settle();
 
   const saved = storage.sections().find((item) => item.videoId === 'song-a');
   assert.deepEqual(saved, { videoId: 'song-a', startSeconds: 10, endSeconds: 20 });
-  assert.notEqual(harness.status(), 'Saved');
+  assert.equal(harness.status(), 'Saved');
 });
 
 test('controller: guard - a stop during an in-flight save writes nothing and leaves no timer', async () => {
@@ -2133,22 +2127,27 @@ test('controller: guard - a failed storage write never reports Saved', async () 
   assert.equal(harness.status(), 'Save failed');
 });
 
-test('controller: guard - Save snapshots the song and points at the click', async () => {
+test('controller: guard - the auto-save snapshots the song and points at commit', async () => {
   const calls = [];
+  let release = null;
   const storage = createStorage();
   storage.saveSection = async (entry) => {
     calls.push(entry);
+    await new Promise((resolve) => {
+      release = resolve;
+    });
     return { ok: true, sections: [entry] };
   };
   const harness = createHarness({ storage });
   await harness.start();
-  harness.commit('From', '0:10');
+  harness.typeInto('From', '0:10');
   harness.commit('To', '0:20');
+  await settle(2);
 
-  harness.click('Save section');
   // Navigate while the write is in flight: the composed entry must not change.
   harness.setHref('https://music.youtube.com/watch?v=song-b');
   harness.dom.win.dispatch('yt-navigate-finish');
+  release();
   await settle();
 
   assert.deepEqual(calls, [{ videoId: 'song-a', startSeconds: 10, endSeconds: 20 }]);
@@ -2696,6 +2695,20 @@ test('page-hook: SLRA_SET_VOLUME applies the percent and replies with the applie
   assert.equal(reply.source, 'player');
 });
 
+test('page-hook: keepMuted restores the element mute in the same request', () => {
+  const video = { muted: false };
+  const hook = createPageHookSandbox({ video });
+  hook.fire({ __slra: true, type: 'SLRA_SET_VOLUME', id: 12, token: 'tok-1', percent: 65, keepMuted: true });
+
+  assert.equal(video.muted, true);
+  assert.deepEqual(hook.player.setVolumeCalls, [65]);
+
+  // Without the request flag the hook leaves mute policy alone.
+  video.muted = false;
+  hook.fire({ __slra: true, type: 'SLRA_SET_VOLUME', id: 13, token: 'tok-1', percent: 70 });
+  assert.equal(video.muted, false);
+});
+
 test('page-hook: a volume request with the wrong token is ignored', () => {
   const hook = createPageHookSandbox();
   hook.fire({ __slra: true, type: 'SLRA_SET_VOLUME', id: 9, token: 'stale', percent: 80 });
@@ -2819,7 +2832,7 @@ test('page-hook: SLRA_SONG pushes null when the player has no id', () => {
   assert.equal(songs[0].videoId, null);
 });
 
-test('page-hook: no GET_VOLUME surface and no mute write survive', () => {
+test('page-hook: no GET_VOLUME surface; keepMuted restores only the mute', () => {
   const hook = createPageHookSandbox();
   const video = { muted: false, setCount: 0 };
   Object.defineProperty(video, 'muted', {
@@ -2836,23 +2849,26 @@ test('page-hook: no GET_VOLUME surface and no mute write survive', () => {
   withVideo.fire({ __slra: true, type: 'SLRA_SET_VOLUME', id: 13, token: 'tok-1', percent: 55, keepMuted: true, session: 's1' });
   assert.equal(withVideo.replies().filter((reply) => reply.id === 12).length, 0);
   assert.equal(withVideo.player.setVolumeCalls.length, 1);
-  assert.equal(video.setCount, 0);
+  assert.equal(video.setCount, 1);
   assert.equal(hook.player.setVolumeCalls.length, 0);
 });
 
-test('static: page-hook.js writes volume only - no muted assignment, no attach channel', () => {
-  assert.equal(/\.muted\s*=/.test(pageHookSource), false);
+test('static: page-hook.js restores a requested mute, never unmutes or attaches', () => {
+  // The only element mute write in the hook is the guarded restore.
+  const muteWrites = pageHookSource.match(/\.muted\s*=\s*[^;]+;/g) || [];
+  assert.deepEqual(muteWrites, ['.muted = true;']);
+  assert.equal(pageHookSource.includes('keepMuted === true'), true);
   assert.equal(pageHookSource.includes('ATTACH_STATE'), false);
-  assert.equal(pageHookSource.includes('keepMuted'), false);
   assert.equal(pageHookSource.includes('SLRA_GET_VOLUME'), false);
 });
 
-test('static: content-script is the single writer of media.muted', () => {
-  assert.equal(/ATTACH_STATE|keepMuted|SLRA_GET_VOLUME/.test(contentScriptSource), false);
-  // The only mute writer in the extension runtime that touches an element.
+test('static: content-script owns mute policy; the hook only restores it', () => {
+  assert.equal(contentScriptSource.includes('keepMuted: true'), true);
+  assert.equal(/ATTACH_STATE|SLRA_GET_VOLUME/.test(contentScriptSource), false);
+  // The element mute policy lives in the content script and is requested from
+  // the hook; player-actions never writes `muted`.
   assert.equal(/\.muted\s*=/.test(playerActionsSource), false);
   assert.equal(/\.muted\s*=/.test(contentScriptSource), true);
-  assert.equal(/\.muted\s*=/.test(pageHookSource), false);
 });
 
 // ---------------------------------------------------------------------------

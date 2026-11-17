@@ -198,6 +198,53 @@
     return list.slice(list.length - max);
   }
 
+  /**
+   * Strict check for a list that will be written back: every entry must already
+   * be the stored schema, unique by videoId, and no entry may be a forget (both
+   * bounds null). Nothing is dropped or rewritten; `sections` is the input.
+   */
+  function validateSavedList(value) {
+    if (!Array.isArray(value)) return { ok: false, reason: 'list' };
+    const seen = new Set();
+    for (let index = 0; index < value.length; index += 1) {
+      const entry = sanitizeEntry(value[index]);
+      if (entry === null) return { ok: false, reason: 'entry', index: index };
+      if (seen.has(entry.videoId)) return { ok: false, reason: 'duplicate', index: index };
+      seen.add(entry.videoId);
+    }
+    return { ok: true, sections: value };
+  }
+
+  /**
+   * Merges a validated batch into the saved list. An id that is already saved
+   * keeps its saved entry (the destination always wins) and counts as skipped;
+   * new ids append in batch order. A merge that would pass `limit` is refused
+   * whole, so an import can never evict a saved section.
+   */
+  function mergeSavedLists(existing, incoming, limit) {
+    const list = Array.isArray(existing) ? existing.slice() : [];
+    const batch = Array.isArray(incoming) ? incoming : [];
+    const known = new Set(list.map((entry) => entry.videoId));
+    const max = Number.isFinite(limit) ? limit : SAVED_LIMIT;
+    let imported = 0;
+    let skipped = 0;
+    for (let index = 0; index < batch.length; index += 1) {
+      const entry = sanitizeEntry(batch[index]);
+      if (entry === null) return { ok: false, error: 'invalid_entry', index: index };
+      if (known.has(entry.videoId)) {
+        skipped += 1;
+        continue;
+      }
+      known.add(entry.videoId);
+      list.push(entry);
+      imported += 1;
+    }
+    if (list.length > max) {
+      return { ok: false, error: 'capacity_exceeded', count: list.length, limit: max };
+    }
+    return { ok: true, imported: imported, skipped: skipped, sections: list };
+  }
+
   // -------------------------------------------------------------------------
   // Song identity and the restore latches
   // -------------------------------------------------------------------------
@@ -449,7 +496,7 @@
 
   const PANEL_CSS = [
     ':host{position:fixed;right:16px;bottom:96px;z-index:2147483000;display:block;pointer-events:none;font:12px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;color:#f1f1f1;}',
-    '.slra-shell{display:flex;flex-direction:column;align-items:flex-end;gap:6px;}',
+    '.slra-shell{position:relative;display:flex;flex-direction:column;align-items:flex-end;gap:6px;}',
     '.slra-pill{pointer-events:auto;border:0;border-radius:999px;padding:6px 12px;background:rgba(0,0,0,.72);color:#f1f1f1;font:inherit;font-weight:600;cursor:pointer;}',
     '.slra-pill:hover{background:rgba(0,0,0,.85);}',
     '.slra-panel{display:none;pointer-events:auto;width:224px;padding:10px;border-radius:12px;background:rgba(15,15,15,.94);box-shadow:0 8px 24px rgba(0,0,0,.45);}',
@@ -460,10 +507,16 @@
     '.slra-field{width:64px;padding:3px 6px;border:1px solid #3a3a3a;border-radius:6px;background:#0d0d0d;color:#f1f1f1;font:inherit;}',
     '.slra-field[aria-invalid="true"]{border-color:#e05252;}',
     '.slra-now,.slra-button{pointer-events:auto;border:1px solid #3a3a3a;border-radius:6px;background:#1c1c1c;color:#f1f1f1;font:inherit;padding:3px 8px;cursor:pointer;}',
+    '.slra-button:disabled{opacity:.38;cursor:default;}',
+    '.slra-icon{flex:0 0 auto;padding:3px 7px;font-size:14px;line-height:1;}',
     '.slra-status{min-height:16px;margin:4px 0 8px;color:#b3b3b3;}',
     '.slra-status.invalid{color:#e05252;}',
     '.slra-actions{display:flex;gap:6px;}',
     '.slra-actions .slra-button{flex:1;}',
+    '.slra-actions .slra-icon{flex:0 0 auto;}',
+    '.slra-volume{position:absolute;right:0;bottom:44px;pointer-events:none;min-width:44px;padding:4px 8px;border-radius:999px;background:rgba(0,0,0,.72);color:#f1f1f1;font:600 12px/1.2 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;text-align:center;opacity:0;transition:opacity 120ms ease;}',
+    '.slra-volume.show{opacity:1;}',
+    '@media (prefers-reduced-motion: reduce){.slra-volume{transition:none;}}',
   ].join('\n');
 
   function createPlayerActions(options) {
@@ -522,6 +575,15 @@
     let settleTimer = null;
     let saveChain = Promise.resolve();
     let volumeSeq = 0;
+    // One-level undo for the current song's saved section. `undoEntry === null`
+    // with `undoAvailable` means the section did not exist before the last write.
+    let undoAvailable = false;
+    let undoEntry = null;
+    let undoSongKey = null;
+    let volumeHudTimer = null;
+    // One write per identical section: auto-save and a Save click in quick
+    // succession must not queue two writes for the same range.
+    let saveInFlight = null;
 
     function currentState() {
       return {
@@ -665,6 +727,7 @@
       saved = [];
       savedReady = false;
       session = createSectionSession();
+      clearUndo();
       active = true;
       notice = null;
       accumulator = createWheelAccumulator();
@@ -760,6 +823,36 @@
       }
     }
 
+    // -- undo ---------------------------------------------------------------
+
+    function sameSection(left, right) {
+      if (!left || !right) return left === right;
+      return left.videoId === right.videoId
+        && left.startSeconds === right.startSeconds
+        && left.endSeconds === right.endSeconds;
+    }
+
+    function clearUndo() {
+      undoAvailable = false;
+      undoEntry = null;
+      undoSongKey = null;
+      syncUndo();
+    }
+
+    function rememberUndo(previous, videoId) {
+      undoAvailable = true;
+      undoEntry = previous
+        ? { videoId: previous.videoId, startSeconds: previous.startSeconds, endSeconds: previous.endSeconds }
+        : null;
+      undoSongKey = videoId;
+      syncUndo();
+    }
+
+    function syncUndo() {
+      if (!ui || !ui.undo) return;
+      ui.undo.disabled = !(undoAvailable && undoSongKey !== null && undoSongKey === session.songKey);
+    }
+
     // -- song identity and the cached restore ------------------------------
 
     /**
@@ -783,6 +876,8 @@
       // Captured before adoption: beginSong overwrites the key.
       const previousSong = session.songKey !== null;
       if (beginSong(session, key)) {
+        // Undo belongs to one song visit; a new song never inherits it.
+        clearUndo();
         cancelSeekRetry();
         clearSettleCheck();
         // A genuine song change drops the previous song's typed text; the first
@@ -943,6 +1038,7 @@
       if (!step.applied) return;
       volume = step.volume;
       applyVolume(step.volume);
+      showVolumeHud(step.volume);
     }
 
     function applyVolume(percent) {
@@ -1182,9 +1278,18 @@
       actions.className = 'slra-actions';
       const clear = buildButton('Clear', 'Clear section');
       const save = buildButton('Save', 'Save section');
-      actions.append(clear, save);
+      // One glyph, not a word: the least footprint for a one-step undo.
+      const undo = buildButton('\u21BA', 'Restore previous section');
+      undo.classList.add('slra-icon');
+      undo.title = 'Restore previous section';
+      undo.disabled = true;
+      actions.append(clear, save, undo);
 
       panel.append(repeatRow, fromRow.row, toRow.row, status, actions);
+
+      const volumeHud = doc.createElement('div');
+      volumeHud.className = 'slra-volume';
+      volumeHud.setAttribute('aria-hidden', 'true');
 
       const pill = doc.createElement('button');
       pill.type = 'button';
@@ -1192,7 +1297,7 @@
       pill.textContent = 'Repeat';
       pill.setAttribute('aria-label', 'Section repeat');
 
-      shell.append(panel, pill);
+      shell.append(panel, volumeHud, pill);
       shadow.appendChild(shell);
       parent.appendChild(host);
 
@@ -1208,6 +1313,8 @@
         status: status,
         clear: clear,
         save: save,
+        undo: undo,
+        volumeHud: volumeHud,
         pill: pill,
       };
 
@@ -1253,6 +1360,9 @@
       ui.save.addEventListener('click', () => {
         requestSave();
       });
+      ui.undo.addEventListener('click', () => {
+        requestUndo();
+      });
       ui.pill.addEventListener('click', () => {
         ui.panel.classList.toggle('open');
       });
@@ -1260,8 +1370,26 @@
       syncPanel();
     }
 
+    function showVolumeHud(percent) {
+      if (!ui) return;
+      const value = Math.round(Number(percent));
+      if (!Number.isFinite(value)) return;
+      ui.volumeHud.textContent = Math.max(0, Math.min(100, value)) + '%';
+      ui.volumeHud.classList.add('show');
+      if (volumeHudTimer !== null) timers.clearTimeout(volumeHudTimer);
+      volumeHudTimer = timers.setTimeout(() => {
+        volumeHudTimer = null;
+        if (!ui) return;
+        ui.volumeHud.classList.remove('show');
+      }, 900);
+    }
+
     function destroyUi() {
       if (!ui) return;
+      if (volumeHudTimer !== null) {
+        timers.clearTimeout(volumeHudTimer);
+        volumeHudTimer = null;
+      }
       try {
         ui.host.remove();
       } catch {
@@ -1335,6 +1463,7 @@
       ui.repeat.checked = active;
       if (!fromDirty) ui.from.value = session.startSeconds === null ? '' : formatTime(session.startSeconds);
       if (!toDirty) ui.to.value = session.endSeconds === null ? '' : formatTime(session.endSeconds);
+      syncUndo();
       paintStatus();
     }
 
@@ -1390,6 +1519,9 @@
       }
       syncTick();
       syncPanel();
+      // Now, Enter, blur and Clear all land here: the committed range is the
+      // saved range, so no separate Save click is needed.
+      requestSave();
     }
 
     // -- storage -----------------------------------------------------------
@@ -1465,28 +1597,83 @@
         startSeconds: session.startSeconds,
         endSeconds: session.endSeconds,
       };
+      // A commit that matches what is already saved (a blur after Enter, a
+      // repeated Save, Clear on an unsaved song) is not a write.
+      if (savedReady) {
+        const current = lookupSaved(saved, videoId);
+        const empty = entry.startSeconds === null && entry.endSeconds === null;
+        if (current === null ? empty : sameSection(current, entry)) {
+          syncPanel();
+          return;
+        }
+      }
       notice = null;
-      void save(entry);
+      startSave(entry);
     }
 
-    async function save(entry) {
+    function sectionKey(entry) {
+      return entry.videoId + '|' + entry.startSeconds + '|' + entry.endSeconds;
+    }
+
+    function startSave(entry, options) {
+      const key = sectionKey(entry);
+      if (saveInFlight && saveInFlight.key === key) return saveInFlight.promise;
+      const promise = save(entry, options).finally(() => {
+        if (saveInFlight && saveInFlight.promise === promise) saveInFlight = null;
+      });
+      saveInFlight = { key: key, promise: promise };
+      return promise;
+    }
+
+    function requestUndo() {
+      if (!ui || !undoAvailable || undoSongKey === null || undoSongKey !== session.songKey) return;
+      const target = undoEntry;
+      const videoId = undoSongKey;
+      // Undo is one step: restore the fields, then write the previous state.
+      active = target !== null;
+      session.startSeconds = target ? target.startSeconds : null;
+      session.endSeconds = target ? target.endSeconds : null;
+      fromDirty = false;
+      toDirty = false;
+      notice = null;
+      cancelSeekRetry();
+      clearSettleCheck();
+      syncTick();
+      syncPanel();
+      if (target && target.startSeconds !== null) requestSeek(target.startSeconds, null);
+      startSave(
+        { videoId: videoId, startSeconds: session.startSeconds, endSeconds: session.endSeconds },
+        { restoring: true },
+      );
+    }
+
+    async function save(entry, options) {
+      const opts = options || {};
       const mine = generation;
       const removed = entry.startSeconds === null && entry.endSeconds === null;
+      // Snapshot the destination before the write: that is what undo restores.
+      const hadCache = savedReady;
+      const previous = hadCache ? lookupSaved(saved, entry.videoId) : null;
       try {
         const reply = await requestSectionSave(entry, mine);
         // A stop (or a new session) owns the state now: mutate nothing.
-        if (!started || mine !== generation) return;
+        if (!started || mine !== generation) return false;
         // `ok:false` is a storage failure, not a rejection: never claim a save
         // and never touch the cache.
         if (!reply || reply.ok !== true) {
           notice = 'failed';
           syncPanel();
-          return;
+          return false;
         }
         // Adopt the writer's list now; the onChanged echo is then a no-op.
         if (Array.isArray(reply.sections)) {
           saved = sanitizeSaved(reply.sections);
           savedReady = true;
+        }
+        if (opts.restoring) {
+          clearUndo();
+        } else if (hadCache && !sameSection(previous, entry)) {
+          rememberUndo(previous, entry.videoId);
         }
         // A song change (or a changed range) also owns the state now; the
         // notice for the old compose would be stale.
@@ -1504,10 +1691,12 @@
             syncPanel();
           }, NOTICE_VISIBLE_MS);
         }
+        return true;
       } catch {
-        if (!started || mine !== generation) return;
+        if (!started || mine !== generation) return false;
         notice = 'failed';
         syncPanel();
+        return false;
       }
     }
 
@@ -1566,6 +1755,8 @@
     lookupSaved: lookupSaved,
     upsertSaved: upsertSaved,
     capSaved: capSaved,
+    validateSavedList: validateSavedList,
+    mergeSavedLists: mergeSavedLists,
     songKeyFrom: songKeyFrom,
     createSectionSession: createSectionSession,
     beginSong: beginSong,
