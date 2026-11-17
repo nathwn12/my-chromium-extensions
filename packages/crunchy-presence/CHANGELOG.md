@@ -4,6 +4,12 @@ Notable changes to this project. Dates are ISO 8601. This package is local-only 
 
 ## [Unreleased]
 
+## [1.2.3] - 2026-11-18
+
+- The content script stays silent until storage answers, so a switched-off extension sends no message and holds no timer on a cold start, and `pageshow` restarts the poll `pagehide` stopped.
+- The options Application ID field shows the stored override only: a fresh install shows an empty field and the diagnostics report `clientId` as `missing`, and clearing an override returns to that state.
+- Test presence now honours the synopsis option, and a push the rate limiter defers is no longer recorded as sent.
+
 ## [1.2.2] - 2026-11-16
 
 - Native host startup clears inherited `NODE_OPTIONS` so a stale preload cannot prevent Node from starting.
