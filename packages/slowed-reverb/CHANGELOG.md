@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.4] - 2026-11-18
+
+- A track change no longer becomes audible before the effect is applied. The
+  next song starts with the slowed rate and pitch already in place instead of
+  playing briefly at the page's own rate and correcting itself, which sounded
+  like the effect re-aligning in real time.
+- When YouTube Music writes its own playback rate mid-track, the correction now
+  happens under a 5 ms fade instead of in the open.
 ## [1.2.3] - 2026-11-18
 
 - Section repeat now saves itself: Now, Enter or blur on a valid range, and Clear all commit the saved section without a Save click. A commit that matches the saved range writes nothing, and an in-flight write for the same range is shared.
