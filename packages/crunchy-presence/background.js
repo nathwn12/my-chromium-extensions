@@ -1240,10 +1240,12 @@ if (hasChrome) {
           pageUrl: "https://www.crunchyroll.com/watch/G6VU774M5/test-presence"
         };
         ensurePort();
-        const activity = buildActivity(sample);
+        const activity = buildActivity(sample, Date.now(), { synopsis: synopsisEnabled });
         if (bridgeState === "connected" && port) {
           limiter.push(activity);
-          lastSentJson = JSON.stringify(activity);
+          // A deferred push has not reached Discord: leave lastSentJson alone
+          // so the next identical recompute can still send.
+          if (!limiter.hasPending) lastSentJson = JSON.stringify(activity);
         }
         sendResponse({
           queued: bridgeState === "connected",
