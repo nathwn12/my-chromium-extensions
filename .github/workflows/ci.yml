@@ -28,7 +28,7 @@ jobs:
         run: |
           docs='^(.*\.md|docs/.*|LICEN[CS]E(\.md)?)$'
           if [ "${{ github.event_name }}" = "pull_request" ]; then
-            git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
+            git fetch --no-tags origin "${{ github.base_ref }}"
             changed=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD")
           elif [ "${{ github.event_name }}" = "push" ] && [ -n "${{ github.event.before }}" ]; then
             changed=$(git diff --name-only "${{ github.event.before }}" HEAD || true)
@@ -67,7 +67,7 @@ jobs:
         run: |
           docs='^(.*\.md|docs/.*|LICEN[CS]E(\.md)?)$'
           if [ "${{ github.event_name }}" = "pull_request" ]; then
-            git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
+            git fetch --no-tags origin "${{ github.base_ref }}"
             changed=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD")
           elif [ "${{ github.event_name }}" = "push" ] && [ -n "${{ github.event.before }}" ]; then
             changed=$(git diff --name-only "${{ github.event.before }}" HEAD || true)
@@ -126,7 +126,7 @@ jobs:
         run: |
           docs='^(.*\.md|docs/.*|LICEN[CS]E(\.md)?)$'
           if [ "${{ github.event_name }}" = "pull_request" ]; then
-            git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
+            git fetch --no-tags origin "${{ github.base_ref }}"
             changed=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD")
           elif [ "${{ github.event_name }}" = "push" ] && [ -n "${{ github.event.before }}" ]; then
             changed=$(git diff --name-only "${{ github.event.before }}" HEAD || true)
@@ -177,7 +177,7 @@ jobs:
         run: |
           docs='^(.*\.md|docs/.*|LICEN[CS]E(\.md)?)$'
           if [ "${{ github.event_name }}" = "pull_request" ]; then
-            git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
+            git fetch --no-tags origin "${{ github.base_ref }}"
             changed=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD")
           elif [ "${{ github.event_name }}" = "push" ] && [ -n "${{ github.event.before }}" ]; then
             changed=$(git diff --name-only "${{ github.event.before }}" HEAD || true)
@@ -228,7 +228,7 @@ jobs:
         run: |
           docs='^(.*\.md|docs/.*|LICEN[CS]E(\.md)?)$'
           if [ "${{ github.event_name }}" = "pull_request" ]; then
-            git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
+            git fetch --no-tags origin "${{ github.base_ref }}"
             changed=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD")
           elif [ "${{ github.event_name }}" = "push" ] && [ -n "${{ github.event.before }}" ]; then
             changed=$(git diff --name-only "${{ github.event.before }}" HEAD || true)
