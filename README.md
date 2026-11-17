@@ -63,5 +63,5 @@ Tests run in Node on `node --test`, never in a browser: no Playwright dependency
 ## Links
 
 - [Issues](https://github.com/nathwn12/my-chromium-extensions/issues)
-- [Releases](https://github.com/nathwn12/my-chromium-extensions/releases) — the extension zips attached to each tag.
+- [Releases](https://github.com/nathwn12/my-chromium-extensions/releases) — one packaged zip per extension.
 - [MIT](LICENSE)
