@@ -8,6 +8,7 @@ const {
 
 const {
   capSaved,
+  mergeSavedLists,
   sanitizeSaved,
   upsertSaved,
 } = self.SlowedReverbPlayerActions;
@@ -18,6 +19,12 @@ const SITE_TOGGLES_KEY = 'siteToggles';
 const TAB_SESSION_KEY = 'tabSessionById';
 const PLAYER_ACTIONS_KEY = 'playerActions';
 const PLAYER_SECTIONS_LIMIT = 100;
+// Local operator gate: a packaged, gitignored file dropped into the unpacked
+// extension. Nothing on the page, in the popup or in another extension can
+// reach it; only someone who can write this extension's own files can use it.
+const DEV_IMPORT_PATH = '.dev/section-import.json';
+const DEV_IMPORT_KEY = 'devSectionImport';
+const DEV_IMPORT_SUMMARY_KEY = 'devSectionImportSummary';
 
 const tabBypassById = new Map();
 const tabSessionById = new Map();
@@ -59,6 +66,265 @@ function queuePlayerSectionSave(entry) {
       return next;
     });
   return playerSectionSaveChain;
+}
+
+// Bulk import for the owner, run from the service-worker devtools console:
+//   await importPlayerSections(sections)
+// It is a worker-global function on purpose, not a message type: the popup, the
+// content script and any page have no route to it. The batch is validated whole
+// before the save chain is touched, and the saved list must already be well
+// formed, so a bad entry on either side writes nothing.
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+/** The stored schema, minus a forget: both bounds null is a live save action. */
+function isValidSectionEntry(entry) {
+  if (!isPlainObject(entry)) return false;
+  if (typeof entry.videoId !== 'string' || entry.videoId === '') return false;
+  const startSeconds = normalizeSectionTime(entry.startSeconds);
+  const endSeconds = normalizeSectionTime(entry.endSeconds);
+  if (startSeconds === undefined || endSeconds === undefined) return false;
+  return startSeconds !== null || endSeconds !== null;
+}
+
+function validateSectionImport(entries) {
+  if (!Array.isArray(entries) || entries.length === 0) return { error: 'invalid_entries' };
+  const seen = new Set();
+  const batch = [];
+  for (let index = 0; index < entries.length; index += 1) {
+    const entry = entries[index];
+    if (!isValidSectionEntry(entry)) return { error: 'invalid_entry', index };
+    // One id twice in one batch is ambiguous; the source is malformed.
+    if (seen.has(entry.videoId)) return { error: 'duplicate_entry', index };
+    seen.add(entry.videoId);
+    batch.push(normalizeSectionEntry(entry));
+  }
+  return { batch };
+}
+
+/**
+ * The destination is merged into and written back, so it has to be clean
+ * already: a malformed or duplicated stored entry is refused instead of being
+ * sanitized out of the saved list. The list comes back as stored, so fields
+ * this path does not know about survive the round trip.
+ */
+function readStoredSections(raw) {
+  if (raw !== undefined && raw !== null && !isPlainObject(raw)) {
+    return { error: 'invalid_destination' };
+  }
+  const sections = raw ? raw.sections : undefined;
+  if (sections === undefined || sections === null) return { list: [] };
+  if (!Array.isArray(sections)) return { error: 'invalid_destination' };
+  const seen = new Set();
+  for (let index = 0; index < sections.length; index += 1) {
+    const entry = sections[index];
+    if (!isValidSectionEntry(entry)) return { error: 'invalid_destination', index };
+    if (seen.has(entry.videoId)) return { error: 'invalid_destination', index };
+    seen.add(entry.videoId);
+  }
+  return { list: sections };
+}
+
+/**
+ * Merges saved sections from one local array. All-or-nothing: a single invalid
+ * entry, a duplicate id, a malformed saved list, or a merge past
+ * PLAYER_SECTIONS_LIMIT returns an error and leaves storage untouched. A
+ * videoId already saved keeps its destination entry and counts as skipped, new
+ * ids append in source order, and the write carries every other playerActions
+ * field through unchanged.
+ *
+ * The work rides the same `playerSectionSaveChain` as SAVE_PLAYER_SECTION, so an
+ * import and a tab's save can never read-modify-write over each other.
+ */
+async function importPlayerSections(entries) {
+  const validated = validateSectionImport(entries);
+  if (validated.error) {
+    const rejected = { ok: false, error: validated.error };
+    if (validated.index !== undefined) rejected.index = validated.index;
+    return rejected;
+  }
+
+  playerSectionSaveChain = playerSectionSaveChain
+    .catch(() => [])
+    .then(async () => {
+      try {
+        const stored = await chrome.storage.local.get(PLAYER_ACTIONS_KEY);
+        const raw = stored ? stored[PLAYER_ACTIONS_KEY] : undefined;
+        const existing = readStoredSections(raw);
+        if (existing.error) {
+          const refused = { ok: false, error: existing.error };
+          if (existing.index !== undefined) refused.index = existing.index;
+          return refused;
+        }
+        const merged = mergeSavedLists(existing.list, validated.batch, PLAYER_SECTIONS_LIMIT);
+        if (merged.ok !== true) return merged;
+        if (merged.imported > 0) {
+          // Only `sections` belongs to this path; every other field is kept.
+          const next = isPlainObject(raw) ? { ...raw, sections: merged.sections } : { sections: merged.sections };
+          const write = {};
+          write[PLAYER_ACTIONS_KEY] = next;
+          await chrome.storage.local.set(write);
+        }
+        return { ok: true, imported: merged.imported, skipped: merged.skipped, sections: merged.sections };
+      } catch (error) {
+        return {
+          ok: false,
+          error: 'storage_failed',
+          detail: String(error && error.message ? error.message : error),
+        };
+      }
+    });
+  return playerSectionSaveChain;
+}
+
+// ---------------------------------------------------------------------------
+// Local section import gate
+// ---------------------------------------------------------------------------
+
+async function sha256Hex(text) {
+  if (!globalThis.crypto || !globalThis.crypto.subtle) throw new Error('No SHA-256.');
+  const bytes = new TextEncoder().encode(text);
+  const hash = await globalThis.crypto.subtle.digest('SHA-256', bytes);
+  return Array.from(new Uint8Array(hash), (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+/** A digest of the saved bounds only: the summary never carries song ids. */
+async function canonicalSectionsDigest(sections) {
+  const canonical = sections
+    .map((entry) => [entry.videoId, entry.startSeconds, entry.endSeconds])
+    .sort((left, right) => (left[0] < right[0] ? -1 : left[0] > right[0] ? 1 : 0));
+  return sha256Hex(JSON.stringify(canonical));
+}
+
+async function readDevImportText() {
+  if (typeof fetch !== 'function') return null;
+  try {
+    const response = await fetch(chrome.runtime.getURL(DEV_IMPORT_PATH));
+    if (!response || response.ok !== true) return null;
+    return await response.text();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Records the outcome where the lead can read it without extension devtools:
+ * a hidden attribute on an open YouTube Music document, and the same object in
+ * storage for a run that had no eligible tab. Both carry counts and a digest,
+ * never ids.
+ */
+async function reportDevImport(summary) {
+  try {
+    await chrome.storage.local.set({ [DEV_IMPORT_SUMMARY_KEY]: summary });
+  } catch {
+    // Best effort: the page marker is the primary read.
+  }
+  try {
+    const tabs = await chrome.tabs.query({ url: 'https://music.youtube.com/*' });
+    for (const tab of tabs) {
+      if (tab.id == null) continue;
+      try {
+        await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          func: (value) => {
+            document.documentElement.dataset.slraImportSummary = value;
+          },
+          args: [JSON.stringify(summary)],
+        });
+        return true;
+      } catch {
+        // Try the next eligible tab.
+      }
+    }
+  } catch {
+    // No tabs permission or no tab: the stored summary remains.
+  }
+  return false;
+}
+
+async function executeDevImport() {
+  const text = await readDevImportText();
+  if (text === null) return null;
+
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    const summary = { ok: false, error: 'invalid_file' };
+    await reportDevImport(summary);
+    return summary;
+  }
+  const entries = parsed && Array.isArray(parsed.sections) ? parsed.sections : null;
+  if (entries === null) {
+    const summary = { ok: false, error: 'invalid_file' };
+    await reportDevImport(summary);
+    return summary;
+  }
+
+  let hash;
+  try {
+    hash = await sha256Hex(text);
+  } catch {
+    const summary = { ok: false, error: 'hash_failed' };
+    await reportDevImport(summary);
+    return summary;
+  }
+
+  try {
+    const marker = await chrome.storage.local.get(DEV_IMPORT_KEY);
+    const seen = marker ? marker[DEV_IMPORT_KEY] : null;
+    if (seen && seen.hash === hash) return null;
+  } catch {
+    // An unreadable marker is not a reason to write again or to stop: fall
+    // through and let the import decide from the saved list itself.
+  }
+
+  const result = await importPlayerSections(entries);
+  const summary = { ok: result.ok === true };
+  if (result.ok) {
+    summary.imported = result.imported;
+    summary.skipped = result.skipped;
+    summary.before = result.sections.length - result.imported;
+    summary.total = result.sections.length;
+    try {
+      summary.digest = await canonicalSectionsDigest(result.sections);
+    } catch {
+      // Counts still describe the write; the digest is an extra receipt.
+    }
+  } else {
+    summary.error = result.error;
+    if (result.index !== undefined) summary.index = result.index;
+    if (result.count !== undefined) summary.count = result.count;
+    if (result.limit !== undefined) summary.limit = result.limit;
+  }
+  summary.at = Date.now();
+
+  if (summary.ok) {
+    try {
+      await chrome.storage.local.set({
+        [DEV_IMPORT_KEY]: {
+          hash: hash,
+          at: summary.at,
+          imported: summary.imported,
+          skipped: summary.skipped,
+          total: summary.total,
+        },
+      });
+    } catch {
+      // The import already landed; a lost marker only means a retry next start.
+    }
+  }
+  await reportDevImport(summary);
+  return summary;
+}
+
+let devImportRun = null;
+
+/** One run per service-worker lifetime; repeated startup events share it. */
+function runDevSectionImport() {
+  if (devImportRun === null) devImportRun = executeDevImport().catch(() => null);
+  return devImportRun;
 }
 
 function getEligibleTab(tabId) {
@@ -320,6 +586,23 @@ chrome.runtime.onStartup.addListener(() => {
 chrome.runtime.onInstalled.addListener(() => {
   void scheduleRehydrate();
 });
+
+// The local import gate reads its file at every worker start; the stored hash
+// makes a repeat a no-op. onStartup/onInstalled are extra chances for a reload
+// that does not keep the worker alive long enough for the fetch.
+chrome.runtime.onStartup.addListener(() => {
+  void runDevSectionImport();
+});
+
+chrome.runtime.onInstalled.addListener(() => {
+  void runDevSectionImport();
+});
+
+try {
+  void runDevSectionImport();
+} catch {
+  // Never throw at import.
+}
 
 // onStartup does not fire when the worker wakes from idle, so rehydrate
 // best-effort once, gated by a session flag so idle wakes do not reflood
