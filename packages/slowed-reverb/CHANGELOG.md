@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.3] - 2026-11-18
+
+- Section repeat now saves itself: Now, Enter or blur on a valid range, and Clear all commit the saved section without a Save click. A commit that matches the saved range writes nothing, and an in-flight write for the same range is shared.
+- A one-step Restore glyph sits beside Clear and Save; it is disabled when there is nothing to restore, restores the previous bounds (or removes a newly saved section), and clears after use.
+- Wheel volume shows a transient percentage above the player bar and fades after 900 ms; it is hidden from assistive tech because YouTube Music's own slider is the announcement.
+- Fix: a wheel volume write no longer plays the element alongside the graph. The page hook restores the mute the content script owns in the same task as `setVolume`, so the graph ramps alone and the wheel sounds like the native slider.
+- Local operator only: a gitignored `.dev/section-import.json` dropped into the unpacked extension is merged once at worker start, preserving every saved section, refusing a malformed entry or a merge past the 100-entry cap, and reporting a hidden count-and-digest receipt. No message, page or popup route reaches it.
+
 ## [1.2.2] - 2026-11-14
 
 - Fix: wheel volume over the player bar no longer moves the site volume the wrong way or stalls near 20. The wheel cache is player scale (0–100) and is seeded from the element only until the first applied page reply; afterwards it follows applied replies only, so the YTM element/player unit mismatch (element max ≈0.741) cannot re-seed it on every sync.
