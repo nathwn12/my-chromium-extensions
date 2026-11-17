@@ -1089,11 +1089,15 @@ async function main() {
     volumeBlock.indexOf('controller.sourceStale') !== -1 && volumeBlock.indexOf('controller.media.muted') === -1,
     'volumeHandler still maps media.muted to masterGain 0'
   );
+  const alignBlock = (src.match(/function alignBeforeAudible\(controller\) \{[\s\S]*?\n  \}/) || [])[0] || '';
+  const alignRateAt = alignBlock.indexOf('writeIntendedRate(controller, state.settings.slow)');
   check(
-    'rebuild resets the mute budget and ramps only after the mute (static)',
-    /resetMuteDampener\(controller\);\s+if \(controller\.dryGain\)/.test(src) &&
-      /controller\.media\.muted = true;/.test(src),
-    'no resetMuteDampener + mute-before-ramp in rebuild'
+    'rebuild resets the mute budget and only ramps through the rate gate (static)',
+    /resetMuteDampener\(controller\);\s+alignBeforeAudible\(controller\);/.test(src) &&
+      /controller\.media\.muted = true;/.test(src) &&
+      alignRateAt !== -1 &&
+      alignRateAt < alignBlock.indexOf('rampGain(controller.masterGain.gain'),
+    'no resetMuteDampener + rate-before-ramp in rebuild'
   );
   check(
     'failed rebuild disconnects the stale tap (static)',
