@@ -780,17 +780,24 @@ export function createWorker({
     // The reference is the entry's stored receipt time, not `now()`: a clock
     // read here would move the anchor on every tick for a rejected stamp.
     // A non-1x sample is anchored half an interval ahead of the sample instant,
-    // so the error the wall-clock timer accumulates is split either side of the
-    // truth instead of all of it landing behind. Rate 1 passes the sample
-    // through untouched, byte for byte.
+    // so the elapsed bar's error is split either side of the truth instead of
+    // all of it landing behind. The un-biased sample is kept as well: Discord
+    // counts the countdown in wall time, so the builder scales the remaining
+    // media time by the rate from that sample. Rate 1 passes the sample through
+    // untouched, byte for byte.
     const sample = best ? sampleAt(best, best.at) : 0;
     const bias = best ? rateBiasMs(best.state) : 0;
     const anchor = sample + bias;
+    const rateScaled = Boolean(best) && isRateScaled(best.state);
     desired = best
-      ? buildActivity(bias ? { ...best.state, at: anchor } : best.state, anchor)
+      ? buildActivity(
+          bias ? { ...best.state, at: anchor } : best.state,
+          anchor,
+          rateScaled ? sample : undefined
+        )
       : null;
     hasDesired = true;
-    desiredRateScaled = Boolean(best) && isRateScaled(best.state);
+    desiredRateScaled = rateScaled;
     persist();
     // A new song, artist line or album is a discrete change and goes out at
     // once; a seek or a pause keeps the identity and takes the paced path.

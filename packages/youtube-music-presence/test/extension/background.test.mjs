@@ -470,7 +470,9 @@ test("at 1.5x the anchor is biased half an interval earlier", async () => {
   const biased = Math.floor((sample - 625) / 1000) - 10;
   assert.equal(frame.activity.timestamps.start, biased, "the builder sees sample - 625 ms");
   assert.equal(biased - unbiased, -1, "625 ms earlier crosses one whole second here");
-  assert.equal(frame.activity.timestamps.end, biased + 200);
+  // The countdown is rate-scaled from the un-biased sample, not from the
+  // biased anchor that positions the elapsed bar.
+  assert.equal(frame.activity.timestamps.end, Math.floor(sample / 1000 + (200 - 10) / 1.5));
 });
 
 test("at 1x the anchor carries no bias", async () => {
@@ -503,6 +505,39 @@ test("at 0.75x the anchor is biased later", async () => {
   const frame = activities(port).at(-1);
   assert.equal(frame.activity.timestamps.start, biased);
   assert.ok(frame.activity.timestamps.start > unbiased, "a slower rate starts later");
+});
+
+test("at 1x the worker's whole outgoing frame is byte-identical", async () => {
+  const { chrome, clock, port } = await boot();
+  connect(port);
+  clock.advance(123);
+  sendState(chrome, 1, musicState({ position: 10, duration: 200, playbackRate: 1 }));
+  assert.deepEqual(activities(port).at(-1).activity, {
+    name: "YouTube Music",
+    type: 2,
+    details: "A Song",
+    state: "An Artist",
+    status_display_type: 1,
+    assets: {
+      large_image: "https://lh3.googleusercontent.com/cover",
+      large_text: "An Album",
+    },
+    timestamps: {
+      start: Math.floor((BASE + 123) / 1000) - 10,
+      end: Math.floor((BASE + 123) / 1000) - 10 + 200,
+    },
+  });
+});
+
+test("at a non-1x rate the worker's end uses the un-biased sample", async () => {
+  const { chrome, clock, port } = await boot();
+  connect(port);
+  clock.advance(123);
+  sendState(chrome, 1, musicState({ position: 10, duration: 200, playbackRate: 0.7 }));
+  const sample = BASE + 123;
+  const frame = activities(port).at(-1).activity;
+  assert.equal(frame.timestamps.end, Math.floor(sample / 1000 + (200 - 10) / 0.7));
+  assert.equal(frame.timestamps.start, Math.floor((sample + 375) / 1000) - 10, "elapsed stays biased");
 });
 
 test("at 1.5x a second update one second later waits for the 2500 ms interval", async () => {

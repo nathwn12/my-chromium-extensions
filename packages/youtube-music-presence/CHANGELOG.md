@@ -2,6 +2,12 @@
 
 Notable changes to this package. Dates are ISO 8601. This package is local-only and is not published to a registry.
 
+## [1.1.12] - 2026-11-19
+
+- A media event that fires before YouTube Music swaps the player-bar title now arms one 250 ms re-read, so a stale-event switch lands in about 250 ms instead of waiting for the 1 s poll (≤500 ms ordinary, 0 ms when the DOM already flipped). The re-read never republishes an unchanged title; the 1 s poll, the 1.5 s pacing and the eight-per-20 s ceiling are unchanged, and a burst past eight changes in 20 s still defers to the window edge.
+- The countdown is now rate-scaled from the un-biased sample second and the remaining media time divided by the playback rate, with one floor on the sum. Measured over 60 s the countdown error stays within 552 ms at 0.70×, 123 ms at 1× and 277 ms at 1.30×, and the 1× frame is byte-identical. The elapsed bar keeps its ±375 ms bias and can still read up to 1123 ms ahead at 1.30× — the honest bound left by integer-second stamps and the ~3.3 s re-anchor gap, not a figure the send budget is loosened to chase.
+- Docs now name the measured ~3.3 s cadence and the honest bound instead of the 2.5 s / ~2 s claim.
+
 ## [1.1.11] - 2026-11-18
 
 - The package is `youtube-music-presence` everywhere: folder, package name, display name, and native host `com.nathwn12.youtube_music_presence` installed under `%LOCALAPPDATA%\youtube-music-presence`. **Reinstall the native host** (`node scripts/install-host.mjs`) and reload the unpacked extension: the extension asks only for the new host name, so an earlier registration is never consulted.
@@ -21,7 +27,7 @@ Notable changes to this package. Dates are ISO 8601. This package is local-only 
 
 ## [1.1.7] - 2026-11-11
 
-- While the playback rate is not 1×, the card re-anchors at most once every 2.5 s and biases its reference by half the interval's drift, so the displayed time crosses the truth instead of lagging behind it; whole-second timestamps put a floor of roughly two seconds on the error at 1.5× (about three at 2×), and it never accumulates.
+- While the playback rate is not 1×, the card re-anchors at most once every 2.5 s and biases its reference by half the interval's drift, so the displayed time crosses the truth instead of lagging behind it; whole-second timestamps put a floor of roughly two seconds on the error at 1.5× (about three at 2×), and it never accumulates. Later measurement corrected this claim: 2.5 s was a spacing floor, not the cadence — deduplicated payloads put the measured re-anchor near 3.3 s — and the countdown no longer depends on re-anchoring at all (see 1.1.12).
 
 ## [1.1.6] - 2026-11-11
 
