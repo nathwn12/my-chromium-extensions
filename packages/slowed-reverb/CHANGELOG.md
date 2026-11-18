@@ -30,6 +30,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   or re-seeking a section that already restored; the push-first order is
   unchanged.
 
+- Fix: a deferred restore no longer seeks while an identity read is in flight.
+  A source swap that puts the element at its top used to arm the saved section
+  before the 1 s read answered. The visit now stays pending until the push or
+  read that answers the suspension arrives; an at-top load with no read in
+  flight still restores straight away.
+
 - Fix: a From/To range now stays set across refreshes. Enter and Save have
   always written it to storage keyed by the song, and a reload has always
   restored it; the loss came after an identity read gave up. That dropped the

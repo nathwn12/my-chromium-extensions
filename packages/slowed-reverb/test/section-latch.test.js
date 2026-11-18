@@ -730,6 +730,36 @@ test('identity: a push for the URL-adopted song confirms the visit', async () =>
   assert.equal(harness.status(), '0:10 → 0:20', 'B stays armed at its own range');
 });
 
+test('identity: a deferred restore does not seek while the read is in flight; the answer releases it', async () => {
+  const harness = createHarness({ storage: createStorage([SECTION, SONG_B]) });
+  await harness.start();
+  const media = harness.media();
+  assert.equal(media.currentTime, SECTION.startSeconds, 'precondition: A is restored and armed');
+
+  // The URL adopts B first while A still holds the element: B's restore waits.
+  harness.setHref(songUrl('song-b'));
+  harness.timers.tickIntervals();
+  await settle();
+  assert.equal(media.currentTime, SECTION.startSeconds, 'B waits for a vouch');
+
+  // The element swaps source and is observed at its top while the 1 s identity
+  // read is in flight. Being at the top is not the player's answer.
+  harness.controller.suspendSongIdentity();
+  media.currentTime = 0;
+  harness.timers.tickIntervals();
+  await settle();
+  assert.equal(media.currentTime, 0, 'nothing may seek while the identity read is in flight');
+
+  // The player answers with its own id: the suspension is answered and the
+  // deferred restore can proceed.
+  harness.pushSong('song-b', songUrl('song-b'));
+  await settle();
+  harness.timers.tickIntervals();
+  await settle();
+  assert.equal(media.currentTime, SONG_B.startSeconds, 'the answer releases the deferred restore');
+  assert.equal(harness.status(), '0:10 → 0:20', 'B is armed at its own range');
+});
+
 test('identity: a pushed null defers, a late push still restores', async () => {
   const harness = createHarness({ storage: createStorage([SONG_B]) });
   await harness.start();

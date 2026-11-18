@@ -1079,6 +1079,14 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
         syncTick();
         return;
       }
+      // An identity read is in flight: nothing may seek or adopt an identity
+      // until it lands. The reloaded element being at its top is not the
+      // player's answer, so the deferred visit stays pending.
+      if (session.identityPending) {
+        session.pendingRestore = true;
+        syncTick();
+        return;
+      }
       const entry = lookupSaved(saved, key);
       if (entry === null) {
         markSongRestored(session, key);
