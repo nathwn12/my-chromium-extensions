@@ -45,6 +45,15 @@ function gones(handle) {
   return handle.messages.filter((message) => message.t === "ytmp-gone");
 }
 
+/** Reports that repeat the previous title: sends that spend budget on nothing. */
+function duplicateTitleCount(messages) {
+  let n = 0;
+  for (let i = 1; i < messages.length; i += 1) {
+    if (messages[i].state.title === messages[i - 1].state.title) n += 1;
+  }
+  return n;
+}
+
 /**
  * The master presence switch as the content script sees it: one stored key and
  * an onChanged fan-out the test drives.
@@ -292,6 +301,62 @@ test("same-URL SPA updates report immediately", () => {
   page.dispatchOnDoc("yt-page-data-updated");
   assert.equal(handle.messages.length, 2);
   assert.equal(handle.messages[1].state.title, "Re-rendered");
+});
+
+test("a stale media event re-reads after the settle window instead of waiting for the poll", () => {
+  const page = musicWatch("First Song", { duration: 300, currentTime: 10, paused: false });
+  const clock = fakeClock();
+  const handle = bootWithClock(page, clock);
+  assert.equal(states(handle).length, 1);
+
+  // The player fires for the next track while the title element still shows
+  // the old song. The event itself still reports: a pause or seek must not wait.
+  page.dispatchOnDoc("play", { target: page.doc.querySelector("audio") });
+  assert.equal(states(handle).length, 2);
+  assert.equal(states(handle).at(-1).state.title, "First Song");
+  const wastedAfterEvent = duplicateTitleCount(states(handle));
+
+  assert.equal(handle.pendingTimeouts(), 1, "one one-shot re-read is armed");
+  assert.deepEqual(handle.timeoutDelays(), [250], "re-read lands on the settle window");
+  assert.deepEqual(handle.intervalDelays(), [1000], "the original poll is unchanged");
+
+  // The DOM flips during the settle window, before the next poll is due.
+  page.doc.querySelector("ytmusic-player-bar .title").textContent = "Second Song";
+  clock.advance(250);
+  handle.flush();
+
+  assert.equal(states(handle).at(-1).state.title, "Second Song", "the switch lands within the bound");
+  assert.equal(
+    duplicateTitleCount(states(handle)),
+    wastedAfterEvent,
+    "the re-read never republishes the unchanged old title"
+  );
+});
+
+test("a stale re-read whose DOM never flipped stays silent", () => {
+  const page = musicWatch("First Song", { duration: 300, currentTime: 10, paused: false });
+  const clock = fakeClock();
+  const handle = bootWithClock(page, clock);
+  page.dispatchOnDoc("play", { target: page.doc.querySelector("audio") });
+  assert.equal(states(handle).length, 2);
+
+  assert.equal(handle.pendingTimeouts(), 1);
+  clock.advance(250);
+  handle.flush();
+  assert.equal(states(handle).length, 2, "an unchanged re-read spends no second send");
+  assert.equal(duplicateTitleCount(states(handle)), 1);
+});
+
+test("a media event whose DOM already flipped reports at once with no re-read", () => {
+  const page = musicWatch("First Song", { duration: 300, currentTime: 10, paused: false });
+  const clock = fakeClock();
+  const handle = bootWithClock(page, clock);
+  page.doc.querySelector("ytmusic-player-bar .title").textContent = "Second Song";
+  page.dispatchOnDoc("play", { target: page.doc.querySelector("audio") });
+
+  assert.equal(states(handle).length, 2);
+  assert.equal(states(handle).at(-1).state.title, "Second Song", "no settle wait when the DOM is current");
+  assert.equal(handle.pendingTimeouts(), 0, "no redundant re-read");
 });
 
 test("a Music-to-Music SPA navigation reports once the page settles", () => {

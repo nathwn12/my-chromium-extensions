@@ -24,9 +24,11 @@
  * them, else absent. The title is never the tooltip.
  *
  * Timestamps are integer SECONDS on the wire: `start = floor(anchor/1000) -
- * floor(clamp(position))`, `end = start + floor(duration)`. Nothing is
- * stamped unless the tab is playing with a finite position and a positive
- * duration; `now` goes in as milliseconds.
+ * floor(clamp(position))`, `end = start + floor(duration)`. A caller that also
+ * supplies the un-biased sample instant gets a rate-scaled `end` at non-1x;
+ * 1x is byte-identical with or without it. Nothing is stamped unless the tab is
+ * playing with a finite position and a positive duration; `now` goes in as
+ * milliseconds.
  *
  * The anchor is a property of the SAMPLE, never of the send. `now` is the
  * sample reference: the instant the position was sampled, always a stored
@@ -66,6 +68,8 @@ const MAX_BUTTON_LABEL = 32;
 const MAX_BUTTON_URL = 512;
 /** A sample stamp this far ahead of `now` is still trusted, as clock skew. */
 export const SAMPLE_SKEW_MS = 5000;
+/** Mirrors RATE_EPSILON in background.js: a rate this close to 1 is 1x. */
+const RATE_EPSILON = 0.01;
 
 /** Member-list line: 1 = State (the artist). See header UNVERIFIED note. */
 export const STATUS_DISPLAY_STATE = 1;
@@ -149,7 +153,9 @@ function watchPageUrl(raw) {
  * ONE activity for the Music state, or null.
  *
  * Timestamps follow the contract exactly: `start = floor(anchor/1000) -
- * floor(clamp(position))`, `end = start + floor(duration)`, position clamped
+ * floor(clamp(position))`, `end = start + floor(duration)` at 1x; a caller that
+ * also passes the un-biased sample instant gets `end = floor(sample/1000 +
+ * (duration - clamp(position)) / rate)` at a non-1x rate. Position is clamped
  * to `[0, duration]`, and no timestamps at all unless the tab is playing with
  * a positive duration and a real position. `now` is milliseconds and is the
  * sample reference: the instant the position was sampled, a stored value, not
@@ -160,19 +166,24 @@ function watchPageUrl(raw) {
  * back to a moving limit); the builder does not second-guess the caller.
  * Whole seconds leave on the wire.
  *
- * Also accepts `(source, state, now)`; a leading source other than
- * `youtube-music` builds nothing.
+ * Also accepts `(source, state, now, sampleMs)`; a leading source other than
+ * `youtube-music` builds nothing. In the object form the third argument is
+ * `sampleMs`, the un-biased sample instant the worker kept alongside the biased
+ * anchor passed as `now`. It is only used to scale the countdown at non-1x.
  */
-export function buildActivity(sourceOrState, stateOrNow, nowArg = Date.now()) {
+export function buildActivity(sourceOrState, stateOrNow, nowArg, sampleMs = undefined) {
   let state;
   let now;
+  let sample;
   if (typeof sourceOrState === "string") {
     if (sourceOrState !== SOURCE_YOUTUBE_MUSIC) return null;
     state = stateOrNow;
-    now = nowArg;
+    now = typeof nowArg === "number" ? nowArg : Date.now();
+    sample = sampleMs;
   } else {
     state = sourceOrState;
     now = typeof stateOrNow === "number" ? stateOrNow : Date.now();
+    sample = typeof nowArg === "number" ? nowArg : sampleMs;
   }
   const meta = SOURCE_META[SOURCE_YOUTUBE_MUSIC];
   if (!state || typeof state !== "object") return null;
@@ -260,9 +271,22 @@ export function buildActivity(sourceOrState, stateOrNow, nowArg = Date.now()) {
   ) {
     const clamped = Math.min(Math.max(position, 0), duration);
     const start = Math.floor(anchor / 1000) - Math.floor(clamped);
+    const rate = state.playbackRate;
+    const rateScaled =
+      typeof rate === "number" && Number.isFinite(rate) && rate > 0 &&
+      Math.abs(rate - 1) > RATE_EPSILON &&
+      typeof sample === "number" && Number.isFinite(sample);
     activity.timestamps = {
       start,
-      end: start + Math.floor(duration),
+      // Discord counts the countdown in wall time; media seconds are not wall
+      // seconds at a non-1x rate. Build the end from the un-biased sample
+      // second plus the remaining media time divided by the rate, with one
+      // floor over the sum: the residual is the sub-second part of one stamp,
+      // not a drift that grows with the track. The elapsed bar keeps the
+      // biased anchor above.
+      end: rateScaled
+        ? Math.floor(sample / 1000 + (duration - clamped) / rate)
+        : start + Math.floor(duration),
     };
   }
 

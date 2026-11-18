@@ -722,6 +722,50 @@ test("a sample stamp up to 5 s ahead is trusted, further ahead is ignored for no
   );
 });
 
+test("a non-1x countdown is rate-scaled from the un-biased sample second", () => {
+  const sample = SAMPLE_AT + 123;
+  const biased = sample + 375; // 0.70x: (1 - 0.70) * 1250 ms
+  const state = musicState({ position: 10, duration: 200, playbackRate: 0.7, at: biased });
+  const activity = buildActivity(state, biased, sample);
+
+  // The elapsed bar still comes from the biased anchor; only the end changes.
+  assert.equal(activity.timestamps.start, Math.floor(biased / 1000) - 10);
+  // One floor over the un-biased sample second plus the rate-scaled remainder.
+  assert.equal(activity.timestamps.end, Math.floor(sample / 1000 + (200 - 10) / 0.7));
+  const trueRemaining = (200 - 10) / 0.7;
+  assert.ok(Math.abs(activity.timestamps.end - sample / 1000 - trueRemaining) < 1);
+});
+
+test("the rate-scaled end also holds for a faster track", () => {
+  const sample = SAMPLE_AT + 123;
+  const biased = sample - 375; // 1.30x: (1 - 1.30) * 1250 ms
+  const state = musicState({ position: 10, duration: 200, playbackRate: 1.3, at: biased });
+  const activity = buildActivity(state, biased, sample);
+  assert.equal(activity.timestamps.end, Math.floor(sample / 1000 + (200 - 10) / 1.3));
+  assert.ok(Math.abs(activity.timestamps.end - sample / 1000 - (200 - 10) / 1.3) < 1);
+});
+
+test("supplying the sample at 1x leaves the whole frame byte-identical", () => {
+  const state = musicState({ position: 10, duration: 200, playbackRate: 1, at: SAMPLE_AT });
+  const plain = buildActivity(state, SAMPLE_AT);
+  const withSample = buildActivity(state, SAMPLE_AT, SAMPLE_AT);
+  assert.deepEqual(withSample, plain);
+  assert.equal(JSON.stringify(withSample), JSON.stringify(plain));
+});
+
+test("a rate-scaled sample never invents timestamps", () => {
+  for (const overrides of [
+    { paused: true },
+    { paused: undefined },
+    { position: null },
+    { duration: 0 },
+    { duration: null },
+  ]) {
+    const state = musicState({ playbackRate: 0.7, at: SAMPLE_AT, ...overrides });
+    assert.equal("timestamps" in buildActivity(state, SAMPLE_AT, SAMPLE_AT), false);
+  }
+});
+
 test("clampText collapses whitespace, rejects short text and caps length", () => {
   assert.equal(clampText("  a   b  "), "a b");
   assert.equal(clampText("a"), null);

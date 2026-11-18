@@ -485,6 +485,10 @@ export function loadContent({ extractSource, contentSource, page, sendMessage, t
     },
     pendingTimeouts() {
       return [...timeouts.values()].filter((entry) => entry.active).length;
+    },
+    /** Delays of the live one-shot timeouts, in registration order. */
+    timeoutDelays() {
+      return [...timeouts.values()].filter((entry) => entry.active).map((entry) => entry.ms);
     }
   };
 }

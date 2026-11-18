@@ -55,6 +55,8 @@
   var lastSample = null;
   var reported = false;
   var settleTimer = null;
+  // One-shot re-read after a media event whose DOM title has not flipped yet.
+  var staleTimer = null;
   var pollTimer = null;
   // The master presence switch (on unless explicitly stored `false`). Off means
   // the page is not read at all: the poll stops and every report is dropped,
@@ -140,6 +142,28 @@
     report(readState());
   }
 
+  /**
+   * A media event can fire for the next track before the player bar swaps its
+   * title. The event's own report still goes out — a pause, seek or rate change
+   * must not wait — so one short re-read closes the gap to the poll. A re-read
+   * that still shows the same title and playback state is a duplicate and stays
+   * silent: publishing it would spend a send on an unchanged card.
+   */
+  function armStaleReRead() {
+    if (staleTimer !== null) clearTimeout(staleTimer);
+    staleTimer = setTimeout(function () {
+      staleTimer = null;
+      if (!enabled) return;
+      var state = readState();
+      if (!state || !state.title) {
+        gone();
+        return;
+      }
+      if (state.title === lastTitle && state.paused === lastPaused) return;
+      report(state);
+    }, SPA_SETTLE_MS);
+  }
+
   /** A new URL is a new page: a non-watch URL clears the tab immediately. */
   function checkUrl() {
     var current = href();
@@ -148,6 +172,10 @@
     if (settleTimer !== null) {
       clearTimeout(settleTimer);
       settleTimer = null;
+    }
+    if (staleTimer !== null) {
+      clearTimeout(staleTimer);
+      staleTimer = null;
     }
     if (!readState()) {
       gone();
@@ -169,7 +197,12 @@
     var target = event && event.target;
     var tag = String(target && target.tagName || "").toUpperCase();
     if (tag !== "VIDEO" && tag !== "AUDIO") return;
-    reportNow();
+    var state = readState();
+    // A same-title (or title-less) report means the player fired before the DOM
+    // flipped. Keep the event's own report — pause, seek and rate still land at
+    // once — and re-read shortly so the new title is not left to the next poll.
+    if (enabled && state && (!state.title || state.title === lastTitle)) armStaleReRead();
+    report(state);
   }
 
   /**
@@ -288,6 +321,10 @@
     if (settleTimer !== null) {
       clearTimeout(settleTimer);
       settleTimer = null;
+    }
+    if (staleTimer !== null) {
+      clearTimeout(staleTimer);
+      staleTimer = null;
     }
     gone();
   });
