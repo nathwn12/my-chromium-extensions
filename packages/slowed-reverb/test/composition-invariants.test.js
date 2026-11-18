@@ -1,23 +1,27 @@
-/**
- * Composition guard.
- *
- * Each behaviour below is covered by its own test elsewhere. This file exists
- * because a change can keep every unit green and still break a neighbour: the
- * volume lane passed 973 unit checks while the wheel stopped moving YouTube
- * Music's own slider, because a background state push re-armed the restore and
- * wrote an older volume over the fresh one.
- *
- * These are cross-feature invariants. They are static on purpose: they assert the
- * wiring that the units cannot see, and they fail loudly when a seam moves.
- */
-import { test } from 'node:test';
-import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
+'use strict';
 
-const here = dirname(fileURLToPath(import.meta.url));
-const pkg = join(here, '..');
+/* global require, __dirname */
+
+/*
+ * test/composition-invariants.test.js - the cross-feature seams, Node only.
+ *
+ * Every behaviour below is covered by its own test file. This file exists
+ * because a change can keep each unit green and still break its neighbour: the
+ * volume lane passed 293 checks while the wheel stopped moving YouTube Music's
+ * own slider, because a background state push re-armed the stored-volume
+ * restore and wrote an older number over the fresh step.
+ *
+ * These assertions are static on purpose. They see the wiring the units cannot,
+ * and they name the file the symbol must live in, so a move fails loudly
+ * instead of passing against the wrong source.
+ */
+
+const { test } = require('node:test');
+const assert = require('node:assert/strict');
+const { readFileSync } = require('node:fs');
+const { join } = require('node:path');
+
+const pkg = join(__dirname, '..');
 const read = (name) => readFileSync(join(pkg, name), 'utf8');
 
 const playerActions = read('player-actions.js');
@@ -43,14 +47,21 @@ test('invariant: a wheel step writes the page player, so YTM own slider moves', 
 });
 
 test('invariant: the stored volume is handed over exactly once per document', () => {
-  const calls = contentScript.match(/restoreStoredVolume\(\)/g) || [];
-  assert.equal(calls.length, 2, 'one definition call site and one guarded call expected');
+  const guarded = contentScript.slice(
+    contentScript.indexOf('function applyRuntimeState('),
+    contentScript.indexOf('function restoreStoredVolume('),
+  );
   assert.match(
-    contentScript,
+    guarded,
     /if \(!volumeRestoreSeeded\) \{\s*volumeRestoreSeeded = true;\s*restoreStoredVolume\(\);/,
     'the hand-off must be latched, never re-armed by a later state push',
   );
   assert.match(contentScript, /let volumeRestoreSeeded = false;/);
+  assert.doesNotMatch(
+    guarded,
+    /syncAllMedia\(\);\s*restoreStoredVolume\(\);/,
+    'the tail of applyRuntimeState must not call the restore unguarded',
+  );
 });
 
 test('invariant: a state push cannot write a volume the user did not ask for', () => {
