@@ -293,6 +293,10 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
       // Set while an on-demand read is in flight: nothing may seek until it
       // answers, because the media may already be another song.
       identityPending: false,
+      // Set when a deliberate commit claimed this visit after an identity read
+      // began. That read was already stale when the person pressed, so its later
+      // answer or invalidation must not silently undo the press.
+      pressVouched: false,
       startSeconds: null,
       endSeconds: null,
       pendingRestore: false,
@@ -323,6 +327,7 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
     // playing the previous song, so it stays unconfirmed until a signal says
     // otherwise - and that confirmation is bound to this key.
     session.confirmedKey = session.identitySource === 'push' || firstEver ? key : null;
+    session.pressVouched = false;
     return true;
   }
 
@@ -341,6 +346,7 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
     session.pendingRestore = false;
     session.restoreDeadlineAt = 0;
     session.confirmedKey = null;
+    session.pressVouched = false;
   }
 
   function songRestorePending(session, key) {
@@ -735,6 +741,9 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
     function suspendSongIdentity() {
       session.identityPending = true;
       session.confirmedKey = null;
+      // A fresh source signal gives the new read the visit, even if an earlier
+      // press had vouched for it.
+      session.pressVouched = false;
     }
 
     /**
@@ -744,6 +753,15 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
      * left it; nothing can seek until something vouches for the media.
      */
     function invalidateSongIdentity() {
+      // A deliberate press claimed this visit after the read began. That read
+      // was stale at press time: its timeout or unreadable answer may not undo
+      // the committed range. Provenance is left intact - nothing is cleared or
+      // bypassed - only this stale invalidation is ignored.
+      if (session.pressVouched) {
+        session.pressVouched = false;
+        session.identityPending = false;
+        return;
+      }
       session.identityPending = false;
       songIdPushed = false;
       pageSongId = null;
@@ -1898,13 +1916,22 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
       clearSettleCheck();
       clearPendingRestore(session);
 
-      // Adopt the identity when the cache load has not reached syncSong yet, so
-      // this edit latches the visit and the landing cannot overwrite it.
+      // A deliberate press is a vouch (A-semantics): when a suspended read or
+      // an invalidation left no song, the URL still names one and this edit
+      // adopts it. Provenance is not bypassed - currentSongIdentity still decides
+      // which key may be adopted, and a 'lost' v-less identity adopts nothing.
+      // The press owns the visit from here: a read that was already in flight is
+      // stale relative to it and cannot silently undo it.
+      let adoptedByPress = false;
       if (session.songKey === null) {
-        const earlyKey = currentSongKey();
-        if (earlyKey !== null) {
-          session.songKey = earlyKey;
+        const identity = currentSongIdentity();
+        if (identity.key !== null && identity.source !== 'lost') {
+          session.songKey = identity.key;
           session.identityKnown = true;
+          session.confirmedKey = identity.key;
+          session.pressVouched = true;
+          session.identityPending = false;
+          adoptedByPress = true;
         }
       }
       if (session.songKey !== null) markSongRestored(session, session.songKey);
@@ -1918,14 +1945,23 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
       ui.to.value = live.endSeconds === null ? '' : formatTime(live.endSeconds);
 
       // A committed From jumps playback there at once, armed or not and without
-      // a known duration; To/clear never seek.
+      // a known duration; To/clear never seek. The press vouches for the song it
+      // adopted, so that seek is bounded to the URL's song. When the song was
+      // adopted earlier (an unconfirmed URL candidate after a navigation) the
+      // element is not known to hold that song: a mid-stream, unconfirmed source
+      // is never dragged into the range, which is how a section got onto another
+      // song. A fresh element at its top, or one the player already vouched for,
+      // still seeks at once.
       if (source === 'from') {
         clearSettleCheck();
         const key = session.songKey;
-        requestSeek(live.startSeconds === null ? 0 : live.startSeconds, () => {
-          if (!started || session.songKey !== key) return;
-          armSettleCheck(key, live.startSeconds);
-        });
+        const vouched = adoptedByPress || (key !== null && session.confirmedKey === key);
+        if (key !== null && (vouched || !mediaIsMidStream())) {
+          requestSeek(live.startSeconds === null ? 0 : live.startSeconds, () => {
+            if (!started || session.songKey !== key) return;
+            armSettleCheck(key, live.startSeconds);
+          });
+        }
       }
       syncTick();
       syncPanel();
