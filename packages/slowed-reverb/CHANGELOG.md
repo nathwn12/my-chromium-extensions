@@ -19,6 +19,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   passes, a pause, a manual seek and a `seeking`/`seeked` cycle all return to
   the section start. No identity still means no seek, and Repeat off or Clear
   still ends the loop.
+- Fix: the wheel volume is stored per site and restored on load, so a refresh
+  or a new tab no longer jumps back to the page's own louder value. Writes are
+  coalesced to one per burst and flushed on page hide, and the restore runs once
+  after the page has set its own volume instead of pinning it.
+- Fix: the volume percentage is a permanent readout beside the Repeat button
+  instead of a pill that faded out after 900 ms. It shows the live volume, and
+  because it sits in the panel's own row it cannot overlap the panel when open.
+- Fix: moving the speed or reverb slider no longer changes how loud the output
+  is. The dry and wet paths are level-compensated against the measured reverb
+  transfer and share a constant headroom, so the whole slider matrix holds
+  within 0.4 dB and full reverb cannot clip a hot master.
 
 ## [1.2.4] - 2026-11-18
 
