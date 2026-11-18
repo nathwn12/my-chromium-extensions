@@ -9,6 +9,22 @@ function src(name) { return fs.readFileSync(path.join(ROOT, name), 'utf8'); }
 const sharedApi = require(path.join(ROOT, 'shared.js'));
 
 async function settle(ms = 50) { await new Promise((r) => setTimeout(r, ms)); }
+// Bounded condition wait. A fixed sleep here races timers the product really
+// schedules - the 400 ms `resumeWithTimeout` watchdog and the recovery-burst
+// ticks - which stay in the frame's `timeouts` map until they actually fire, so
+// under CPU starvation a sleep can return while one is still pending. Polling
+// the condition removes the race; the deadline keeps a condition that never
+// arrives a loud failure of this test instead of a hang or a silent pass.
+async function waitFor(predicate, { timeout = 4000, interval = 25, label = 'condition' } = {}) {
+  const started = Date.now();
+  while (!predicate()) {
+    const elapsed = Date.now() - started;
+    if (elapsed >= timeout) {
+      throw new Error(`timed out after ${elapsed} ms waiting for: ${label}`);
+    }
+    await settle(interval);
+  }
+}
 function clone(v) { return v === undefined ? undefined : JSON.parse(JSON.stringify(v)); }
 function hostOf(url) { return sharedApi.getSiteKey(sharedApi.extractHostname(url)); }
 
@@ -902,7 +918,13 @@ test('per-frame signal: an embedded frame on an excluded host tears itself down,
   // all-frame teardown never targets this tab: the only thing that reaches the
   // embedded frame is its own storage signal.
   await bg.sendMessage({ type: 'SET_SITE_STATE', siteKey: 'embed.test', set: { excluded: true } });
-  await settle(200);
+  // Wait for the condition, not a fixed 200 ms: the teardown's timers are real
+  // ones. The 400 ms `resumeWithTimeout` watchdog and the recovery-burst ticks
+  // are inside `embedded.timeouts` until they fire, so the sleep returned early
+  // under load. The assertion below still fails if a timeout outlives the wait.
+  await waitFor(() => embedded.timeouts.size === 0, {
+    label: 'the embedded frame to hold no pending timeout',
+  });
 
   // The change crossed the frame boundary into BOTH worlds; only the frame whose
   // own host it excludes acts on it.
