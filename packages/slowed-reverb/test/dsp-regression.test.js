@@ -242,22 +242,26 @@ function main() {
   check('2. capped *0.42 wet mapping is gone', csrc.indexOf('* 0.42') === -1);
   const wetSrc = (csrc.match(/wetGain:\s*(Math\.pow\(i, 0\.75\)[^,\n]*),/) || [])[1] || '';
   const wetFn = new Function('I', 'return (' + wetSrc.replace(/\bi\b/g, 'I') + ');');
-  // Every dry-gain ramp (updateWetChain and alignBeforeAudible) must use the
-  // equal-power complement of the wet gain.
-  const drySrcs = [];
+  // The dry complement is owned by computeMixLevels: one formula there, and
+  // every dry-gain ramp takes its value from that owner instead of re-deriving
+  // it, so the sites cannot drift apart.
+  const dryExpr = ((csrc.match(/dry:\s*([^\n]+)/) || [])[1] || '').replace(/,\s*$/, '').trim();
+  const dryOwners = csrc.match(/Math\.sqrt\(Math\.max\(0, 1 - [^)]*\)\)/g) || [];
+  const drySites = [];
   const dryRe = /rampGain\(controller\.dryGain\.gain,\s*([^;]+)\);/g;
   for (let dryMatch = dryRe.exec(csrc); dryMatch; dryMatch = dryRe.exec(csrc)) {
-    drySrcs.push(dryMatch[1]);
+    drySites.push(dryMatch[1]);
   }
   check(
-    '2. both dry sites use the equal-power complement',
-    drySrcs.length >= 2 && drySrcs.every((s) => s.indexOf('Math.sqrt') !== -1),
-    drySrcs.join(' | ')
+    '2. one owner holds the equal-power complement, every dry ramp uses it',
+    dryExpr !== '' &&
+      dryOwners.length === 1 &&
+      drySites.length >= 1 &&
+      drySites.every((s) => s.trim() === 'levels.dry'),
+    'owner=' + JSON.stringify(dryExpr) + ' sites=' + drySites.join(' | ')
   );
-  const dryFns = drySrcs.map(
-    (s) => new Function('W', 'return (' + s.replace(/initialParams\.wetGain/g, 'W').replace(/params\.wetGain/g, 'W') + ');')
-  );
-  const dry = dryFns.length > 0 ? dryFns[dryFns.length - 1] : () => NaN;
+  const dryFn = dryExpr ? new Function('W', 'return (' + dryExpr.replace(/\bwet\b/g, 'W') + ');') : () => NaN;
+  const dry = (w) => dryFn(w);
   let worstDip = 0;
   for (let k = 0; k <= 100; k++) {
     const i = k / 100;
