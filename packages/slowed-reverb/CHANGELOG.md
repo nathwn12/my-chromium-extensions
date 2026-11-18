@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.8]
+
+- Fix: a deliberate From, Now, To or Clear commit is now a vouch for the song the
+  URL names. When an unreadable identity read or an invalidation had dropped the
+  visit, the commit re-adopts that song and saves the typed range under it. A
+  stale read that was already in flight when the person pressed no longer undoes
+  the commit: its later answer or timeout cannot clear the committed points or
+  write. Nothing in the provenance chain is cleared or bypassed - a lost v-less
+  identity is still not adopted, the 1 s read suspension still governs every
+  other seek, and a recreated controller still cannot replay an invalidated id.
+- The commit's seek is bounded to the URL's song. A song adopted earlier as an
+  unconfirmed URL candidate cannot drag a mid-stream element that provenance has
+  not shown to hold that song; a fresh element at its top, or one the player has
+  already vouched for, still seeks at once. Cross-song isolation and the same-id
+  confirmation guards are unchanged.
+- The YouTube Music Home limit is unchanged and fail-closed. A live measurement
+  of three source swaps found the player id leading the element source by 160 to
+  224 ms with no stale different id; the numbers, method and the reason the gate
+  was not relaxed are recorded in `docs/RESEARCH.md`.
+
 ## [1.2.7] - 2026-11-19
 
 - Fix: an armed section now survives a playing song that reloads its source and
