@@ -316,7 +316,11 @@ jobs:
         run: bun install --frozen-lockfile
       - name: Root test gate
         if: steps.scope.outputs.code == 'true'
-        run: bun run test
+        run: |
+          echo "RED PROOF (throwaway branch, never merged): the root gate fails on purpose here."
+          echo "The only question this branch answers: does root-gate turn RED when the gate fails,"
+          echo "while the four per-package jobs stay GREEN?"
+          exit 1
 
       - name: Scope
         if: always()
