@@ -41,6 +41,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   confirming push, once the element has topped out, restores the saved section
   instead of playing the whole song with empty fields.
 
+- Fix: one lost identity read no longer poisons the same-song channel. After a
+  timeout invalidated a visit, every later push of that id was discarded and
+  no further read could be asked, so the section was gone for good. A
+  provenance-complete push now re-adopts the visit under the same checks an
+  in-time push faces. The timeout still leaves nothing cached, so a recreated
+  controller cannot replay the invalidated id, and Home stays fail-closed.
+
 - Fix: a From/To range now stays set across refreshes. Enter and Save have
   always written it to storage keyed by the song, and a reload has always
   restored it; the loss came after an identity read gave up. That dropped the

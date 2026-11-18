@@ -802,6 +802,54 @@ test('S4: a same-id answer still invalidates when the reloaded element is not th
   assert.equal(recorder.instances[0].invalidations, 1, 'an element other than the tracked one is not a confirmation');
 });
 
+test('F1: a provenance-complete same-id push after a timeout re-adopts, but replay still refuses the invalidated id', async () => {
+  const recorder = createPlayerActionsRecorder();
+  const env = createContentEnv({
+    playerActions: recorder.api,
+    runtimeSettings: { slow: 0.8, reverbIntensity: 0.5, volume: 20 },
+  });
+  const watch = 'https://music.youtube.com/watch?v=song-a';
+  env.sandbox.location.href = watch;
+  const media = env.addMedia(false);
+  env.fireDoc('play', media);
+  await env.settle(6);
+  env.holdTimeouts = true;
+  pushHookReady(env);
+  pushPageSong(env, { videoId: 'song-a', href: watch });
+  await env.settle(2);
+  assert.equal(recorder.instances[0].songIds.length, 1, 'precondition: A pushed once');
+
+  media.currentTime = 45;
+  env.fireDoc('timeupdate', media);
+  env.fireDoc('loadedmetadata', media);
+  await env.settle(2);
+  assert.equal(songQueries(env).length, 1, 'the read was asked for');
+  env.flushHeldTimeouts();
+  await env.settle(2);
+  assert.equal(recorder.instances[0].invalidations, 1, 'the timeout invalidates (pinned P)');
+
+  // Clause 2: a recreated controller must not replay the invalidated id. Only
+  // a new provenance-complete push may bring it back.
+  env.sendRuntime({ type: 'APPLY_TAB_STATE', bypass: true, settings: { slow: 0.8, reverbIntensity: 0.5 } });
+  await env.settle(2);
+  env.sendRuntime({ type: 'APPLY_TAB_STATE', bypass: false, settings: { slow: 0.8, reverbIntensity: 0.5 } });
+  await env.settle(6);
+  const recreated = recorder.instances.at(-1);
+  assert.equal(recreated.songIds.length, 0, 'ensurePlayerActions does not replay an invalidated id');
+
+  // Clause 1: the URL, the href, the push and the element all still name A, so
+  // a later same-id push is a fresh vouch, not another invalidation.
+  pushPageSong(env, { videoId: 'song-a', href: watch });
+  await env.settle(2);
+  const current = recorder.instances.at(-1);
+  assert.equal(current.invalidations, 0, 'the recreated controller does not re-invalidate on the later push');
+  assert.deepEqual(
+    current.songIds.at(-1),
+    { id: 'song-a', href: watch },
+    'the later push re-adopts with its own provenance',
+  );
+});
+
 test('U: a different id after a source change is adopted, and recovery works', async () => {
   const recorder = createPlayerActionsRecorder();
   const env = createContentEnv({

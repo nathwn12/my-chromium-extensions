@@ -341,6 +341,21 @@
         const pushedHref = typeof data.href === 'string' && data.href !== '' ? data.href : location.href;
         if (state.pendingSourceChange) {
           if (pushedId === state.suspendedSongId) {
+            // A timeout invalidation erased the cached push, and with it the
+            // ability to re-confirm this id ever again. The hook's own later
+            // push is a fresh vouch: adopt it as the cached push first, then
+            // hold it to exactly the provenance checks an in-time push faces.
+            // Nothing is restored by the timeout itself, so a recreated
+            // controller still refuses to replay the invalidated id.
+            if (!state.pageSongPushed && pushedId !== null) {
+              state.pageSongId = pushedId;
+              state.pageSongHref = pushedHref;
+              state.pageSongPushed = true;
+              // The invalidation dropped the recorded element; the element
+              // still tracked by the controller is the one this push would
+              // seek, and is what the provenance check must test.
+              state.suspendedElement = currentMediaForPlayerActions();
+            }
             // The player repeats the old id. It confirms the visit only when the
             // push, the live URL and the reloaded element all still name that
             // song; otherwise the new media has no readable identity.
