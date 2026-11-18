@@ -22,6 +22,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on a watch page keeps its section. It still applies on YouTube Music Home,
   whose URL carries no `?v=` and cannot corroborate the player's answer.
 
+- Fix: a From/To range now stays set across refreshes. Enter and Save have
+  always written it to storage keyed by the song, and a reload has always
+  restored it; the loss came after an identity read gave up. That dropped the
+  in-memory points and repainted the fields empty, and a later Enter or blur on
+  one of those empty fields re-adopted the id from the URL and wrote an empty
+  entry, which removed the saved section. Only an explicit Clear (or undo) can
+  erase a stored range now. An identity event, and a commit on the fields it
+  emptied, leave the stored section alone.
+- Three refresh cycles over one store were checked: the range comes back armed
+  at its own From and still returns to From at To. Nothing here relaxes the
+  fail-closed `?v=` checks or the 1 s read suspension.
+
 ## [1.2.6] - 2026-11-18
 
 - Fix: a saved section no longer seeks into another song. The player's pushed id

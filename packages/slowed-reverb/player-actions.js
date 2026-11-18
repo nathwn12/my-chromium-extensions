@@ -1915,8 +1915,10 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
       syncTick();
       syncPanel();
       // Now, Enter, blur and Clear all land here: the committed range is the
-      // saved range, so no separate Save click is needed.
-      requestSave();
+      // saved range, so no separate Save click is needed. Only Clear is an
+      // erasure: an identity drop repaints the fields empty, and an Enter or a
+      // blur on those empty fields must never delete the stored section.
+      requestSave({ erase: source === 'clear' });
     }
 
     // -- storage -----------------------------------------------------------
@@ -1977,7 +1979,7 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
       return saveChain;
     }
 
-    function requestSave() {
+    function requestSave(options) {
       if (!ui) return;
       const videoId = session.songKey;
       if (videoId === null || !session.identityKnown) {
@@ -1992,6 +1994,13 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
         startSeconds: session.startSeconds,
         endSeconds: session.endSeconds,
       };
+      // Empty fields after an identity drop are not a Clear: commit() re-adopts
+      // the id from the URL, which would otherwise turn a stray Enter or blur
+      // into a forget. Only an explicit Clear (or undo) may erase a section.
+      if (entry.startSeconds === null && entry.endSeconds === null && !(options && options.erase)) {
+        syncPanel();
+        return;
+      }
       // A commit that matches what is already saved (a blur after Enter, a
       // repeated Save, Clear on an unsaved song) is not a write.
       if (savedReady) {
