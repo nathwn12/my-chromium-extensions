@@ -706,6 +706,60 @@ test('ordering: a push for the new song restores it while the URL is still old',
   assert.equal(harness.status(), '0:10 → 0:20', 'B keeps its own section');
 });
 
+test('identity: a push for the URL-adopted song confirms the visit', async () => {
+  const harness = createHarness({ storage: createStorage([SECTION, SONG_B]) });
+  await harness.start();
+  const media = harness.media();
+  assert.equal(media.currentTime, SECTION.startSeconds, 'precondition: A is restored and armed');
+
+  // The URL adopts B first, while the element still holds A's playback
+  // position. Nothing vouches for B yet, so its restore stays deferred.
+  harness.setHref(songUrl('song-b'));
+  harness.timers.tickIntervals();
+  await settle();
+  assert.equal(media.currentTime, SECTION.startSeconds, 'B waits without a vouch');
+
+  // The player pushes B. It is the same evidence that restores instantly when
+  // the push arrives before the URL, so it must confirm this visit too.
+  harness.pushSong('song-b', songUrl('song-b'));
+  await settle();
+  harness.timers.tickIntervals();
+  media.dispatchEvent('timeupdate');
+  await settle();
+  assert.equal(media.currentTime, SONG_B.startSeconds, 'the push vouches B and restores its own section');
+  assert.equal(harness.status(), '0:10 → 0:20', 'B stays armed at its own range');
+});
+
+test('identity: a deferred restore does not seek while the read is in flight; the answer releases it', async () => {
+  const harness = createHarness({ storage: createStorage([SECTION, SONG_B]) });
+  await harness.start();
+  const media = harness.media();
+  assert.equal(media.currentTime, SECTION.startSeconds, 'precondition: A is restored and armed');
+
+  // The URL adopts B first while A still holds the element: B's restore waits.
+  harness.setHref(songUrl('song-b'));
+  harness.timers.tickIntervals();
+  await settle();
+  assert.equal(media.currentTime, SECTION.startSeconds, 'B waits for a vouch');
+
+  // The element swaps source and is observed at its top while the 1 s identity
+  // read is in flight. Being at the top is not the player's answer.
+  harness.controller.suspendSongIdentity();
+  media.currentTime = 0;
+  harness.timers.tickIntervals();
+  await settle();
+  assert.equal(media.currentTime, 0, 'nothing may seek while the identity read is in flight');
+
+  // The player answers with its own id: the suspension is answered and the
+  // deferred restore can proceed.
+  harness.pushSong('song-b', songUrl('song-b'));
+  await settle();
+  harness.timers.tickIntervals();
+  await settle();
+  assert.equal(media.currentTime, SONG_B.startSeconds, 'the answer releases the deferred restore');
+  assert.equal(harness.status(), '0:10 → 0:20', 'B is armed at its own range');
+});
+
 test('identity: a pushed null defers, a late push still restores', async () => {
   const harness = createHarness({ storage: createStorage([SONG_B]) });
   await harness.start();
@@ -891,6 +945,35 @@ test('identity: an unreadable source change clears Home and a later read rearms'
   harness.pushSong('song-a', 'https://music.youtube.com/');
   await settle();
   assert.equal(media.currentTime, SECTION.startSeconds, 'the same id adopts again');
+});
+
+test('identity: a push after the restore deadline restores', async () => {
+  const harness = createHarness({ storage: createStorage([SECTION, SONG_B]) });
+  await harness.start();
+  const media = harness.media();
+  assert.equal(media.currentTime, SECTION.startSeconds, 'precondition: A is restored and armed');
+
+  // The URL adopts B first and the source takes longer than the 3 s window.
+  harness.setHref(songUrl('song-b'));
+  harness.timers.tickIntervals();
+  await settle();
+  assert.equal(media.currentTime, SECTION.startSeconds, 'B waits while A holds the element');
+
+  harness.advance(3100);
+  harness.timers.tickIntervals();
+  await settle();
+  assert.equal(harness.backstop(), false, 'the deadline still ends the retry');
+
+  // The player vouches for B at last, and the element has topped out with its
+  // own source: the saved section must be able to come back on this visit.
+  media.currentTime = 0;
+  harness.pushSong('song-b', songUrl('song-b'));
+  await settle();
+  harness.timers.tickIntervals();
+  media.dispatchEvent('timeupdate');
+  await settle();
+  assert.equal(media.currentTime, SONG_B.startSeconds, 'a late confirming push restores B');
+  assert.equal(harness.status(), '0:10 → 0:20', 'B holds its own range');
 });
 
 test('identity: a restore that cannot confirm stops the backstop at its deadline', async () => {

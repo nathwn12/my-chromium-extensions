@@ -1721,6 +1721,55 @@ test('controller: saving an empty section removes the song entry', async () => {
   assert.equal(harness.status(), 'Removed');
 });
 
+test('persistence: an identity drop must not let an Enter on empty fields delete the saved range', async () => {
+  const saved = [{ videoId: 'song-a', startSeconds: 30, endSeconds: 200 }];
+  const storage = createStorage({ playerActions: { sections: saved } });
+  const harness = createHarness({ storage });
+  harness.setHref('https://music.youtube.com/watch?v=song-a');
+  await harness.start();
+  assert.equal(harness.fromValue(), '0:30', 'the saved From is restored');
+  assert.equal(harness.toValue(), '3:20', 'the saved To is restored');
+
+  // An unreadable or expired identity drops the in-memory points and repaints
+  // the fields empty. That identity event must not write storage.
+  harness.controller.invalidateSongIdentity();
+  await settle();
+  assert.equal(harness.fromValue(), '', 'the points are dropped from the panel');
+  assert.equal(harness.toValue(), '');
+  assert.deepEqual(storage.sections(), saved, 'the identity event itself writes nothing');
+
+  // Enter (or blur) on the repainted-empty field is not a deliberate Clear.
+  harness.commit('From', '');
+  await settle();
+  assert.deepEqual(
+    storage.sections(),
+    saved,
+    'an identity-driven empty commit must not erase the stored section'
+  );
+});
+
+test('persistence: three refreshes restore the range and re-arm at the To mark', async () => {
+  const saved = [{ videoId: 'song-a', startSeconds: 30, endSeconds: 200 }];
+  const storage = createStorage({ playerActions: { sections: saved } });
+  for (let cycle = 1; cycle <= 3; cycle += 1) {
+    const harness = createHarness({ storage });
+    harness.setHref('https://music.youtube.com/watch?v=song-a');
+    await harness.start();
+    assert.equal(harness.fromValue(), '0:30', `refresh ${cycle}: From is restored`);
+    assert.equal(harness.toValue(), '3:20', `refresh ${cycle}: To is restored`);
+    assert.equal(
+      actions.resolveSeekTarget(
+        loop({ startSeconds: 30, endSeconds: 200 }),
+        sample({ currentTime: 200, duration: 209 }),
+      ),
+      30,
+      `refresh ${cycle}: the To boundary still returns to From`,
+    );
+    assert.deepEqual(storage.sections(), saved, `refresh ${cycle}: storage is unchanged`);
+    await harness.controller.stop();
+  }
+});
+
 test('cache: a restore that cannot seek stays pending, retries on a source change, then gives up', async () => {
   const storage = createStorage({
     playerActions: { sections: [{ videoId: 'song-a', startSeconds: 40, endSeconds: null }] },

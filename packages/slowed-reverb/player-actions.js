@@ -758,15 +758,20 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
     /** Adopts the id pushed by the page hook (null when no track is loaded). */
     function setSongId(next, href) {
       const normalized = typeof next === 'string' && next !== '' ? next : null;
-      // Any delivered id answers a pending read.
+      // Any delivered id answers a pending read, and vouches for the visit it
+      // names even when the URL adopted that song first: beginSong does not run
+      // for an already adopted key, so without this a deferred restore waiting
+      // on a player vouch could never proceed. Provenance still moves only with
+      // the id, and the one-restore-per-visit latch stops a repeat from seeking.
       session.identityPending = false;
       songIdPushed = true;
+      if (session.songKey === normalized && normalized !== null) {
+        session.confirmedKey = normalized;
+      }
       // Provenance moves only when the id does. A repeat push of the same id
       // taken on a newer URL would otherwise re-anchor the old song to the new
       // navigation, which is how it kept running there.
       if (normalized === pageSongId && normalized !== null) {
-        // Still evidence the player holds it: a visit invalidated since then
-        // may adopt again.
         if (started) {
           syncSong();
           syncTick();
@@ -1074,6 +1079,14 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
         syncTick();
         return;
       }
+      // An identity read is in flight: nothing may seek or adopt an identity
+      // until it lands. The reloaded element being at its top is not the
+      // player's answer, so the deferred visit stays pending.
+      if (session.identityPending) {
+        session.pendingRestore = true;
+        syncTick();
+        return;
+      }
       const entry = lookupSaved(saved, key);
       if (entry === null) {
         markSongRestored(session, key);
@@ -1157,7 +1170,9 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
       // Deadline first: a pending restore with no media must still expire
       // instead of waking every tick forever.
       if (session.pendingRestore && session.restoreDeadlineAt && now() > session.restoreDeadlineAt) {
-        if (session.songKey !== null) markSongRestored(session, session.songKey);
+        // The window ends the retry, not the visit. Marking it restored here
+        // consumed an unrestored song and left its saved section dead for the
+        // rest of the visit, even when the player vouched for it later.
         clearPendingRestore(session);
         cancelSeekRetry();
         syncTick();
@@ -1915,8 +1930,10 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
       syncTick();
       syncPanel();
       // Now, Enter, blur and Clear all land here: the committed range is the
-      // saved range, so no separate Save click is needed.
-      requestSave();
+      // saved range, so no separate Save click is needed. Only Clear is an
+      // erasure: an identity drop repaints the fields empty, and an Enter or a
+      // blur on those empty fields must never delete the stored section.
+      requestSave({ erase: source === 'clear' });
     }
 
     // -- storage -----------------------------------------------------------
@@ -1977,7 +1994,7 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
       return saveChain;
     }
 
-    function requestSave() {
+    function requestSave(options) {
       if (!ui) return;
       const videoId = session.songKey;
       if (videoId === null || !session.identityKnown) {
@@ -1992,6 +2009,13 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
         startSeconds: session.startSeconds,
         endSeconds: session.endSeconds,
       };
+      // Empty fields after an identity drop are not a Clear: commit() re-adopts
+      // the id from the URL, which would otherwise turn a stray Enter or blur
+      // into a forget. Only an explicit Clear (or undo) may erase a section.
+      if (entry.startSeconds === null && entry.endSeconds === null && !(options && options.erase)) {
+        syncPanel();
+        return;
+      }
       // A commit that matches what is already saved (a blur after Enter, a
       // repeated Save, Clear on an unsaved song) is not a write.
       if (savedReady) {

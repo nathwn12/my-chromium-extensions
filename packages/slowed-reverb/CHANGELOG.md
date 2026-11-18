@@ -7,6 +7,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.7] - 2026-11-19
+
+- Fix: an armed section now survives a playing song that reloads its source and
+  answers the follow-up read with the same id. That answer used to be treated as
+  stale, so the saved From/To was dropped and playback ran on to the end of the
+  song instead of looping back to From at To. A same-id answer after a
+  post-playback source change now confirms the visit only when a confirmed push
+  named that id, the live URL and the answer's own href both carry the same
+  `?v=`, and the reloaded element is still the one the controller tracks. A
+  v-less URL, a href that moved, or a different element still invalidates, so a
+  section can never seek into another song. The 1 s read suspension stays.
+- The 1.2.6 known limit is retired where the URL names the song: a benign reload
+  on a watch page keeps its section. It still applies on YouTube Music Home,
+  whose URL carries no `?v=` and cannot corroborate the player's answer.
+
+- Fix: a push for the song the URL already named now vouches for it. When the
+  URL adopted a song before the player reported it, `beginSong` had already run
+  and never ran again for that key, so the push left `confirmedKey` unset and a
+  restore deferred for mid-stream media stayed deferred for the whole visit. A
+  delivered id now confirms the visit it names without moving stored provenance
+  or re-seeking a section that already restored; the push-first order is
+  unchanged.
+
+- Fix: a deferred restore no longer seeks while an identity read is in flight.
+  A source swap that puts the element at its top used to arm the saved section
+  before the 1 s read answered. The visit now stays pending until the push or
+  read that answers the suspension arrives; an at-top load with no read in
+  flight still restores straight away.
+
+- Fix: the 3 s restore window no longer consumes the visit it could not restore.
+  On expiry the retry stops, as before, but the song stays eligible: a later
+  confirming push, once the element has topped out, restores the saved section
+  instead of playing the whole song with empty fields.
+
+- Fix: one lost identity read no longer poisons the same-song channel. After a
+  timeout invalidated a visit, every later push of that id was discarded and
+  no further read could be asked, so the section was gone for good. A
+  provenance-complete push now re-adopts the visit under the same checks an
+  in-time push faces. The timeout still leaves nothing cached, so a recreated
+  controller cannot replay the invalidated id, and Home stays fail-closed.
+
+- Fix: a From/To range now stays set across refreshes. Enter and Save have
+  always written it to storage keyed by the song, and a reload has always
+  restored it; the loss came after an identity read gave up. That dropped the
+  in-memory points and repainted the fields empty, and a later Enter or blur on
+  one of those empty fields re-adopted the id from the URL and wrote an empty
+  entry, which removed the saved section. Only an explicit Clear (or undo) can
+  erase a stored range now. An identity event, and a commit on the fields it
+  emptied, leave the stored section alone.
+- Three refresh cycles over one store were checked: the range comes back armed
+  at its own From and still returns to From at To. Nothing here relaxes the
+  fail-closed `?v=` checks or the 1 s read suspension.
+
 ## [1.2.6] - 2026-11-18
 
 - Fix: a saved section no longer seeks into another song. The player's pushed id
