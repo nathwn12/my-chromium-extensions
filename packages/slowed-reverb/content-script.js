@@ -444,13 +444,16 @@ function applyRuntimeState(runtime) {
   state.bypass = Boolean(runtime?.bypass);
   if (runtime?.settings !== undefined) {
     state.settings = normalizeSettings(runtime.settings);
+    if (!volumeRestoreSeeded) {
+      volumeRestoreSeeded = true;
+      restoreStoredVolume();
+    }
     if (state.settings.reverbIntensity > 0) {
       state.lastNonzeroIntensity = state.settings.reverbIntensity;
     }
   }
   state.lastError = '';
     syncAllMedia();
-    restoreStoredVolume();
   }
 
   /**
@@ -508,6 +511,10 @@ function applyRuntimeState(runtime) {
   const VOLUME_REPLY_TIMEOUT_MS = 500;
   let playerActions = null;
   let volumeRequestSeq = 0;
+  // One hand-off per document. Later state pushes carry the last saved
+  // settings; re-arming on them writes an older volume over a fresh wheel
+  // step, which is what made the page slider snap back.
+  let volumeRestoreSeeded = false;
   const pendingVolumeRequests = new Map();
 
   function requestVolumeUiSync(percent) {
