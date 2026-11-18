@@ -514,7 +514,7 @@
     '.slra-actions{display:flex;gap:6px;}',
     '.slra-actions .slra-button{flex:1;}',
     '.slra-actions .slra-icon{flex:0 0 auto;}',
-    '.slra-volume{position:absolute;right:0;bottom:44px;pointer-events:none;min-width:44px;padding:4px 8px;border-radius:999px;background:rgba(0,0,0,.72);color:#f1f1f1;font:600 12px/1.2 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;text-align:center;opacity:0;transition:opacity 120ms ease;}',
+    '.slra-volume{position:absolute;right:0;bottom:100%;margin-bottom:6px;pointer-events:none;min-width:44px;padding:4px 8px;border-radius:999px;background:rgba(0,0,0,.72);color:#f1f1f1;font:600 12px/1.2 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;text-align:center;opacity:0;transition:opacity 120ms ease;}',
     '.slra-volume.show{opacity:1;}',
     '@media (prefers-reduced-motion: reduce){.slra-volume{transition:none;}}',
   ].join('\n');
