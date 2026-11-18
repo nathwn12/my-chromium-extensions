@@ -68,8 +68,12 @@ const MAX_BUTTON_LABEL = 32;
 const MAX_BUTTON_URL = 512;
 /** A sample stamp this far ahead of `now` is still trusted, as clock skew. */
 export const SAMPLE_SKEW_MS = 5000;
-/** Mirrors RATE_EPSILON in background.js: a rate this close to 1 is 1x. */
-const RATE_EPSILON = 0.01;
+/**
+ * A rate this close to 1 is 1x. Single owner: background.js imports this, and
+ * the classic content script keeps a literal pinned by rate-epsilon.test.mjs
+ * because a content script cannot import.
+ */
+export const RATE_EPSILON = 0.01;
 
 /** Member-list line: 1 = State (the artist). See header UNVERIFIED note. */
 export const STATUS_DISPLAY_STATE = 1;

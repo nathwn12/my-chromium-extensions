@@ -26,7 +26,7 @@ import {
   resolveEnabled,
   sourceForUrl,
 } from "./config.js";
-import { buildActivity, clampText, SAMPLE_SKEW_MS } from "./activity.js";
+import { buildActivity, clampText, RATE_EPSILON, SAMPLE_SKEW_MS } from "./activity.js";
 import {
   AVAILABILITY,
   BRIDGE,
@@ -53,8 +53,6 @@ export const MIN_GAP_MS = 1500;
  * interval's drift (`rateBiasMs`).
  */
 export const RATE_INTERVAL_MS = 2500;
-/** A rate within this of 1 is 1x; the content script uses the same epsilon. */
-export const RATE_EPSILON = 0.01;
 /** A tab that has not reported for this long is treated as closed. */
 export const TAB_TTL_MS = 30 * 60 * 1000;
 /** A ping with no pong inside this window marks the bridge disconnected. */

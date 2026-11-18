@@ -21,3 +21,16 @@ The package check validates the emitted activity payload, not Discord's UI. No l
 The extractor reads `navigator.mediaSession`, the YouTube Music player bar, JSON-LD and real `<audio>`/`<video>` media properties. Its tests use a fake page and therefore prove local extraction logic, not that every current Music page exposes the same selectors. The extension sends local metadata through Chrome native messaging; the native host's IPC framing is exercised by its package tests. No external endpoint, credentials, account state, or Discord client rendering was inspected for this change.
 
 `status_display_type` and timestamp behavior are treated as outgoing protocol fields under test. The regression boundary for timestamps is the real-media-element values through activity construction and the outgoing frame. A missing/invalid position or nonpositive duration is not replaced with an estimate.
+
+## Pending live closure (staged, not run)
+
+Two claims remain UNVERIFIED because they can only be settled by watching a real session, not by the local payload tests:
+
+1. The 60 s countdown error bounds — 552 ms at 0.70×, 123 ms at 1×, 277 ms at 1.30× — are modelled from the extractor and builder, not observed on live YouTube Music.
+2. Discord's rendered card is never inspected here. The ±375 ms elapsed bias and the stated 1123 ms (1.30×) / 377 ms (0.70×) ahead-bounds are outgoing-payload arithmetic, not pixels on the member list/voice panel.
+
+Closure route, one line the owner may authorise later (nothing here has been run; Discord was not touched and nothing was captured):
+
+`tools["oc-hand"].desktop_screenshot({ target: { titleContains: "Discord" }, fmt: "png" })`
+
+A read-only `tools["oc-hand"].desktop_list_windows()` confirms the exact window title first. The capture targets the Discord window by title with no activation: `desktop_screenshot` never moves the pointer, changes focus or writes the clipboard, and its reply carries `foregroundUnchanged`, `cursorUnchanged` and `noSteal` so the no-steal property is measured, not assumed. With the owner playing a known track at 0.7× and then 1.3× over a 60 s window on his word, two such captures (one per rate) of the rendered card are the receipt: the PNG shows what Discord actually displayed at that instant, and the no-steal fields prove the owner's session was not disturbed. Together with his stated rate and real position, those pixels are what would turn the two bounds above into observed facts. **Pending the owner's word — do not run until he authorises it.**

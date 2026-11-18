@@ -44,6 +44,8 @@
   // Discord counts elapsed time in wall time and has no field for the playback
   // rate, so any non-1x playback falls behind by `rate - 1` every second.
   // Reporting on every tick re-anchors the card before the gap is visible.
+  // Classic content scripts cannot import, so this literal is pinned to
+  // activity.js's exported RATE_EPSILON by rate-epsilon.test.mjs.
   var RATE_EPSILON = 0.01;
   // YouTube's player swaps its DOM after the URL changes; read once it settles.
   var SPA_SETTLE_MS = 250;
