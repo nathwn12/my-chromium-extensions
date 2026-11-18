@@ -71,6 +71,12 @@
    */
   function playerSong() {
     try {
+      // Two player nodes means the DOM is mid-swap: picking one would be a
+      // guess, and this read is only useful as "what the player holds now".
+      if (typeof document.querySelectorAll === 'function') {
+        const players = document.querySelectorAll('#movie_player');
+        if (players && typeof players.length === 'number' && players.length !== 1) return null;
+      }
       const player = document.querySelector('#movie_player');
       if (!player || typeof player.getVideoData !== 'function') return null;
       const data = player.getVideoData();
@@ -81,6 +87,23 @@
     } catch {
       return null;
     }
+  }
+
+  /**
+   * Answers a request with the player's own current id. This is a read, never
+   * an inference from an event: the caller sends an id and correlates the reply,
+   * so one that crosses a later push can be discarded. A null id means the
+   * player had nothing readable - not that no song is playing.
+   */
+  function replySongState(data) {
+    if (typeof data.id !== 'string' && typeof data.id !== 'number') return;
+    const song = playerSong();
+    emit('SLRA_SONG_STATE', 'query', {
+      token: pageToken(),
+      id: data.id,
+      videoId: song ? song.videoId : null,
+      title: song ? song.title : '',
+    });
   }
 
   /**
@@ -277,11 +300,19 @@
       if (event.source !== window) return;
       const data = event.data;
       if (!data || data.__slra !== true) return;
-      if (data.type !== 'SLRA_SET_VOLUME' && data.type !== 'SLRA_SYNC_VOLUME_UI') return;
+      if (
+        data.type !== 'SLRA_SET_VOLUME'
+        && data.type !== 'SLRA_SYNC_VOLUME_UI'
+        && data.type !== 'SLRA_QUERY_SONG'
+      ) return;
       if (typeof data.token !== 'string' || data.token.length === 0) return;
       if (data.token !== pageToken()) return;
       // The content script asks for the UI sync when it wrote media.volume
       // itself (no page player API available).
+      if (data.type === 'SLRA_QUERY_SONG') {
+        replySongState(data);
+        return;
+      }
       if (data.type === 'SLRA_SYNC_VOLUME_UI') {
         syncVolumeUi(Number(data.percent));
         return;

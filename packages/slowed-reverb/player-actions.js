@@ -45,6 +45,10 @@
   const SEEK_TOLERANCE_SECONDS = 0.25;
   const SETTLE_MS = 1200;
   const SETTLE_NEAR_ZERO_SECONDS = 1;
+// An unconfirmed identity may only seek a media element that is still at its
+// top. Past this point the element is already playing something, and moving it
+// would drag the outgoing track into the new song's section.
+const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
   const STORAGE_KEY = 'playerActions';
   const HOST_ATTR = 'data-slra-player-actions';
 
@@ -277,6 +281,18 @@
       songKey: null,
       restoredSongKey: null,
       identityKnown: false,
+      // How the current identity was learned ('push' or 'url'), and which key a
+      // source-change signal has confirmed. Tying the confirmation to a key -
+      // never a bare flag - means it cannot authorise a later song.
+      identitySource: null,
+      confirmedKey: null,
+      // True once any song has been adopted in this document. A URL-sourced
+      // adoption is only a "first visit" (and therefore self-confirming) while
+      // this is false; an invalidated visit is not virgin again.
+      everAdopted: false,
+      // Set while an on-demand read is in flight: nothing may seek until it
+      // answers, because the media may already be another song.
+      identityPending: false,
       startSeconds: null,
       endSeconds: null,
       pendingRestore: false,
@@ -288,15 +304,43 @@
    * Adopts a new song. A null key never changes anything: an id that has not
    * arrived yet must defer, not restore the previous song's section.
    */
-  function beginSong(session, key) {
+  function beginSong(session, key, source) {
     if (key === null || key === undefined || key === '') return false;
     if (session.songKey === key) return false;
+    const firstEver = !session.everAdopted;
+    session.everAdopted = true;
     session.songKey = key;
     session.restoredSongKey = null;
     session.startSeconds = null;
     session.endSeconds = null;
     session.pendingRestore = false;
+    // Each visit owns its restore window: one inherited from the previous song
+    // would expire this one before its source could even load.
+    session.restoreDeadlineAt = 0;
+    session.identitySource = source === 'push' || source === 'url' ? source : null;
+    // A push names the media the player loaded, and the first adoption of a
+    // document has no outgoing track to disturb. A URL-only change may still be
+    // playing the previous song, so it stays unconfirmed until a signal says
+    // otherwise - and that confirmation is bound to this key.
+    session.confirmedKey = session.identitySource === 'push' || firstEver ? key : null;
     return true;
+  }
+
+  /**
+   * Drops a visit's points without touching the user's Repeat preference. A
+   * navigation that leaves the song must not keep the old section armed.
+   */
+  function forgetSong(session) {
+    // Clearing the key makes the return to the same song a fresh visit: with it
+    // left behind, beginSong sees "no change" and the rearm never happens.
+    session.songKey = null;
+    session.identityKnown = false;
+    session.restoredSongKey = null;
+    session.startSeconds = null;
+    session.endSeconds = null;
+    session.pendingRestore = false;
+    session.restoreDeadlineAt = 0;
+    session.confirmedKey = null;
   }
 
   function songRestorePending(session, key) {
@@ -556,6 +600,10 @@
     let savedRevision = 0;
     let pageSongId = null;
     let songIdPushed = false;
+    // The href the pushed id was taken in. The page hook sends its own href, so
+    // a push describes the navigation it belongs to; one that arrives later (a
+    // replay, or a URL that already moved on) cannot borrow a newer one.
+    let pageSongHref = null;
     let unsubscribeStorage = null;
     let session = createSectionSession();
     let active = true;
@@ -618,14 +666,39 @@
     }
 
     /**
-     * Identity: the player's own id wins, because YouTube Music Home plays from
-     * `/` with no `?v=` and a song and its music-video version may legitimately
-     * have different ids, so per-media keys stay. The URL is only the fallback
-     * for the first moments after load; a pushed null is authoritative.
+     * The identity and where it came from. A push is usable only for the
+     * navigation it was taken in: `pageSongHref` is the hook's own href at that
+     * moment, so a URL that has moved since makes it stale, and a replay or a
+     * repeat push cannot re-anchor itself to whatever URL is current now.
+     *
+     * `source` is 'push' (confirmed by the player), 'url' (a candidate until
+     * the media confirms), 'blip' (no id, but the same navigation: keep the
+     * points) or 'lost' (the navigation left the pushed song: drop them).
      */
+    function currentSongIdentity() {
+      const fromUrl = songKeyFrom(currentHref());
+      if (!songIdPushed) {
+        return { key: fromUrl, source: fromUrl === null ? null : 'url' };
+      }
+      const pushedForKey = songKeyFrom(pageSongHref);
+      if (fromUrl === null) {
+        // A v-less URL is either the page the push was taken in (Home) or a
+        // page we moved to afterwards. Only the first may keep the points.
+        if (pushedForKey !== null) return { key: null, source: 'lost' };
+        return { key: pageSongId, source: pageSongId === null ? 'blip' : 'push' };
+      }
+      if (pushedForKey !== fromUrl) {
+        // The push was taken in another navigation. The URL is the newer one,
+        // and its song is only a candidate until the media confirms the swap.
+        return { key: fromUrl, source: 'url' };
+      }
+      // The push describes this navigation: the player's own id wins, even
+      // before the history entry catches up.
+      return { key: pageSongId, source: pageSongId === null ? 'blip' : 'push' };
+    }
+
     function currentSongKey() {
-      if (songIdPushed) return pageSongId;
-      return songKeyFrom(currentHref());
+      return currentSongIdentity().key;
     }
 
     /**
@@ -634,19 +707,75 @@
      * absolute value, so last-writer-wins is exact; like an applied reply, it
      * owns the cache from here on and syncs never overwrite it.
      */
-    function setPlayerVolume(next) {
+    function setPlayerVolume(next, options) {
       const value = Number(next);
       if (!Number.isFinite(value)) return;
       volume = Math.min(100, Math.max(0, Math.round(value)));
       hasVolumeTruth = true;
+      // Adopted truth is what the readout shows, whoever moved the number.
+      showVolumeHud(volume);
+      // A slider drag is a deliberate change, like a wheel step: it outranks a
+      // restore that has not applied yet. An install/revive/poll push is only a
+      // reading of the page's own value; cancelling there would kill the restore
+      // this document exists to make.
+      if (options && options.user === true) {
+        cancelPendingVolumeRestore();
+        // The dragged value is the user's number for this site: carry it to the
+        // next document through the same coalesced writer the wheel uses. A
+        // poll is only a reading, so it never writes storage.
+        scheduleVolumeSave(volume);
+      }
+    }
+
+    /**
+     * A source signal may already be another song, and the read that decides it
+     * is in flight. Suspend the latch until the answer lands: nothing seeks in
+     * the meantime, and an unreadable answer invalidates.
+     */
+    function suspendSongIdentity() {
+      session.identityPending = true;
+      session.confirmedKey = null;
+    }
+
+    /**
+     * Fail closed: the media's source changed and nothing could confirm which
+     * song it holds now. Drop the visit and the remembered push, so only a new
+     * push or a readable player id adopts a song again. Repeat stays as the user
+     * left it; nothing can seek until something vouches for the media.
+     */
+    function invalidateSongIdentity() {
+      session.identityPending = false;
+      songIdPushed = false;
+      pageSongId = null;
+      pageSongHref = null;
+      forgetSong(session);
+      cancelSeekRetry();
+      clearSettleCheck();
+      syncTick();
+      syncPanel();
     }
 
     /** Adopts the id pushed by the page hook (null when no track is loaded). */
-    function setSongId(next) {
+    function setSongId(next, href) {
       const normalized = typeof next === 'string' && next !== '' ? next : null;
+      // Any delivered id answers a pending read.
+      session.identityPending = false;
       songIdPushed = true;
-      if (normalized === pageSongId && normalized !== null) return;
+      // Provenance moves only when the id does. A repeat push of the same id
+      // taken on a newer URL would otherwise re-anchor the old song to the new
+      // navigation, which is how it kept running there.
+      if (normalized === pageSongId && normalized !== null) {
+        // Still evidence the player holds it: a visit invalidated since then
+        // may adopt again.
+        if (started) {
+          syncSong();
+          syncTick();
+          syncPanel();
+        }
+        return;
+      }
       pageSongId = normalized;
+      pageSongHref = typeof href === 'string' && href !== '' ? href : currentHref();
       if (!started) return;
       syncSong();
       syncTick();
@@ -790,6 +919,7 @@
         clearSettleCheck();
         session.songKey = null;
         session.restoredSongKey = null;
+        session.confirmedKey = null;
         session.identityKnown = false;
         session.startSeconds = null;
         session.endSeconds = null;
@@ -827,6 +957,13 @@
       media = null;
     }
 
+    /**
+     * A source load is not an identity. The element never says which song its
+     * new resource belongs to, so a metadata event for the outgoing source would
+     * authorise a seek on it. It only makes the controller look at the URL
+     * again: confirmation stays with a push, or with the element observed back
+     * at its top when the restore runs.
+     */
     function handleSourceChange() {
       if (!started) return;
       syncSong();
@@ -892,16 +1029,21 @@
      * can come back) but the loop tick is stopped.
      */
     function syncSong() {
-      const key = currentSongKey();
+      const identity = currentSongIdentity();
+      const key = identity.key;
       session.identityKnown = key !== null;
       if (key === null) {
+        if (identity.source === 'lost') {
+          forgetSong(session);
+          syncPanel();
+        }
         cancelSeekRetry();
         syncTick();
         return;
       }
       // Captured before adoption: beginSong overwrites the key.
       const previousSong = session.songKey !== null;
-      if (beginSong(session, key)) {
+      if (beginSong(session, key, identity.source)) {
         // Undo belongs to one song visit; a new song never inherits it.
         clearUndo();
         cancelSeekRetry();
@@ -921,6 +1063,11 @@
       applySavedSection(key);
     }
 
+    function mediaIsMidStream() {
+      const at = Number(media && media.currentTime);
+      return Number.isFinite(at) && at > UNCONFIRMED_SEEK_GUARD_SECONDS;
+    }
+
     function applySavedSection(key) {
       if (!savedReady) {
         session.pendingRestore = true;
@@ -931,6 +1078,22 @@
       if (entry === null) {
         markSongRestored(session, key);
         clearPendingRestore(session);
+        syncTick();
+        syncPanel();
+        return;
+      }
+
+      const confirmed = session.songKey !== null && session.confirmedKey === session.songKey;
+      if (!confirmed && (media === null || mediaIsMidStream())) {
+        // Fail closed: the URL named this song, but nothing has shown that the
+        // page media switched with it (a push for it, or a loaded new source).
+        // An element already playing would be dragged into this song's range,
+        // and with no element yet the first one to appear may be the outgoing
+        // track - arming the section now is what lets handleProgress seek it.
+        // A fresh element at its top has nothing to drag, so a normal load
+        // still restores instantly.
+        session.pendingRestore = true;
+        if (!session.restoreDeadlineAt) session.restoreDeadlineAt = now() + RESTORE_DEADLINE_MS;
         syncTick();
         syncPanel();
         return;
@@ -977,7 +1140,12 @@
      * the handlers refuse to seek without an identity or in a hidden tab.
      */
     function syncTick() {
-      if (started && isLoopEngaged(currentState())) {
+      // A deferred restore keeps the tick alive: the element returning to its
+      // top is itself the confirmation that a new source loaded, and the tick is
+      // what retries the seek then. The restore deadline bounds it.
+      // Only a deferred restore that owns a deadline keeps the backstop: a
+      // cache read that never lands must not leave a tick firing forever.
+      if (started && (isLoopEngaged(currentState()) || (session.pendingRestore && session.restoreDeadlineAt > 0))) {
         if (tickTimer === null) tickTimer = timers.setInterval(handleTick, TICK_MS);
         return;
       }
@@ -1001,14 +1169,19 @@
       bindMedia();
       if (!media) return;
 
-      const key = currentSongKey();
+      const identity = currentSongIdentity();
+      const key = identity.key;
       session.identityKnown = key !== null;
       if (key === null) {
+        if (identity.source === 'lost') {
+          forgetSong(session);
+          syncPanel();
+        }
         cancelSeekRetry();
         syncTick();
         return;
       }
-      if (beginSong(session, key)) {
+      if (beginSong(session, key, identity.source)) {
         // A URL change with no delivered event: adopt it and never seek with
         // the previous song's points.
         cancelSeekRetry();
@@ -1024,6 +1197,8 @@
         applySavedSection(key);
         return;
       }
+      // The latch is suspended while an identity read is in flight.
+      if (session.identityPending) return;
 
       const target = resolveSeekTarget(currentState(), {
         currentTime: media.currentTime,
@@ -1049,6 +1224,16 @@
      */
     function handleProgress() {
       if (!started || !media || !isVisible()) return;
+      const key = currentSongKey();
+      if (key !== null && key !== session.songKey) {
+        // A reused element plus a missed push: adopt the new song before any
+        // seek, so the previous song's points can never move this one.
+        syncSong();
+        return;
+      }
+      if (session.pendingRestore) return;
+      // The latch is suspended while an identity read is in flight.
+      if (session.identityPending) return;
       if (!session.identityKnown || session.songKey === null) return;
       const target = resolveSeekTarget(currentState(), {
         currentTime: media.currentTime,
@@ -1949,6 +2134,8 @@
       stop: stop,
       sync: sync,
       setSongId: setSongId,
+      invalidateSongIdentity: invalidateSongIdentity,
+      suspendSongIdentity: suspendSongIdentity,
       setPlayerVolume: setPlayerVolume,
       restoreVolume: restoreVolume,
     };

@@ -1500,6 +1500,8 @@ test('controller: guard - a song change restores with no tick running (listener 
   assert.equal(harness.timers.intervalCount(), 0);
 
   harness.setHref('https://music.youtube.com/watch?v=song-b');
+  // A new resource starts at the top; the URL alone is not a confirmation.
+  harness.media().currentTime = 0;
   harness.dom.win.dispatch('yt-navigate-finish');
   await settle();
   assert.equal(harness.media().currentTime, 20);
@@ -1519,6 +1521,7 @@ test('controller: guard - restoring a saved section turns Repeat back on', async
   assert.equal(harness.timers.intervalCount(), 0);
 
   harness.setHref('https://music.youtube.com/watch?v=song-b');
+  harness.media().currentTime = 0;
   harness.dom.win.dispatch('yt-navigate-finish');
   await settle();
   assert.equal(harness.media().currentTime, 30);
@@ -1791,9 +1794,11 @@ test('cache: a subscription update during the initial read wins', async () => {
   // A later visit proves which cache survived: the subscription's 55, not the
   // stale read's 10.
   harness.setHref('https://music.youtube.com/watch?v=song-b');
+  harness.media().currentTime = 0;
   harness.dom.win.dispatch('yt-navigate-finish');
   await settle();
   harness.setHref('https://music.youtube.com/watch?v=song-a');
+  harness.media().currentTime = 0;
   harness.dom.win.dispatch('yt-navigate-finish');
   await settle();
 
@@ -1952,6 +1957,7 @@ test('controller: guard - a failed save leaves the cache untouched', async () =>
 
   // The cached section still restores: the failed write changed nothing.
   harness.setHref('https://music.youtube.com/watch?v=song-b');
+  harness.media().currentTime = 0;
   harness.dom.win.dispatch('yt-navigate-finish');
   await settle();
   assert.equal(harness.media().currentTime, 25);
@@ -1969,9 +1975,11 @@ test('controller: guard - a successful save updates the cache from the reply', a
 
   // A second visit restores from the cache alone (the fake never stored it).
   harness.setHref('https://music.youtube.com/watch?v=song-b');
+  harness.media().currentTime = 0;
   harness.dom.win.dispatch('yt-navigate-finish');
   await settle();
   harness.setHref('https://music.youtube.com/watch?v=song-a');
+  harness.media().currentTime = 0;
   harness.dom.win.dispatch('yt-navigate-finish');
   await settle();
 

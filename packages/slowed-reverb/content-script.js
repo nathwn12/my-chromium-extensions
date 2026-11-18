@@ -47,6 +47,24 @@
     pageHookToken: '',
     pageSongId: null,
     pageSongPushed: false,
+    // The href the pushed id was read in, kept so a replayed push carries its
+    // own provenance instead of borrowing the URL current at replay time.
+    pageSongHref: null,
+    // When a real (trusted) input on YouTube Music's own volume slider was last
+    // seen. A page script can post a forged volume message, but it cannot make
+    // an event trusted, and a gesture elsewhere on the page is not this control.
+    lastTrustedSliderAt: 0,
+    // Correlation for on-demand player reads: every accepted push bumps the
+    // sequence, and a read that crosses one is discarded.
+    songPushSeq: 0,
+    songQuerySeq: 0,
+    pendingSongQuery: null,
+    // A media that has actually played can be replaced under a live identity;
+    // a fresh load cannot. `pendingSourceChange` is that replacement, waiting
+    // for evidence of what the new source is.
+    identityPlayed: false,
+    pendingSourceChange: false,
+    suspendedSongId: null,
     lastError: '',
     workletLoaded: false,
     workletRetryCount: 0,
@@ -211,6 +229,46 @@
       }, { passive: true, capture: true });
     });
 
+    // A track can change on the same element with no push at all (Home has no
+    // `?v=` to compare). A source change or a player/navigation signal only
+    // *asks* the hook what the player reads now; the event is never treated as
+    // an identity, and an unreadable player invalidates instead of guessing.
+    document.addEventListener('timeupdate', (event) => {
+      const target = event && event.target;
+      if (!(target instanceof HTMLMediaElement)) return;
+      if (Number(target.currentTime) > 0.5) state.identityPlayed = true;
+    }, true);
+
+    ['loadedmetadata', 'emptied'].forEach((eventName) => {
+      document.addEventListener(eventName, (event) => {
+        const target = event && event.target;
+        if (!(target instanceof HTMLMediaElement)) return;
+        if (state.identityPlayed && state.pageSongId !== null) {
+          // A media that has played is being replaced. Nothing may seek until
+          // something proves what the new source is.
+          state.pendingSourceChange = true;
+          state.suspendedSongId = state.pageSongId;
+          suspendPlayerSongIdentity();
+        }
+        if (!requestSongIdentity() && state.pendingSourceChange) {
+          // No hook to ask: the new source cannot be confirmed at all.
+          invalidatePlayerSongIdentity();
+        }
+      }, true);
+    });
+    window.addEventListener('yt-navigate-finish', () => requestSongIdentity(), true);
+    window.addEventListener('yt-player-updated', () => requestSongIdentity(), true);
+
+    // The one thing that can make a native volume push a user change is a real
+    // move of YouTube Music's own slider. Same selectors as page-hook.js, which
+    // owns the slider writes.
+    ['input', 'change'].forEach((eventName) => {
+      document.addEventListener(eventName, (event) => {
+        if (!event || event.isTrusted !== true) return;
+        if (isVolumeSliderEvent(event.target)) state.lastTrustedSliderAt = Date.now();
+      }, true);
+    });
+
     document.addEventListener('pause', () => {
       queueMicrotask(() => {
         try {
@@ -274,9 +332,60 @@
       if (data.type === 'SLRA_SONG') {
         if (typeof data.token !== 'string' || data.token.length === 0) return;
         if (data.token !== state.pageHookToken) return;
+        state.songPushSeq += 1;
+        const pushedId = typeof data.videoId === 'string' && data.videoId !== '' ? data.videoId : null;
+        const pushedHref = typeof data.href === 'string' && data.href !== '' ? data.href : location.href;
+        if (state.pendingSourceChange) {
+          if (pushedId === null || pushedId === state.suspendedSongId) {
+            // The media's source changed and the player repeats the old id (or
+            // reports nothing): neither is evidence the new media is that song.
+            invalidatePlayerSongIdentity();
+            return;
+          }
+          state.pendingSourceChange = false;
+          state.suspendedSongId = null;
+        }
+        if (pushedId !== state.pageSongId) state.identityPlayed = false;
         state.pageSongPushed = true;
-        state.pageSongId = typeof data.videoId === 'string' && data.videoId !== '' ? data.videoId : null;
-        if (playerActions) playerActions.setSongId(state.pageSongId);
+        state.pageSongId = pushedId;
+        // The hook sends the href the id was read in. Keeping it is what makes a
+        // replayed push safe: anchoring a stale id to the current URL is how one
+        // song's repeat section ended up driving another.
+        state.pageSongHref = pushedHref;
+        if (playerActions) playerActions.setSongId(state.pageSongId, state.pageSongHref);
+      }
+
+      if (data.type === 'SLRA_SONG_STATE') {
+        if (typeof data.token !== 'string' || data.token.length === 0) return;
+        if (data.token !== state.pageHookToken) return;
+        const pending = state.pendingSongQuery;
+        if (!pending || data.id !== pending.id) return;
+        clearTimeout(pending.timer);
+        state.pendingSongQuery = null;
+        // A push that landed while this read was in flight is newer than it.
+        if (state.songPushSeq !== pending.pushSeq) return;
+        if (typeof data.videoId === 'string' && data.videoId !== '') {
+          if (state.pendingSourceChange && data.videoId === state.suspendedSongId) {
+            // Same id after a source change: a stale read, not a confirmation.
+            invalidatePlayerSongIdentity();
+            return;
+          }
+          state.pendingSourceChange = false;
+          state.suspendedSongId = null;
+          // Provenance follows the id, exactly like the controller: a read that
+          // still reports the old song must not move that song's href to the
+          // URL we have navigated to since, or a replay would anchor it there.
+          if (!(state.pageSongPushed && state.pageSongId === data.videoId)) {
+            state.identityPlayed = false;
+            state.pageSongHref = typeof data.href === 'string' && data.href !== '' ? data.href : location.href;
+          }
+          state.pageSongPushed = true;
+          state.pageSongId = data.videoId;
+          if (playerActions) playerActions.setSongId(state.pageSongId, state.pageSongHref);
+          return;
+        }
+        invalidatePlayerSongIdentity();
+        return;
       }
 
       if (data.type === 'SLRA_VOLUME_STATE') {
@@ -303,7 +412,10 @@
             settleAttachedVolume();
             if (playerActions) {
               try {
-                playerActions.setPlayerVolume(pushed);
+                // A slider drag is the user's own change and outranks a restore
+                // that has not applied yet; an install/revive/poll push is only
+                // a reading of the page's value, or it would cancel the restore.
+                playerActions.setPlayerVolume(pushed, { user: isUserSliderPush(data) });
               } catch {
                 // Best effort: the cache follows on the next push.
               }
@@ -438,33 +550,37 @@
     }
   }
 
-function applyRuntimeState(runtime) {
-  if (runtime && runtime.ok === false) return;
-  state.eligible = Boolean(runtime?.eligible !== false);
-  state.bypass = Boolean(runtime?.bypass);
-  if (runtime?.settings !== undefined) {
-    state.settings = normalizeSettings(runtime.settings);
-    if (!volumeRestoreSeeded) {
-      volumeRestoreSeeded = true;
-      restoreStoredVolume();
+  function applyRuntimeState(runtime) {
+    if (runtime && runtime.ok === false) return;
+    state.eligible = Boolean(runtime?.eligible !== false);
+    state.bypass = Boolean(runtime?.bypass);
+    if (runtime?.settings !== undefined) {
+      state.settings = normalizeSettings(runtime.settings);
+      if (state.settings.reverbIntensity > 0) {
+        state.lastNonzeroIntensity = state.settings.reverbIntensity;
+      }
     }
-    if (state.settings.reverbIntensity > 0) {
-      state.lastNonzeroIntensity = state.settings.reverbIntensity;
-    }
-  }
-  state.lastError = '';
+    state.lastError = '';
     syncAllMedia();
+    // syncAllMedia is what creates the controller, so the stored volume is
+    // handed over after it runs. Latching before the controller existed spent
+    // the one hand-off on a null and lost it: a refresh then forgot the wheel
+    // volume. restoreStoredVolume latches itself, once per document.
+    restoreStoredVolume();
   }
 
   /**
    * The wheel volume is remembered in this site's settings. Applying it is the
    * controller's job (it waits for the first playback start); here we only hand
-   * it the stored number, and a controller that already restored ignores it.
+   * it the stored number, once per document, and only when a controller exists
+   * to take it - a number dropped before that is a number lost.
    */
   function restoreStoredVolume() {
+    if (volumeRestoreSeeded) return;
     const stored = state.settings ? state.settings.volume : null;
     if (!Number.isFinite(stored)) return;
     if (!playerActions || typeof playerActions.restoreVolume !== 'function') return;
+    volumeRestoreSeeded = true;
     try {
       playerActions.restoreVolume(stored);
     } catch {
@@ -525,6 +641,89 @@ function applyRuntimeState(runtime) {
     } catch {
       // Best effort: the page may be tearing down.
     }
+  }
+
+  // An on-demand player read: bounded, correlated, and fail-closed. Nothing is
+  // adopted until the hook answers with an id it read, and no answer means the
+  // media cannot be vouched for.
+  const SONG_QUERY_TIMEOUT_MS = 1000;
+
+  function suspendPlayerSongIdentity() {
+    if (playerActions && typeof playerActions.suspendSongIdentity === 'function') {
+      try {
+        playerActions.suspendSongIdentity();
+      } catch {
+        // Best effort: the invalidate path still disarms on an unreadable answer.
+      }
+    }
+  }
+
+  function invalidatePlayerSongIdentity() {
+    // The cached push is stale too: keeping it would let a recreated controller
+    // replay the identity this invalidated.
+    state.pageSongPushed = false;
+    state.pageSongId = null;
+    state.pageSongHref = null;
+    // The source change that caused this stays open: a later read that repeats
+    // the same id is still not evidence for the new media. Only a different id
+    // (or a new source event) moves the suspended id.
+    if (playerActions && typeof playerActions.invalidateSongIdentity === 'function') {
+      try {
+        playerActions.invalidateSongIdentity();
+      } catch {
+        // Best effort: nothing may be armed either way.
+      }
+    }
+  }
+
+  function requestSongIdentity() {
+    // Nothing to re-confirm, or a hook that has never signalled: a fresh page
+    // must not be invalidated for a hook that cannot answer yet.
+    if (!state.pageSongPushed || !state.pageHookReady) return false;
+    const token = state.pageHookToken;
+    if (!token) return false;
+    const id = ++state.songQuerySeq;
+    if (state.pendingSongQuery && state.pendingSongQuery.timer) {
+      clearTimeout(state.pendingSongQuery.timer);
+    }
+    const timer = setTimeout(() => {
+      if (!state.pendingSongQuery || state.pendingSongQuery.id !== id) return;
+      state.pendingSongQuery = null;
+      invalidatePlayerSongIdentity();
+    }, SONG_QUERY_TIMEOUT_MS);
+    state.pendingSongQuery = { id, pushSeq: state.songPushSeq, timer };
+    // Nothing may seek while this read is in flight.
+    suspendPlayerSongIdentity();
+    try {
+      window.postMessage({ __slra: true, type: 'SLRA_QUERY_SONG', id, token }, '*');
+      return true;
+    } catch {
+      // The pending timeout turns an unsendable request into the same fail-closed
+      // invalidation as an unreadable player.
+      return false;
+    }
+  }
+
+  // The reason string is written by the page hook, and a page script can post
+  // the same message with a correct token: the token is an anti-collision
+  // marker, not authentication. The user intent is therefore trusted only when
+  // a trusted input on the volume slider itself arrived just before, which a
+  // forged message cannot fabricate and an unrelated click cannot supply.
+  const USER_PUSH_WINDOW_MS = 3000;
+  const VOLUME_SLIDER_SELECTOR = '#volume-slider, #expand-volume-slider';
+
+  function isVolumeSliderEvent(target) {
+    try {
+      if (!target || typeof target.closest !== 'function') return false;
+      return Boolean(target.closest(VOLUME_SLIDER_SELECTOR));
+    } catch {
+      return false;
+    }
+  }
+
+  function isUserSliderPush(data) {
+    if (!data || data.reason !== 'slider') return false;
+    return Date.now() - state.lastTrustedSliderAt <= USER_PUSH_WINDOW_MS;
   }
 
   function resolvePageVolume(id, reply) {
@@ -645,7 +844,7 @@ function applyRuntimeState(runtime) {
     }
     // Only a real push is authoritative: before it, the controller may still use
     // the URL's `v`. A pushed null means "no track", which is different.
-    if (state.pageSongPushed) playerActions.setSongId(state.pageSongId);
+    if (state.pageSongPushed) playerActions.setSongId(state.pageSongId, state.pageSongHref);
     void playerActions.start();
     return playerActions;
   }
