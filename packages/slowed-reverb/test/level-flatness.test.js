@@ -79,8 +79,10 @@ function extractFunction(src, name) {
 // bytes, so this harness cannot drift from the extension.
 function loadLevels() {
   const table = (contentSrc.match(/const WET_TRANSFER_BY_INTENSITY = \[[^\]]*\];/) || [])[0] || '';
+  const headroom = (contentSrc.match(/const MIX_HEADROOM = ([0-9.]+);/) || [])[0] || '';
   const pieces = [
     table,
+    headroom,
     extractFunction(contentSrc, 'computeDattorroParams'),
     extractFunction(contentSrc, 'computePostParams'),
     extractFunction(contentSrc, 'wetTransferForIntensity'),
@@ -89,13 +91,14 @@ function loadLevels() {
   if (pieces.some((piece) => !piece)) return null;
   const factory = new Function(
     'state',
-    pieces.join('\n') + '\nreturn { computeMixLevels, wetTransferForIntensity, WET_TRANSFER_BY_INTENSITY };'
+    pieces.join('\n') + '\nreturn { computeMixLevels, wetTransferForIntensity, WET_TRANSFER_BY_INTENSITY, MIX_HEADROOM };'
   );
   const loaded = factory({ lastNonzeroIntensity: 0.5 });
   return {
     triple: (intensity) => loaded.computeMixLevels(intensity),
     transfer: loaded.wetTransferForIntensity,
     table: loaded.WET_TRANSFER_BY_INTENSITY,
+    headroom: loaded.MIX_HEADROOM,
   };
 }
 
@@ -255,8 +258,9 @@ function measure(triple, material, peakLevel, intensities, speeds) {
     const input = speed === 1 ? src.subarray(0, total) : resample(src, speed, total);
     for (const intensity of intensities) {
       const rendered = renderSetting(triple, input, intensity);
-      worstPeak = Math.max(worstPeak, peakOf(rendered.out));
-      rows.push({ speed, intensity, level: rendered.level, dry: rendered.mix.dry, comp: rendered.mix.comp });
+      const peak = peakOf(rendered.out);
+      worstPeak = Math.max(worstPeak, peak);
+      rows.push({ speed, intensity, level: rendered.level, peak, dry: rendered.mix.dry, comp: rendered.mix.comp });
     }
   }
   return { rows, worstPeak };
@@ -339,8 +343,24 @@ function main() {
     'a mix value reaches masterGain'
   );
 
+  const mixBody = extractFunction(contentSrc, 'computeMixLevels');
+  check(
+    '0g. the mix headroom is one constant, applied to both halves of the mix',
+    Number.isFinite(shipped.headroom) &&
+      shipped.headroom > 0 &&
+      shipped.headroom <= 1 &&
+      (contentSrc.match(/const MIX_HEADROOM = /g) || []).length === 1 &&
+      mixBody.indexOf('MIX_HEADROOM * Math.sqrt') !== -1 &&
+      mixBody.indexOf('MIX_HEADROOM / wetTransferForIntensity') !== -1,
+    'headroom=' + shipped.headroom
+  );
+
   const triple = shipped.triple;
-  console.log('     transfer table k=[' + shipped.table.map((k) => k.toFixed(4)).join(' ') + ']');
+  const headroom = shipped.headroom;
+  console.log(
+    '     mix headroom ' + headroom.toFixed(3) + ' (' + db(headroom).toFixed(2) + ' dB) | transfer table k=[' +
+      shipped.table.map((k) => k.toFixed(4)).join(' ') + ']'
+  );
   console.log(
     '     wet=[' + INTENSITIES.map((i) => triple(i).params.wetGain.toFixed(3)).join(' ') +
       '] dry=[' + INTENSITIES.map((i) => triple(i).dry.toFixed(3)).join(' ') +
@@ -389,10 +409,11 @@ function main() {
     '     input RMS ' + inputLevel.toFixed(2) + ' dBFS  i=0 ' + atZero.level.toFixed(2) +
       '  i=1 ' + atOne.level.toFixed(2)
   );
+  const trimmedInput = inputLevel + db(headroom);
   check(
-    '4. intensity 0 is the untouched input level',
-    Math.abs(atZero.level - inputLevel) <= 0.05,
-    'delta ' + (atZero.level - inputLevel).toFixed(3) + ' dB'
+    '4. intensity 0 is the input level after the constant mix trim, and nothing else',
+    Math.abs(atZero.level - trimmedInput) <= 0.05,
+    'delta ' + (atZero.level - trimmedInput).toFixed(3) + ' dB'
   );
   check(
     '5. intensity 1 holds the same level as intensity 0',
@@ -402,11 +423,26 @@ function main() {
   check('6. the wet path is compensated, never attenuated', triple(1).comp >= 1, 'comp ' + triple(1).comp.toFixed(3));
   check('7. nothing clips at input peak 0.5', primary.worstPeak <= 1, 'peak ' + primary.worstPeak.toFixed(3));
   // Full wet now carries the same RMS as dry, so on a near-full-scale master the
-  // tank's own crest factor can overshoot unity by a fraction of a dB. That is
-  // the measured cost of a level-neutral mix; the bound catches it drifting.
-  const hot = measure(triple, musicLike, 0.9, INTENSITIES, [1]);
-  console.log('     headroom at input peak 0.9, full wet: peak ' + hot.worstPeak.toFixed(3));
-  check('7b. full wet keeps documented headroom on a hot input', hot.worstPeak <= 1.1, 'peak ' + hot.worstPeak.toFixed(3));
+  // tank's own crest factor peaks above unity without the constant trim. The
+  // peak is gated across the whole matrix, not only at full wet, because the
+  // loudest cell is dry and wet summing at an intermediate intensity.
+  const hot = measure(triple, musicLike, 0.9, INTENSITIES, SPEEDS);
+  const hotCell = hot.rows.filter((r) => r.intensity === 1 && r.speed === 1)[0];
+  const hotWorst = hot.rows.reduce((worst, row) => (row.peak > worst.peak ? row : worst), hot.rows[0]);
+  console.log(
+    '     peak at input 0.9: full wet ' + hotCell.peak.toFixed(3) + ' (speed 1.00), worst cell ' +
+      hotWorst.peak.toFixed(3) + ' (speed ' + hotWorst.speed.toFixed(2) + ', i=' + hotWorst.intensity.toFixed(2) + ')'
+  );
+  check(
+    '7b. a hot master at full wet stays below unity',
+    hotCell.peak <= 0.99,
+    'peak ' + hotCell.peak.toFixed(3)
+  );
+  check(
+    '7c. no cell of the hot matrix reaches unity',
+    hotWorst.peak <= 0.99,
+    'peak ' + hotWorst.peak.toFixed(3) + ' at speed ' + hotWorst.speed + ', intensity ' + hotWorst.intensity
+  );
 
   // --- the slider is continuous, so the curve must be flat between points ----
   const offGrid = measure(triple, musicLike, 0.5, [0, ...OFF_GRID], [1]);

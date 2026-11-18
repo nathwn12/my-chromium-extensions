@@ -1418,6 +1418,17 @@ function applyRuntimeState(runtime) {
   // The tank is not unity-sum, so this is below 1 and rises with the decay time.
   const WET_TRANSFER_BY_INTENSITY = [0.5814, 0.6193, 0.6698, 0.7384];
 
+  // Constant mix headroom, -0.92 dB. Fully wet now carries the same RMS as the
+  // dry path, and on a near-full-scale master the tank's own crest factor peaks
+  // above unity (measured worst cell 1.096 at input peak 0.9), so 100 % reverb
+  // would clip the destination. This scales the whole mix - wet and dry cells
+  // alike - which is what keeps the level flat: a wet-only trim would cost
+  // exactly 20*log10 of it at full wet and nothing at zero, which is the very
+  // level change this stage exists to remove. Measured worst cell afterwards:
+  // 0.986. See test/level-flatness.test.js, which gates the peak and re-measures
+  // the flatness.
+  const MIX_HEADROOM = 0.9;
+
   // Linear between the measured points; the end values hold outside 0..1, which
   // the slider cannot leave.
   function wetTransferForIntensity(intensity) {
@@ -1440,8 +1451,8 @@ function applyRuntimeState(runtime) {
     const wet = params.wetGain;
     return {
       params,
-      dry: Math.sqrt(Math.max(0, 1 - wet * wet)),
-      comp: 1 / wetTransferForIntensity(intensity),
+      dry: MIX_HEADROOM * Math.sqrt(Math.max(0, 1 - wet * wet)),
+      comp: MIX_HEADROOM / wetTransferForIntensity(intensity),
     };
   }
 
