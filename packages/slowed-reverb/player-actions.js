@@ -501,6 +501,7 @@
     '.slra-pill:hover{background:rgba(0,0,0,.85);}',
     '.slra-panel{display:none;pointer-events:auto;width:224px;padding:10px;border-radius:12px;background:rgba(15,15,15,.94);box-shadow:0 8px 24px rgba(0,0,0,.45);}',
     '.slra-panel.open{display:block;}',
+    '.slra-bar{display:flex;align-items:center;gap:6px;}',
     '.slra-row{display:flex;align-items:center;gap:6px;margin-bottom:6px;}',
     '.slra-row span{flex:1;}',
     '.slra-row input[type=checkbox]{margin:0;}',
@@ -514,7 +515,7 @@
     '.slra-actions{display:flex;gap:6px;}',
     '.slra-actions .slra-button{flex:1;}',
     '.slra-actions .slra-icon{flex:0 0 auto;}',
-    '.slra-volume{position:absolute;right:0;bottom:100%;margin-bottom:6px;pointer-events:none;min-width:44px;padding:4px 8px;border-radius:999px;background:rgba(0,0,0,.72);color:#f1f1f1;font:600 12px/1.2 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;text-align:center;opacity:0;transition:opacity 120ms ease;}',
+    '.slra-volume{pointer-events:none;min-width:44px;padding:4px 8px;border-radius:999px;background:rgba(0,0,0,.72);color:#f1f1f1;font:600 12px/1.2 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;text-align:center;opacity:1;transition:opacity 120ms ease;}',
     '.slra-volume.show{opacity:1;}',
     '@media (prefers-reduced-motion: reduce){.slra-volume{transition:none;}}',
   ].join('\n');
@@ -663,6 +664,7 @@
       if (hasVolumeTruth) return volume;
       const next = readMediaVolume();
       if (next !== null) volume = next;
+      if (Number.isFinite(volume)) showVolumeHud(volume);
       return volume;
     }
 
@@ -1297,7 +1299,11 @@
       pill.textContent = 'Repeat';
       pill.setAttribute('aria-label', 'Section repeat');
 
-      shell.append(panel, volumeHud, pill);
+      const bar = doc.createElement('div');
+      bar.className = 'slra-bar';
+      bar.append(volumeHud, pill);
+
+      shell.append(panel, bar);
       shadow.appendChild(shell);
       parent.appendChild(host);
 
@@ -1368,20 +1374,17 @@
       });
 
       syncPanel();
+      // Seed the persistent readout from whatever the page currently reports.
+      if (Number.isFinite(volume)) showVolumeHud(volume);
     }
 
+    // The readout is permanent: it always shows the live volume, so a wheel
+    // step updates the number and nothing schedules a hide.
     function showVolumeHud(percent) {
       if (!ui) return;
       const value = Math.round(Number(percent));
       if (!Number.isFinite(value)) return;
       ui.volumeHud.textContent = Math.max(0, Math.min(100, value)) + '%';
-      ui.volumeHud.classList.add('show');
-      if (volumeHudTimer !== null) timers.clearTimeout(volumeHudTimer);
-      volumeHudTimer = timers.setTimeout(() => {
-        volumeHudTimer = null;
-        if (!ui) return;
-        ui.volumeHud.classList.remove('show');
-      }, 900);
     }
 
     function destroyUi() {
