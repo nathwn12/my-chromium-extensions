@@ -2094,9 +2094,9 @@ test('controller: guard - no song id means no loop seek; the same id resumes, a 
   harness.dom.win.dispatch('yt-navigate-finish');
   await settle();
 
-  // No id: the loop tick is gone (only the bounded restore retry may run) and
-  // nothing seeks, even when the retry ticks.
-  assert.equal(harness.timers.intervalDelays().includes(100), false);
+  // No id: the backstop stays installed (a blip must not latch the loop off)
+  // but nothing seeks, even when it ticks.
+  assert.equal(harness.timers.intervalDelays().includes(100), true);
   harness.timers.tickIntervals();
   await settle();
   assert.equal(harness.media().currentTime, 299.75);
@@ -2315,7 +2315,7 @@ test('identity: a different id clears the points', async () => {
   assert.equal(harness.timers.intervalDelays().includes(100), false);
 });
 
-test('identity: a null id stops the tick and keeps the points', async () => {
+test('identity: a null id keeps the points and the backstop but never seeks', async () => {
   const storage = createStorage({
     playerActions: { sections: [{ videoId: 'id-a', startSeconds: 30, endSeconds: null }] },
   });
@@ -2327,8 +2327,13 @@ test('identity: a null id stops the tick and keeps the points', async () => {
 
   harness.pushSong(null);
   await settle();
-  assert.equal(harness.timers.intervalDelays().includes(100), false);
+  // The tick stays so the section is still latched, but the no-identity
+  // invariant still forbids a seek with points that may belong to another song.
+  assert.equal(harness.timers.intervalDelays().includes(100), true);
   assert.equal(harness.fromValue(), '0:30');
+  harness.media().currentTime = 299.75;
+  harness.timers.tickIntervals();
+  assert.equal(harness.media().currentTime, 299.75);
 });
 
 test('identity: the same id returns and the loop resumes', async () => {
@@ -2341,7 +2346,7 @@ test('identity: the same id returns and the loop resumes', async () => {
   await settle();
   harness.pushSong(null);
   await settle();
-  assert.equal(harness.timers.intervalDelays().includes(100), false);
+  assert.equal(harness.timers.intervalDelays().includes(100), true);
 
   harness.pushSong('id-a');
   await settle();

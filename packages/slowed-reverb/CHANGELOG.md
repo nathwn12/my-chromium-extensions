@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.5] - 2026-11-18
+
+- Fix: a saved section repeat now stays latched for the whole song. The loop
+  used to be enforced only by the 100 ms backstop, which one transient loss of
+  song identity (a null id pushed while the player re-inits) or a hidden tab
+  could tear down for the rest of the song, so a section that was still set
+  stopped binding after its first pass.
+- The armed section now keeps the backstop installed and the loop is also
+  applied on the media's own `timeupdate` and `seeked` events, so repeated
+  passes, a pause, a manual seek and a `seeking`/`seeked` cycle all return to
+  the section start. No identity still means no seek, and Repeat off or Clear
+  still ends the loop.
+
 ## [1.2.4] - 2026-11-18
 
 - A track change no longer becomes audible before the effect is applied. The

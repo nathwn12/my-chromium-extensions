@@ -785,6 +785,10 @@
       bindMediaListener('loadedmetadata', handleSourceChange);
       bindMediaListener('emptied', handleSourceChange);
       bindMediaListener('volumechange', refreshVolume);
+      // The section must loop on the media's own clock, not only on the backstop
+      // interval: timeupdate fires while playing and seeked when a seek lands.
+      bindMediaListener('timeupdate', handleProgress);
+      bindMediaListener('seeked', handleProgress);
     }
 
     function detachMedia() {
@@ -944,15 +948,14 @@
       tickTimer = null;
     }
 
+    /**
+     * The armed section is the latch. One transient `wanted` false (a song id
+     * that blips mid-transition, a hidden tab) must never tear the backstop
+     * down for the rest of the song, so the interval follows the section and
+     * the handlers refuse to seek without an identity or in a hidden tab.
+     */
     function syncTick() {
-      // No identity means no loop: a stale range must never seek the media that
-      // happens to be loaded during a transition.
-      const wanted = started
-        && session.identityKnown
-        && session.songKey !== null
-        && isLoopEngaged(currentState())
-        && isVisible();
-      if (wanted) {
+      if (started && isLoopEngaged(currentState())) {
         if (tickTimer === null) tickTimer = timers.setInterval(handleTick, TICK_MS);
         return;
       }
@@ -971,6 +974,8 @@
         syncPanel();
         return;
       }
+      // A hidden tab keeps the backstop but does no work, as before.
+      if (!isVisible()) return;
       bindMedia();
       if (!media) return;
 
@@ -998,6 +1003,31 @@
         return;
       }
 
+      const target = resolveSeekTarget(currentState(), {
+        currentTime: media.currentTime,
+        duration: media.duration,
+        paused: media.paused,
+        seeking: media.seeking,
+      });
+      if (target === null) return;
+      try {
+        media.currentTime = target;
+      } catch {
+        // Detached element.
+      }
+    }
+
+    /**
+     * Applies the same decision as the backstop on the media's own events. It
+     * is what makes the loop a latch: `timeupdate` keeps firing every ~250 ms
+     * and `seeked` reports a landed seek, so a transient loss of identity or a
+     * throttled interval cannot leave an armed section silent for the rest of
+     * the song. Guards match the tick: no identity and no visible tab means no
+     * seek, and `resolveSeekTarget` itself refuses a paused or seeking player.
+     */
+    function handleProgress() {
+      if (!started || !media || !isVisible()) return;
+      if (!session.identityKnown || session.songKey === null) return;
       const target = resolveSeekTarget(currentState(), {
         currentTime: media.currentTime,
         duration: media.duration,
