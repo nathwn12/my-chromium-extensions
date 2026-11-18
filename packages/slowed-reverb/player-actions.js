@@ -30,12 +30,6 @@
   const YTM_ELEMENT_PER_PLAYER = 0.00741;
   const TICK_MS = 100;
   const NOTICE_VISIBLE_MS = 1200;
-  // Sticky volume: one coalesced write per wheel burst, and one bounded restore
-  // per page load through the same page-hook path the wheel uses.
-  const VOLUME_SAVE_MS = 300;
-  const VOLUME_RESTORE_ATTEMPTS = 2;
-  const VOLUME_RESTORE_RETRY_MS = 600;
-  const VOLUME_RESTORE_TOLERANCE = 0.02;
   const SAVED_LIMIT = 100;
   const RESTORE_DEADLINE_MS = 3000;
   const PLAYER_BAR_TAG = 'YTMUSIC-PLAYER-BAR';
@@ -589,17 +583,6 @@
     // One write per identical section: auto-save and a Save click in quick
     // succession must not queue two writes for the same range.
     let saveInFlight = null;
-    // Sticky volume: `pendingVolumeSave` is the newest wheel value waiting for
-    // the coalescing window; one write is in flight at a time.
-    let pendingVolumeSave = null;
-    let volumeSaveTimer = null;
-    let volumeSaveInFlight = false;
-    // A restore runs once per controller session; after it settles the page
-    // owns the value again and nothing here writes on its own.
-    let volumeRestoreTarget = null;
-    let volumeRestoreAttempts = 0;
-    let volumeRestoreSettled = false;
-    let volumeRestoreTimer = null;
 
     function currentState() {
       return {
@@ -723,7 +706,6 @@
       started = false;
       stopTick();
       cancelSeekRetry();
-      resetVolumePersistence();
       clearSettleCheck();
       if (unsubscribeStorage !== null) {
         try {
@@ -807,10 +789,6 @@
       // interval: timeupdate fires while playing and seeked when a seek lands.
       bindMediaListener('timeupdate', handleProgress);
       bindMediaListener('seeked', handleProgress);
-      // The stored volume is applied once the page has restored its own value,
-      // which happens around the first real playback start.
-      bindMediaListener('play', handleVolumeRestoreSignal);
-      bindMediaListener('playing', handleVolumeRestoreSignal);
     }
 
     function detachMedia() {
@@ -1089,23 +1067,17 @@
       const step = stepVolumeFromWheel(accumulator, event, volume);
       if (!step.applied) return;
       volume = step.volume;
-      // A wheel step is a deliberate change and outranks a restore that has not
-      // applied yet: a paused page can be scrolled before playback starts.
-      cancelPendingVolumeRestore();
       applyVolume(step.volume);
       showVolumeHud(step.volume);
     }
 
-    function applyVolume(percent, options) {
+    function applyVolume(percent) {
       // One sequence per write, scoped by generation: a late reply from before a
       // stop cannot overwrite the new session's volume.
       const mine = generation;
       const seq = ++volumeSeq;
-      // A restore is not a user change: it must not write storage again.
-      const persist = !options || options.persist !== false;
       if (!pageHook || typeof pageHook.setVolume !== 'function') {
         writeMediaVolume(percent);
-        if (persist) scheduleVolumeSave(percent);
         return;
       }
       let pending = null;
@@ -1116,14 +1088,12 @@
       }
       if (!pending || typeof pending.then !== 'function') {
         writeMediaVolume(percent);
-        if (persist) scheduleVolumeSave(percent);
         return;
       }
       pending.then((reply) => {
         if (!started || mine !== generation || seq !== volumeSeq) return;
         if (!reply || reply.applied === false || reply.source === 'none') {
           writeMediaVolume(percent);
-          if (persist) scheduleVolumeSave(percent);
           return;
         }
         // The page's applied value is the truth; the element mirrors it.
@@ -1133,163 +1103,10 @@
           volume = Math.round(applied);
           hasVolumeTruth = true;
         }
-        // Persist what the page ended up with, not what was asked for.
-        if (persist) scheduleVolumeSave(volume);
       }).catch(() => {
         if (!started || mine !== generation || seq !== volumeSeq) return;
         writeMediaVolume(percent);
-        if (persist) scheduleVolumeSave(percent);
       });
-    }
-
-    // -- sticky volume -----------------------------------------------------
-
-    function canSaveVolume() {
-      return Boolean(storage) && typeof storage.saveVolume === 'function';
-    }
-
-    /** Arms the coalescing window; the last wheel step inside it wins. */
-    function scheduleVolumeSave(percent) {
-      if (!canSaveVolume()) return;
-      if (typeof percent !== 'number' || !Number.isFinite(percent)) return;
-      pendingVolumeSave = Math.min(100, Math.max(0, Math.round(percent)));
-      if (volumeSaveTimer !== null) timers.clearTimeout(volumeSaveTimer);
-      volumeSaveTimer = timers.setTimeout(() => {
-        volumeSaveTimer = null;
-        writePendingVolume();
-      }, VOLUME_SAVE_MS);
-    }
-
-    /** Writes now: the window elapsed, the page is going away, or the tab hid. */
-    function flushVolumeSave() {
-      if (volumeSaveTimer !== null) {
-        timers.clearTimeout(volumeSaveTimer);
-        volumeSaveTimer = null;
-      }
-      writePendingVolume();
-    }
-
-    function writePendingVolume() {
-      if (!started || !canSaveVolume() || pendingVolumeSave === null) return;
-      // One write in flight; the newest value waits for it and then goes.
-      if (volumeSaveInFlight) return;
-      const value = pendingVolumeSave;
-      pendingVolumeSave = null;
-      volumeSaveInFlight = true;
-      const mine = generation;
-      let write = null;
-      try {
-        write = storage.saveVolume(value);
-      } catch {
-        write = null;
-      }
-      Promise.resolve(write).catch(() => {}).then(() => {
-        volumeSaveInFlight = false;
-        if (!started || mine !== generation) return;
-        if (pendingVolumeSave !== null) writePendingVolume();
-      });
-    }
-
-    function onPageHide() {
-      flushVolumeSave();
-    }
-
-    function resetVolumePersistence() {
-      if (volumeSaveTimer !== null) {
-        timers.clearTimeout(volumeSaveTimer);
-        volumeSaveTimer = null;
-      }
-      if (volumeRestoreTimer !== null) {
-        timers.clearTimeout(volumeRestoreTimer);
-        volumeRestoreTimer = null;
-      }
-      pendingVolumeSave = null;
-      volumeSaveInFlight = false;
-      volumeRestoreTarget = null;
-      volumeRestoreAttempts = 0;
-      volumeRestoreSettled = false;
-    }
-
-    /**
-     * Applies a stored volume once, through the same page-hook path the wheel
-     * uses. It waits for the first real playback start, because that is when
-     * YouTube Music has restored its own value, then leaves the page alone.
-     */
-    function restoreVolume(percent) {
-      // `Number(null)` is 0: a missing value must never restore silence.
-      if (percent === null || percent === undefined || percent === '') return;
-      if (typeof percent !== 'number' && typeof percent !== 'string') return;
-      const value = Number(percent);
-      if (!Number.isFinite(value) || volumeRestoreSettled) return;
-      volumeRestoreTarget = Math.min(100, Math.max(0, Math.round(value)));
-      attemptVolumeRestore();
-    }
-
-    function handleVolumeRestoreSignal() {
-      // play/playing only wait for the right moment: once a value has been
-      // written, the single bounded retry owns the after-the-fact check.
-      if (volumeRestoreAttempts > 0) return;
-      attemptVolumeRestore();
-    }
-
-    function attemptVolumeRestore() {
-      if (volumeRestoreSettled || volumeRestoreTarget === null) return;
-      // No element yet, or no playback yet: the next play/playing retries.
-      if (!started || !media || media.paused) return;
-      if (volumeRestoreAttempts >= VOLUME_RESTORE_ATTEMPTS) {
-        settleVolumeRestore();
-        return;
-      }
-      volumeRestoreAttempts += 1;
-      const target = volumeRestoreTarget;
-      // Seed the cache and the permanent readout, so both agree with the value
-      // being applied; the next wheel step starts from it too.
-      volume = target;
-      hasVolumeTruth = true;
-      showVolumeHud(target);
-      applyVolume(target, { persist: false });
-      if (volumeRestoreAttempts >= VOLUME_RESTORE_ATTEMPTS) {
-        settleVolumeRestore();
-        return;
-      }
-      // One bounded retry, only if the page put its own value back.
-      if (volumeRestoreTimer !== null) timers.clearTimeout(volumeRestoreTimer);
-      volumeRestoreTimer = timers.setTimeout(() => {
-        volumeRestoreTimer = null;
-        if (!started || volumeRestoreSettled) return;
-        if (mediaVolumeMatches(target)) {
-          settleVolumeRestore();
-          return;
-        }
-        attemptVolumeRestore();
-      }, VOLUME_RESTORE_RETRY_MS);
-    }
-
-    /** A user wheel step owns the volume: drop a restore that has not run. */
-    function cancelPendingVolumeRestore() {
-      volumeRestoreSettled = true;
-      volumeRestoreTarget = null;
-      volumeRestoreAttempts = 0;
-      if (volumeRestoreTimer !== null) {
-        timers.clearTimeout(volumeRestoreTimer);
-        volumeRestoreTimer = null;
-      }
-    }
-
-    function mediaVolumeMatches(percent) {
-      const element = Number(media && media.volume);
-      if (!Number.isFinite(element)) return false;
-      return Math.abs(element - percent * YTM_ELEMENT_PER_PLAYER) <= VOLUME_RESTORE_TOLERANCE;
-    }
-
-    function settleVolumeRestore() {
-      volumeRestoreSettled = true;
-      volumeRestoreTarget = null;
-      volumeRestoreAttempts = 0;
-      if (volumeRestoreTimer !== null) {
-        timers.clearTimeout(volumeRestoreTimer);
-        volumeRestoreTimer = null;
-      }
     }
 
     function writeMediaVolume(percent) {
@@ -1921,8 +1738,6 @@
 
     function onVisibilityChange() {
       if (!started) return;
-      // A hidden tab may be about to be discarded: land the pending wheel value.
-      if (!isVisible()) flushVolumeSave();
       syncTick();
     }
 
@@ -1932,8 +1747,6 @@
       // Independent of the tick: a swap while disarmed must still be seen.
       for (const name of SONG_EVENTS) win.addEventListener(name, onSongSignal, true);
       doc.addEventListener('visibilitychange', onVisibilityChange);
-      // A refresh moments after a scroll must keep the value.
-      win.addEventListener('pagehide', onPageHide);
     }
 
     function removeSongListeners() {
@@ -1941,7 +1754,6 @@
       songListenersInstalled = false;
       for (const name of SONG_EVENTS) win.removeEventListener(name, onSongSignal, true);
       doc.removeEventListener('visibilitychange', onVisibilityChange);
-      win.removeEventListener('pagehide', onPageHide);
     }
 
     return {
@@ -1950,7 +1762,6 @@
       sync: sync,
       setSongId: setSongId,
       setPlayerVolume: setPlayerVolume,
-      restoreVolume: restoreVolume,
     };
   }
   const api = {

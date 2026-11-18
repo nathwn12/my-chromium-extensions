@@ -25,7 +25,6 @@
   }
 
   const {
-    extractHostname,
     getDefaultSettings,
     isNeutral,
     normalizeSettings,
@@ -450,23 +449,6 @@ function applyRuntimeState(runtime) {
   }
   state.lastError = '';
     syncAllMedia();
-    restoreStoredVolume();
-  }
-
-  /**
-   * The wheel volume is remembered in this site's settings. Applying it is the
-   * controller's job (it waits for the first playback start); here we only hand
-   * it the stored number, and a controller that already restored ignores it.
-   */
-  function restoreStoredVolume() {
-    const stored = state.settings ? state.settings.volume : null;
-    if (!Number.isFinite(stored)) return;
-    if (!playerActions || typeof playerActions.restoreVolume !== 'function') return;
-    try {
-      playerActions.restoreVolume(stored);
-    } catch {
-      // Best effort: the page keeps its own value.
-    }
   }
 
   // Mute invariant: media.muted === attached. The element's own output is
@@ -554,27 +536,6 @@ function applyRuntimeState(runtime) {
     });
   }
 
-  /**
-   * Persists the wheel volume. The patch carries only `volume`, so the worker
-   * must merge it over the stored object; a wheel scroll never rewrites slow or
-   * reverb. The shared normalizer clamps it, and the local cache follows.
-   */
-  function savePlayerVolume(percent) {
-    const value = Number(percent);
-    if (!Number.isFinite(value)) return Promise.resolve({ ok: false, error: 'invalid_volume' });
-    const clamped = Math.min(100, Math.max(0, Math.round(value)));
-    state.settings = normalizeSettings({ ...state.settings, volume: clamped });
-    try {
-      return chrome.runtime.sendMessage({
-        type: 'SET_SITE_SETTINGS',
-        siteKey: extractHostname(location.href),
-        settings: { volume: clamped },
-      });
-    } catch {
-      return Promise.resolve({ ok: false, error: 'runtime_unavailable' });
-    }
-  }
-
   function currentMediaForPlayerActions() {
     for (const controller of state.media.values()) {
       if (controller.attached && controller.media && controller.media.isConnected) return controller.media;
@@ -609,9 +570,6 @@ function applyRuntimeState(runtime) {
           get: (key) => chrome.storage.local.get(key),
           // One ordered writer for the section list, across every tab.
           saveSection: (entry) => chrome.runtime.sendMessage({ type: 'SAVE_PLAYER_SECTION', entry }),
-          // Sticky wheel volume: one coalesced write per burst, as a field-level
-          // patch the worker merges into this site's stored settings.
-          saveVolume: (percent) => savePlayerVolume(percent),
           // Another tab's save is what makes a section visible here. The
           // controller keeps its cache from this, never from a re-read.
           subscribe: (callback) => {

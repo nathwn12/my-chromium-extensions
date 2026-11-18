@@ -640,13 +640,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return buildTabState(sender.tab?.id || message.tabId);
       }
       case 'SET_SITE_SETTINGS': {
-        // The content script's sticky-volume write is a field-level patch
-        // (`{ volume }`), so it merges over the stored object before the shared
-        // normalizer fills the rest. The popup still sends every field.
-        const tabId = Number(message.tabId ?? sender.tab?.id);
-        const patch = message.settings && typeof message.settings === 'object' ? message.settings : {};
-        const current = message.siteKey ? (await getStoredSiteSettings())[message.siteKey] : null;
-        const settings = normalizeSettings({ ...(current || {}), ...patch });
+        const tabId = Number(message.tabId);
+        const settings = normalizeSettings(message.settings);
 
         if (message.siteKey) {
           await setStoredSiteSettings(message.siteKey, settings);

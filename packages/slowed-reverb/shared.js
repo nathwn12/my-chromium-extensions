@@ -7,9 +7,6 @@
   const DEFAULT_SETTINGS = {
     slow: 1,
     reverbIntensity: 0,
-    // The wheel-set volume in player scale. `null` means never set: the page's
-    // own restored value stands and nothing is written on load.
-    volume: null,
   };
 
   function clampSlow(value) {
@@ -26,19 +23,6 @@
     return Math.round(numeric * 100) / 100;
   }
 
-  /**
-   * A wheel volume is a whole percentage in player scale, so it clamps instead
-   * of falling back to a default: 120 -> 100, -5 -> 0. Anything that is not a
-   * number (or a numeric string) is "never set", not zero.
-   */
-  function clampVolume(value) {
-    if (value === null || value === undefined || value === '') return null;
-    if (typeof value !== 'number' && typeof value !== 'string') return null;
-    const numeric = Number(value);
-    if (!Number.isFinite(numeric)) return null;
-    return Math.min(100, Math.max(0, Math.round(numeric)));
-  }
-
   function normalizeSettings(raw) {
     const next = raw && typeof raw === 'object' ? raw : {};
     return {
@@ -46,9 +30,6 @@
       reverbIntensity: clampIntensity(
         Object.prototype.hasOwnProperty.call(next, 'reverbIntensity') ? next.reverbIntensity : DEFAULT_SETTINGS.reverbIntensity
       ),
-      // Optional on purpose: a stored object written before this field existed
-      // stays valid and reads as "never set".
-      volume: clampVolume(Object.prototype.hasOwnProperty.call(next, 'volume') ? next.volume : DEFAULT_SETTINGS.volume),
     };
   }
 
