@@ -47,21 +47,35 @@ test('invariant: a wheel step writes the page player, so YTM own slider moves', 
 });
 
 test('invariant: the stored volume is handed over exactly once per document', () => {
-  const guarded = contentScript.slice(
+  // Shape only, and it has been wrong before: 1.2.5 latched the hand-off before
+  // the controller existed and spent it on a null. The behaviour is proved in
+  // injection-lifecycle test H, which fails when this seam is broken.
+  const restore = contentScript.slice(
+    contentScript.indexOf('function restoreStoredVolume('),
+    contentScript.indexOf('// Mute invariant'),
+  );
+  assert.match(restore, /if \(volumeRestoreSeeded\) return;/, 'the hand-off must latch itself');
+  assert.match(
+    restore,
+    /volumeRestoreSeeded = true;[\s\S]{0,200}restoreVolume\(stored\)/,
+    'the latch is set where the controller takes the value, never before',
+  );
+  assert.doesNotMatch(
+    restore,
+    /volumeRestoreSeeded = true;[\s\S]{0,200}if \(!playerActions\) return;/,
+    'a missing controller must leave the hand-off unspent',
+  );
+
+  const apply = contentScript.slice(
     contentScript.indexOf('function applyRuntimeState('),
     contentScript.indexOf('function restoreStoredVolume('),
   );
-  assert.match(
-    guarded,
-    /if \(!volumeRestoreSeeded\) \{\s*volumeRestoreSeeded = true;\s*restoreStoredVolume\(\);/,
-    'the hand-off must be latched, never re-armed by a later state push',
+  assert.match(apply, /restoreStoredVolume\(\);/, 'applyRuntimeState must still hand the value over');
+  assert.ok(
+    apply.indexOf('syncAllMedia();') < apply.indexOf('restoreStoredVolume();'),
+    'the hand-off must run after syncAllMedia created the controller',
   );
   assert.match(contentScript, /let volumeRestoreSeeded = false;/);
-  assert.doesNotMatch(
-    guarded,
-    /syncAllMedia\(\);\s*restoreStoredVolume\(\);/,
-    'the tail of applyRuntimeState must not call the restore unguarded',
-  );
 });
 
 test('invariant: a state push cannot write a volume the user did not ask for', () => {

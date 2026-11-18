@@ -495,6 +495,105 @@ test('guard: a wheel step before playback cancels the pending restore', async ()
   assert.deepEqual(harness.pageHookCalls, [{ percent: 45 }], 'the stale restore never fires');
 });
 
+// ---------------------------------------------------------------------------
+// Native volume: a YTM slider drag is not a wheel step, but it is still the
+// user's number. It must paint the permanent readout and it must outrank a
+// restore that has not applied yet. A reading (install/revive/poll) must not.
+// ---------------------------------------------------------------------------
+
+function shadowNodes(root) {
+  const out = [];
+  const walk = (node) => {
+    out.push(node);
+    for (const child of node.children || []) walk(child);
+    if (node.shadowRoot) walk(node.shadowRoot);
+  };
+  walk(root);
+  return out;
+}
+
+function readout(harness) {
+  const node = shadowNodes(harness.dom.documentElement).find(
+    (candidate) => String(candidate.className || '').split(/\s+/).includes('slra-volume')
+  );
+  return node ? node.textContent : null;
+}
+
+test('volume: the permanent readout follows a native volume push', async () => {
+  const harness = createHarness();
+  await harness.start();
+  assert.equal(readout(harness), '50%', 'precondition: the readout shows the page value');
+
+  harness.controller.setPlayerVolume(35);
+  await settle();
+  assert.equal(readout(harness), '35%', 'a native slider drag must not leave a stale number on screen');
+});
+
+test('volume: a native slider drag outranks a restore that has not applied', async () => {
+  const harness = createHarness();
+  await harness.start();
+  harness.media.paused = true;
+  harness.controller.restoreVolume(20);
+  await settle();
+  assert.deepEqual(harness.pageHookCalls, [], 'a paused player is not written');
+
+  // The user drags YouTube Music's own slider before pressing play.
+  harness.controller.setPlayerVolume(65, { user: true });
+  harness.media.paused = false;
+  harness.media.dispatchEvent('playing');
+  harness.timers.flushTimeouts();
+  await settle();
+
+  assert.deepEqual(harness.pageHookCalls, [], 'the stale restore must not undo the native drag');
+});
+
+test('volume: a native slider drag is what the next load restores', async () => {
+  // Document 1: the user drags YouTube Music's own slider to 65.
+  const first = createHarness();
+  await first.start();
+  first.controller.setPlayerVolume(65, { user: true });
+  await settle();
+  first.timers.flushTimeouts();
+  await settle();
+  assert.deepEqual(first.savedVolumes, [65], 'the dragged value is persisted, like a wheel step');
+
+  // Document 2: a fresh controller restores what the last document stored.
+  const second = createHarness();
+  await second.start();
+  second.controller.restoreVolume(first.savedVolumes[0]);
+  await settle();
+  assert.deepEqual(second.pageHookCalls, [{ percent: 65 }], 'a reload keeps the dragged value');
+});
+
+test('guard: a poll reading is never persisted', async () => {
+  const harness = createHarness();
+  await harness.start();
+  // A media-key change or a page-side write shows up on the poll, not as a
+  // slider drag. It is truth for the cache, but not a stored preference.
+  harness.controller.setPlayerVolume(65);
+  await settle();
+  harness.timers.flushTimeouts();
+  await settle();
+  assert.deepEqual(harness.savedVolumes, []);
+});
+
+test('guard: a volume reading (install, revive, poll) does not cancel a restore', async () => {
+  const harness = createHarness();
+  await harness.start();
+  harness.media.paused = true;
+  harness.controller.restoreVolume(20);
+  await settle();
+
+  // YouTube Music reports its own startup value; that is not a user change.
+  harness.controller.setPlayerVolume(65);
+  harness.media.paused = false;
+  harness.media.dispatchEvent('playing');
+  harness.timers.flushTimeouts();
+  await settle();
+
+  assert.deepEqual(harness.pageHookCalls, [{ percent: 20 }], 'the stored volume still owns the page load');
+});
+
 test('guard: junk restore values are ignored', async () => {
   const harness = createHarness();
   await harness.start();
