@@ -168,6 +168,7 @@ function createContentEnv(opts = {}) {
     Error,
     String,
     Boolean,
+    URL,
     queueMicrotask,
   };
 
@@ -705,6 +706,100 @@ test('T: a source change after playback voids a same-id pull too', async () => {
   replyPageSongState(env, { id: songQueries(env)[0].id, videoId: 'song-a', href });
   await env.settle(2);
   assert.equal(recorder.instances[0].invalidations, 1, 'the same id is not a confirmation');
+});
+
+test('S2: a same-id query after a source change confirms the visit when URL, href and element agree', async () => {
+  const recorder = createPlayerActionsRecorder();
+  const env = createContentEnv({
+    playerActions: recorder.api,
+    runtimeSettings: { slow: 0.8, reverbIntensity: 0.5, volume: 20 },
+  });
+  const href = 'https://music.youtube.com/watch?v=song-a';
+  env.sandbox.location.href = href;
+  const media = env.addMedia(false);
+  env.fireDoc('play', media);
+  await env.settle(6);
+  env.holdTimeouts = true;
+  pushHookReady(env);
+  pushPageSong(env, { videoId: 'song-a', href });
+  await env.settle(2);
+
+  media.currentTime = 45;
+  env.fireDoc('timeupdate', media);
+  env.fireDoc('loadedmetadata', media);
+  await env.settle(2);
+  assert.ok(recorder.instances[0].suspends >= 1, 'the source change suspends the section while the read is in flight');
+  replyPageSongState(env, { id: songQueries(env)[0].id, videoId: 'song-a', href });
+  await env.settle(2);
+
+  // A same song reloaded on its own element is a confirmation, not a swap: the
+  // visit survives, the id is re-delivered with its own provenance, and the
+  // armed section keeps its From/To (it still loops back to From at the To mark
+  // instead of running on to the end of the song).
+  assert.equal(recorder.instances[0].invalidations, 0, 'the armed section is not dropped');
+  assert.deepEqual(
+    recorder.instances[0].songIds.at(-1),
+    { id: 'song-a', href },
+    'the id is re-confirmed with the navigation it was read in'
+  );
+});
+
+test('S3: a same-id push after a source change confirms the visit under the same provenance', async () => {
+  const recorder = createPlayerActionsRecorder();
+  const env = createContentEnv({
+    playerActions: recorder.api,
+    runtimeSettings: { slow: 0.8, reverbIntensity: 0.5, volume: 20 },
+  });
+  const href = 'https://music.youtube.com/watch?v=song-a';
+  env.sandbox.location.href = href;
+  const media = env.addMedia(false);
+  env.fireDoc('play', media);
+  await env.settle(6);
+  env.holdTimeouts = true;
+  pushHookReady(env);
+  pushPageSong(env, { videoId: 'song-a', href });
+  await env.settle(2);
+
+  media.currentTime = 45;
+  env.fireDoc('timeupdate', media);
+  env.fireDoc('emptied', media);
+  await env.settle(2);
+  pushPageSong(env, { videoId: 'song-a', href });
+  await env.settle(2);
+
+  assert.equal(recorder.instances[0].invalidations, 0, 'the push is a confirmation, not a stale id');
+  assert.deepEqual(
+    recorder.instances[0].songIds.at(-1),
+    { id: 'song-a', href },
+    'the same song is re-adopted with its own provenance'
+  );
+});
+
+test('S4: a same-id answer still invalidates when the reloaded element is not the tracked one', async () => {
+  const recorder = createPlayerActionsRecorder();
+  const env = createContentEnv({
+    playerActions: recorder.api,
+    runtimeSettings: { slow: 0.8, reverbIntensity: 0.5, volume: 20 },
+  });
+  const href = 'https://music.youtube.com/watch?v=song-a';
+  env.sandbox.location.href = href;
+  const media = env.addMedia(false);
+  env.fireDoc('play', media);
+  await env.settle(6);
+  env.holdTimeouts = true;
+  pushHookReady(env);
+  pushPageSong(env, { videoId: 'song-a', href });
+  await env.settle(2);
+
+  media.currentTime = 45;
+  env.fireDoc('timeupdate', media);
+  const other = env.addMedia(false);
+  env.fireDoc('loadedmetadata', other);
+  await env.settle(2);
+  replyPageSongState(env, { id: songQueries(env)[0].id, videoId: 'song-a', href });
+  await env.settle(2);
+
+  assert.equal(recorder.instances[0].invalidations, 1, 'an element other than the tracked one is not a confirmation');
 });
 
 test('U: a different id after a source change is adopted, and recovery works', async () => {

@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.7] - 2026-11-19
+
+- Fix: an armed section now survives a playing song that reloads its source and
+  answers the follow-up read with the same id. That answer used to be treated as
+  stale, so the saved From/To was dropped and playback ran on to the end of the
+  song instead of looping back to From at To. A same-id answer after a
+  post-playback source change now confirms the visit only when a confirmed push
+  named that id, the live URL and the answer's own href both carry the same
+  `?v=`, and the reloaded element is still the one the controller tracks. A
+  v-less URL, a href that moved, or a different element still invalidates, so a
+  section can never seek into another song. The 1 s read suspension stays.
+- The 1.2.6 known limit is retired where the URL names the song: a benign reload
+  on a watch page keeps its section. It still applies on YouTube Music Home,
+  whose URL carries no `?v=` and cannot corroborate the player's answer.
+
 ## [1.2.6] - 2026-11-18
 
 - Fix: a saved section no longer seeks into another song. The player's pushed id

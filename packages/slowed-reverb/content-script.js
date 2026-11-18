@@ -65,6 +65,9 @@
     identityPlayed: false,
     pendingSourceChange: false,
     suspendedSongId: null,
+    // The element whose source changed. A same-id answer confirms the visit
+    // only while this is still the element the controller tracks.
+    suspendedElement: null,
     lastError: '',
     workletLoaded: false,
     workletRetryCount: 0,
@@ -248,6 +251,7 @@
           // something proves what the new source is.
           state.pendingSourceChange = true;
           state.suspendedSongId = state.pageSongId;
+          state.suspendedElement = target;
           suspendPlayerSongIdentity();
         }
         if (!requestSongIdentity() && state.pendingSourceChange) {
@@ -336,14 +340,22 @@
         const pushedId = typeof data.videoId === 'string' && data.videoId !== '' ? data.videoId : null;
         const pushedHref = typeof data.href === 'string' && data.href !== '' ? data.href : location.href;
         if (state.pendingSourceChange) {
-          if (pushedId === null || pushedId === state.suspendedSongId) {
-            // The media's source changed and the player repeats the old id (or
-            // reports nothing): neither is evidence the new media is that song.
+          if (pushedId === state.suspendedSongId) {
+            // The player repeats the old id. It confirms the visit only when the
+            // push, the live URL and the reloaded element all still name that
+            // song; otherwise the new media has no readable identity.
+            if (!sameSongSourceConfirmed(pushedId, pushedHref)) {
+              invalidatePlayerSongIdentity();
+              return;
+            }
+          } else if (pushedId === null) {
+            // Reporting nothing is never evidence for the new source.
             invalidatePlayerSongIdentity();
             return;
           }
           state.pendingSourceChange = false;
           state.suspendedSongId = null;
+          state.suspendedElement = null;
         }
         if (pushedId !== state.pageSongId) state.identityPlayed = false;
         state.pageSongPushed = true;
@@ -366,12 +378,17 @@
         if (state.songPushSeq !== pending.pushSeq) return;
         if (typeof data.videoId === 'string' && data.videoId !== '') {
           if (state.pendingSourceChange && data.videoId === state.suspendedSongId) {
-            // Same id after a source change: a stale read, not a confirmation.
-            invalidatePlayerSongIdentity();
-            return;
+            // Same id after a source change: a stale read unless every piece of
+            // provenance still names that song. A v-less URL, a moved href or a
+            // different element stays fail-closed.
+            if (!sameSongSourceConfirmed(data.videoId, data.href)) {
+              invalidatePlayerSongIdentity();
+              return;
+            }
           }
           state.pendingSourceChange = false;
           state.suspendedSongId = null;
+          state.suspendedElement = null;
           // Provenance follows the id, exactly like the controller: a read that
           // still reports the old song must not move that song's href to the
           // URL we have navigated to since, or a replay would anchor it there.
@@ -658,12 +675,40 @@
     }
   }
 
+  // The `v` param is the only song id a URL carries (mirrors the controller's
+  // songKeyFrom); no id means the URL cannot corroborate an identity.
+  function songIdFromHref(href) {
+    try {
+      const parsed = new URL(String(href === undefined || href === null ? '' : href));
+      const id = parsed.searchParams.get('v');
+      return typeof id === 'string' && id !== '' ? id : null;
+    } catch {
+      return null;
+    }
+  }
+
+  // A same-id answer to a post-playback source change confirms the visit only
+  // when a confirmed push named it, the live URL and the answer's own href still
+  // name it, and the element that reloaded is still the one the controller
+  // tracks. Anything less stays fail-closed: a section must never seek into
+  // another song.
+  function sameSongSourceConfirmed(id, href) {
+    if (typeof id !== 'string' || id === '') return false;
+    if (!(state.pageSongPushed && state.pageSongId === id)) return false;
+    if (songIdFromHref(location.href) !== id) return false;
+    if (songIdFromHref(href) !== id) return false;
+    const element = state.suspendedElement;
+    if (!element || !(element instanceof HTMLMediaElement) || !element.isConnected) return false;
+    return currentMediaForPlayerActions() === element;
+  }
+
   function invalidatePlayerSongIdentity() {
     // The cached push is stale too: keeping it would let a recreated controller
     // replay the identity this invalidated.
     state.pageSongPushed = false;
     state.pageSongId = null;
     state.pageSongHref = null;
+    state.suspendedElement = null;
     // The source change that caused this stays open: a later read that repeats
     // the same id is still not evidence for the new media. Only a different id
     // (or a new source event) moves the suspended id.
