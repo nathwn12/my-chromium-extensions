@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.6] - 2026-11-18
+
+- Fix: a saved section no longer seeks into another song. The player's pushed id
+  is now anchored to the href it was read in, so a push replayed after a
+  navigation - or an id that outlived one - is stale and cannot arm a section on
+  the new page. When the navigation leaves the pushed song its points are
+  dropped, and Repeat itself is left exactly as the user set it.
+- Nothing seeks until the player's own reading confirms the song. A media source
+  change, `yt-navigate-finish` or `yt-player-updated` asks the page hook what the
+  player holds now (`SLRA_QUERY_SONG`, answered by `SLRA_SONG_STATE`); the answer
+  is correlated against the push sequence and bounded at 1 second. A repeated id
+  after a source change, a timeout, or a player that reads as nothing invalidates
+  the visit instead of guessing. An unconfirmed identity never seeks a media
+  element already past its first second, while a fresh element still restores
+  instantly, so an ordinary track load is unchanged.
+- A player that reads as two `#movie_player` nodes mid-swap now answers "nothing
+  readable" instead of picking one of them.
+- Fix: the wheel volume survives a refresh. The stored volume used to be latched
+  before any controller existed, so the one hand-off was spent on a null and the
+  refreshed page kept its own louder value; it is now handed over once per
+  document, after the first sync creates the controller.
+- A trusted move of YouTube Music's own volume slider is treated as the user's
+  own number: it cancels a restore that has not applied yet and is stored for the
+  next document. An install, revive or poll push is only a reading of the page's
+  value and no longer cancels the restore. The adopted value is shown in the
+  readout whoever moved it.
+- Known limit, accepted rather than hidden: when the same media element reloads
+  its source and the player answers with the same id - a benign refresh on
+  YouTube Music Home, whose URL carries no `?v=` - the extension cannot tell that
+  reload from a track swap, so it stops seeking until a different id arrives.
+  Repeat stays on and the loop returns with the next song.
 
 ## [1.2.5] - 2026-11-18
 
