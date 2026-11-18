@@ -516,7 +516,6 @@
     '.slra-actions .slra-button{flex:1;}',
     '.slra-actions .slra-icon{flex:0 0 auto;}',
     '.slra-volume{pointer-events:none;min-width:44px;padding:4px 8px;border-radius:999px;background:rgba(0,0,0,.72);color:#f1f1f1;font:600 12px/1.2 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;text-align:center;opacity:1;transition:opacity 120ms ease;}',
-    '.slra-volume.show{opacity:1;}',
     '@media (prefers-reduced-motion: reduce){.slra-volume{transition:none;}}',
   ].join('\n');
 
@@ -581,7 +580,6 @@
     let undoAvailable = false;
     let undoEntry = null;
     let undoSongKey = null;
-    let volumeHudTimer = null;
     // One write per identical section: auto-save and a Save click in quick
     // succession must not queue two writes for the same range.
     let saveInFlight = null;
@@ -1389,10 +1387,6 @@
 
     function destroyUi() {
       if (!ui) return;
-      if (volumeHudTimer !== null) {
-        timers.clearTimeout(volumeHudTimer);
-        volumeHudTimer = null;
-      }
       try {
         ui.host.remove();
       } catch {
