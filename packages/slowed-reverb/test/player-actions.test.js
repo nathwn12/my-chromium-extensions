@@ -3093,3 +3093,75 @@ test('page-hook: slider input and the poll post player truth, deduped', () => {
   hook.runIntervals();
   assert.deepEqual(hook.pushes().map((push) => push.volume), [40, 55, 57]);
 });
+
+// ---------------------------------------------------------------------------
+// F4: a deliberate commit (From/Now/To/Clear) is a vouch. It may adopt an
+// identity an invalidation dropped or a read suspended, and save the typed range
+// under that id. Two bounds stay: the seek never drags a mid-stream element that
+// provenance has not confirmed belongs to the URL's song, and a read that was
+// already in flight when the press landed cannot silently undo the press.
+// ---------------------------------------------------------------------------
+
+test('F4: a post-invalidation From commit vouches the URL song and a stale read cannot undo it', async () => {
+  const section = { videoId: 'song-a', startSeconds: 30, endSeconds: 60 };
+  const harness = createHarness({ storage: createStorage({ playerActions: { sections: [section] } }) });
+  await harness.start();
+  const media = harness.media();
+  harness.pushSong('song-a', 'https://music.youtube.com/watch?v=song-a');
+  await settle();
+  assert.equal(media.currentTime, 30, 'precondition: A restored and armed at its own start');
+
+  // The player read failed: the visit is dropped and the fields repaint empty,
+  // while the URL still names A. A source signal left a read in flight.
+  harness.controller.invalidateSongIdentity();
+  harness.controller.suspendSongIdentity();
+  await settle();
+  assert.equal(harness.fromValue(), '', 'precondition: identity drop emptied the fields');
+
+  // The person deliberately types From 0:15 while the id is unconfirmed.
+  harness.commit('From', '0:15');
+  await settle();
+  // A-semantics: the press vouches for the URL's song, adopts it and saves the
+  // typed range under it (audit actual: media 30->15, {song-a,15,null} written).
+  assert.equal(media.currentTime, 15, 'the press vouches and seeks to the URL song');
+  assert.deepEqual(harness.storage.sections(), [{ videoId: 'song-a', startSeconds: 15, endSeconds: null }]);
+
+  // The read that was already in flight when the press landed answers nothing.
+  // It was stale at press time, so its invalidation must not silently undo the
+  // deliberate commit.
+  harness.controller.invalidateSongIdentity();
+  await settle();
+  assert.equal(harness.fromValue(), '0:15', 'the press survives the stale invalidation');
+  assert.equal(media.currentTime, 15, 'the committed seek is not undone');
+  assert.deepEqual(
+    harness.storage.sections(),
+    [{ videoId: 'song-a', startSeconds: 15, endSeconds: null }],
+    'the committed write stands',
+  );
+});
+
+test('F4: a commit never drags a mid-stream element that provenance names as another song', async () => {
+  const section = { videoId: 'song-a', startSeconds: 30, endSeconds: 60 };
+  const harness = createHarness({ storage: createStorage({ playerActions: { sections: [section] } }) });
+  await harness.start();
+  const media = harness.media();
+  harness.pushSong('song-a', 'https://music.youtube.com/watch?v=song-a');
+  await settle();
+  assert.equal(media.currentTime, 30, 'precondition: A is armed on the element');
+
+  // The SPA URL moves to B while the player still holds A mid-stream. B is only
+  // a URL candidate: nothing has confirmed the element swapped to B.
+  harness.setHref('https://music.youtube.com/watch?v=song-b');
+  harness.controller.suspendSongIdentity();
+  media.currentTime = 45;
+  harness.timers.tickIntervals();
+  await settle();
+  assert.equal(media.currentTime, 45, 'precondition: unconfirmed B does not seek A');
+
+  // The person deliberately sets From 0:15 on the B watch page. The press vouches
+  // for B, but the element still holds A and provenance has not confirmed B, so
+  // the seek must be refused rather than drag A into B's range.
+  harness.commit('From', '0:15');
+  await settle();
+  assert.equal(media.currentTime, 45, 'never seek into another song: the unconfirmed mid-stream element stays put');
+});
