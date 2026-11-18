@@ -758,15 +758,20 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
     /** Adopts the id pushed by the page hook (null when no track is loaded). */
     function setSongId(next, href) {
       const normalized = typeof next === 'string' && next !== '' ? next : null;
-      // Any delivered id answers a pending read.
+      // Any delivered id answers a pending read, and vouches for the visit it
+      // names even when the URL adopted that song first: beginSong does not run
+      // for an already adopted key, so without this a deferred restore waiting
+      // on a player vouch could never proceed. Provenance still moves only with
+      // the id, and the one-restore-per-visit latch stops a repeat from seeking.
       session.identityPending = false;
       songIdPushed = true;
+      if (session.songKey === normalized && normalized !== null) {
+        session.confirmedKey = normalized;
+      }
       // Provenance moves only when the id does. A repeat push of the same id
       // taken on a newer URL would otherwise re-anchor the old song to the new
       // navigation, which is how it kept running there.
       if (normalized === pageSongId && normalized !== null) {
-        // Still evidence the player holds it: a visit invalidated since then
-        // may adopt again.
         if (started) {
           syncSong();
           syncTick();

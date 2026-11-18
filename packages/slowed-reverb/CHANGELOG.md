@@ -22,6 +22,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on a watch page keeps its section. It still applies on YouTube Music Home,
   whose URL carries no `?v=` and cannot corroborate the player's answer.
 
+- Fix: a push for the song the URL already named now vouches for it. When the
+  URL adopted a song before the player reported it, `beginSong` had already run
+  and never ran again for that key, so the push left `confirmedKey` unset and a
+  restore deferred for mid-stream media stayed deferred for the whole visit. A
+  delivered id now confirms the visit it names without moving stored provenance
+  or re-seeking a section that already restored; the push-first order is
+  unchanged.
+
 - Fix: a From/To range now stays set across refreshes. Enter and Save have
   always written it to storage keyed by the song, and a reload has always
   restored it; the loss came after an identity read gave up. That dropped the

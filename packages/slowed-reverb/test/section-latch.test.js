@@ -706,6 +706,30 @@ test('ordering: a push for the new song restores it while the URL is still old',
   assert.equal(harness.status(), '0:10 → 0:20', 'B keeps its own section');
 });
 
+test('identity: a push for the URL-adopted song confirms the visit', async () => {
+  const harness = createHarness({ storage: createStorage([SECTION, SONG_B]) });
+  await harness.start();
+  const media = harness.media();
+  assert.equal(media.currentTime, SECTION.startSeconds, 'precondition: A is restored and armed');
+
+  // The URL adopts B first, while the element still holds A's playback
+  // position. Nothing vouches for B yet, so its restore stays deferred.
+  harness.setHref(songUrl('song-b'));
+  harness.timers.tickIntervals();
+  await settle();
+  assert.equal(media.currentTime, SECTION.startSeconds, 'B waits without a vouch');
+
+  // The player pushes B. It is the same evidence that restores instantly when
+  // the push arrives before the URL, so it must confirm this visit too.
+  harness.pushSong('song-b', songUrl('song-b'));
+  await settle();
+  harness.timers.tickIntervals();
+  media.dispatchEvent('timeupdate');
+  await settle();
+  assert.equal(media.currentTime, SONG_B.startSeconds, 'the push vouches B and restores its own section');
+  assert.equal(harness.status(), '0:10 → 0:20', 'B stays armed at its own range');
+});
+
 test('identity: a pushed null defers, a late push still restores', async () => {
   const harness = createHarness({ storage: createStorage([SONG_B]) });
   await harness.start();
