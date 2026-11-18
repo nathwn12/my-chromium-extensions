@@ -947,6 +947,35 @@ test('identity: an unreadable source change clears Home and a later read rearms'
   assert.equal(media.currentTime, SECTION.startSeconds, 'the same id adopts again');
 });
 
+test('identity: a push after the restore deadline restores', async () => {
+  const harness = createHarness({ storage: createStorage([SECTION, SONG_B]) });
+  await harness.start();
+  const media = harness.media();
+  assert.equal(media.currentTime, SECTION.startSeconds, 'precondition: A is restored and armed');
+
+  // The URL adopts B first and the source takes longer than the 3 s window.
+  harness.setHref(songUrl('song-b'));
+  harness.timers.tickIntervals();
+  await settle();
+  assert.equal(media.currentTime, SECTION.startSeconds, 'B waits while A holds the element');
+
+  harness.advance(3100);
+  harness.timers.tickIntervals();
+  await settle();
+  assert.equal(harness.backstop(), false, 'the deadline still ends the retry');
+
+  // The player vouches for B at last, and the element has topped out with its
+  // own source: the saved section must be able to come back on this visit.
+  media.currentTime = 0;
+  harness.pushSong('song-b', songUrl('song-b'));
+  await settle();
+  harness.timers.tickIntervals();
+  media.dispatchEvent('timeupdate');
+  await settle();
+  assert.equal(media.currentTime, SONG_B.startSeconds, 'a late confirming push restores B');
+  assert.equal(harness.status(), '0:10 → 0:20', 'B holds its own range');
+});
+
 test('identity: a restore that cannot confirm stops the backstop at its deadline', async () => {
   const harness = createHarness({ storage: createStorage([SECTION, SONG_B]), startWithoutMedia: true });
   await harness.start();

@@ -1170,7 +1170,9 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
       // Deadline first: a pending restore with no media must still expire
       // instead of waking every tick forever.
       if (session.pendingRestore && session.restoreDeadlineAt && now() > session.restoreDeadlineAt) {
-        if (session.songKey !== null) markSongRestored(session, session.songKey);
+        // The window ends the retry, not the visit. Marking it restored here
+        // consumed an unrestored song and left its saved section dead for the
+        // rest of the visit, even when the player vouched for it later.
         clearPendingRestore(session);
         cancelSeekRetry();
         syncTick();

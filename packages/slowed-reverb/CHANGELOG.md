@@ -36,6 +36,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   read that answers the suspension arrives; an at-top load with no read in
   flight still restores straight away.
 
+- Fix: the 3 s restore window no longer consumes the visit it could not restore.
+  On expiry the retry stops, as before, but the song stays eligible: a later
+  confirming push, once the element has topped out, restores the saved section
+  instead of playing the whole song with empty fields.
+
 - Fix: a From/To range now stays set across refreshes. Enter and Save have
   always written it to storage keyed by the song, and a reload has always
   restored it; the loss came after an identity read gave up. That dropped the
