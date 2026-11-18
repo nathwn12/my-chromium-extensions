@@ -836,6 +836,7 @@ function applyRuntimeState(runtime) {
       stream: null,
       source: null,
       dryGain: null,
+      reverbCompGain: null,
       masterGain: null,
       dattorroNode: null,
       originalRate: media.playbackRate,
@@ -1146,20 +1147,29 @@ function applyRuntimeState(runtime) {
 
       source = context.createMediaStreamSource(stream);
       const dryGain = context.createGain();
+      // Wet-path compensation: the Dattorro tank is not unity-sum, so the wet
+      // bus arrives quieter than the dry one and its level climbs as the decay
+      // lengthens. This stage carries the inverse of the measured wet transfer,
+      // so dry + wet sums to one level at every slider position. It is not part
+      // of masterGain: that node carries media.volume only.
+      const reverbCompGain = context.createGain();
       const masterGain = context.createGain();
       const dattorroNode = new AudioWorkletNode(context, 'dattorro-reverb');
 
-      const initialParams = computePostParams(state.settings.reverbIntensity);
+      const initial = computeMixLevels(state.settings.reverbIntensity);
+      const initialParams = initial.params;
       dattorroNode.port.postMessage({ type: 'reset' });
       dattorroNode.port.postMessage({ type: 'setParams', params: initialParams });
 
       dryGain.gain.value = 0;
+      reverbCompGain.gain.value = initial.comp;
       masterGain.gain.value = 0;
 
       source.connect(dryGain);
       dryGain.connect(masterGain);
       source.connect(dattorroNode);
-      dattorroNode.connect(masterGain);
+      dattorroNode.connect(reverbCompGain);
+      reverbCompGain.connect(masterGain);
       masterGain.connect(context.destination);
 
       // Direct, not budgeted: this is the one write that establishes the
@@ -1172,6 +1182,7 @@ function applyRuntimeState(runtime) {
       controller.stream = stream;
       controller.source = source;
       controller.dryGain = dryGain;
+      controller.reverbCompGain = reverbCompGain;
       controller.masterGain = masterGain;
       controller.dattorroNode = dattorroNode;
       controller.attached = true;
@@ -1251,7 +1262,7 @@ function applyRuntimeState(runtime) {
       // the fresh tap becomes audible.
       if (controller.dattorroNode) {
         controller.dattorroNode.port.postMessage({ type: 'reset' });
-        const params = computePostParams(state.settings.reverbIntensity);
+        const { params } = computeMixLevels(state.settings.reverbIntensity);
         controller.dattorroNode.port.postMessage({ type: 'setParams', params });
         controller.lastPostedParams = JSON.stringify(params);
       }
@@ -1442,6 +1453,51 @@ function applyRuntimeState(runtime) {
     return { ...base, wetGain: intensity > 0 ? base.wetGain : 0 };
   }
 
+  // Measured wet-path transfer of the Dattorro tank: output RMS per unit of
+  // worklet wetGain, relative to the input RMS, at the quarter points of the
+  // intensity slider. Rendered offline at 48 kHz on music-like material from
+  // test/level-flatness.test.js (which re-measures it), over a 1.5-4.5 s window.
+  // The tank is not unity-sum, so this is below 1 and rises with the decay time.
+  const WET_TRANSFER_BY_INTENSITY = [0.5814, 0.6193, 0.6698, 0.7384];
+
+  // Constant mix headroom, -0.92 dB. Fully wet now carries the same RMS as the
+  // dry path, and on a near-full-scale master the tank's own crest factor peaks
+  // above unity (measured worst cell 1.096 at input peak 0.9), so 100 % reverb
+  // would clip the destination. This scales the whole mix - wet and dry cells
+  // alike - which is what keeps the level flat: a wet-only trim would cost
+  // exactly 20*log10 of it at full wet and nothing at zero, which is the very
+  // level change this stage exists to remove. Measured worst cell afterwards:
+  // 0.986. See test/level-flatness.test.js, which gates the peak and re-measures
+  // the flatness.
+  const MIX_HEADROOM = 0.9;
+
+  // Linear between the measured points; the end values hold outside 0..1, which
+  // the slider cannot leave.
+  function wetTransferForIntensity(intensity) {
+    const numeric = Number(intensity);
+    const i = Number.isFinite(numeric) ? Math.max(0, Math.min(1, numeric)) : 0;
+    const span = WET_TRANSFER_BY_INTENSITY.length - 1;
+    const index = i * span;
+    const lo = Math.min(span, Math.floor(index));
+    const hi = Math.min(span, lo + 1);
+    const k = WET_TRANSFER_BY_INTENSITY[lo] + (WET_TRANSFER_BY_INTENSITY[hi] - WET_TRANSFER_BY_INTENSITY[lo]) * (index - lo);
+    return Math.max(1e-6, k);
+  }
+
+  // One owner for the audible mix: the worklet params, the dry complement and
+  // the wet compensation. Every call site goes through this, so the three values
+  // cannot drift apart. `masterGain` stays out of it by design - it carries
+  // media.volume only, and folding the mix into it would fight the volume knob.
+  function computeMixLevels(intensity) {
+    const params = computePostParams(intensity);
+    const wet = params.wetGain;
+    return {
+      params,
+      dry: MIX_HEADROOM * Math.sqrt(Math.max(0, 1 - wet * wet)),
+      comp: MIX_HEADROOM / wetTransferForIntensity(intensity),
+    };
+  }
+
   function rampGain(param, value, tau = 0.015) {
     if (!param || !state.context) return;
     param.setTargetAtTime(value, state.context.currentTime, tau);
@@ -1463,14 +1519,20 @@ function applyRuntimeState(runtime) {
 
   function updateWetChain(controller) {
     if (!controller.dattorroNode) return;
-    const params = computePostParams(state.settings.reverbIntensity);
+    const levels = computeMixLevels(state.settings.reverbIntensity);
+    const { params } = levels;
     const signature = JSON.stringify(params);
     if (signature === controller.lastPostedParams) return;
     controller.lastPostedParams = signature;
     controller.dattorroNode.port.postMessage({ type: 'setParams', params });
-    if (controller.dryGain) {
-      rampGain(controller.dryGain.gain, Math.sqrt(Math.max(0, 1 - params.wetGain * params.wetGain)));
-    }
+    applyMixLevels(controller, levels);
+  }
+
+  // The only writer of the two gains that carry the mix. `computeMixLevels`
+  // owns the numbers; this ramps them, so no call site can drift.
+  function applyMixLevels(controller, levels) {
+    if (controller.dryGain) rampGain(controller.dryGain.gain, levels.dry);
+    if (controller.reverbCompGain) rampGain(controller.reverbCompGain.gain, levels.comp);
   }
 
   function pitchStateMatches(media, intended) {
@@ -1638,10 +1700,7 @@ function applyRuntimeState(runtime) {
     }
 
     controller.sourceStale = false;
-    if (controller.dryGain) {
-      const params = computePostParams(state.settings.reverbIntensity);
-      rampGain(controller.dryGain.gain, Math.sqrt(Math.max(0, 1 - params.wetGain * params.wetGain)));
-    }
+    applyMixLevels(controller, computeMixLevels(state.settings.reverbIntensity));
     if (controller.masterGain) {
       rampGain(controller.masterGain.gain, controller.media.volume);
     }
@@ -1680,6 +1739,7 @@ function applyRuntimeState(runtime) {
     if (controller.attached) {
       disconnectNode(controller.source);
       disconnectNode(controller.dryGain);
+      disconnectNode(controller.reverbCompGain);
       disconnectNode(controller.masterGain);
       if (controller.dattorroNode) {
         try { controller.dattorroNode.disconnect(); } catch {}
@@ -1703,6 +1763,7 @@ function applyRuntimeState(runtime) {
     controller.stream = null;
     controller.source = null;
     controller.dryGain = null;
+    controller.reverbCompGain = null;
     controller.masterGain = null;
     controller.dattorroNode = null;
 

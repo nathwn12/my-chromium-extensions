@@ -242,22 +242,37 @@ function main() {
   check('2. capped *0.42 wet mapping is gone', csrc.indexOf('* 0.42') === -1);
   const wetSrc = (csrc.match(/wetGain:\s*(Math\.pow\(i, 0\.75\)[^,\n]*),/) || [])[1] || '';
   const wetFn = new Function('I', 'return (' + wetSrc.replace(/\bi\b/g, 'I') + ');');
-  // Every dry-gain ramp (updateWetChain and alignBeforeAudible) must use the
-  // equal-power complement of the wet gain.
-  const drySrcs = [];
+  // The dry complement is owned by computeMixLevels: one formula there, and
+  // every dry-gain ramp takes its value from that owner instead of re-deriving
+  // it, so the sites cannot drift apart.
+  const dryExpr = ((csrc.match(/dry:\s*([^\n]+)/) || [])[1] || '').replace(/,\s*$/, '').trim();
+  const dryOwners = csrc.match(/Math\.sqrt\(Math\.max\(0, 1 - [^)]*\)\)/g) || [];
+  const headroomSrc = (csrc.match(/const MIX_HEADROOM = ([0-9.]+);/) || [])[1] || '';
+  const headroom = headroomSrc === '' ? NaN : Number(headroomSrc);
+  const drySites = [];
   const dryRe = /rampGain\(controller\.dryGain\.gain,\s*([^;]+)\);/g;
   for (let dryMatch = dryRe.exec(csrc); dryMatch; dryMatch = dryRe.exec(csrc)) {
-    drySrcs.push(dryMatch[1]);
+    drySites.push(dryMatch[1]);
   }
   check(
-    '2. both dry sites use the equal-power complement',
-    drySrcs.length >= 2 && drySrcs.every((s) => s.indexOf('Math.sqrt') !== -1),
-    drySrcs.join(' | ')
+    '2. one owner holds the equal-power complement, every dry ramp uses it',
+    dryExpr !== '' &&
+      dryOwners.length === 1 &&
+      drySites.length >= 1 &&
+      drySites.every((s) => s.trim() === 'levels.dry'),
+    'owner=' + JSON.stringify(dryExpr) + ' sites=' + drySites.join(' | ')
   );
-  const dryFns = drySrcs.map(
-    (s) => new Function('W', 'return (' + s.replace(/initialParams\.wetGain/g, 'W').replace(/params\.wetGain/g, 'W') + ');')
+  check(
+    '2. the mix headroom is one constant, applied to the dry cell',
+    Number.isFinite(headroom) && headroom > 0 && headroom <= 1 && dryExpr.indexOf('MIX_HEADROOM') === 0,
+    'headroom=' + headroomSrc + ' dry=' + JSON.stringify(dryExpr)
   );
-  const dry = dryFns.length > 0 ? dryFns[dryFns.length - 1] : () => NaN;
+  const dryFn = dryExpr
+    ? new Function('W', 'H', 'return (' + dryExpr.replace(/MIX_HEADROOM/g, 'H').replace(/\bwet\b/g, 'W') + ');')
+    : () => NaN;
+  // Divided by the headroom: the complement itself must still sum to unity
+  // power, and the constant is a separate, uniform trim.
+  const dry = (w) => dryFn(w, headroom) / headroom;
   let worstDip = 0;
   for (let k = 0; k <= 100; k++) {
     const i = k / 100;
@@ -269,10 +284,10 @@ function main() {
   console.log(
     '     wet(0)=' + wetFn(0).toFixed(3) + ' wet(1)=' + wetFn(1).toFixed(3) +
     ' dry(0)=' + dry(wetFn(0)).toFixed(3) + ' dry(1)=' + dry(wetFn(1)).toFixed(3) +
-    ' worst dip=' + worstDip.toFixed(3) + ' dB'
+    ' headroom=' + headroom + ' worst dip=' + worstDip.toFixed(3) + ' dB'
   );
   check('2. i=0 fully dry (wet 0, dry 1)', wetFn(0) === 0 && dry(0) === 1);
-  check('2. i=1 fully wet (wet 1, dry 0)', wetFn(1) === 1 && dry(1) === 0);
+  check('2. i=1 fully wet (wet 1, dry 0)', wetFn(1) === 1 && Math.abs(dry(1)) < 1e-12);
   check('2. level dip < 1 dB across 0..1', worstDip > -1, 'worst dip ' + worstDip.toFixed(2) + ' dB');
 
   // --- 3. DENORMALS: 40 s of silence leaves nothing below 1e-20 ---
