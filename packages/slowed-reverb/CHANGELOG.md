@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.6] - 2026-11-18
+
+- Revert: the wheel volume no longer tries to persist across a refresh. That
+  change broke the one thing the wheel must always do - move YouTube Music's own
+  volume slider - so it is withdrawn in full rather than patched blind. Volume
+  returns to the 1.2.4 behaviour: the wheel writes the page player, the slider
+  follows, and nothing survives a reload.
+- Unchanged in this release: the latched section repeat, the permanent
+  percentage readout beside Repeat, and level compensation with constant
+  headroom.
 ## [1.2.5] - 2026-11-18
 
 - Fix: a saved section repeat now stays latched for the whole song. The loop
