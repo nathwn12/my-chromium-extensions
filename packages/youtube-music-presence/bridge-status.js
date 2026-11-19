@@ -42,9 +42,6 @@ export const BRIDGE = Object.freeze({
 
 export const REASON = Object.freeze({
   ARRPC_CLOSED: "arrpc-closed",
-  // The host's wire vocabulary already names a Discord desktop pipe that is not
-  // there; without this member the worker dropped the hint and read a quit
-  // Discord as a silent one.
   DISCORD_CLOSED: "discord-closed",
   HOST_MISSING: "host-missing",
   REJECTED: "rejected",
@@ -93,15 +90,7 @@ export const HUNG_RETRY_LIMIT = 3;
 
 const PATTERNS = [
   [/no arrpc|arrpc.*(closed|unreachable|unavailable)|connection closed/i, REASON.ARRPC_CLOSED],
-  // Nothing listening on the arRPC ports surfaces as ECONNREFUSED, and a
-  // listener that stopped mid-frame as ECONNRESET.
   [/\bECONNREFUSED\b|\bECONNRESET\b|\bEHOSTUNREACH\b/i, REASON.ARRPC_CLOSED],
-  // A Discord desktop pipe that nothing answered is Discord not running, the
-  // same absence as a closed arRPC: `no Discord IPC pipe answered on N path(s)`
-  // is the IPC client's summary, `connect ENOENT \\.\pipe\discord-ipc-N` is the
-  // primary probe error, and `transport-unavailable` is the host's own ack code
-  // for a pipe that was not there (only the IPC leg ever returns it). A handshake
-  // or reply timeout is Discord running but silent, and stays HUNG below.
   [
     /no Discord IPC pipe answered|Discord IPC pipe (?:is )?(?:absent|closed|unavailable)|ENOENT[^\n]*discord-ipc|transport-unavailable/i,
     REASON.DISCORD_CLOSED,
@@ -141,8 +130,6 @@ export function classifyBridgeFailure(detail, options = {}) {
   const retries = Number.isInteger(options.retries) && options.retries > 0 ? options.retries : 0;
   const hint = typeof options.reason === "string" && hasReason(options.reason) ? options.reason : null;
   const matched = PATTERNS.find(([re]) => re.test(text))?.[1] ?? null;
-  // An explicit fatal flag is a permanent rejection by definition; otherwise a
-  // hint wins, then the diagnostic pattern, then a neutral transient hang.
   const kind = options.fatal ? REASON.REJECTED : hint ?? matched ?? REASON.HUNG;
   const exhausted = kind === REASON.HUNG && retries >= HUNG_RETRY_LIMIT;
   const isError = kind === REASON.REJECTED || exhausted;
@@ -152,7 +139,6 @@ export function classifyBridgeFailure(detail, options = {}) {
     availability: AVAILABILITY.UNAVAILABLE,
     bridgeState: isError ? BRIDGE.ERROR : BRIDGE.WAITING,
     reason: copyForReason(kind, exhausted),
-    // Never surface an expected absence as an error; `detail` stays raw for logs.
     error: isError ? copyForReason(kind, exhausted) : null,
     detail: text,
     retryable: !isError,
@@ -223,8 +209,6 @@ export const STATUS_DEFAULT = Object.freeze({
 export function bridgeStatusOf(current, message, retries = 0) {
   const carried = { ...STATUS_DEFAULT, ...(current || {}) };
   if (!message || message.t !== "status") return carried;
-  // The host names the transport it used on every frame; an unrecognised value
-  // never reaches a surface, and a frame without one keeps the last known.
   const base = {
     ...carried,
     transport: chosenTransportOf(message.transport) ?? chosenTransportOf(carried.transport),
@@ -254,8 +238,6 @@ export function bridgeStatusOf(current, message, retries = 0) {
   }
 
   if (message.state === BRIDGE.ERROR) {
-    // The host marks every non-permanent failure `fatal: false`; never promote
-    // one to an error just because its diagnostic text matched a pattern.
     const verdict =
       message.fatal === false
         ? {

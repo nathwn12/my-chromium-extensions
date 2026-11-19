@@ -7,8 +7,6 @@
   const DEFAULT_SETTINGS = {
     slow: 1,
     reverbIntensity: 0,
-    // The wheel-set volume in player scale. `null` means never set: the page's
-    // own restored value stands and nothing is written on load.
     volume: null,
   };
 
@@ -46,8 +44,6 @@
       reverbIntensity: clampIntensity(
         Object.prototype.hasOwnProperty.call(next, 'reverbIntensity') ? next.reverbIntensity : DEFAULT_SETTINGS.reverbIntensity
       ),
-      // Optional on purpose: a stored object written before this field existed
-      // stays valid and reads as "never set".
       volume: clampVolume(Object.prototype.hasOwnProperty.call(next, 'volume') ? next.volume : DEFAULT_SETTINGS.volume),
     };
   }
@@ -86,9 +82,6 @@
     return normalized.slow === 1 && normalized.reverbIntensity === 0;
   }
 
-  // Prod-facing status copy. Internal error text (runtime unavailable, worklet
-  // failure, attach failure) belongs in lastError + the console, never in the
-  // popup. Neutral settings with a live graph are Active, not an error.
   function friendlyStatus(live) {
     if (!live || typeof live !== 'object') return 'Waiting for tab';
     if (!live.eligible) return 'Waiting for tab';

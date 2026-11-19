@@ -246,10 +246,7 @@ async function main() {
     stdio: ["pipe", "pipe", "pipe"],
     env: {
       ...process.env,
-      // The one port the fake arRPC listens on...
       YTMP_ARRPC_PORTS: String(PORT),
-      // ...and a pipe that cannot exist, so `auto` falls back to arRPC instead
-      // of publishing to a real Discord desktop on this machine.
       YTMP_DISCORD_PIPES: `\\\\.\\pipe\\ytmp-e2e-absent-${process.pid}-${Date.now().toString(36)}`,
     },
   });

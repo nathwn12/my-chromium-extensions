@@ -21,7 +21,6 @@ const { DEFAULT_CLIENT_ID } = await import(
 
 const OVERRIDE = "123456789012345678";
 
-// Every element options.js looks up at load, plus the form and its controls.
 const ELEMENT_IDS = [
   "client-form",
   "clientId",
@@ -145,8 +144,6 @@ async function openOptions(initial = {}) {
     getElementById: (id) => elements.get(id) || null,
     execCommand: () => false
   };
-  // Node exposes `navigator` as a getter-only global; define it to stand in for
-  // the page's clipboard surface.
   Object.defineProperty(globalThis, "navigator", {
     value: { clipboard: { async writeText() {} } },
     configurable: true

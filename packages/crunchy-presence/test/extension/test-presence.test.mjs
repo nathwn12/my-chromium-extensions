@@ -177,8 +177,6 @@ test("the test presence keeps the timer line while the synopsis option is off", 
 });
 
 test("a deferred test presence never reaches the host", async () => {
-  // Timers are held so a deferral cannot fire mid-test; the limiter's window
-  // is measured on the real clock, and four reports fill it at once.
   mock.timers.enable({ apis: ["setTimeout"] });
   try {
     const harness = await boot({ synopsis: true });
@@ -207,9 +205,6 @@ test("a deferred test presence never reaches the host", async () => {
 });
 
 test("a deferred limiter push does not record the activity as sent", () => {
-  // The limiter's own flush records lastSentJson when it really sends, so the
-  // only wrong state is claiming an undelivered payload was sent: the worker
-  // has no exported seam for lastSentJson, so the guard itself is asserted.
   assert.match(
     workerSource,
     /if \(!limiter\.hasPending\) lastSentJson = JSON\.stringify\(activity\);/,

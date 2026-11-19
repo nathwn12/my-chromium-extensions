@@ -1,12 +1,5 @@
 'use strict';
 
-/*
- * qa/proof-f4.js - F4 teardown proof (pure Node stub harness, real content-script.js).
- * Attaches, then drives the bypass path (TOGGLE_CHANGED enabled:false) and asserts
- * every captured track was stopped and the context suspended once zero controllers
- * remain attached. RED: tracks running, context running. GREEN: both released.
- * Exit 0 = holds, 1 = failed, 2 = harness setup problem.
- */
 
 const { createContentEnv } = require('./stub-env');
 

@@ -14,7 +14,6 @@ const detailEl = el("detail");
 const reasonEl = el("reason");
 const buttonsEl = el("buttons");
 const enabledEl = el("enabled");
-// Single vocabulary across popups: the toggle reads "Active".
 const toggleLabel = document.querySelector(".toggle span");
 if (toggleLabel) toggleLabel.textContent = "Active";
 
@@ -54,8 +53,6 @@ async function render() {
   appEl.textContent = override ? `App: custom ${effective}` : "App: Crunchyroll";
   appOverrideEl.hidden = !override;
   enabledEl.checked = enabled;
-  // The toggle stays operable in every state: turning presence OFF must never
-  // be blocked by Discord being absent.
   enabledEl.disabled = false;
 
   reasonEl.hidden = !view.reason;
@@ -85,15 +82,11 @@ async function render() {
     buttonsEl.hidden = buttons.length === 0;
   } else {
     nowEl.textContent = "Nothing playing";
-    // The reason lives in its own live region so a playing activity never
-    // hides why presence is paused. Raw diagnostics never reach this text.
     detailEl.textContent = "Open a Crunchyroll episode to start.";
   }
 }
 
 enabledEl.addEventListener("change", async () => {
-  // Optimistic: the pill never claims the pre-toggle state while the worker
-  // persists. Turning off always sends the clear; turning on waits.
   if (enabledEl.checked) {
     bridge.textContent = "Waiting";
     bridge.dataset.state = "connecting";

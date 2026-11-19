@@ -1,12 +1,5 @@
 'use strict';
 
-/*
- * qa/proof-f3.js - F3 mono-mix proof (pure Node, real dattorro-worklet.js).
- * Runs the same input through a stereo instance and a 1-channel instance and
- * asserts the mono output equals the intended mix: the mean of the two stereo
- * channels. RED (alias bug): mono buffer holds only the right-channel result.
- * Exit 0 = holds, 1 = failed, 2 = harness setup problem.
- */
 
 const fs = require('fs');
 const path = require('path');

@@ -44,7 +44,6 @@ function describeActivity(activity) {
   if (!activity || typeof activity !== "object") return "Nothing playing";
   const title = typeof activity.details === "string" ? activity.details : "";
   const rawState = typeof activity.state === "string" ? activity.state : "";
-  // Header is static; the row is track then artist. Drop a state repeating the track.
   const state =
     rawState && title && rawState.toLowerCase() !== title.toLowerCase() ? rawState : "";
   const parts = [title, state].filter((part) => typeof part === "string" && part);
@@ -96,7 +95,6 @@ function render() {
         application: "built-in",
         enabled,
       },
-      // Raw diagnostics: bugs need these strings, the card never shows them.
       detail: status.detail ?? null,
       activities,
       hostSources: status.hostSources ?? {},
@@ -148,7 +146,6 @@ chrome.storage.onChanged.addListener((changes, area) => {
     if (next && typeof next === "object") status = next;
     render();
   }
-  // Stored transport, per-site and application-id settings are ignored.
 });
 
 void load();

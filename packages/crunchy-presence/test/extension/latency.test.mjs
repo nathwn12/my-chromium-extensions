@@ -31,7 +31,6 @@ const base = (overrides = {}) => ({
   ...overrides
 });
 
-// 1. null clear is delivered, not swallowed (old: `if (!pending) return`).
 test("limiter delivers a null clear payload", () => {
   const sent = [];
   const limiter = createCoalescingLimiter({ send: (v) => sent.push(v) });
@@ -40,7 +39,6 @@ test("limiter delivers a null clear payload", () => {
   assert.equal(limiter.hasPending, false);
 });
 
-// 2. ack ok:false records lastError without latching bridgeState to error.
 test("ack ok:false keeps bridge state and records lastError", () => {
   assert.equal(typeof applyAckResult, "function");
   const next = applyAckResult(
@@ -56,14 +54,12 @@ test("ack ok:false keeps bridge state and records lastError", () => {
   assert.equal(connected.bridgeState, "connected");
 });
 
-// 2b. offline payload is stashed and flushed (wiring present).
 test("background stashes offline payloads and flushes on status/ack", () => {
   assert.match(bgSource, /hasStashed/);
   assert.match(bgSource, /flushStashed/);
   assert.match(bgSource, /stashedActivity = activity/);
 });
 
-// 4. timestamps stable for an unchanged position second.
 test("buildActivity timestamps are stable within one position second", () => {
   const a = buildActivity(base({ position: 754.1 }), NOW);
   const b = buildActivity(base({ position: 754.9 }), NOW + 400);
@@ -71,14 +67,12 @@ test("buildActivity timestamps are stable within one position second", () => {
   assert.deepEqual(a.timestamps, { start: NOW - 754_000, end: NOW + (1440 - 754) * 1000 });
 });
 
-// 4b. lockstep advance keeps start fixed.
 test("buildActivity start is stable as position advances with the clock", () => {
   const a = buildActivity(base({ position: 10.2 }), NOW);
   const b = buildActivity(base({ position: 11.2 }), NOW + 1000);
   assert.equal(a.timestamps.start, b.timestamps.start);
 });
 
-// 8. tab-scoped gone deletes the whole tab; updatedAt never bumped.
 test("applyGoneToEntry deletes the tab on tab-scoped gone", () => {
   assert.equal(typeof applyGoneToEntry, "function");
   const entry = {
@@ -92,8 +86,6 @@ test("applyGoneToEntry deletes the tab on tab-scoped gone", () => {
   assert.equal(entry.updatedAt, 1000);
 });
 
-// 8a. frame-scoped gone on the top frame drops only it; the tab survives
-// while an iframe frame remains, and is deleted when nothing remains.
 test("applyGoneToEntry drops only the top frame on frame-scoped gone", () => {
   const entry = {
     tabId: 9,
@@ -112,7 +104,6 @@ test("applyGoneToEntry drops only the top frame on frame-scoped gone", () => {
   assert.equal(last, "delete");
 });
 
-// 8b. iframe gone removes only that frame without bumping updatedAt.
 test("applyGoneToEntry drops one iframe frame without touching updatedAt", () => {
   const entry = {
     tabId: 9,
@@ -131,7 +122,6 @@ test("applyGoneToEntry drops one iframe frame without touching updatedAt", () =>
   assert.equal(entry.updatedAt, 1000);
 });
 
-// 9. navigate-away detection + wiring.
 test("crunchyroll url predicate and tabs.onUpdated wiring", () => {
   assert.equal(isCrunchyrollPageUrl("https://www.crunchyroll.com/watch/G1"), true);
   assert.equal(isCrunchyrollPageUrl("https://crunchyroll.com/series/x"), true);
@@ -141,20 +131,16 @@ test("crunchyroll url predicate and tabs.onUpdated wiring", () => {
   assert.match(bgSource, /isCrunchyrollPageUrl/);
 });
 
-// 10. watchdog is created only when absent.
 test("watchdog checks for an existing alarm before creating", () => {
   assert.match(bgSource, /alarms\.get/);
 });
 
-// 11. reconnect resets the coalescing window so republish is immediate.
 test("limiter resetWindow releases a queued republish at once", () => {
   const sent = [];
   const scheduled = [];
   let now = 0;
   const limiter = createCoalescingLimiter({
     send: (v) => sent.push(v),
-    // Ordinary payloads fill the whole window, so max 2 leaves two
-    // ordinary slots: the first two sends land, the third queues.
     max: 2,
     windowMs: 20000,
     now: () => now,
@@ -174,19 +160,13 @@ test("limiter resetWindow releases a queued republish at once", () => {
   assert.deepEqual(sent, ["a", "b", "c"]);
 });
 
-// 7. content script pageshow + low-rate keepalive while a video exists.
 test("content script handles bfcache restore and paused keepalive", () => {
   assert.match(contentSource, /pageshow/);
   assert.match(contentSource, /KEEPALIVE_MS/);
   assert.match(contentSource, /lastReportAt/);
 });
 
-// 12a. pause after an event-driven burst is delivered in the same tick.
 test("pause after a burst of position reports is delivered in the same tick", () => {
-  // Cause fix: content.js no longer reports on timeupdate, so a 1 Hz
-  // position stream never reaches the limiter. The largest realistic
-  // event-driven burst (play + seek) plus the pause fits the ordinary
-  // budget and must send with no deferral.
   assert.doesNotMatch(contentSource, /timeupdate/);
   const sent = [];
   const scheduled = [];
@@ -213,8 +193,6 @@ test("pause after a burst of position reports is delivered in the same tick", ()
   assert.equal(scheduled.length, 0);
 });
 
-// 12b. null clear after four rapid non-null updates is delivered immediately
-// and never spends the budget.
 test("null clear after four rapid non-null updates is delivered immediately", () => {
   const sent = [];
   const scheduled = [];
@@ -230,13 +208,11 @@ test("null clear after four rapid non-null updates is delivered immediately", ()
     }
   });
   for (const value of ["u1", "u2", "u3", "u4"]) limiter.push(value);
-  // All four ordinary updates fit the window; nothing is deferred.
   assert.deepEqual(sent, ["u1", "u2", "u3", "u4"]);
   assert.equal(limiter.hasPending, false);
   limiter.push(null);
   assert.deepEqual(sent, ["u1", "u2", "u3", "u4", null]);
   assert.equal(limiter.hasPending, false);
-  // The clear was not counted: a fifth ordinary update still waits.
   limiter.push("u5");
   assert.deepEqual(sent, ["u1", "u2", "u3", "u4", null]);
   assert.equal(limiter.pending, "u5");
@@ -245,7 +221,6 @@ test("null clear after four rapid non-null updates is delivered immediately", ()
   assert.deepEqual(sent, ["u1", "u2", "u3", "u4", null, "u5"]);
 });
 
-// 12c. a 1 Hz stream no longer fills the bucket (the old cadence is gone).
 test("a 1 Hz stream no longer fills the bucket (the old cadence is gone)", () => {
   assert.doesNotMatch(contentSource, /timeupdate/);
   assert.doesNotMatch(contentSource, /TIMUPDATE/);

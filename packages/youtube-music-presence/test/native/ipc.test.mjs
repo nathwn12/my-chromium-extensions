@@ -167,13 +167,10 @@ async function startMockDiscord(options = {}) {
     async close() {
       for (const socket of state.sockets) socket.destroy();
       await new Promise((resolve) => server.close(resolve));
-      // Closing a Unix domain socket leaves the file behind; a named pipe
-      // needs no cleanup. Unique names keep runs independent either way.
       if (process.platform !== "win32") {
         try {
           fs.rmSync(pipePath, { force: true });
         } catch {
-          // Another process already removed it.
         }
       }
     },
@@ -397,8 +394,6 @@ test("the default budget forwards forty activities inside one window", async (t)
   t.after(() => mock.close());
 
   await client.connect();
-  // A non-1x playback makes the worker send once a second; the host guard must
-  // stay above that in either pacing mode.
   for (let i = 1; i <= 40; i += 1) {
     const result = await client.setActivity({ type: 3, details: `track ${i}` });
     assert.equal(result.ok, true);

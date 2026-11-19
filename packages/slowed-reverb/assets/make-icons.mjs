@@ -25,8 +25,6 @@ const SUPERSAMPLE = 8;
 const TILE = [0x0b, 0x0f, 0x14];
 const LIGHT = [0xee, 0xf3, 0xf6]; // tall left bar (matches icon.svg)
 const PINK = [0xff, 0x7a, 0x9c]; // descending tail (matches icon.svg)
-// Bars as tile fractions measured from icon.svg (tile 16..496 of 512):
-// x=112/170/228/286/344 w=40; y/h per bar; tile-relative u=(x-16)/480.
 const BARS = [
   { u: 96 / 480, v: 140 / 480, w: 40 / 480, h: 200 / 480, c: LIGHT },
   { u: 154 / 480, v: 165 / 480, w: 40 / 480, h: 150 / 480, c: PINK },

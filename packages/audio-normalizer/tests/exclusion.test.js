@@ -11,7 +11,6 @@ const sharedApi = require(path.join(ROOT, 'shared.js'));
 async function settle(ms = 40) { await new Promise((r) => setTimeout(r, ms)); }
 function clone(v) { return v === undefined ? undefined : JSON.parse(JSON.stringify(v)); }
 
-// ---------- fake chrome.storage.local (per-site aware, onChanged wired) ----------
 function createFakeStorage(initial = {}) {
   let store = clone(initial);
   let listeners = [];
@@ -51,7 +50,6 @@ function createFakeStorage(initial = {}) {
   };
 }
 
-// ---------- fake chrome.scripting with a live registration registry ----------
 function createFakeScripting() {
   const registered = new Map();
   const calls = { execute: [], register: [], update: [], unregister: [] };
@@ -61,8 +59,6 @@ function createFakeScripting() {
     executeScript: async (opts) => {
       calls.execute.push({
         ...clone(opts),
-        // JSON drops functions: keep the name so a test can prove WHICH
-        // function the worker injects (gate, presence probe, hook teardown).
         funcName: opts.func ? opts.func.name : null,
         files: opts.files ? opts.files.slice() : null,
       });
@@ -178,13 +174,9 @@ function loadContentFrame(href, storage, { excludedCache = null, fastTimerMs = n
   const intervals = new Map();
   let nextTimer = 1;
   let timerRegistrations = 0;
-  // Timer delays at or above `fastTimerMs` fire at once: a test that proves a
-  // bounded wait does not have to sit through the real budget.
   const delayOf = (ms) => (fastTimerMs !== null && Number(ms) >= fastTimerMs ? 0 : ms);
   const sandbox = {
     console,
-    // Tracked AND real: product timers must actually fire in these tests, but
-    // nothing may keep the process alive after a test ends.
     setTimeout: (fn, ms) => {
       timerRegistrations += 1;
       const id = nextTimer++;
@@ -228,9 +220,6 @@ function loadContentFrame(href, storage, { excludedCache = null, fastTimerMs = n
           removeListener: (fn) => removedRuntime.push(fn),
         },
         sendMessage: async (msg) => {
-          // Control flows extension -> page only: the content script asks the WORKER,
-          // which is the only party allowed to reach the MAIN world. The harness
-          // records that request; the page itself receives nothing.
           if (msg && msg.type === 'CONTROL_HOOK') {
             const actionType = { start: 'START', stop: 'STOP', setGain: 'SET_GAIN', status: 'STATUS_REQUEST' }[msg.action] || msg.action;
             postedToPage.push({ type: actionType, via: 'worker', action: msg.action, gainDb: (msg.payload || {}).gainDb });
@@ -248,7 +237,6 @@ function loadContentFrame(href, storage, { excludedCache = null, fastTimerMs = n
     },
     document: {
       hidden: false,
-      // document_start: this instance was injected while the document loaded.
       readyState: 'loading',
       documentElement: { setAttribute: () => {}, removeAttribute: () => {} },
       addEventListener: (t, fn) => { (documentListeners[t] = documentListeners[t] || []).push(fn); },
@@ -262,8 +250,6 @@ function loadContentFrame(href, storage, { excludedCache = null, fastTimerMs = n
   vm.createContext(sandbox);
   vm.runInContext(src('content-script.js'), sandbox, { filename: 'content-script.js' });
   const sendMessage = (message) => new Promise((resolve) => {
-    // No listener = no receiver: the platform rejects, and the product's
-    // fail-closed frames have exactly zero listeners.
     if (typeof runtimeListeners[0] !== 'function') {
       resolve({ ok: false, error: 'no receiver' });
       return;
@@ -390,19 +376,14 @@ test('ancestorSiteKeys lists parents nearest-first, never itself', () => {
 });
 
 test('normalization: trailing dot before the port, unicode hosts, and bare-key ancestors', () => {
-  // Trailing dot BEFORE the port: the dot strip must happen after the port
-  // strip, or the key keeps a trailing dot.
   assert.equal(sharedApi.getSiteKey('example.com.:443'), 'example.com');
   assert.equal(sharedApi.getSiteKey('example.com.'), 'example.com');
   assert.equal(sharedApi.hostMatchesSiteKey('example.com.:443', 'example.com'), true);
-  // IPv6 groups are not ports.
   assert.equal(sharedApi.getSiteKey('[::1]:8080'), '::1');
 
-  // Unicode hosts canonicalize to punycode, like location.hostname does.
   assert.equal(sharedApi.getSiteKey('bücher.example'), 'xn--bcher-kva.example');
   assert.equal(sharedApi.hostMatchesSiteKey('www.bücher.example', 'xn--bcher-kva.example'), true);
 
-  // The suffix rule has no label floor for ancestors either.
   assert.deepEqual(sharedApi.ancestorSiteKeys('foo.localhost'), ['localhost']);
   assert.equal(sharedApi.isHostExcluded('foo.localhost', ['localhost']), true);
   assert.equal(sharedApi.isHostExcluded('example.com', ['com']), true);
@@ -512,8 +493,6 @@ test('registration: enabled hosts are matches, excluded hosts are excludeMatches
   assert.deepEqual(registration.excludeMatches, ['*://*.tiktok.com/*'], 'derived from excluded hosts');
   assert.ok(!registration.matches.includes('<all_urls>'), 'never all_urls');
 
-  // The browser-visible registry answers with the excludes (the same assertion
-  // the cost-audit harness makes from the service worker).
   const seen = await bg.scripting.api.getRegisteredContentScripts();
   assert.ok(seen.some((s) => s.excludeMatches.includes('*://*.tiktok.com/*')));
   assert.ok(seen.every((s) => !s.matches.includes('*://*.tiktok.com/*')));
@@ -529,7 +508,6 @@ test('registration: nothing enabled means nothing registered at all', async () =
   assert.equal(bg.scripting.registered.size, 0, 'no registration: zero injected code on idle hosts');
   assert.equal(bg.scripting.calls.register.length, 0, 'never registered');
 
-  // ...and a registration that stops matching is removed, not left stale.
   await bg.sendMessage({ type: 'SET_SITE_STATE', siteKey: 'example.com', set: { enabled: true } });
   await settle();
   assert.equal(bg.scripting.registered.size, 1, 'enabled host registered');
@@ -562,8 +540,6 @@ test('registration: an exclusion change re-registers, an install and a startup b
   assert.deepEqual(afterUndo.matches, ['*://example.com/*', '*://tiktok.com/*'], 'undo re-registers the host');
   assert.deepEqual(afterUndo.excludeMatches, []);
 
-  // A startup is a reconciliation, not a rewrite: the descriptor already says
-  // what the records derive, so nothing is written on the wake.
   bg.scripting.calls.register.length = 0;
   bg.scripting.calls.update.length = 0;
   await bg.runStartup();
@@ -573,7 +549,6 @@ test('registration: an exclusion change re-registers, an install and a startup b
     0,
     'startup reconciles an identical descriptor without rewriting it',
   );
-  // ...and it CORRECTS one that no longer says it: the self-healing half.
   bg.scripting.registered.set('tab-normalizer-content-script', {
     ...Array.from(bg.scripting.registered.values())[0],
     matches: ['*://example.com/*'],
@@ -594,9 +569,6 @@ test('registration: a worker WAKE reconciles a descriptor a dead worker left beh
     'site:tiktok.com': { enabled: true, gainDb: 0, seq: 2, mirror: true, excluded: true },
   });
   const scripting = createFakeScripting();
-  // The crash-shaped sequence: a previous worker wrote this while tiktok.com was
-  // still enabled, then died before the exclusion write's pass. The descriptor
-  // now matches a host the records exclude.
   scripting.registered.set('tab-normalizer-content-script', {
     id: 'tab-normalizer-content-script',
     js: ['shared.js', 'content-script.js'],
@@ -608,7 +580,6 @@ test('registration: a worker WAKE reconciles a descriptor a dead worker left beh
     world: 'ISOLATED',
     persistAcrossSessions: true,
   });
-  // A new worker: no message, no install, no startup event — only the wake.
   const bg = loadBackground(storage, { scripting });
   await settle(80);
 
@@ -644,8 +615,6 @@ test('registration: a rejected update fails closed, and the next wake heals it',
     'both hosts are matches while enabled',
   );
 
-  // The exclusion write lands; the update that should remove tiktok.com from
-  // matches rejects.
   scripting.failNextUpdate('Invalid value for host_wildcard');
   await bg.sendMessage({ type: 'SET_SITE_STATE', siteKey: 'tiktok.com', set: { excluded: true } });
   await settle(60);
@@ -656,8 +625,6 @@ test('registration: a rejected update fails closed, and the next wake heals it',
     'a descriptor that could not be corrected was dropped: fail closed, never a stale match on an excluded host',
   );
 
-  // A worker restart over the same registry and storage: the wake must converge
-  // with no user action and no navigation.
   const revived = loadBackground(storage, { scripting });
   await settle(120);
   const healed = Array.from(scripting.registered.values())[0];
@@ -684,7 +651,6 @@ test('registration: when the descriptor cannot be updated OR removed, it is repo
   const initial = Array.from(scripting.registered.values())[0];
   assert.ok(initial.matches.includes('*://tiktok.com/*'), 'both hosts are matches to begin with');
 
-  // OS-level failure: the descriptor can be neither corrected nor removed.
   const api = scripting.api;
   const realUpdate = api.updateContentScripts;
   const realUnregister = api.unregisterContentScripts;
@@ -696,25 +662,20 @@ test('registration: when the descriptor cannot be updated OR removed, it is repo
   const answered = await bg.sendMessage({ type: 'GET_SITE_STATE', siteKey: 'example.com' });
   assert.equal(answered.ok, true, 'the extension keeps answering while registration is stuck');
 
-  // Loud, once — not once per attempt.
   assert.equal(
     lines.filter((line) => /REGISTRATION STUCK/.test(line)).length,
     1,
     'the stuck registration is reported exactly once',
   );
 
-  // Bounded: no synchronous re-entry. A retry is one timer away, not a loop.
   const attempts = () => scripting.calls.update.length + scripting.calls.register.length;
   const afterFirst = attempts();
   await settle(100);
   assert.ok(attempts() <= afterFirst + 2, `no runaway retry loop (attempts ${afterFirst} -> ${attempts()})`);
 
-  // The documented limit really is present here: the stale descriptor still
-  // matches the excluded host, because no API was able to remove it.
   const stuck = Array.from(scripting.registered.values())[0];
   assert.ok(stuck.matches.includes('*://tiktok.com/*'), 'LIMIT: the uncorrectable descriptor still matches');
 
-  // ...and the next wake converges as soon as the browser answers again.
   api.updateContentScripts = realUpdate;
   api.unregisterContentScripts = realUnregister;
   const revived = loadBackground(storage, { scripting, log });
@@ -731,8 +692,6 @@ test('registration failure is logged, not fatal, the gate layer still works, and
     'site:example.com': { enabled: true, gainDb: 0, seq: 1, mirror: true, excluded: false },
   });
   const scripting = createFakeScripting();
-  // Every registration write fails: the wake pass and the install pass both hit
-  // it, so the failure is not consumed by whichever pass arrives first.
   const realRegister = scripting.api.registerContentScripts;
   let rejectRegisters = true;
   scripting.api.registerContentScripts = async (scripts) => {
@@ -746,7 +705,6 @@ test('registration failure is logged, not fatal, the gate layer still works, and
   assert.equal(res.ok, true, 'the extension keeps answering after a registration failure');
   assert.equal(res.enabled, true);
 
-  // The bounded retry rebuilds it without a user action.
   rejectRegisters = false;
   await settle(400);
   assert.equal(bg.scripting.registered.size, 1, 'the retry registered the content script');
@@ -770,25 +728,18 @@ test('gate: a cached exclusion stops the content script before any listener or t
   assert.equal(frame.sandbox.__tabNormalizerContentScriptV5, undefined, 'nothing installed');
 });
 
-// Replaces the old fail-open assertion: a FRESH document with no cache must
-// install NOTHING until storage has answered, and an excluded answer must keep
-// it that way. (The previous test asserted the opposite and was the defect.)
 test('gate: a fresh document installs nothing before the answer, and never for an excluded host', async () => {
   const storage = createFakeStorage({
     'site:tiktok.com': { enabled: true, gainDb: 0, seq: 1, mirror: true, excluded: false },
   });
-  // Nothing is installed synchronously: the storage answer has not arrived.
   const pending = loadContentFrame('https://www.tiktok.com/foryou', storage, {
     excludedCache: { hosts: [] },
   });
   assert.equal(pending.liveListeners().length, 0, 'no listener before the answer');
-  // One timer, and it is the bounded read guard itself (never an SPA watch or a
-  // retry): the frame does no work while the answer is outstanding.
   assert.deepEqual([...pending.timeouts.values()], [2000], 'only the read budget is pending');
   await settle();
   assert.ok(pending.liveListeners().length > 0, 'a known, non-excluded host arms after the answer');
 
-  // Same cold start, but the stored truth says excluded: it stays inert.
   const excludedStorage = createFakeStorage({
     'site:tiktok.com': { enabled: true, gainDb: 0, seq: 1, mirror: true, excluded: true },
   });
@@ -821,15 +772,12 @@ test('bootstrap: a storage read that never answers is bounded, inert, observable
       return hang ? new Promise(() => {}) : realGet(...args);
     },
   };
-  // The bounded wait is real; this run makes it fire at once.
   const frame = loadContentFrame('https://example.com/watch', storage, {
     excludedCache: { hosts: [] },
     fastTimerMs: 1000,
   });
   await settle(200);
 
-  // Bounded: the read is retried exactly once, then given up on. A read that
-  // never resolves can therefore never hang the bootstrap forever.
   assert.equal(reads, 2, `one idle read plus one retry (saw ${reads})`);
   assert.equal(frame.intervals.size, 0, 'no SPA watch');
   assert.equal(frame.timeouts.size, 0, 'no timer is left behind');
@@ -841,15 +789,12 @@ test('bootstrap: a storage read that never answers is bounded, inert, observable
   assert.deepEqual(frame.posted, [], 'the page received nothing');
   assert.deepEqual(frame.postedToPage, [], 'and the worker was asked for no hook control');
 
-  // Observable, not silent: the frame answers with the reason it is inert.
   const status = await frame.sendMessage({ type: 'GET_DOCUMENT_STATUS' });
   assert.equal(status.ok, true, 'the frame still answers');
   assert.equal(status.enabled, false, 'and does no work');
   assert.equal(status.hookAlive, false);
   assert.match(String(status.bootstrapError), /timed out/i, 'the reason is reported');
 
-  // Recoverable: once storage answers, a soft re-check retries the read and
-  // arms the frame. A hung read cannot permanently disable an enabled site.
   hang = false;
   await frame.sendMessage({ type: 'SOFT_RECHECK_DOCUMENT' });
   await settle(120);
@@ -876,9 +821,6 @@ test('the exclusion signal creates nothing while the frame is torn down', async 
   assert.equal(frame.liveListeners().length, 0, 'everything else is released');
   assert.equal(frame.timeouts.size, 0, 'and no timer is pending');
 
-  // Ten relevant changes of every legacy and per-site shape: the surviving
-  // listener must CREATE nothing on a torn-down frame. No timer, no observer,
-  // no re-read loop — measured at registration, not after timers expire.
   const timersBefore = frame.timerRegistrations;
   for (let i = 0; i < 10; i += 1) {
     await storage.set({ activeSites: { 'www.tiktok.com': true } });
@@ -957,8 +899,6 @@ test('exclusion beats the transient session override', async () => {
   });
   const frame = loadContentFrame('https://www.tiktok.com/foryou', storage);
   await settle();
-  // There is no listener to deliver the override to: the frame was never
-  // armed, which is the strongest form of "exclusion beats the transient".
   await frame.sendMessage({
     type: 'SET_DOCUMENT_STATE', siteKey: 'tiktok.com', enabled: true, gainDb: 3, transient: true,
   });
@@ -987,9 +927,6 @@ test('live teardown: excluding an open tab stops audio and releases every listen
   await frame.sendMessage({ type: 'TOGGLE_CHANGED', siteKey: 'www.tiktok.com', enabled: true, excluded: true });
   await settle();
 
-  // The frame releases everything it owns, becomes inert, and asks the worker
-  // for exactly one thing: the STOP it can no longer perform itself (the worker
-  // answers by destroying that frame's hook). It never asks for work again.
   assert.deepEqual(frame.posted, [], 'the frame posts nothing to the page: there is no page channel');
   const stops = injected.filter((m) => m.type === 'CONTROL_HOOK' && m.action === 'stop');
   assert.equal(stops.length, 1, 'exactly one STOP is delegated to the worker');
@@ -1019,8 +956,6 @@ test('live teardown also follows a PARENT-host exclusion through the storage bro
     'site:tiktok.com': { enabled: true, gainDb: 0, seq: 2, mirror: true, excluded: true },
   });
   await settle(120);
-  // The frame learns the PARENT record's verdict, so its synchronous gate would
-  // refuse a re-entry even though its own key was never excluded.
   assert.ok(
     frame.sandbox.__tabNormalizerExclusionCache.hosts.includes('tiktok.com'),
     'the parent key is in the synchronous gate cache',
@@ -1035,11 +970,9 @@ test('gate runs before reinject(): an excluded re-entry calls nothing', async ()
   });
   const frame = loadContentFrame('https://www.tiktok.com/foryou', storage, { excludedCache: { hosts: [] } });
   await settle();
-  // Make the previous instance's reinject observable.
   let reinjectCalls = 0;
   frame.sandbox.__tabNormalizerContentScriptV5 = { reinject: () => { reinjectCalls += 1; } };
 
-  // Re-execute the same file in the same world with an excluded gate verdict.
   const nodeVm = require('node:vm');
   frame.sandbox.__tabNormalizerFrameGate = { host: 'www.tiktok.com', excluded: true };
   nodeVm.runInContext(src('content-script.js'), frame.sandbox, { filename: 'content-script.js#reinject' });
@@ -1053,7 +986,6 @@ test('teardown: the popup probe listener and its timer are cancelled', async () 
   });
   const frame = loadContentFrame('https://www.tiktok.com/foryou', storage);
   await settle(50);
-  // A popup status poll starts a probe: one window listener + a 1 s timeout.
   await frame.sendMessage({ type: 'GET_DOCUMENT_STATUS' });
   await settle(10);
   assert.ok(frame.timeouts.size > 0, 'the probe timer is live');
@@ -1073,13 +1005,8 @@ test('teardown is message-driven from the popup path: TOGGLE_CHANGED carries exc
   const broadcast = bg.tabsSent.find((c) => c.msg?.type === 'TOGGLE_CHANGED');
   assert.ok(broadcast, 'the open tab is messaged');
   assert.equal(broadcast.msg.excluded, true, 'the message carries the exclusion');
-  // All frames, not just the top one: a cross-origin frame of the excluded host
-  // does not share the tab's top-level URL and must tear down too.
   assert.equal(broadcast.options, undefined, 'an exclusion broadcast reaches every frame');
 
-  // The reliable half: the WORKER also pushes teardown straight into every
-  // MAIN world of every affected tab, so a frame whose content script is
-  // mid-read, hung, or already detached still loses its hook.
   const teardown = bg.scripting.calls.execute.find((c) => c.funcName === 'tnHookTeardownAll');
   assert.ok(teardown, 'the worker injects the teardown function');
   assert.equal(teardown.world, 'MAIN', 'into the world the hook lives in');
@@ -1096,10 +1023,6 @@ test('an ordinary (non-exclusion) broadcast also reaches every frame, and the si
   await settle();
   const broadcast = bg.tabsSent.find((c) => c.msg?.type === 'TOGGLE_CHANGED');
   assert.ok(broadcast);
-  // One send path for every broadcast: no frameId filter. A cross-origin frame
-  // of another site receives the message too, and drops it on its own exact
-  // `siteKey` match ('defect1c: disabling site A never disables embedded site
-  // B' proves that guard).
   assert.equal(broadcast.options, undefined, 'no frameId filter: every frame is addressed');
 });
 
@@ -1119,7 +1042,6 @@ test('popup: a first-ever enable shows the automatic reload, not an instruction'
       }
       return { ok: true };
     },
-    // The tab is going away: the document cannot answer.
     tabsSendMessage: async () => { throw new Error('Receiving end does not exist.'); },
   });
   await settle(60);
@@ -1133,8 +1055,6 @@ test('popup: a first-ever enable shows the automatic reload, not an instruction'
 });
 
 test('popup: a live enable says Active without a reload notice; a first-ever enable keeps the notice', async () => {
-  // A seen host: the background answers activation "live" and the tab reports
-  // an armed, processing document with the hook present.
   const live = loadPopup({
     tabUrl: 'https://example.com/watch',
     runtimeSendMessage: async (msg) => {
@@ -1168,8 +1088,6 @@ test('popup: a live enable says Active without a reload notice; a first-ever ena
   assert.match(liveText, /normalizer active/i, 'the honest state is shown');
   assert.equal(live.els['status-pill'].textContent, 'Active', 'and the pill is Active');
 
-  // A first-ever enable: no hook in the document yet, so the background says
-  // "reload" and the popup says so once.
   const first = loadPopup({
     tabUrl: 'https://fresh.example/watch',
     runtimeSendMessage: async (msg) => {
@@ -1249,15 +1167,12 @@ test('popup: exclusion and the re-enable both say a reload restores the page, on
   assert.match(text(), /nothing runs/i, 'the excluded state still explains that nothing runs');
   assert.match(text(), /reload restores this page/i, 'and says a reload restores the page');
 
-  // Undo: the live document cannot be re-normalized (its capture was released),
-  // so the just-re-enabled state carries the same quiet instruction.
   await popup.els['exclude-btn'].fire('click');
   await settle(80);
   assert.equal(popup.els.toggle.disabled, false, 'the switch is usable again');
   assert.match(text(), /reload restores this page/i, 'the re-enabled state says it too');
   assert.equal((text().match(/reload/gi) || []).length, 1, 'said once, on one line');
 
-  // Quiet means no new control: the popup is text-only about this.
   const html = src('popup.html');
   assert.ok(!/id\s*=\s*"[^"]*reload/i.test(html), 'no reload control was added');
 });

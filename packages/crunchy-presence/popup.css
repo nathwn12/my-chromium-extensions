@@ -75,7 +75,6 @@ h1 {
   border-color: #4d2323;
 }
 
-/* Display tone: waiting is neutral amber, never red. */
 .pill[data-tone="connected"] {
   color: var(--ok);
   border-color: #1f4d33;

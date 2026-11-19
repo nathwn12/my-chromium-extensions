@@ -63,8 +63,6 @@ function render() {
     view.isError ? "error" : state === "connected" ? "connected" : view.state === "off" ? "off" : "waiting";
   appNameEl.textContent = status.appName || "—";
   currentActivity.textContent = describeActivity(status.lastActivity);
-  // Same friendly vocabulary as the popup. The raw diagnostic stays in the
-  // copyable diagnostics block below.
   lastErrorEl.textContent = view.reason || "—";
   diagnostics.value = JSON.stringify(
     {
@@ -74,7 +72,6 @@ function render() {
         reason: status.reason,
         reasonKind: status.reasonKind,
         appName: status.appName,
-        // Raw detail is diagnostics only, never the status card.
         lastError: status.lastError,
         enabled: status.enabled,
         clientId: status.clientIdPresent ? "set" : "missing"
@@ -101,8 +98,6 @@ function showError(message) {
 
 async function load() {
   const stored = await chrome.storage.local.get(["clientId", "enabled", "synopsis"]);
-  // Show the override, not the effective built-in id: an empty field is the
-  // truthful fresh-install state and the label names the built-in application.
   clientInput.value = stored.clientId || "";
   status.enabled = stored.enabled !== false;
   synopsisEl.checked = stored.synopsis === true;

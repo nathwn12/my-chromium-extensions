@@ -2,19 +2,6 @@
 
 /* global require, __dirname */
 
-/*
- * test/composition-invariants.test.js - the cross-feature seams, Node only.
- *
- * Every behaviour below is covered by its own test file. This file exists
- * because a change can keep each unit green and still break its neighbour: the
- * volume lane passed 293 checks while the wheel stopped moving YouTube Music's
- * own slider, because a background state push re-armed the stored-volume
- * restore and wrote an older number over the fresh step.
- *
- * These assertions are static on purpose. They see the wiring the units cannot,
- * and they name the file the symbol must live in, so a move fails loudly
- * instead of passing against the wrong source.
- */
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
@@ -34,8 +21,6 @@ test('invariant: a wheel step writes the page player, so YTM own slider moves', 
     playerActions.indexOf('// -- sticky volume'),
   );
   assert.match(applyVolume, /pageHook\.setVolume\(percent\)/);
-  // The user's step must disarm the restore before it applies, or a pending
-  // restore can land on top of it.
   const wheel = playerActions.slice(
     playerActions.indexOf('function onWheel('),
     playerActions.indexOf('function applyVolume('),
@@ -47,9 +32,6 @@ test('invariant: a wheel step writes the page player, so YTM own slider moves', 
 });
 
 test('invariant: the stored volume is handed over exactly once per document', () => {
-  // Shape only, and it has been wrong before: 1.2.5 latched the hand-off before
-  // the controller existed and spent it on a null. The behaviour is proved in
-  // injection-lifecycle test H, which fails when this seam is broken.
   const restore = contentScript.slice(
     contentScript.indexOf('function restoreStoredVolume('),
     contentScript.indexOf('// Mute invariant'),
@@ -79,8 +61,6 @@ test('invariant: the stored volume is handed over exactly once per document', ()
 });
 
 test('invariant: a state push cannot write a volume the user did not ask for', () => {
-  // restoreVolume is the only path a push can reach, and it must refuse once the
-  // document settled or the user has interacted.
   const restore = playerActions.slice(
     playerActions.indexOf('function restoreVolume('),
     playerActions.indexOf('function attemptVolumeRestore('),

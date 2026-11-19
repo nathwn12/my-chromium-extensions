@@ -1,16 +1,5 @@
 'use strict';
 
-/*
- * qa/stub-env.js - shared pure-Node stub environment for content-script proofs.
- *
- * SAFETY (repo AGENTS.md ## Verification safety): plain Node only. No browser is
- * launched, no AudioContext with a device is created, no audio plays. The REAL
- * content-script.js is evaluated with browser globals stubbed (HTMLMediaElement,
- * document/window listeners, chrome.runtime, MutationObserver, AudioContext,
- * AudioWorkletNode) and driven through its real seams (chrome runtime messages,
- * DOM listeners, media events). Timers are fake/controllable; intervals are inert
- * so the process always exits.
- */
 
 const fs = require('fs');
 const path = require('path');
@@ -136,7 +125,6 @@ function createContentEnv(opts = {}) {
     disconnect() {}
   }
 
-  // ---------- stub chrome ----------
   const runtimeHandlers = [];
   const chromeStub = {
     runtime: {

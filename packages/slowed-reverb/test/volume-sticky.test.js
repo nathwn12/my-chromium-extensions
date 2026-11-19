@@ -2,18 +2,6 @@
 
 /* global require, __dirname, setImmediate */
 
-/*
- * test/volume-sticky.test.js - a wheel-set volume is sticky, Node only.
- *
- * Owner report: "The volume also isn't sticky. I set it to 20%, I refresh, it
- * goes back to the louder volume. Scroll volume is not sticky."
- *
- * The wheel wrote the page player and the element but never stored anything,
- * so every page load started again from whatever YouTube Music restored. These
- * tests pin the two halves of the fix: a coalesced write of the wheel value into
- * the site settings, and one restore per page load through the same page-hook
- * path the wheel uses. No browser, no audio: fake DOM, fake timers, fake hooks.
- */
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -31,7 +19,6 @@ const HOST_ATTR = 'data-slra-player-actions';
 const SAVE_DEBOUNCE_MS = 300;
 const RESTORE_RETRY_MS = 600;
 
-// Fake DOM
 
 function createElement(tagName) {
   const listeners = new Map();
@@ -231,7 +218,6 @@ function createDom() {
   };
 }
 
-// Fake timers, page hook, storage, harness
 
 function createTimers() {
   let nextId = 1;
@@ -285,7 +271,6 @@ function createHarness(options) {
   const clock = 1000;
 
   const pageHook = {
-    // YTM writes the element volume alongside the player value.
     setVolume(percent) {
       pageHookCalls.push({ percent: percent });
       media.volume = percent * actions.YTM_ELEMENT_PER_PLAYER;
@@ -340,7 +325,6 @@ function createHarness(options) {
   };
 }
 
-// Persist: one coalesced write per burst
 
 test('volume: one wheel step saves the value once, only after the coalescing window', async () => {
   const harness = createHarness();
@@ -406,7 +390,6 @@ test('guard: no saveVolume writer is not a failed wheel', async () => {
   assert.deepEqual(harness.pageHookCalls, [{ percent: 45 }]);
 });
 
-// Restore: once per page load, through the same page-hook path
 
 test('volume: a stored volume is applied once on load, then the page owns it', async () => {
   const harness = createHarness();
@@ -417,7 +400,6 @@ test('volume: a stored volume is applied once on load, then the page owns it', a
   await settle();
   assert.deepEqual(harness.pageHookCalls, [{ percent: 20 }]);
 
-  // Later playback signals must not re-pin the page.
   harness.media.dispatchEvent('playing');
   harness.media.dispatchEvent('play');
   harness.timers.flushTimeouts();
@@ -447,7 +429,6 @@ test('volume: one bounded retry when the page restores its own volume over ours'
   await settle();
   assert.deepEqual(harness.pageHookCalls, [{ percent: 20 }]);
 
-  // YTM applies its own startup value after ours.
   harness.media.volume = 100 * actions.YTM_ELEMENT_PER_PLAYER;
   harness.timers.flushTimeouts();
   await settle();
@@ -487,9 +468,6 @@ test('guard: a wheel step before playback cancels the pending restore', async ()
   assert.deepEqual(harness.pageHookCalls, [{ percent: 45 }], 'the stale restore never fires');
 });
 
-// Native volume: a YTM slider drag is not a wheel step, but it is still the
-// user's number. It must paint the permanent readout and it must outrank a
-// restore that has not applied yet. A reading (install/revive/poll) must not.
 
 function shadowNodes(root) {
   const out = [];
@@ -527,7 +505,6 @@ test('volume: a native slider drag outranks a restore that has not applied', asy
   await settle();
   assert.deepEqual(harness.pageHookCalls, [], 'a paused player is not written');
 
-  // The user drags YouTube Music's own slider before pressing play.
   harness.controller.setPlayerVolume(65, { user: true });
   harness.media.paused = false;
   harness.media.dispatchEvent('playing');
@@ -538,7 +515,6 @@ test('volume: a native slider drag outranks a restore that has not applied', asy
 });
 
 test('volume: a native slider drag is what the next load restores', async () => {
-  // Document 1: the user drags YouTube Music's own slider to 65.
   const first = createHarness();
   await first.start();
   first.controller.setPlayerVolume(65, { user: true });
@@ -547,7 +523,6 @@ test('volume: a native slider drag is what the next load restores', async () => 
   await settle();
   assert.deepEqual(first.savedVolumes, [65], 'the dragged value is persisted, like a wheel step');
 
-  // Document 2: a fresh controller restores what the last document stored.
   const second = createHarness();
   await second.start();
   second.controller.restoreVolume(first.savedVolumes[0]);
@@ -558,8 +533,6 @@ test('volume: a native slider drag is what the next load restores', async () => 
 test('guard: a poll reading is never persisted', async () => {
   const harness = createHarness();
   await harness.start();
-  // A media-key change or a page-side write shows up on the poll, not as a
-  // slider drag. It is truth for the cache, but not a stored preference.
   harness.controller.setPlayerVolume(65);
   await settle();
   harness.timers.flushTimeouts();
@@ -574,7 +547,6 @@ test('guard: a volume reading (install, revive, poll) does not cancel a restore'
   harness.controller.restoreVolume(20);
   await settle();
 
-  // YouTube Music reports its own startup value; that is not a user change.
   harness.controller.setPlayerVolume(65);
   harness.media.paused = false;
   harness.media.dispatchEvent('playing');
@@ -593,7 +565,6 @@ test('guard: junk restore values are ignored', async () => {
   assert.deepEqual(harness.pageHookCalls, []);
 });
 
-// Settings shape
 
 test('settings: an object without volume stays valid and means never set', () => {
   const normalized = Shared.normalizeSettings({ slow: 0.9, reverbIntensity: 0.4 });
@@ -618,8 +589,6 @@ test('settings: the default shape carries an unset volume', () => {
   assert.equal(Shared.getDefaultSettings().volume, null);
 });
 
-// Wiring, static: the facade and the background merge are what make it reach
-// storage. No browser is launched for these.
 
 test('wiring: the content script saves the wheel volume through SET_SITE_SETTINGS', () => {
   const source = fs.readFileSync(path.join(ROOT, 'content-script.js'), 'utf8');

@@ -1,6 +1,3 @@
-// Unit tests for the harness pieces that do not need a browser: the launch
-// arguments, the DevToolsActivePort parser, match-pattern host extraction, the
-// generated WAV fixture and the validity of the in-page instrument.
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -36,8 +33,6 @@ test("DevToolsActivePort is parsed and a broken file is rejected", () => {
 });
 
 test("every launch argv is muted, headless or headed, and nothing else", () => {
-  // The harness once made noise. This is the regression guard: no argv form may
-  // omit --mute-audio, and a headed fallback is only acceptable while muted.
   for (const headless of [true, false]) {
     const argv = buildArgs({ profileDir: "C:\\Users\\nathan\\AppData\\Local\\Temp\\opencode\\cx\\profile-x", headless });
     assert.ok(argv.includes("--mute-audio"), `missing --mute-audio (headless=${headless})`);
@@ -74,7 +69,6 @@ test("launch arguments keep the profile throwaway and the network off", () => {
   assert.ok(args.includes("--remote-debugging-port=0"));
   assert.ok(args.includes("--user-data-dir=C:\\temp\\profile-123"));
   assert.ok(args.includes("--host-resolver-rules=MAP music.youtube.com 127.0.0.1:8443"));
-  // --load-extension is dead on Chrome 157: it must not be relied on here.
   assert.ok(!args.some((a) => a.startsWith("--load-extension")));
   assert.ok(!args.some((a) => a.startsWith("--remote-allow-origins")), "no origin widening is needed");
 });
@@ -138,8 +132,6 @@ test("the in-page instrument is valid JavaScript and exposes read()", () => {
   }
 });
 
-// Run the real instrument in a stub page world: enough of window/document for
-// it to install and count, with no browser involved.
 function installProbe() {
   class FakeEventTarget {
     constructor() {

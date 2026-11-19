@@ -1,10 +1,4 @@
 'use strict';
-// F5 proof: a sibling-subdomain tab must match the toggle-off broadcast.
-// Usage: node qa/proof-f5-sibling.cjs [path-to-background.js]
-// 1. Unit: getSiteKey('music.youtube.com') === 'youtube.com' (collapsed),
-//    while the old exact-hostname predicate misses it.
-// 2. Static: the TOGGLE_CHANGED fan-out in background.js compares collapsed
-//    site keys (no `siteKey.split(':')[0]` exact-hostname match).
 const fs = require('node:fs');
 const path = require('node:path');
 

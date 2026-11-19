@@ -45,8 +45,6 @@ export const hasChrome = Boolean(
 export function clampText(value, max = MAX_TEXT) {
   if (typeof value !== "string") return null;
   const text = value.replace(/\s+/g, " ").trim();
-  // Discord requires details/state to be 2-128 chars: a single char is
-  // invalid, so fall back instead of sending it.
   if (!text || text.length < 2) return null;
   return text.length > max ? text.slice(0, max) : text;
 }
@@ -129,8 +127,6 @@ export function pickButtonUrl(raw) {
     if (url.protocol !== "https:") return null;
     if (!/(^|\.)crunchyroll\.com$/i.test(url.hostname)) return null;
     const out = url.toString();
-    // Discord rejects button URLs over 512 chars: reject so the caller
-    // falls back to the next candidate instead of sending an invalid card.
     if (out.length > 512) return null;
     return out;
   } catch {
@@ -151,8 +147,6 @@ export function buildActivity(state, now = Date.now(), options = {}) {
       ? Number(state.episodeNumber)
       : null;
 
-  // The synopsis is opt-in: an absent option means off, so a spoiler never
-  // appears without the user asking for it.
   const synopsis = options.synopsis === true ? smartTruncate(state.synopsis) : null;
   let details;
   let stateLine;
@@ -182,8 +176,6 @@ export function buildActivity(state, now = Date.now(), options = {}) {
     if (largeText) activity.assets.large_text = largeText;
   }
 
-  // Episode link first, then series link; pageUrl is only the phase-1 fallback
-  // when neither direct link was extracted.
   const seriesUrl = pickButtonUrl(state.seriesUrl);
   let episodeUrl = pickButtonUrl(state.episodeUrl);
   if (!episodeUrl && !seriesUrl) episodeUrl = pickButtonUrl(state.pageUrl);
@@ -198,11 +190,6 @@ export function buildActivity(state, now = Date.now(), options = {}) {
   const position = Number(state.position);
   const duration = Number(state.duration);
   if (state.paused === false && Number.isFinite(duration) && duration > 0) {
-    // Stable per reported second: flooring both the wall clock and the
-    // position keeps start/end identical across 1 Hz reports while the
-    // position second is unchanged, so the worker dedupe can fire. A
-    // playing position advances in lockstep with the clock, so start stays
-    // fixed instead of jittering on sub-second fractions.
     const atSec =
       Number.isFinite(position) && position >= 0 ? Math.floor(position) : 0;
     const baseSec = Math.floor(now / 1000) * 1000;
@@ -268,7 +255,6 @@ export function mergeFrame(entry, frame, now = Date.now()) {
   if (!entry.frames) entry.frames = {};
   const reportedDuration = Number(frame.duration);
   if (Number.isFinite(reportedDuration) && reportedDuration >= 60) {
-    // Remember the episode length; a later short-duration video is an ad.
     entry.knownDuration = reportedDuration;
   }
   const stored = {
@@ -293,8 +279,6 @@ export function mergeFrame(entry, frame, now = Date.now()) {
   if (stored.frameId === 0) entry.top = stored;
   else entry.frames[stored.frameId] = stored;
   entry.updatedAt = Math.max(entry.updatedAt || 0, stored.receivedAt);
-  // A keepalive keeps frames alive for pruning but must never re-rank the
-  // winner: only a real playback event advances rankAt.
   if (frame.keepalive !== true) {
     entry.rankAt = Math.max(entry.rankAt || 0, stored.receivedAt);
   } else if (entry.rankAt === undefined) {
@@ -325,9 +309,6 @@ export function resolveTab(entry, now = Date.now()) {
   const videoFrame = byRecency.find((frame) => frame.hasVideo) || null;
 
   const pick = (field) => {
-    // Metadata is trusted from the top frame only: any subdomain iframe
-    // could otherwise forge the card via the old any-frame fallback. Video
-    // truth still comes from the newest video frame below.
     if (top && top[field] !== null && top[field] !== undefined) return top[field];
     return null;
   };
@@ -336,9 +317,6 @@ export function resolveTab(entry, now = Date.now()) {
     tabId: entry.tabId ?? null,
     pageUrl: entry.pageUrl ?? null,
     hasVideo: Boolean(videoFrame),
-    // Smallest reliable ad signal: a playing video much shorter than the
-    // episode length this tab already reported. The card is frozen (no
-    // advancing timer) for the break instead of showing the ad as playback.
     adBreak: isAdBreak(videoFrame, entry.knownDuration),
     visible: top ? top.visible !== false : byRecency[0].visible !== false,
     signals: [...new Set(frames.flatMap((frame) => frame.signals))],
@@ -371,8 +349,6 @@ export function createCoalescingLimiter({
   let pending = null;
   let hasPending = false;
   let timer = null;
-  // Timestamps presence of the last payload that actually sent: true while
-  // playing, false while paused/cleared, null before the first send.
   let lastHadTimestamps = null;
 
   function markSent(payload) {
@@ -384,7 +360,6 @@ export function createCoalescingLimiter({
     try {
       send(payload);
     } catch {
-      /* a dead port is handled by the port's own disconnect path */
     }
     markSent(payload);
   }
@@ -405,7 +380,6 @@ export function createCoalescingLimiter({
     try {
       send(payload);
     } catch {
-      /* a dead port is handled by the port's own disconnect path */
     }
     markSent(payload);
   }
@@ -413,23 +387,17 @@ export function createCoalescingLimiter({
   return {
     push(payload) {
       if (payload === null) {
-        // A clear never waits behind an ordinary update and never spends the
-        // budget: bypass the bucket, keep any deferred ordinary payload for
-        // its own window.
         sendBypass(payload);
         return;
       }
       const had = Boolean(payload && payload.timestamps);
       if (lastHadTimestamps !== null && had !== lastHadTimestamps) {
-        // Pause/resume transition: send immediately without spending the
-        // budget and drop any stale deferred ordinary payload it supersedes.
         pending = null;
         hasPending = false;
         if (timer) {
           try {
             clearTimeout(timer);
           } catch {
-            /* timer already fired */
           }
           timer = null;
         }
@@ -511,8 +479,6 @@ export function bridgeStatusOf(current, message, retries = 0) {
   }
 
   if (message.state === "error") {
-    // The host marks every non-permanent failure `fatal: false`; never promote
-    // one to an error just because its diagnostic text matched a pattern.
     const verdict =
       message.fatal === false
         ? {
@@ -666,8 +632,6 @@ if (hasChrome) {
   let enabled = true;
   let synopsisEnabled = false; // the existing option is opt-in: default off
   let bridgeState = "idle";
-  // Availability is a second axis: presence may be enabled while Discord is
-  // simply not running. `reason` is friendly copy; `lastError` stays raw.
   let availability = "unknown";
   let reason = null;
   let reasonKind = null;
@@ -681,20 +645,12 @@ if (hasChrome) {
   let desiredActivity;
   let ackRetryCount = 0;
   let ackRetryTimer = null;
-  // A restart must not blank a live presence before any tab has reported.
   let seenState = false;
   const bootAt = Date.now();
-  // Delayed clears for navigations whose URL the worker cannot see.
   const pendingNoUrlClears = new Map();
-  // Last payload that could not be sent while the bridge was offline (null
-  // included — it carries the same flag so a clear is never swallowed).
   let stashedActivity = null;
   let hasStashed = false;
-  // Dedupe for storage writes: recompute runs on every report and every 30 s
-  // alarm tick, so identical payloads (including disabled idle ticks) skip.
   let lastPersistedJson = "";
-  // Hung-host detection: the last ping/pong wall-clock times. A ping with
-  // no pong inside PONG_TIMEOUT_MS marks the bridge disconnected.
   let lastPingAt = 0;
   let lastPongAt = 0;
 
@@ -718,8 +674,6 @@ if (hasChrome) {
       reason,
       reasonKind,
       appName,
-      // Raw diagnostic for logs and the options diagnostics text; the UI never
-      // renders this string directly.
       lastError,
       lastActivity,
       lastSent,
@@ -731,8 +685,6 @@ if (hasChrome) {
 
   function persist() {
     const status = statusPayload();
-    // updatedAt changes every call, so it is excluded from the dedupe key:
-    // idle ticks with the same bridge/activity/enabled state write nothing.
     const { updatedAt: _drop, ...stable } = status;
     const key = JSON.stringify([stable, lastExtract]);
     if (key === lastPersistedJson) return;
@@ -746,7 +698,6 @@ if (hasChrome) {
         writes.push(chromeApi.storage.local.set({ crpStatus: status }));
       }
     } catch {
-      /* storage may be unavailable during shutdown */
     }
     for (const write of writes) {
       if (write && typeof write.catch === "function") write.catch(() => {});
@@ -782,12 +733,10 @@ if (hasChrome) {
       port.onMessage.removeListener(onNativeMessage);
       port.onDisconnect.removeListener(onPortDisconnect);
     } catch {
-      /* already torn down */
     }
     try {
       port.disconnect();
     } catch {
-      /* already disconnected */
     }
     port = null;
   }
@@ -834,8 +783,6 @@ if (hasChrome) {
         reasonKind: next.reasonKind
       });
       if (next.bridgeState === "connected") {
-        // Discord appeared (or returned): replay the latest payload with no
-        // user action, resetting the coalescing window first.
         flushStashed();
         pushActivity(true);
       }
@@ -860,13 +807,8 @@ if (hasChrome) {
         } else persist();
         flushStashed();
       } else {
-        // Record the rejection without latching the bridge to "error": a
-        // slow connect acks "not connected" while the handshake is in flight.
         const next = applyAckResult({ bridgeState, lastError }, message);
         lastError = next.lastError;
-        // The rejected payload was recorded as sent, so an identical
-        // keepalive would never retry: reset the dedupe and re-push with
-        // bounded backoff, then leave the watchdog to recover.
         lastSentJson = "";
         persist();
         if (ackRetryTimer) {
@@ -910,8 +852,6 @@ if (hasChrome) {
     try {
       fresh = chromeApi.runtime.connectNative(HOST_NAME);
     } catch (error) {
-      // A sync throw is the host-missing/forbidden path on some Chrome builds:
-      // neutral waiting with installer guidance, never a red error.
       applyFailure(String((error && error.message) || error));
       scheduleReconnect();
       return;
@@ -929,13 +869,9 @@ if (hasChrome) {
 
 
   function sendActivity(activity) {
-    // A null clear must still go through while disabled so turning presence
-    // off actually clears Discord; ordinary payloads stay gated.
     if (!enabled && activity !== null) return;
     if (!port) ensurePort();
     if (!port) {
-      // Keep the last payload (null included) and replay it on the next
-      // status/ack instead of dropping it while offline.
       stashedActivity = activity;
       hasStashed = true;
       return;
@@ -945,8 +881,6 @@ if (hasChrome) {
       hasStashed = true;
       return;
     }
-    // A clear is authoritative even while Discord is absent: the host keeps
-    // it and will not republish the previous episode when Discord appears.
     const json = JSON.stringify(activity);
     if (json === lastSentJson) return;
     if (post({ t: "activity", activity })) {
@@ -971,8 +905,6 @@ if (hasChrome) {
   function recompute() {
     const best = pickBestTab(resolvedTabs());
     if (best && best.adBreak) {
-      // Freeze the last episode card: keep the title, drop the timer so the
-      // ad's short duration never renders as an advancing episode bar.
       if (lastActivity) {
         desiredActivity = { ...lastActivity };
         delete desiredActivity.timestamps;
@@ -995,10 +927,6 @@ if (hasChrome) {
 
   function pushActivity(force) {
     if (!enabled) {
-      // Send the clear once on the enabled->disabled transition, then stay
-      // silent. The clear goes out even while the bridge is waiting: the host
-      // remembers it and will not republish a stale episode when Discord
-      // returns. Turning presence off is never blocked by Discord's absence.
       if (lastSentJson !== "null") {
         if (port) {
           limiter.push(null);
@@ -1011,9 +939,6 @@ if (hasChrome) {
       return;
     }
     if (desiredActivity === undefined) return;
-    // A restart must not blank a live presence before any tab has reported:
-    // suppress the boot-time null until the first crp-state or 60 s after
-    // boot, after which a closed site still clears.
     if (desiredActivity === null && !seenState && Date.now() - bootAt < BOOT_SUPPRESS_MS) return;
     if (!port) ensurePort();
     if (bridgeState !== "connected") {
@@ -1044,8 +969,6 @@ if (hasChrome) {
   function handleState(message, sender) {
     const tab = sender && sender.tab;
     if (!tab || tab.id === undefined) return;
-    // Only our own content scripts may report: the sender id must match and
-    // the frame or tab URL must be an https Crunchyroll page.
     if (!sender || sender.id !== chromeApi.runtime.id) return;
     if (!isCrunchyrollPageUrl(sender.url) && !isCrunchyrollPageUrl(tab.url)) return;
     seenState = true;
@@ -1057,9 +980,6 @@ if (hasChrome) {
 
     const entry = entryFor(tab);
     const frameId = frameIdOf(sender);
-    // Card metadata is trusted from the top frame, or from a frame whose
-    // URL is a watch page on the same origin. Any other frame (for example
-    // a compromised subdomain iframe) contributes video truth only.
     const trustedMetadata =
       frameId === 0 || isTrustedFrameUrl(sender.url, tab.url) || isTrustedFrameUrl(sender.url, entry.pageUrl);
     mergeFrame(entry, {
@@ -1129,8 +1049,6 @@ if (hasChrome) {
     if (!entry) return;
     const frameId = frameIdOf(sender);
     const scope = message && typeof message.scope === "string" ? message.scope : undefined;
-    // Tab scope (pagehide) deletes the whole entry; frame scope (SPA URL
-    // change) drops just that frame so a still-playing iframe survives.
     if (applyGoneToEntry(entry, frameId, scope) === "delete") tabStates.delete(tab.id);
     recompute();
   }
@@ -1145,7 +1063,6 @@ if (hasChrome) {
           delayInMinutes: ALARM_PERIOD_MINUTES
         });
       } catch {
-        /* permission revoked mid-session */
       }
     };
     try {
@@ -1161,13 +1078,10 @@ if (hasChrome) {
         }, create);
         return;
       }
-      // Callback-style get: only create when no alarm exists yet, so a
-      // reboot never resets the watchdog countdown.
       getter.call(chromeApi.alarms, ALARM_NAME, (existing) => {
         if (!existing) create();
       });
     } catch {
-      /* permission revoked mid-session */
     }
   }
 
@@ -1176,7 +1090,6 @@ if (hasChrome) {
       const stored = await chromeApi.storage.local.get(["clientId", "enabled", "synopsis"]);
       clientId = resolveClientId(stored.clientId);
       enabled = stored.enabled !== false;
-      // Opt-in: only an explicit `true` shows the synopsis.
       synopsisEnabled = stored.synopsis === true;
     } catch {
       clientId = resolveClientId(null);
@@ -1236,8 +1149,6 @@ if (hasChrome) {
         const activity = buildActivity(sample, Date.now(), { synopsis: synopsisEnabled });
         if (bridgeState === "connected" && port) {
           limiter.push(activity);
-          // A deferred push has not reached Discord: leave lastSentJson alone
-          // so the next identical recompute can still send.
           if (!limiter.hasPending) lastSentJson = JSON.stringify(activity);
         }
         sendResponse({
@@ -1260,18 +1171,12 @@ if (hasChrome) {
       if (!alarm || alarm.name !== ALARM_NAME) return;
       if (!port) ensurePort();
       else if (bridgeState === "connected") {
-        // A hung host keeps the port open but never pongs: a ping with no
-        // pong inside the bounded window marks the bridge disconnected and
-        // runs the normal reconnect instead of staying "connected" forever.
         if (isPongOverdue(lastPingAt, lastPongAt, Date.now())) {
           dropPort();
-          // A hung host is transient; only an exhausted run is worth the
-          // user's attention. Every clean pong/ack resets the counter.
           applyFailure("native host pong timeout", { retries: hungCount + 1 });
           scheduleReconnect();
         } else if (post({ t: "ping" })) {
           if (lastPingAt === 0 || (lastPongAt >= lastPingAt && lastPongAt !== 0)) {
-            // Fresh ping; the next tick proves the pong arrived.
           }
           lastPingAt = Date.now();
         }
@@ -1294,15 +1199,9 @@ if (hasChrome) {
         (tab && typeof tab.url === "string" && tab.url) ||
         null;
       if (typeof url === "string" && url) {
-        // A same-tab navigation away from Crunchyroll deletes the entry
-        // immediately so presence clears within one watchdog tick.
         if (!isCrunchyrollPageUrl(url) && tabStates.delete(tabId)) recompute();
         return;
       }
-      // No usable URL (it is gated without the tabs permission): a loading
-      // or discarded signal may be a navigation away, so schedule a delayed
-      // clear that any arriving crp-state cancels. A Crunchyroll reload
-      // reports state within the window and never blanks.
       if (isBlindReloadSignal(changeInfo)) scheduleNoUrlClear(tabId);
     });
   }

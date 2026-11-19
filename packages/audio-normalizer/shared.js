@@ -20,11 +20,6 @@
     }
   }
 
-  // One canonical host form, shared by every key helper. Order matters:
-  // punycode first (the browser punycodes `location.hostname`, but a stored or
-  // legacy key may not be), then port, then trailing dots — `example.com.:443`
-  // must collapse to `example.com`, which fails if the dot is stripped before
-  // the port.
   function normalizeHostname(hostname) {
     let normalized = String(hostname || '').trim().toLowerCase();
     if (!normalized) return '';
@@ -40,27 +35,16 @@
       return bracketedIpv6[1].replace(/\.+$/, '');
     }
 
-    // A port strip must not eat an IPv6 group: only a single-colon authority
-    // has a port.
     const portless = /^[^:]+:\d+$/.test(normalized)
       ? normalized.replace(/:\d+$/, '')
       : normalized;
     return portless.replace(/\.+$/, '');
   }
 
-  // Canonical site key: the FULL normalized hostname. `alice.github.io`
-  // and `bob.github.io` are different sites and must never share a toggle.
-  // The old collapsed (eTLD+1) form survives ONLY as a read-only legacy
-  // fallback (`getLegacySiteKey`) for data written before full keys existed.
   function getSiteKey(hostname) {
     return normalizeHostname(hostname);
   }
 
-  // Read-only legacy fallback: the pre-full-key collapse (sibling subdomains
-  // merged, ccTLD-aware). Never used for new writes; reads consult it only
-  // when no full-key record exists, and the first write migrates to the full
-  // key. `alice.github.io` collapses to `github.io` here — that is the bug
-  // being retired, kept solely to find old rows.
   function getLegacySiteKey(hostname) {
     const normalized = normalizeHostname(hostname);
     if (!normalized) return '';
@@ -116,15 +100,6 @@
     };
   }
 
-  // Per-site top-level storage keys: `site:<siteKey>` holds that site's
-  // { enabled, gainDb, seq, mirror } in ONE value. The documented
-  // `chrome.storage.local.set` granularity is the top-level key ("Any other
-  // key/value pairs in storage will not be affected"), so a write to
-  // `site:youtube.com` can never touch `site:example.com` — cross-site
-  // clobber is impossible by construction, unlike a whole-map
-  // read-modify-write of `siteSettings`. A single `set` carrying the whole
-  // per-site record means settings/mirror/sequence can never diverge across
-  // separate writes.
   var SITE_KEY_PREFIX = 'site:';
 
   function siteStorageKey(siteKey) {
@@ -133,10 +108,6 @@
     return SITE_KEY_PREFIX + normalized;
   }
 
-  // Read-only legacy fallback for per-site records written before full keys
-  // existed (`site:github.io` covering every `*.github.io` host). The
-  // background migrates a hit to the full key on its next write; the content
-  // script never writes.
   function legacySiteStorageKey(siteKey) {
     const normalized = getLegacySiteKey(siteKey);
     if (!normalized) return '';
@@ -147,10 +118,6 @@
     return typeof key === 'string' && key.indexOf(SITE_KEY_PREFIX) === 0;
   }
 
-  // Exclusion is a property of a HOST, and it covers that host's subdomains:
-  // excluding `tiktok.com` must also exclude `www.tiktok.com`, and a rule on
-  // `www.tiktok.com` must never reach `tiktok.com`. Both sides are normalized
-  // through `getSiteKey` first (ports, case, trailing dots, brackets).
   function hostMatchesSiteKey(hostname, siteKey) {
     const host = getSiteKey(hostname);
     const key = getSiteKey(siteKey);
@@ -166,9 +133,6 @@
     return false;
   }
 
-  // Parent hosts, nearest first, self excluded. The contract's suffix rule has
-  // no label floor: `localhost` covers `foo.localhost` and `com` covers
-  // `example.com`, so every parent is listed. A single-label host has none.
   function ancestorSiteKeys(hostname) {
     const host = getSiteKey(hostname);
     if (!host || /^[\d.:]+$/.test(host)) return [];
@@ -180,10 +144,6 @@
     return out;
   }
 
-  // Content-script match pattern for a host. `*.` also covers the bare host
-  // in Chrome's pattern grammar. A wildcard host is only valid for a real
-  // domain: localhost, IPv4 and IPv6 keys get an exact-host pattern (a
-  // rejected pattern would cost the whole registration).
   function matchPatternFor(siteKey, wildcard) {
     const host = getSiteKey(siteKey);
     if (!host) return '';
@@ -196,13 +156,10 @@
     return wildcard ? `*://*.${host}/*` : `*://${host}/*`;
   }
 
-  // Exclusion covers subdomains, so the pattern must too: `*://*.host/*`.
   function siteExcludeMatchPattern(siteKey) {
     return matchPatternFor(siteKey, true);
   }
 
-  // Injection is per exact host: a record for `example.com` must not arm the
-  // content script on `sub.example.com`, which is a different site here.
   function siteHostMatchPattern(siteKey) {
     return matchPatternFor(siteKey, false);
   }
@@ -264,15 +221,7 @@
       gainDb: clampGainDb(raw.gainDb),
       seq,
       mirror: Boolean(mirrorRaw),
-      // Missing field = not excluded: every record written before exclusion
-      // existed reads as `excluded: false`, so no migration is needed.
       excluded: Boolean(raw.excluded),
-      // `seen` = this host has been enabled at least once, and that fact is
-      // never forgotten by a later disable. It is what makes enabling live on
-      // an already-loaded page: a seen host loads with the page hook present
-      // (passive) so a later enable needs no navigation. Derived on read, so
-      // no migration is needed: a record that predates the field is seen
-      // exactly when it is enabled (it was enabled once by definition).
       seen: Boolean(raw.seen) || enabled,
     };
   }
@@ -303,11 +252,6 @@
     const toggles = siteToggles && typeof siteToggles === 'object' ? siteToggles : {};
     const settings = siteSettings && typeof siteSettings === 'object' ? siteSettings : {};
     const actives = activeSites && typeof activeSites === 'object' ? activeSites : {};
-    // Normalised existence: a raw key counts when it matches the FULL key or
-    // the legacy collapsed key. Full-key matches win for values (they are the
-    // newer, more specific truth); legacy matches keep pre-full-key users
-    // whole. `siteSettings['www.youtube.com']` is still found when reading
-    // `youtube.com` (bare host: full and legacy coincide there).
     let hasSettings = false;
     let hasToggle = false;
     let hasActive = false;
@@ -365,8 +309,6 @@
       gainDb: base.gainDb,
       seq: 0,
       mirror: enabled,
-      // Legacy data only ever recorded enables, so an enabled legacy entry was
-      // used once and is seen; a legacy disabled entry is not.
       seen: enabled,
     });
   }
@@ -382,11 +324,6 @@
         next[siteKey] = normalizeSiteSettings(config);
         continue;
       }
-      // Merge when two raw keys collapse to one site (finding 4): the second
-      // raw entry must not wipe the first's fields. Precedence is
-      // last-explicit-field-wins — a field present in the later raw entry
-      // overwrites, an absent field preserves the earlier value. The `true`
-      // shorthand asserts only `enabled:true` and preserves gain.
       if (config === true) {
         next[siteKey] = { ...prev, enabled: true };
         continue;
@@ -412,10 +349,6 @@
   }
 
   function getSiteConfig(siteSettings, activeSites, hostnameOrSiteKey) {
-    // Legacy whole-map read helper: the maps it reads are keyed by the OLD
-    // collapsed form, so the lookup consults the collapsed key. The returned
-    // `siteKey` is the new canonical FULL key. Full-key records (per-site
-    // storage) never reach this helper — they are preferred before it.
     const siteKey = getSiteKey(hostnameOrSiteKey);
     const legacyKey = getLegacySiteKey(hostnameOrSiteKey);
     const migrated = migrateSiteSettings(siteSettings, activeSites);
@@ -500,23 +433,6 @@
     return 'gray';
   }
 
-  // Recurrence-path closure: the whole-map `siteToggles` mirror writer used
-  // to live here (`saveSiteState`, a serialised read-modify-write of the
-  // entire mirror map). It had zero callers in the product — the background
-  // writes only per-site `site:<key>` records (plus the startup
-  // `activeSites` clear), the content script performs zero storage writes,
-  // and the popup sends field-level intents via messages — but as long as
-  // the writer existed, any future popup-path call could re-create the
-  // diverging state the owner reported (`siteToggles[site] = false` while a
-  // per-site record says `enabled: true`, mirror newer). The writer is
-  // therefore deleted; the mirror is now write-impossible from product code
-  // and survives read-only as a migration fallback
-  // (`migrateLegacyToRecord`, which repairs the diverge once by letting an
-  // explicit toggle win `enabled`). Every legacy READ shape is preserved:
-  // `get` keys, the `changes.siteToggles` listeners, and the migration
-  // arguments. A structural test (`setting-loss.test.js`: "no product writer
-  // can re-create a mirror/settings diverge") fails if any `siteToggles` /
-  // `siteSettings` write ever returns to product code.
 
   return {
     DEFAULT_GAIN_DB,
@@ -531,9 +447,6 @@
     setSiteEnabled,
     getContentAction,
     getPopupIndicator,
-    // NOTE: `saveSiteState` (the whole-map `siteToggles` mirror writer) was
-    // deleted to close the recurrence path — see the note above. It is
-    // deliberately absent from this export, not an omission.
     SITE_KEY_PREFIX,
     siteStorageKey,
     legacySiteStorageKey,

@@ -5,9 +5,6 @@ import { dirname, join } from "node:path";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
-// Load the worker as a module without a `chrome` global: the file guards every
-// chrome.* call on `hasChrome`. background.js imports config.js, so it is
-// imported by path rather than as a data: URL (which cannot resolve imports).
 const worker = await import(
   pathToFileURL(join(here, "..", "..", "background.js")).href
 );
@@ -168,8 +165,6 @@ test("clock and clampText edges", () => {
 });
 
 test("top-frame metadata merged with the iframe video report", () => {
-  // The watch page carries the JSON-LD metadata; the player iframe carries the
-  // video. Neither frame alone can build the activity.
   const entry = { tabId: 42, top: null, frames: {}, pageUrl: TAB_URL, updatedAt: 0 };
 
   mergeFrame(
@@ -235,7 +230,6 @@ test("losing the video frame drops the tab to ineligible activity", () => {
   assert.equal(fresh.hasVideo, true);
   assert.equal(isEligible(fresh), true);
 
-  // The top frame keeps reporting metadata; the player frame stopped 130s ago.
   mergeFrame(entry, { frameId: 0, series: "Frieren", hasVideo: false, visible: true, signals: ["jsonLd"] }, 150_000);
   const stale = resolveTab(entry, 150_000);
   assert.equal(stale.hasVideo, false);
@@ -269,8 +263,6 @@ test("limiter caps ordinary payloads at max and coalesces the newest value", () 
     }
   });
 
-  // Ordinary updates fill the whole window (4 per 20 s); a null clear
-  // bypasses the bucket instead of spending a reserved token.
   for (const value of ["a", "b", "c", "d", "e", "f", "g"]) limiter.push(value);
   assert.deepEqual(sent, ["a", "b", "c", "d"]);
   assert.equal(limiter.pending, "g");

@@ -70,15 +70,11 @@ function raster(size) {
         for (let sx = 0; sx < SUPERSAMPLE; sx += 1) {
           const x = px + (sx + 0.5) * step;
           const y = py + (sy + 0.5) * step;
-          // Map canvas point into glyph-local coords: glyph occupies
-          // [INSET*size, (1-INSET)*size]; outside maps out of 0..size.
           const gx = (x - INSET * size) / GLYPH;
           const gy = (y - INSET * size) / GLYPH;
           if (!insideRoundedSquare(gx, gy, size)) continue;
           squareHits += 1;
           if (insideTriangle(gx, gy, size)) triangleHits += 1;
-          // Status dot lives in canvas fractions so the silhouette is
-          // size-independent; it sits clear of the triangle (no overlap).
           const dx = x / size - DOT_CX;
           const dy = y / size - DOT_CY;
           if (dx * dx + dy * dy <= DOT_R * DOT_R) dotHits += 1;

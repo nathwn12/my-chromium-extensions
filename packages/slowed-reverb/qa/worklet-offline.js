@@ -1,29 +1,5 @@
 'use strict';
 
-/*
- * qa/worklet-offline.js - pure-Node offline harness for the REAL dattorro-worklet.js.
- *
- * SAFETY: runs in plain Node. No browser is launched, no AudioContext is created, no
- * audio device is opened. The real worklet source is evaluated with the AudioWorklet
- * globals stubbed (AudioWorkletProcessor, registerProcessor, sampleRate) and driven
- * block-by-block with Float32Array buffers, so every measured sample is produced by the
- * shipped DSP code itself. Nothing is ever connected to a destination.
- *
- * Question: does keeping the reverb tank primed at intensity 0 remove the wind-up when
- * reverb is enabled? Two scenarios, identical in every respect except tank state at the
- * moment wet output is enabled (step at t = 1.0 s):
- *
- *   PRIMED  the tank is driven from t=0 with the intensity-0.5 params and wetGain = 0
- *           (exactly what the real controller posts at intensity 0, see
- *           content-script.js computePostParams). At the step only wetGain is posted.
- *   COLD    the tank has no history at the step: the processor is reset at the step and
- *           the enabled params + wetGain are posted together - the counterfactual of an
- *           un-primed tank / a freshly attached graph. Because the reset sets wetGain=0
- *           and the enabled wetGain is posted immediately after, the ~5 ms wetGain
- *           one-pole ramp is identical to PRIMED; the only difference is tank fill time.
- *
- * Exit code 0 = all assertions pass, 1 = an assertion failed, 2 = harness setup problem.
- */
 
 const fs = require('fs');
 const path = require('path');
@@ -36,7 +12,6 @@ const STEP_SECONDS = 1;
 const INTENSITY = 0.5;
 const STEP_DELTA_FACTOR = 2; // step deltas must stay within 2x the steady-state max delta
 
-// ---------- AudioWorklet global stubs (the only environment the worklet sees) ----------
 globalThis.sampleRate = SR;
 globalThis.AudioWorkletProcessor = class {
   constructor() {
@@ -78,7 +53,6 @@ function computeDattorroParams(intensity) {
 
 const enabled = computeDattorroParams(INTENSITY);
 
-// Brief-specified expected enabled values, symbolically.
 const expected = {
   preDelay: 0.49,
   preFilter: 0.75,
@@ -128,13 +102,9 @@ function runScenario(kind) {
     if (!stepped && start >= stepSample) {
       stepped = true;
       if (kind === 'cold') {
-        // Empty the tank at the exact block where wet output is enabled. This produces
-        // the same samples as a graph that only starts processing now: reset() zeroes
-        // every delay line and the wetLpf, and sets t=0 / wetGain=0.
         post({ type: 'reset' });
         post({ type: 'setParams', params: { ...enabled } });
       } else {
-        // Only the gain steps; the tank has been running with the enabled params.
         post({ type: 'setParams', params: { wetGain: enabled.wetGain } });
       }
     }

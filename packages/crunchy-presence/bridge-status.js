@@ -71,12 +71,8 @@ export const BRIDGE_LABELS = Object.freeze({
 export const HUNG_RETRY_LIMIT = 3;
 
 const PATTERNS = [
-  // arRPC first: its probe failures carry ECONNREFUSED, which would otherwise
-  // read as "Discord is closed" when the truth is "the arRPC bridge is absent".
   [/arrpc/i, REASON.ARRPC_CLOSED],
   [/no discord ipc pipe found/i, REASON.DISCORD_CLOSED],
-  // A missing named pipe surfaces as ENOENT on Windows; a closed Discord
-  // listener can surface as ECONNREFUSED/ECONNRESET.
   [/\bENOENT\b|\bECONNREFUSED\b|\bECONNRESET\b|connect ENOENT/i, REASON.DISCORD_CLOSED],
   [/discord ipc connection closed|discord ipc dropped|discord ipc pipe closed/i, REASON.DISCORD_CLOSED],
   [/discord ipc not connected/i, REASON.DISCORD_CLOSED],
@@ -117,8 +113,6 @@ export function classifyBridgeFailure(detail, options = {}) {
     ? options.reason
     : null;
   const matched = PATTERNS.find(([re]) => re.test(text))?.[1] ?? null;
-  // An explicit fatal flag is a permanent rejection by definition; otherwise a
-  // hint wins, then the diagnostic pattern, then a neutral transient hang.
   const kind = options.fatal ? REASON.REJECTED : hint ?? matched ?? REASON.HUNG;
   const exhausted = kind === REASON.HUNG && retries >= HUNG_RETRY_LIMIT;
   const isError = kind === REASON.REJECTED || exhausted;
@@ -128,7 +122,6 @@ export function classifyBridgeFailure(detail, options = {}) {
     availability: AVAILABILITY.UNAVAILABLE,
     bridgeState: isError ? BRIDGE.ERROR : BRIDGE.WAITING,
     reason: copyForReason(kind, exhausted),
-    // Never surface an expected absence as an error; `detail` stays raw for logs.
     error: isError ? copyForReason(kind, exhausted) : null,
     detail: text,
     retryable: !isError,

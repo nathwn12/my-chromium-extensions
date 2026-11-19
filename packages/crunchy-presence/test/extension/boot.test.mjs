@@ -134,7 +134,6 @@ test("worker boots into Waiting without Discord, connects later, and clears on q
   assert.equal(harness.posts[0].t, "hello", "the worker opens the native port");
   assert.equal(harness.posts[0].clientId, "1566530911514923188");
 
-  // Host reports the expected absence: neutral waiting, raw detail retained.
   harness.port.messageListener({
     t: "status",
     state: "waiting",
@@ -149,7 +148,6 @@ test("worker boots into Waiting without Discord, connects later, and clears on q
   assert.doesNotMatch(status.reason, /pipe/i);
   assert.equal(status.lastError, "no discord ipc pipe found", "raw detail is diagnostics only");
 
-  // A playing tab is recorded while the bridge waits; nothing is posted yet.
   harness.onMessage(
     {
       kind: "crp-state",
@@ -177,7 +175,6 @@ test("worker boots into Waiting without Discord, connects later, and clears on q
     "offline activity is stashed, not sent"
   );
 
-  // Discord appears: connected plus the latest activity republished, no user action.
   harness.port.messageListener({ t: "status", state: "connected", appName: "Discord" });
   await tick(10);
   status = harness.query();
@@ -188,7 +185,6 @@ test("worker boots into Waiting without Discord, connects later, and clears on q
   assert.ok(republished.length >= 1, "the stashed payload is republished");
   assert.equal(republished.at(-1).activity.details, "Frieren");
 
-  // Discord quits: waiting again, never a stale Connected.
   harness.port.messageListener({
     t: "status",
     state: "waiting",
@@ -200,8 +196,6 @@ test("worker boots into Waiting without Discord, connects later, and clears on q
   assert.notEqual(status.bridgeState, "connected");
   assert.match(status.reason, /Discord is not running/);
 
-  // A dead port is waiting (not a latched error), and the 30 s watchdog is a
-  // reachable wake path that re-creates the native port without user action.
   const deadPort = harness.port;
   harness.chrome.runtime.lastError = { message: "native host disconnected" };
   deadPort.disconnectListener();
@@ -219,7 +213,6 @@ test("worker boots into Waiting without Discord, connects later, and clears on q
   assert.ok(hellosAfter > hellosBefore, "watchdog re-creates the port after wake");
   assert.notEqual(harness.port, deadPort);
 
-  // Turning presence off while unavailable still sends the authoritative clear.
   const before = harness.posts.length;
   assert.ok(harness.onChanged, "worker subscribes to storage changes");
   harness.onChanged({ enabled: { newValue: false } }, "local");

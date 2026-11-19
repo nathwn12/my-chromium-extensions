@@ -1,9 +1,4 @@
 #!/usr/bin/env node
-// Run node --test over every *.test.{js,mjs,cjs} file under the given dirs.
-// Exits 1 when zero test files match, so CI can never pass with no tests.
-// Usage: node scripts/run-tests.mjs <dir> [<dir>...]
-// Windows and Linux safe: no shell globs, dirs resolved relative to the
-// package that invokes the runner, files passed to node --test explicitly.
 import { readdirSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";

@@ -11,7 +11,6 @@ const hook = fs.readFileSync(path.join(ROOT, 'page-hook.js'), 'utf8');
 function fnSrc(src, name) {
   const i = src.indexOf(`function ${name}(`);
   if (i < 0) return '';
-  // crude brace match from the function start
   const open = src.indexOf('{', i);
   let depth = 0;
   for (let j = open; j < src.length; j++) {
@@ -61,8 +60,6 @@ test('resume never blocks session creation; gesture listeners register first', (
 });
 
 test('bounded resume: no bare await resume() gates work; helper used at every gated site', () => {
-  // Every resume that gates work goes through the helper; the only bare
-  // await resume() left is the gesture-listener retry, which must stay.
   const bareLines = hook.split('\n').filter((line) => /await\b.*\.resume\(\)/.test(line));
   assert.equal(bareLines.length, 1, `only the gesture retry keeps a bare await resume() (found ${bareLines.length}: ${bareLines.map((s) => s.trim()).join(' | ')})`);
   assert.ok(bareLines[0].includes('await context.resume()'), 'the remaining bare await is the gesture retry');
@@ -91,8 +88,6 @@ test('liveness: injected-but-dead hook re-syncs via capped retry, no busy loop',
   );
   assert.ok(helper.includes('scheduleActivationRetry'), 'reuses the existing capped retry/backoff');
   assert.ok(!helper.includes('setInterval') && !helper.includes('while ('), 'no busy loop');
-  // Wired where a death is observed, and ONLY on the alive -> dead transition:
-  // a retry answered "still dead" must not re-arm the chain.
   const statusFn = fnSrc(cs, 'applyHookStatus');
   assert.ok(statusFn.includes('scheduleLivenessResync('), 'a dead hook answer arms the re-sync');
   assert.match(

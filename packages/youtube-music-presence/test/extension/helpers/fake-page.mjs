@@ -291,7 +291,6 @@ export function musicPage({ title, byline, artwork, ...rest } = {}) {
     barChildren.push(
       node("div", {
         attrs: { class: "title" },
-        // A node is already the <a> YT Music puts inside the title cell.
         ...(typeof title === "string" ? { text: title } : { children: [title] })
       })
     );
@@ -300,7 +299,6 @@ export function musicPage({ title, byline, artwork, ...rest } = {}) {
     const parts = Array.isArray(byline) ? byline : [byline];
     barChildren.push(
       node("div", {
-        // Live YT Music carries both classes on the byline element.
         attrs: { class: "byline ytmusic-player-bar" },
         children: parts.map((part) =>
           typeof part === "string" ? node("span", { text: part }) : part
@@ -410,7 +408,6 @@ export function makePage({
 export function loadContent({ extractSource, contentSource, page, sendMessage, top, storage }) {
   const messages = [];
   const record = (message) => {
-    // Content runs in a vm realm; round-trip proves the payload is wire-serializable.
     messages.push(JSON.parse(JSON.stringify(message)));
   };
   const chrome = {
@@ -423,9 +420,6 @@ export function loadContent({ extractSource, contentSource, page, sendMessage, t
       }
     }
   };
-  // Only the storage-aware tests carry a `chrome.storage`; every other test
-  // boots the content script with the surface a real content script can always
-  // count on, which is why the script guards the read.
   if (storage) chrome.storage = storage;
 
   const intervals = new Map();

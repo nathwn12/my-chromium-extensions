@@ -1,5 +1,3 @@
-// Unit tests for the pure layer of the cost audit: assertions, verdict text,
-// vacuity, registration phases, the table and the exit code. No browser.
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -45,11 +43,7 @@ function report(overrides = {}) {
     foreignExtensions: [],
     hostAccess: { origins: ["<all_urls>"] },
     scenarios: [scenario()],
-    // Every zero is only evidence when the extension demonstrably injects
-    // somewhere; the fixture supplies that signal by default.
     signals: EXTENSIONS.map((ext) => ({ package: ext.package, scenario: "enabled", host: "excluded.test", scripts: 1 })),
-    // Manifest reach: by default every package could match the fixture hosts, so
-    // a missing signal is a vacuous failure rather than an unreachable host.
     reach: Object.fromEntries(EXTENSIONS.map((ext) => [ext.package, { patterns: ["http://*/*", "https://*/*"] }])),
     registration: null,
     ...overrides,
@@ -131,16 +125,12 @@ test("a seen-off scenario passes when the content script runs and the page costs
   assert.equal(verdict.verdict, "pass");
   assert.match(verdict.message, /1 content script\(s\) on the seen-but-off seen-off\.test/);
 
-  // No content script on a seen host is a failure: registration is what makes a
-  // later enable live.
   const absent = buildAssertions(report({
     scenarios: [scenario({ id: "seen-off", kind: "seen-off", host: "seen-off.test", expectInert: false, extensions: extensionsAll() })],
   })).find((a) => a.id === "seen-off/audio-normalizer");
   assert.equal(absent.verdict, "fail");
   assert.match(absent.message, /no content script .* could not be live/);
 
-  // Page-world cost on a seen-but-off host is a failure of the reservation mode:
-  // it must be idle, not merely unprocessed.
   const costly = buildAssertions(report({
     scenarios: [scenario({
       id: "seen-off",
@@ -168,7 +158,6 @@ test("a zero with no signal is a limit when the manifest cannot even match the h
   assert.match(crunchy.message, /cannot match 127\.0\.0\.1/);
   assert.match(crunchy.message, /crunchyroll/);
 
-  // An extension that could have run here but did not is a vacuous failure.
   const reachable = buildAssertions(
     report({
       signals: [],

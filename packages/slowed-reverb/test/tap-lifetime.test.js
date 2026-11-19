@@ -2,21 +2,6 @@
 
 /* global require, process, __dirname */
 
-/*
- * test/tap-lifetime.test.js - YouTube Music transition matrix for the
- * captureStream tap.
- *
- * The tap is per ELEMENT, not per URL: music.youtube.com rotates googlevideo
- * URLs (quality switches, ads, next/prev, radio, search-to-play) without
- * replacing the <video>. A currentSrc change must never tear the graph down.
- * Only a genuine `emptied`/`loadedmetadata` swaps the MediaStreamSource, and
- * that swap must stay muted (hardZero -> confirm muted -> ramp) so there is no
- * dry gap.
- *
- * SAFETY (AGENTS.md ## Verification safety): plain Node only. The REAL
- * content-script.js runs against stubbed browser globals. No browser, no
- * AudioContext device, no playback.
- */
 
 const fs = require('fs');
 const path = require('path');
@@ -333,7 +318,6 @@ function createEnv() {
         try {
           entry.cb();
         } catch {
-          // Best effort only.
         }
         await Promise.resolve();
       }
@@ -381,8 +365,6 @@ async function main() {
   check('matrix: first play captures exactly once', env.stats.captures === 1, 'captures=' + env.stats.captures);
   check('matrix: first play has one live controller', env.queryLive().attachedCount === 1, JSON.stringify(env.queryLive()));
 
-  // Each row is a real YouTube Music transition. The element is REUSED and its
-  // currentSrc rotates; none of these may disconnect or recapture the tap.
   const rows = [
     ['next', 'https://music.youtube.com/stream/v2'],
     ['previous', 'https://music.youtube.com/stream/v1'],
@@ -413,7 +395,6 @@ async function main() {
     );
   }
 
-  // Autoplay: pause then play again without a source change.
   {
     const capsBefore = env.stats.captures;
     media.paused = true;
@@ -429,7 +410,6 @@ async function main() {
     );
   }
 
-  // Tab background/foreground must not double-tap.
   {
     const capsBefore = env.stats.captures;
     const discBefore = env.stats.disconnects;
@@ -448,7 +428,6 @@ async function main() {
     );
   }
 
-  // Repeated double-sync: play + playing + revive + watchdog + volumechange.
   {
     const capsBefore = env.stats.captures;
     const discBefore = env.stats.disconnects;
@@ -470,7 +449,6 @@ async function main() {
     );
   }
 
-  // Genuine track change: emptied -> loadedmetadata is a source-only swap.
   {
     const capsBefore = env.stats.captures;
     const gainsBefore = env.stats.gains.length;
@@ -518,7 +496,6 @@ async function main() {
     );
   }
 
-  // Element replaced: the old controller must be removed and hand back audio.
   {
     const oldMedia = media;
     const capturesBefore = env.stats.captures;
@@ -545,7 +522,6 @@ async function main() {
     void oldListeners;
   }
 
-  // Removed element: controller is gone, no dangling interval work.
   {
     const live = env.queryLive();
     const replacement = globalThis.document.querySelectorAll('audio,video')[0];

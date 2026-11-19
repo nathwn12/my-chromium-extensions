@@ -26,9 +26,6 @@
   ];
   const URL_POLL_MS = 1000;
   const SPA_SETTLE_MS = 300;
-  // A paused video fires no media events, so re-report on a low cadence
-  // while a video element exists; otherwise the worker prunes the tab at
-  // FRAME_TTL_MS and presence flickers out.
   const KEEPALIVE_MS = 30000;
 
   let lastHref = location.href;
@@ -37,9 +34,6 @@
   let lastReportAt = 0;
   let settleTimer = null;
   let pollTimer = null;
-  // Start conservative: nothing reports or polls until storage answers, so a
-  // switched-off extension sends zero messages and holds zero timers even on a
-  // cold boot. The storage listener below re-arms it.
   let enabled = false;
   let enabledKnown = false;
   let bootReported = false;
@@ -59,7 +53,6 @@
       }
     });
   } catch {
-    /* storage unavailable — stay enabled */
   }
 
   function startPoll() {
@@ -91,7 +84,6 @@
     try {
       chrome.runtime.sendMessage(message, () => void chrome.runtime.lastError);
     } catch {
-      /* extension reloaded under us — nothing to do */
     }
   }
 
@@ -162,7 +154,6 @@
     checkUrl();
   });
 
-  // hashchange fires for same-document navigations that popstate misses.
   window.addEventListener("hashchange", () => {
     lastHref = "";
     checkUrl();
@@ -176,8 +167,6 @@
     send({ kind: "crp-gone", scope: "tab" });
   });
 
-  // bfcache restore fires pageshow (persisted) without a fresh load: report
-  // again and restart the poll that pagehide stopped.
   window.addEventListener("pageshow", () => {
     lastHref = location.href;
     if (!enabledKnown || !enabled) return;
@@ -201,9 +190,6 @@
 
   startPoll();
 
-  // The 1 Hz poll runs only while a video actually exists: observer-driven
-  // detection (player container mutations plus popstate/hashchange) covers
-  // URL changes, so an idle page without a video holds no wakeups.
   function tick() {
     if (!enabled) return;
     checkUrl();
@@ -213,9 +199,6 @@
       return;
     }
     if (video && video !== lastVideo) report(false);
-    // Low-rate keepalive while a video exists so a paused tab never ages
-    // out at FRAME_TTL_MS on the worker side. Marked keepalive so it never
-    // re-ranks the multi-tab winner.
     if (video && Date.now() - lastReportAt >= KEEPALIVE_MS) report(true);
   }
 
@@ -235,7 +218,6 @@
       observer.observe(target, { childList: true, subtree: true });
     }
   } catch {
-    /* MutationObserver unavailable — the poll still covers URL changes */
   }
 
   function initialReport() {

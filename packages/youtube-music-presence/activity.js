@@ -192,8 +192,6 @@ export function buildActivity(sourceOrState, stateOrNow, nowArg, sampleMs = unde
   const meta = SOURCE_META[SOURCE_YOUTUBE_MUSIC];
   if (!state || typeof state !== "object") return null;
 
-  // The sample's own stamp wins, never the moment of the rebuild; a stamp
-  // further than SAMPLE_SKEW_MS ahead is treated as junk and ignored.
   const sampledAt =
     typeof state.at === "number" && Number.isFinite(state.at) ? state.at : null;
   const anchor =
@@ -205,16 +203,10 @@ export function buildActivity(sourceOrState, stateOrNow, nowArg, sampleMs = unde
   const channel = clampText(state.channel);
   const album = clampText(state.album);
 
-  // Each button is decided by its own path shape, so a same-host Home or
-  // Explore URL never becomes one; a URL that fails its shape is dropped and
-  // never stands in for a different target.
   const trackUrl = watchPageUrl(state.trackUrl);
   const artistUrl = artistPageUrl(state.artistUrl);
   const albumUrl = albumPageUrl(state.albumUrl);
 
-  // Music header is static: Discord renders "Listening to <name>", so the
-  // artist must live in `state` to stay visible in the member list and the
-  // card. The album is only a fallback line.
   const same = (a, b) => a.toLowerCase() === b.toLowerCase();
   let stateLine;
   if (channel && !same(channel, details) && !same(channel, meta.name)) {
@@ -240,9 +232,6 @@ export function buildActivity(sourceOrState, stateOrNow, nowArg, sampleMs = unde
   const artwork = httpsUrl(state.artworkUrl);
   if (artwork) {
     activity.assets = { large_image: artwork };
-    // Tooltip only, and only when it says something the card does not: the
-    // album while it is distinct, else the view count while it is distinct.
-    // The title owns line 1 and is never repeated here.
     const views =
       typeof state.views === "string" && state.views.trim()
         ? state.views.replace(/\s+/g, " ").trim().slice(0, MAX_TEXT)
@@ -258,8 +247,6 @@ export function buildActivity(sourceOrState, stateOrNow, nowArg, sampleMs = unde
   const primaryUrl = trackUrl || watchPageUrl(state.pageUrl);
   const buttons = [];
   if (primaryUrl && label) buttons.push({ label, url: primaryUrl });
-  // Decided by URL, never by album text: an album name with no album link
-  // never produces a "View album" button.
   if (albumUrl) buttons.push({ label: "View album", url: albumUrl });
   else if (artistUrl) buttons.push({ label: "View artist", url: artistUrl });
   if (buttons.length) activity.buttons = buttons;
@@ -282,12 +269,6 @@ export function buildActivity(sourceOrState, stateOrNow, nowArg, sampleMs = unde
       typeof sample === "number" && Number.isFinite(sample);
     activity.timestamps = {
       start,
-      // Discord counts the countdown in wall time; media seconds are not wall
-      // seconds at a non-1x rate. Build the end from the un-biased sample
-      // second plus the remaining media time divided by the rate, with one
-      // floor over the sum: the residual is the sub-second part of one stamp,
-      // not a drift that grows with the track. The elapsed bar keeps the
-      // biased anchor above.
       end: rateScaled
         ? Math.floor(sample / 1000 + (duration - clamped) / rate)
         : start + Math.floor(duration),

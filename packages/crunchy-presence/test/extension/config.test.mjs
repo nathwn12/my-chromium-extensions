@@ -18,8 +18,6 @@ const OVERRIDE = "123456789012345678";
 test("the built-in application ID is a real ID the native host accepts", () => {
   assert.equal(DEFAULT_CLIENT_ID, "1566530911514923188");
   assert.match(DEFAULT_CLIENT_ID, /^[0-9]{17,20}$/);
-  // native/protocol.mjs validateClientId accepts 17-19 digits, so a 20-digit
-  // built-in would be rejected at the handshake.
   assert.match(DEFAULT_CLIENT_ID, /^[0-9]{17,19}$/);
 });
 

@@ -25,71 +25,25 @@ let hookWasActiveAt = 0;
 let lastHookActive = false;
 let statusRequestToken = 0;
 let saveInFlight = 0;
-// Persist baseline: the last gain value confirmed by the background (or
-// freshly read). `change`+`pointerup` both fire on a mouse release; the pair
-// persists exactly once because the second sees an unchanged baseline.
-// `lastLiveSent` is the newest drag-preview value applied transiently to the
-// tab; while it differs from the baseline the 750 ms poll must not snap the
-// slider back.
 let lastPersistedGain = null;
 let lastLiveSent = null;
 let livePreviewInFlight = false;
-// Value with a persist currently in flight. `change` and `pointerup` fire
-// back-to-back on a mouse release while the first persist is still in
-// flight (baseline updates only on success), so the baseline alone cannot
-// dedupe the pair — the in-flight target can.
 /** @type {number | null} */
 let persistTargetGain = null;
 let runtimeActivationState = 'idle';
 let runtimeActivationMessage = '';
 /** @type {Promise<void> | null} */
 let softWakePromise = null;
-// Per-site exclusion, as stored. Outranks `enabled` entirely: while excluded
-// the switch and the slider are disabled and nothing runs on the site. Only
-// the flag is ever written, so undo restores the previous enabled/gainDb.
 let excluded = false;
 let excludeInFlight = false;
 let statusPollStarted = false;
-// Set when the user enables (or un-excludes) a site on this popup: the live
-// document is not armed, so the notice replaces the ordinary status line.
 let reloadNoticePending = false;
 const EXCLUDED_TEXT = 'Excluded. Nothing runs on this site. Reload restores this page.';
-// One residual reload case, stated once and quietly: the FIRST-ever enable of a
-// host, where no page hook exists in the loaded document to start. A host that
-// has been enabled before is applied live, and the popup must not say this.
 const RELOAD_NOTICE_TEXT = 'Enabled. Reload applies this.';
-// The first-ever enable of a host reloads its tab automatically; this is what
-// the popup says while that happens (no control, one line plus the pill).
 const RELOADING_TEXT = 'Reloading to activate…';
-// A verdict, not silence: the page plays this audio through its own Web Audio
-// graph, so the one source per element rule means we can never route it.
 const PAGE_OWNED_TEXT = 'This page plays its audio through its own graph, so it cannot be normalized.';
 const ACTIVE_STALE_MS = 3000;
 
-// Single owner: the background owns persisted state and applies intents.
-// This popup sends field-level intents (`set` with ONLY the changed field)
-// with no timestamps and no ordering token. Dispatch is immediate with no
-// in-memory queue. Ordering is last-accepted-write-wins: the background
-// applies an intent's fields to the live record, writes the whole record
-// back in one `set`, bumps the per-site `seq` audit counter (observability
-// only, never a gate), and returns the stored truth. Nothing is ever
-// rejected on ordering grounds. Accepted trade (deliberate): if two popups
-// race the same field and one message is delayed past a newer one, the later
-// *arrival* wins rather than the later action; there is no clock-free way to
-// distinguish those, the window is milliseconds between two
-// simultaneously-open popups, and the wall-clock alternative locked a field
-// out until the clock caught up. The popup always renders what the
-// background returned, never what it sent; a response missing the stored
-// truth is a failure, not a success.
-// Gain persistence: a slider drag persists ONCE (on `change`/`pointerup`,
-// deduped to one write per value), never per `input` tick — a 30-step drag
-// used to cost ~90 storage gets, 30 tab queries and 60 messages. During the
-// drag each tick only renders locally and live-applies the latest value to
-// the tab as a transient session preview (no storage, no broadcast); the
-// release-time persist clears the preview via the storage change it makes.
-// No `unload` flush: every change is persisted on its `change`/
-// `pointerup` event (RESEARCH §6: the popup document is unloaded on close
-// with no flush facility).
 
 /**
  * Require the background's stored truth. The popup renders what the
@@ -145,17 +99,11 @@ gainSlider.addEventListener('input', () => {
   const gainDb = popupShared.clampGainDb(gainSlider.value);
   gainSlider.value = String(gainDb);
   renderGain(gainDb);
-  // Drag preview only: render locally and live-apply the latest value to
-  // the tab as a transient session override (no storage read, no write, no
-  // broadcast). Persistence waits for `change`/`pointerup` below.
   void pumpLivePreview();
 });
 
 gainSlider.addEventListener('change', () => {
   if (gainSlider.disabled) return;
-  // The release-time persist: one field-level intent per value. `change`
-  // and `pointerup` both fire on a mouse release; the dedupe inside makes
-  // the pair exactly one storage write and one broadcast.
   void persistDragGain();
 });
 
@@ -172,8 +120,6 @@ resetBtnEl.addEventListener('click', () => {
   if (gainSlider.disabled) return;
   gainSlider.value = '0';
   renderGain(0);
-  // Reset is ONE single-field intent — gain 0 in a SINGLE message and a
-  // SINGLE per-site storage write.
   void saveResetInner();
 });
 
@@ -219,7 +165,6 @@ async function init() {
 
     const state = await chrome.runtime.sendMessage({ type: 'GET_SITE_STATE', hostname: siteKey });
 
-    // Authority first: the stored per-site record is the truth.
     toggle.checked = state ? Boolean(state.enabled) : false;
     gainSlider.value = String(popupShared.clampGainDb(state?.gainDb));
     renderGain(gainSlider.value);
@@ -232,7 +177,6 @@ async function init() {
     syncPresetControlState();
 
     if (excluded) {
-      // No polling at all while excluded: nothing runs, nothing to poll.
       renderStatus({ indicator: 'gray', text: EXCLUDED_TEXT, excluded: true });
     } else if (toggle.checked) {
       await refreshDocumentStatus();
@@ -306,8 +250,6 @@ async function toggleExclusion() {
       hookWasActiveAt = 0;
       renderStatus({ indicator: 'gray', text: EXCLUDED_TEXT, excluded: true });
     } else {
-      // The release on exclusion means this document cannot be re-normalized in
-      // place: tell the user once, quietly, that a reload restores it.
       reloadNoticePending = true;
       startStatusPolling();
       await refreshDocumentStatus();
@@ -341,10 +283,7 @@ async function toggleSite() {
     toggle.checked = !toggle.checked;
     return;
   }
-  // A deliberate action supersedes the quiet reload notice.
   reloadNoticePending = false;
-  // Exclusion owns the switch: while excluded it is disabled, and a stale
-  // caller must not resurrect audio on the site.
   if (excluded) {
     toggle.checked = false;
     applyExcludedState();
@@ -364,11 +303,6 @@ async function toggleSite() {
   const wanted = toggle.checked;
   saveInFlight += 1;
   try {
-    // Field-level intent: ONLY the toggled field. Never send gainDb
-    // from a cache — a concurrent sibling popup may have
-    // changed it newer, and a snapshot would revert it. Dispatched
-    // immediately with no popup-side chain; the background applies on
-    // arrival (last-accepted-write-wins) and returns the stored truth.
     const res = await chrome.runtime.sendMessage({
       type: 'SET_SITE_STATE',
       siteKey,
@@ -376,22 +310,14 @@ async function toggleSite() {
       set: { enabled: wanted },
     });
     requireStoredTruth(res);
-    // Render what the background returned, never what was sent.
     applyControlState({ enabled: res.enabled, gainDb: res.gainDb });
 
     if (res.enabled) {
-      // The background decides: a host that has been enabled before loads with
-      // the page hook in place, so this enable is live and the popup must not
-      // claim otherwise. The one residual reload case is the FIRST-ever enable
-      // of a host (no hook in the document to start). A response with no
-      // activation field is treated as the conservative case.
       const activation = res.activation && typeof res.activation === 'object'
         ? /** @type {Record<string, unknown>} */ (res.activation)
         : null;
       const activationState = activation ? String(activation.state || '') : '';
       if (activationState === 'reloading') {
-        // The background already reloaded (or is about to): say so, once, and
-        // never ask the user for an action they do not have to take.
         reloadNoticePending = false;
         runtimeActivationState = 'reloading';
         runtimeActivationMessage = String(activation?.message || RELOADING_TEXT);
@@ -408,9 +334,6 @@ async function toggleSite() {
         renderStatus({ indicator: 'gray', text: runtimeActivationMessage });
       }
     } else {
-      // Immediate apply for the current tab's TOP FRAME ONLY (frameId 0:
-      // RESEARCH §5.3). The named siteKey keeps every other frame from
-      // acting on this as defence in depth.
       if (tabId) {
         await chrome.tabs.sendMessage(tabId, {
           type: 'SET_DOCUMENT_STATE',
@@ -421,10 +344,6 @@ async function toggleSite() {
     }
     await refreshDocumentStatus();
   } catch {
-    // A failed write must not look like a success: revert the control to
-    // the stored truth and surface it on the existing status line. If the
-    // recovery read itself failed, the state is UNKNOWN — never claim a
-    // revert that never happened.
     let reverted = false;
     try {
       await revertToStoredTruth();
@@ -444,15 +363,11 @@ async function toggleSite() {
 
 async function saveGainInner(gainDb) {
   if (!toggle.checked) return;
-  // A deliberate action supersedes the quiet reload notice.
   reloadNoticePending = false;
   saveInFlight += 1;
   const wantedGain = popupShared.clampGainDb(gainDb);
   persistTargetGain = wantedGain;
   try {
-    // Field-level intent: ONLY gainDb. Never send enabled
-    // from this popup's cache — a sibling popup may own a newer value.
-    // The background applies on arrival and returns the stored truth.
     const res = await chrome.runtime.sendMessage({
       type: 'SET_SITE_STATE',
       siteKey,
@@ -460,7 +375,6 @@ async function saveGainInner(gainDb) {
       set: { gainDb: wantedGain },
     });
     requireStoredTruth(res);
-    // Render the returned truth, never the sent value.
     const nextGain = popupShared.clampGainDb(res.gainDb);
     gainSlider.value = String(nextGain);
     renderGain(nextGain);
@@ -487,10 +401,6 @@ async function saveGainInner(gainDb) {
   }
 }
 
-// Release-time persist for a slider drag: one field-level intent per value.
-// Called by both `change` and `pointerup` (both fire on a mouse release);
-// the baseline + in-flight-target dedupe makes the pair exactly one storage
-// write and — via the background's single broadcast per write — one broadcast.
 async function persistDragGain() {
   if (!toggle.checked) return;
   const gainDb = popupShared.clampGainDb(gainSlider.value);
@@ -498,10 +408,6 @@ async function persistDragGain() {
   await saveGainInner(gainDb);
 }
 
-// Drag preview: live-apply the slider's latest value to the tab as a
-// transient session override (no storage read, no write, no broadcast), at
-// most one send outstanding; a tick that lands mid-send re-pumps once so
-// the release-time persist always carries the final value.
 async function pumpLivePreview() {
   if (livePreviewInFlight || !tabId || !siteKey || !toggle.checked) return;
   livePreviewInFlight = true;
@@ -545,9 +451,6 @@ async function saveResetInner() {
       set: { gainDb: 0 },
     });
     requireStoredTruth(res);
-    // Render the returned truth, never the sent value: if the background
-    // stored something else, acknowledging 0 would claim a change
-    // that never happened.
     const nextGain = popupShared.clampGainDb(res.gainDb);
     gainSlider.value = String(nextGain);
     renderGain(nextGain);
@@ -590,7 +493,6 @@ async function requestSliderSoftWake() {
         runtimeActivationMessage = String(res.activation.message || '');
       }
     } catch {
-      // Restricted or unreachable tabs can fail quietly here.
     } finally {
       try {
         await refreshDocumentStatus();
@@ -609,8 +511,6 @@ function applyPreset(gainDb) {
   const nextGain = popupShared.clampGainDb(gainDb);
   gainSlider.value = String(nextGain);
   renderGain(nextGain);
-  // Immediate persist (no debounce, no chain): the preset click IS the
-  // user's change event and dispatches its own field-level intent at once.
   void saveGainInner(nextGain);
 }
 
@@ -640,32 +540,18 @@ async function refreshDocumentStatus() {
   }
 
   try {
-    // Defect 1: target the TOP FRAME ONLY. Without frameId the message fires
-    // in every frame (RESEARCH §5.1) and the sender gets one arbitrary answer
-    // (RESEARCH §5.2: "one of answers"), so an embedded cross-origin iframe's
-    // state could overwrite the selected site's controls. frameId 0 is the
-    // documented main-frame id (RESEARCH §5.3) and needs no new permission.
     const doc = await chrome.tabs.sendMessage(tabId, { type: 'GET_DOCUMENT_STATUS' }, { frameId: 0 });
     if (requestToken !== statusRequestToken) return;
-    // Defence in depth: the content script names its siteKey; a reply that
-    // does not name THIS site (a non-top frame's answer, a stale tab) must
-    // never overwrite the popup's controls.
     const docSite = typeof doc?.siteKey === 'string' ? popupShared.getSiteKey(doc.siteKey) : '';
     if (!docSite || docSite !== siteKey) return;
     const enabled = Boolean(doc?.enabled);
     const hookAlive = Boolean(doc?.hookAlive);
     const hookActive = Boolean(doc?.hookActive);
-    // Explicitly reported only: an older document that does not answer the
-    // field must not be described as needing a reload.
     const hookPresent = doc?.hookPresent === false ? false : true;
     const unprocessed = Number(doc?.unprocessed) || 0;
     const activating = Boolean(doc?.activating);
     const lastError = String(doc?.lastError || '');
 
-    // A save in flight owns the controls: the 750ms poll must not snap
-    // them back to pre-save document state mid-write. A drag preview owns
-    // them too: while the transient preview differs from the persisted
-    // baseline the poll reports status without touching the slider.
     if (saveInFlight === 0 && !hasUnsavedPreview()) {
       applyControlState({
         enabled,
@@ -720,9 +606,6 @@ async function refreshDocumentStatus() {
       renderStatus({ indicator: 'gray', text: runtimeActivationMessage || 'Enabled. Reload on a supported page.' });
       return;
     }
-    // No content script in this document: either the tab is reloading right now
-    // (a first-ever enable), or there was no hook to start and the notice is
-    // the honest answer.
     if (toggle.checked && runtimeActivationState === 'reloading') {
       renderStatus({ indicator: 'gray', text: runtimeActivationMessage || RELOADING_TEXT });
       return;
@@ -759,12 +642,7 @@ function getStatusText({ enabled, hookActive, activating, lastError, hookPresent
   if (enabled && (activating || runtimeActivationState === 'pending')) {
     return runtimeActivationMessage || 'Enabling on this tab…';
   }
-  // The document answered and says it has no page hook: this tab loaded before
-  // the hook existed, so this is the one case that really needs a reload.
   if (enabled && hookPresent === false) return RELOAD_NOTICE_TEXT;
-  // The page wires this audio through its own Web Audio graph. We can never
-  // take it over (one MediaElementSource per element), so say so instead of
-  // claiming the page is normalized or forcing silence.
   if (enabled && Number(unprocessed) > 0) return PAGE_OWNED_TEXT;
   if (enabled) return 'Enabled. Waiting for audio.';
   return 'Off for this site.';
@@ -774,8 +652,6 @@ function getStatusText({ enabled, hookActive, activating, lastError, hookPresent
  * @param {{ indicator: string, text: string, excluded?: boolean }} status
  */
 function renderStatus({ indicator, text, excluded: isExcluded }) {
-  // One quiet line, no control: while the reload notice is pending it replaces
-  // the ordinary status text (the excluded state already carries its own).
   const shown = !isExcluded && reloadNoticePending && toggle.checked ? RELOAD_NOTICE_TEXT : text;
   statusTextEl.textContent = shown;
   if (!statusPillEl) return;
@@ -839,8 +715,3 @@ function syncPresetControlState() {
     button.disabled = disabled;
   }
 }
-
-// No `unload` handler by design (defect 3): every user change is persisted
-// immediately on its `change`/`input` event, so there is never pending work
-// for teardown to flush. RESEARCH §6 documents no flush-on-teardown facility
-// and warns async teardown work is not guaranteed to complete.

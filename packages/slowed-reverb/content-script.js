@@ -1,9 +1,6 @@
 (() => {
   const existing = globalThis.__slowedReverbAudioContent;
 
-  // A reloaded/updated extension leaves the previous instance in this isolated
-  // world with a dead chrome.runtime. Adopting it via refresh() keeps a zombie
-  // that can never message the new worker; only adopt a live instance.
   function runtimeAlive() {
     try {
       return Boolean(chrome.runtime && chrome.runtime.id);
@@ -20,7 +17,6 @@
     try {
       existing.retire();
     } catch {
-      // A dead instance may fail to hand back the element; install anyway.
     }
   }
 
@@ -47,26 +43,14 @@
     pageHookToken: '',
     pageSongId: null,
     pageSongPushed: false,
-    // The href the pushed id was read in, kept so a replayed push carries its
-    // own provenance instead of borrowing the URL current at replay time.
     pageSongHref: null,
-    // When a real (trusted) input on YouTube Music's own volume slider was last
-    // seen. A page script can post a forged volume message, but it cannot make
-    // an event trusted, and a gesture elsewhere on the page is not this control.
     lastTrustedSliderAt: 0,
-    // Correlation for on-demand player reads: every accepted push bumps the
-    // sequence, and a read that crosses one is discarded.
     songPushSeq: 0,
     songQuerySeq: 0,
     pendingSongQuery: null,
-    // A media that has actually played can be replaced under a live identity;
-    // a fresh load cannot. `pendingSourceChange` is that replacement, waiting
-    // for evidence of what the new source is.
     identityPlayed: false,
     pendingSourceChange: false,
     suspendedSongId: null,
-    // The element whose source changed. A same-id answer confirms the visit
-    // only while this is still the element the controller tracks.
     suspendedElement: null,
     lastError: '',
     workletLoaded: false,
@@ -107,7 +91,6 @@
         try {
           state.observer.disconnect();
         } catch {
-          // Already disconnected.
         }
         state.observer = null;
       }
@@ -115,7 +98,6 @@
         try {
           teardownController(controller, true, state.context);
         } catch {
-          // Best effort: a dead instance may not own the element any more.
         }
       }
       state.media.clear();
@@ -123,7 +105,6 @@
         try {
           void state.context.close();
         } catch {
-          // Already closed.
         }
         state.context = null;
         state.workletLoaded = false;
@@ -198,10 +179,7 @@
       const media = event.target;
       if (!(media instanceof HTMLMediaElement)) return;
       const controller = trackMedia(media);
-      // A fresh playback start gets a fresh mute-correction budget; a page that
-      // fought the last track must not leave the next one permanently unmuted.
       resetMuteDampener(controller);
-      // The addModule ladder is per playback, not per page lifetime.
       state.workletRetryCount = 0;
       syncMediaController(controller);
       const generation = controller.generation;
@@ -232,10 +210,6 @@
       }, { passive: true, capture: true });
     });
 
-    // A track can change on the same element with no push at all (Home has no
-    // `?v=` to compare). A source change or a player/navigation signal only
-    // *asks* the hook what the player reads now; the event is never treated as
-    // an identity, and an unreadable player invalidates instead of guessing.
     document.addEventListener('timeupdate', (event) => {
       const target = event && event.target;
       if (!(target instanceof HTMLMediaElement)) return;
@@ -247,15 +221,12 @@
         const target = event && event.target;
         if (!(target instanceof HTMLMediaElement)) return;
         if (state.identityPlayed && state.pageSongId !== null) {
-          // A media that has played is being replaced. Nothing may seek until
-          // something proves what the new source is.
           state.pendingSourceChange = true;
           state.suspendedSongId = state.pageSongId;
           state.suspendedElement = target;
           suspendPlayerSongIdentity();
         }
         if (!requestSongIdentity() && state.pendingSourceChange) {
-          // No hook to ask: the new source cannot be confirmed at all.
           invalidatePlayerSongIdentity();
         }
       }, true);
@@ -263,9 +234,6 @@
     window.addEventListener('yt-navigate-finish', () => requestSongIdentity(), true);
     window.addEventListener('yt-player-updated', () => requestSongIdentity(), true);
 
-    // The one thing that can make a native volume push a user change is a real
-    // move of YouTube Music's own slider. Same selectors as page-hook.js, which
-    // owns the slider writes.
     ['input', 'change'].forEach((eventName) => {
       document.addEventListener(eventName, (event) => {
         if (!event || event.isTrusted !== true) return;
@@ -278,7 +246,6 @@
         try {
           maybeSuspendContext();
         } catch {
-          // Best effort only.
         }
       });
     }, true);
@@ -305,7 +272,6 @@
       try {
         maybeSuspendContext();
       } catch {
-        // Best effort only.
       }
     }, { passive: true });
 
@@ -341,30 +307,17 @@
         const pushedHref = typeof data.href === 'string' && data.href !== '' ? data.href : location.href;
         if (state.pendingSourceChange) {
           if (pushedId === state.suspendedSongId) {
-            // A timeout invalidation erased the cached push, and with it the
-            // ability to re-confirm this id ever again. The hook's own later
-            // push is a fresh vouch: adopt it as the cached push first, then
-            // hold it to exactly the provenance checks an in-time push faces.
-            // Nothing is restored by the timeout itself, so a recreated
-            // controller still refuses to replay the invalidated id.
             if (!state.pageSongPushed && pushedId !== null) {
               state.pageSongId = pushedId;
               state.pageSongHref = pushedHref;
               state.pageSongPushed = true;
-              // The invalidation dropped the recorded element; the element
-              // still tracked by the controller is the one this push would
-              // seek, and is what the provenance check must test.
               state.suspendedElement = currentMediaForPlayerActions();
             }
-            // The player repeats the old id. It confirms the visit only when the
-            // push, the live URL and the reloaded element all still name that
-            // song; otherwise the new media has no readable identity.
             if (!sameSongSourceConfirmed(pushedId, pushedHref)) {
               invalidatePlayerSongIdentity();
               return;
             }
           } else if (pushedId === null) {
-            // Reporting nothing is never evidence for the new source.
             invalidatePlayerSongIdentity();
             return;
           }
@@ -375,9 +328,6 @@
         if (pushedId !== state.pageSongId) state.identityPlayed = false;
         state.pageSongPushed = true;
         state.pageSongId = pushedId;
-        // The hook sends the href the id was read in. Keeping it is what makes a
-        // replayed push safe: anchoring a stale id to the current URL is how one
-        // song's repeat section ended up driving another.
         state.pageSongHref = pushedHref;
         if (playerActions) playerActions.setSongId(state.pageSongId, state.pageSongHref);
       }
@@ -389,13 +339,9 @@
         if (!pending || data.id !== pending.id) return;
         clearTimeout(pending.timer);
         state.pendingSongQuery = null;
-        // A push that landed while this read was in flight is newer than it.
         if (state.songPushSeq !== pending.pushSeq) return;
         if (typeof data.videoId === 'string' && data.videoId !== '') {
           if (state.pendingSourceChange && data.videoId === state.suspendedSongId) {
-            // Same id after a source change: a stale read unless every piece of
-            // provenance still names that song. A v-less URL, a moved href or a
-            // different element stays fail-closed.
             if (!sameSongSourceConfirmed(data.videoId, data.href)) {
               invalidatePlayerSongIdentity();
               return;
@@ -404,9 +350,6 @@
           state.pendingSourceChange = false;
           state.suspendedSongId = null;
           state.suspendedElement = null;
-          // Provenance follows the id, exactly like the controller: a read that
-          // still reports the old song must not move that song's href to the
-          // URL we have navigated to since, or a replay would anchor it there.
           if (!(state.pageSongPushed && state.pageSongId === data.videoId)) {
             state.identityPlayed = false;
             state.pageSongHref = typeof data.href === 'string' && data.href !== '' ? data.href : location.href;
@@ -423,33 +366,20 @@
       if (data.type === 'SLRA_VOLUME_STATE') {
         if (typeof data.token !== 'string' || data.token.length === 0) return;
         if (data.token !== state.pageHookToken) return;
-        // `#movie_player.setVolume()` writes a different scale into
-        // video.volume, unmutes the element and fires NO volumechange, so the
-        // gain ramp and the mute enforcement - both volumechange-driven - would
-        // never see it. Settle them from the reply itself.
         if (data.applied === true) settleAttachedVolume();
         resolvePageVolume(data.id, {
           volume: data.volume,
           applied: data.applied === true,
           source: data.source || 'none',
         });
-        // Native push (no request id): absolute player-scale truth from a
-        // slider drag or keyboard step. Replies carry the SET id; pushes do
-        // not. Settle the mute contract and the gain like an applied reply -
-        // a native setVolume unmutes the element and fires no volumechange -
-        // and adopt the value as the wheel base. Never a page request.
         if ((data.id === undefined || data.id === null) && data.source === 'player') {
           const pushed = Number(data.volume);
           if (Number.isFinite(pushed)) {
             settleAttachedVolume();
             if (playerActions) {
               try {
-                // A slider drag is the user's own change and outranks a restore
-                // that has not applied yet; an install/revive/poll push is only
-                // a reading of the page's value, or it would cancel the restore.
                 playerActions.setPlayerVolume(pushed, { user: isUserSliderPush(data) });
               } catch {
-                // Best effort: the cache follows on the next push.
               }
             }
           }
@@ -467,10 +397,6 @@
   function ensureObserver() {
     if (state.observer) return;
 
-    // Fast path: react only to media adds/removes on the next microtask via
-    // queueScan (which coalesces with scanQueued, so a DOM storm schedules at
-    // most one scan). Unrelated mutations are ignored; the slow safety poll
-    // below is the backstop for a missed record.
     state.observer = new MutationObserver((records) => {
       if (!isMediaMutation(records)) return;
       queueScan();
@@ -489,12 +415,10 @@
       const upper = tag.toUpperCase();
       if (upper === 'VIDEO' || upper === 'AUDIO') return true;
     }
-    // Subtree add: a wrapper DIV whose descendants contain media.
     if (typeof node.querySelectorAll === 'function') {
       try {
         if (node.querySelectorAll('audio,video').length > 0) return true;
       } catch {
-        // Non-element subtree; fall through.
       }
     }
     return false;
@@ -526,9 +450,6 @@
     }
   }
 
-  // chrome.runtime.getURL throws once the extension is reloaded and this content
-  // script is an orphan. Resolve it through one guarded read so no timer tick can
-  // throw and abandon the rest of its work.
   function workletUrl() {
     try {
       return chrome.runtime.getURL('dattorro-worklet.js');
@@ -557,7 +478,6 @@
         document.documentElement.dataset.slraToken = token;
       }
     } catch {
-      // Best effort only.
     }
     return token;
   }
@@ -566,19 +486,14 @@
     if (!state.context || state.context.state !== 'running') return;
     if (typeof state.context.suspend !== 'function') return;
     for (const controller of state.media.values()) {
-      // "Idle" means nothing is playing. A detached-but-playing element (retry,
-      // cool-down, source swap) is real playback: suspending there turns a
-      // recoverable stall into seconds of silence.
       if (controller.media && !controller.media.paused && !controller.media.ended) {
         return;
       }
     }
     try {
       void Promise.resolve(state.context.suspend()).catch(() => {
-        // Best effort only.
       });
     } catch {
-      // Best effort only.
     }
   }
 
@@ -594,10 +509,6 @@
     }
     state.lastError = '';
     syncAllMedia();
-    // syncAllMedia is what creates the controller, so the stored volume is
-    // handed over after it runs. Latching before the controller existed spent
-    // the one hand-off on a null and lost it: a refresh then forgot the wheel
-    // volume. restoreStoredVolume latches itself, once per document.
     restoreStoredVolume();
   }
 
@@ -616,23 +527,13 @@
     try {
       playerActions.restoreVolume(stored);
     } catch {
-      // Best effort: the page keeps its own value.
     }
   }
 
-  // Mute invariant: media.muted === attached. The element's own output is
-  // suppressed for as long as this controller owns a graph; the graph renders
-  // the captured stream. Gain invariant: masterGain carries media.volume only
-  // while attached && !sourceStale; a stale or budget-parked graph is
-  // hard-zeroed, so the page's own output is never doubled. A source swap is
-  // therefore muted end to end: hardZero -> confirm muted -> connect -> ramp.
   function isAudible(controller) {
     return Boolean(controller && controller.attached);
   }
 
-  // Stale-attach guard: bumped on every teardown/stale transition; async
-  // continuations capture controller.generation and return early on mismatch,
-  // so a resolve after teardown can never write muted or gain.
   function bumpGeneration(controller) {
     if (!controller) return;
     controller.generation = (controller.generation || 0) + 1;
@@ -652,16 +553,9 @@
   let rateWatchdogTimer = null;
   let lastPageMessageRecovery = 0;
 
-  // Player actions (easy volume + section repeat): one controller for the tab,
-  // created only while the tab is eligible and not bypassed, torn down on
-  // bypass/retire. Volume writes go through the MAIN-world page hook so YTM's
-  // own slider stays truthful; a missing hook falls back to element volume.
   const VOLUME_REPLY_TIMEOUT_MS = 500;
   let playerActions = null;
   let volumeRequestSeq = 0;
-  // One hand-off per document. Later state pushes carry the last saved
-  // settings; re-arming on them writes an older volume over a fresh wheel
-  // step, which is what made the page slider snap back.
   let volumeRestoreSeeded = false;
   const pendingVolumeRequests = new Map();
 
@@ -671,13 +565,9 @@
     try {
       window.postMessage({ __slra: true, type: 'SLRA_SYNC_VOLUME_UI', token, percent }, '*');
     } catch {
-      // Best effort: the page may be tearing down.
     }
   }
 
-  // An on-demand player read: bounded, correlated, and fail-closed. Nothing is
-  // adopted until the hook answers with an id it read, and no answer means the
-  // media cannot be vouched for.
   const SONG_QUERY_TIMEOUT_MS = 1000;
 
   function suspendPlayerSongIdentity() {
@@ -685,13 +575,10 @@
       try {
         playerActions.suspendSongIdentity();
       } catch {
-        // Best effort: the invalidate path still disarms on an unreadable answer.
       }
     }
   }
 
-  // The `v` param is the only song id a URL carries (mirrors the controller's
-  // songKeyFrom); no id means the URL cannot corroborate an identity.
   function songIdFromHref(href) {
     try {
       const parsed = new URL(String(href === undefined || href === null ? '' : href));
@@ -702,11 +589,6 @@
     }
   }
 
-  // A same-id answer to a post-playback source change confirms the visit only
-  // when a confirmed push named it, the live URL and the answer's own href still
-  // name it, and the element that reloaded is still the one the controller
-  // tracks. Anything less stays fail-closed: a section must never seek into
-  // another song.
   function sameSongSourceConfirmed(id, href) {
     if (typeof id !== 'string' || id === '') return false;
     if (!(state.pageSongPushed && state.pageSongId === id)) return false;
@@ -718,27 +600,19 @@
   }
 
   function invalidatePlayerSongIdentity() {
-    // The cached push is stale too: keeping it would let a recreated controller
-    // replay the identity this invalidated.
     state.pageSongPushed = false;
     state.pageSongId = null;
     state.pageSongHref = null;
     state.suspendedElement = null;
-    // The source change that caused this stays open: a later read that repeats
-    // the same id is still not evidence for the new media. Only a different id
-    // (or a new source event) moves the suspended id.
     if (playerActions && typeof playerActions.invalidateSongIdentity === 'function') {
       try {
         playerActions.invalidateSongIdentity();
       } catch {
-        // Best effort: nothing may be armed either way.
       }
     }
   }
 
   function requestSongIdentity() {
-    // Nothing to re-confirm, or a hook that has never signalled: a fresh page
-    // must not be invalidated for a hook that cannot answer yet.
     if (!state.pageSongPushed || !state.pageHookReady) return false;
     const token = state.pageHookToken;
     if (!token) return false;
@@ -752,23 +626,15 @@
       invalidatePlayerSongIdentity();
     }, SONG_QUERY_TIMEOUT_MS);
     state.pendingSongQuery = { id, pushSeq: state.songPushSeq, timer };
-    // Nothing may seek while this read is in flight.
     suspendPlayerSongIdentity();
     try {
       window.postMessage({ __slra: true, type: 'SLRA_QUERY_SONG', id, token }, '*');
       return true;
     } catch {
-      // The pending timeout turns an unsendable request into the same fail-closed
-      // invalidation as an unreadable player.
       return false;
     }
   }
 
-  // The reason string is written by the page hook, and a page script can post
-  // the same message with a correct token: the token is an anti-collision
-  // marker, not authentication. The user intent is therefore trusted only when
-  // a trusted input on the volume slider itself arrived just before, which a
-  // forged message cannot fabricate and an unrelated click cannot supply.
   const USER_PUSH_WINDOW_MS = 3000;
   const VOLUME_SLIDER_SELECTOR = '#volume-slider, #expand-volume-slider';
 
@@ -794,8 +660,6 @@
     pending.resolve(reply);
   }
 
-  // Volume only: the hook never writes `muted`, so no mute intent travels with
-  // a wheel write. The content script stays the single writer of media.muted.
   function requestPageVolume(percent) {
     const token = state.pageHookToken;
     if (!token) return Promise.resolve({ volume: null, applied: false, source: 'none' });
@@ -807,8 +671,6 @@
         resolve({ volume: null, applied: false, source: 'none' });
       }, VOLUME_REPLY_TIMEOUT_MS);
       pendingVolumeRequests.set(id, { resolve, timer });
-      // The graph owns the output, so the page hook restores the element mute
-      // immediately after `setVolume` (which unmutes as a side effect).
       const message = { __slra: true, type: 'SLRA_SET_VOLUME', id, token, percent, keepMuted: true };
       try {
         window.postMessage(message, '*');
@@ -867,19 +729,12 @@
         mediaProvider: currentMediaForPlayerActions,
         pageHook: {
           setVolume: (percent) => requestPageVolume(percent),
-          // Used when the page player API is missing and the controller writes
-          // media.volume itself: YTM's slider still has to follow.
           syncVolumeUi: (percent) => requestVolumeUiSync(percent),
         },
         storage: {
           get: (key) => chrome.storage.local.get(key),
-          // One ordered writer for the section list, across every tab.
           saveSection: (entry) => chrome.runtime.sendMessage({ type: 'SAVE_PLAYER_SECTION', entry }),
-          // Sticky wheel volume: one coalesced write per burst, as a field-level
-          // patch the worker merges into this site's stored settings.
           saveVolume: (percent) => savePlayerVolume(percent),
-          // Another tab's save is what makes a section visible here. The
-          // controller keeps its cache from this, never from a re-read.
           subscribe: (callback) => {
             if (!chrome.storage || !chrome.storage.onChanged) return () => {};
             const handler = (changes, area) => {
@@ -892,7 +747,6 @@
               try {
                 chrome.storage.onChanged.removeListener(handler);
               } catch {
-                // Already detached.
               }
             };
           },
@@ -902,8 +756,6 @@
       playerActions = null;
       return null;
     }
-    // Only a real push is authoritative: before it, the controller may still use
-    // the URL's `v`. A pushed null means "no track", which is different.
     if (state.pageSongPushed) playerActions.setSongId(state.pageSongId, state.pageSongHref);
     void playerActions.start();
     return playerActions;
@@ -921,7 +773,6 @@
     try {
       current.stop();
     } catch {
-      // Best effort: a dying instance must not throw.
     }
   }
 
@@ -935,13 +786,6 @@
   }
   const ATTACH_RETRY_MAX_ATTEMPTS = 20;
   const ATTACH_RETRY_MAX_DELAY_MS = 2000;
-  // Mute enforcement is a correction loop against a page that may fight back.
-  // A page that restores `muted = false` from its own `volumechange` listener
-  // can otherwise spin forever, so each element gets a rolling budget of
-  // corrections per second. Eight leaves headroom for YouTube's own start
-  // sequence (~6 unmute writes) while still starving a spin loop. Spending the
-  // budget pauses corrections for a cool-down rather than latching: after the
-  // deadline the 2 s watchdog and the next volumechange can correct again.
   const MUTE_CORRECTION_WINDOW_MS = 1000;
   const MUTE_CORRECTION_BUDGET = 8;
   const MUTE_COOLDOWN_MS = 1000;
@@ -987,8 +831,6 @@
       }
       for (const controller of state.media.values()) {
         if (!controller.attached || controller.failed) continue;
-        // Mute is part of the contract, not just an attach-time action: the page
-        // can unmute itself at any point. Independent of the rate-drift check.
         enforceElementMute(controller);
         if (Math.abs(controller.media.playbackRate - state.settings.slow) > 0.02) {
           setMediaPlaybackState(controller, state.settings.slow);
@@ -1046,7 +888,6 @@
         state.pageHookReady = true;
       }
     } catch {
-      // Best effort only.
     } finally {
       state.hookRefreshQueued = false;
     }
@@ -1059,19 +900,13 @@
         try {
           applyRuntimeState(runtime);
         } catch {
-          // Keep local state; scan+sync still run below.
         }
       }
     } catch {
-      // SW unreachable; keep local state and still scan+sync below.
     }
   }
 
   function scanMediaElements() {
-    // Swap order: tear down (pause/mute) disconnected controllers BEFORE
-    // tracking the replacement, so the old output never layers under the new
-    // attach. Teardown runs restoreMediaPlaybackState, which pauses a
-    // disconnected element before restoring its playback state.
     for (const [media, controller] of state.media.entries()) {
       if (media.isConnected) continue;
       teardownController(controller, true, state.context);
@@ -1126,21 +961,13 @@
       if (shouldBeActiveForController(controller)) {
         const intended = intendedPlaybackState(controller, state.settings.slow);
         const rateDiffers = media.playbackRate !== intended.intendedRate || !pitchStateMatches(media, intended.intendedPitch);
-        // Our own rate write echoes back as a queued `ratechange` after the
-        // guard flag is gone; that echo is not a page write and must not fade
-        // anything.
         if (!rateDiffers && media.muted === isAudible(controller)) return;
-        // The page replaced our rate. Cover the correction: fade the graph to
-        // zero over ~5 ms, restore the slowed rate, then ramp back, so the
-        // page's own speed never reaches the output. A stale tap is already at
-        // zero, so it only needs the write.
         const coverParam = rateDiffers && !controller.sourceStale && controller.masterGain ? controller.masterGain.gain : null;
         if (coverParam) {
           const now = state.context ? state.context.currentTime : 0;
           try {
             coverParam.cancelScheduledValues(now);
           } catch {
-            // No scheduled values.
           }
           coverParam.setValueAtTime(coverParam.value, now);
           if (typeof coverParam.linearRampToValueAtTime === 'function') {
@@ -1148,8 +975,6 @@
           }
         }
         writeIntendedRate(controller, state.settings.slow);
-        // Same mute seam and budget as setMediaPlaybackState: a page can restore
-        // its rate and fire `ratechange` as easily as `volumechange`.
         enforceElementMute(controller);
         if (coverParam && !controller.budgetBypassed) {
           rampGain(controller.masterGain.gain, media.volume);
@@ -1190,10 +1015,6 @@
     return controller;
   }
 
-  // A genuine source change (emptied/loadedmetadata) invalidates the tap but not
-  // the graph: hardZero first, confirm the element is muted, and let the next
-  // sync connect the fresh capture. The element never goes audible here, so a
-  // track switch has no dry gap and no doubled audio.
   function markTapStale(controller) {
     if (!controller.attached) {
       resetMuteDampener(controller);
@@ -1242,7 +1063,6 @@
 
     if (controller.budgetBypassed) {
       if (Date.now() < controller.budgetBypassedUntil) {
-        // Keep trying through the cool-down; the graph stays attached at 0.
         enforceElementMute(controller);
         return;
       }
@@ -1253,11 +1073,7 @@
     void resumeContext();
     if (!ensureAttached(controller)) {
       if (controller.attached) {
-        // The graph stays owned and muted while the new source loads; retry at
-        // the ceiling instead of tearing a live graph down mid-song.
         if (controller.sourceStale) {
-          // Rate only: the element must carry the slowed rate through the swap
-          // window even while the graph is parked at zero. Never unmute here.
           writeIntendedRate(controller, state.settings.slow);
         }
         scheduleAttachRetry(controller, retryCount);
@@ -1268,21 +1084,14 @@
         return;
       }
       if (!state.context) {
-        // Nothing to resume and no graph to own: retry later (play/seek/poll).
         scheduleAttachRetry(controller, retryCount);
         return;
       }
-      // Autoplay-policy / external suspend: wait for the resume already in
-      // flight instead of burning an attach-retry slot against a context that
-      // is about to be running.
       const resumeGeneration = controller.generation;
       void resumeContext().then(() => {
         if (state.retired || resumeGeneration !== controller.generation) return;
         if (!controller.media.isConnected) return;
         if (!state.eligible || state.bypass) return;
-        // Only continue when the resume actually produced a runnable context;
-        // a failed resume is retried by the watchdog/poll, never by a microtask
-        // spin.
         if (!state.context || state.context.state !== 'running') return;
         syncMediaController(controller, retryCount);
       });
@@ -1311,8 +1120,6 @@
         teardownController(controller, false, state.context);
         return;
       }
-      // Attached: never tear a live graph down mid-song. Keep it muted and
-      // retry at the ceiling until the new source arrives.
       controller.lastAttachReset = now;
     }
     const delay = Math.min(200 * (attempt + 1), ATTACH_RETRY_MAX_DELAY_MS);
@@ -1338,9 +1145,6 @@
     teardownController(controller, false, state.context);
   }
 
-  // One tap per element. The public name is the seam the tests drive: a second
-  // sync, a revive double-fire, or a volumechange re-entry must never capture
-  // or connect a second MediaStreamSource for the same live controller.
   function ensureSingleTap(controller) {
     if (!controller.attached) return false;
     if (controller.sourceStale) {
@@ -1353,9 +1157,6 @@
 
     const currentSrc = controller.media.currentSrc;
     if (currentSrc && currentSrc !== controller.attachedSrc) {
-      // Track-change hint only. music.youtube.com rotates googlevideo URLs
-      // (next/prev, radio, quality, ads) on the SAME element; captureStream is
-      // per element, so the existing tap is still live. Never recapture here.
       controller.attachedSrc = currentSrc;
     }
     return true;
@@ -1392,14 +1193,10 @@
           }
         });
 
-        // No audio track yet: the old tap is still connected, so hard-zero the
-        // graph BEFORE unmuting. audible(controller) === (attached && !stale):
-        // an unmuted element implies gain === 0.
         stream.getTracks().forEach((track) => {
           try {
             track.stop();
           } catch {
-            // Track already stopped.
           }
         });
         if (controller.masterGain) {
@@ -1413,11 +1210,6 @@
 
       source = context.createMediaStreamSource(stream);
       const dryGain = context.createGain();
-      // Wet-path compensation: the Dattorro tank is not unity-sum, so the wet
-      // bus arrives quieter than the dry one and its level climbs as the decay
-      // lengthens. This stage carries the inverse of the measured wet transfer,
-      // so dry + wet sums to one level at every slider position. It is not part
-      // of masterGain: that node carries media.volume only.
       const reverbCompGain = context.createGain();
       const masterGain = context.createGain();
       const dattorroNode = new AudioWorkletNode(context, 'dattorro-reverb');
@@ -1438,11 +1230,6 @@
       reverbCompGain.connect(masterGain);
       masterGain.connect(context.destination);
 
-      // Direct, not budgeted: this is the one write that establishes the
-      // contract, and it must land before `controller.attached = true` so the
-      // volumechange it queues cannot re-enter a half-attached controller
-      // (`enforceElementMute` gates on `attached`). The budget is cleared just
-      // below, so this single write never eats into the correction allowance.
       controller.media.muted = true;
 
       controller.stream = stream;
@@ -1453,8 +1240,6 @@
       controller.dattorroNode = dattorroNode;
       controller.attached = true;
       controller.attachedSrc = controller.media.currentSrc;
-      // The initial unmute goes through the same gate as a source swap: the
-      // intended rate must be on the element before the graph may carry audio.
       alignBeforeAudible(controller);
       resetMuteDampener(controller);
       controller.lastPostedParams = JSON.stringify(initialParams);
@@ -1474,7 +1259,6 @@
           try {
             track.stop();
           } catch {
-            // Track already stopped.
           }
         });
       }
@@ -1490,9 +1274,6 @@
     controller.tapInFlight = true;
     let capturedStream = null;
     try {
-      // Mute-first ordering: markTapStale already hard-zeroed the graph and
-      // confirmed the element muted, so the source swap is inaudible. Re-assert
-      // both before the new capture becomes reachable.
       if (controller.masterGain) hardZero(controller.masterGain.gain);
       controller.internalMuteWrite = true;
       controller.media.muted = true;
@@ -1507,13 +1288,10 @@
       capturedStream = stream;
 
       if (!stream.getAudioTracks().length) {
-        // No audio track yet: the old tap is still connected, so keep the
-        // element muted. The graph owns the output, not the element.
         stream.getTracks().forEach((track) => {
           try {
             track.stop();
           } catch {
-            // Track already stopped.
           }
         });
         controller.sourceStale = true;
@@ -1524,8 +1302,6 @@
       source.connect(controller.dryGain);
       source.connect(controller.dattorroNode);
 
-      // A new track must not inherit the previous track's tank: clear it before
-      // the fresh tap becomes audible.
       if (controller.dattorroNode) {
         controller.dattorroNode.port.postMessage({ type: 'reset' });
         const { params } = computeMixLevels(state.settings.reverbIntensity);
@@ -1550,27 +1326,20 @@
           try {
             track.stop();
           } catch {
-            // Track already stopped.
           }
         });
       }
 
-      // The new source may only become audible once the element already carries
-      // the intended rate; otherwise the graph plays the page's own speed until
-      // the write lands.
       resetMuteDampener(controller);
       alignBeforeAudible(controller);
       return true;
     } catch (error) {
-      // Never leave the element muted without an audio path: drop the stale
-      // tap before unmuting so the old source cannot keep playing underneath.
       disconnectNode(controller.source);
       if (controller.stream) {
         controller.stream.getTracks().forEach((track) => {
           try {
             track.stop();
           } catch {
-            // Track already stopped.
           }
         });
       }
@@ -1583,7 +1352,6 @@
           try {
             track.stop();
           } catch {
-            // Track already stopped.
           }
         });
       }
@@ -1599,7 +1367,6 @@
 
   function getAudioContext() {
     if (!state.context) {
-      // Chromium-only: AudioContext is unprefixed since Chrome 35 (2014).
       state.context = new AudioContext();
       state.context.onstatechange = handleContextStateChange;
       void loadWorklet(state.context);
@@ -1607,9 +1374,6 @@
     return state.context;
   }
 
-  // The one place a context lifecycle fact becomes an event: recover without
-  // waiting for the 2 s watchdog, and never leave an element muted onto a dead
-  // or frozen graph.
   function handleContextStateChange() {
     const context = state.context;
     if (!context || state.retired) return;
@@ -1627,7 +1391,6 @@
       syncAllMedia();
       return;
     }
-    // suspended/interrupted while we own a playing element: resume now.
     for (const controller of state.media.values()) {
       if (controller.media && !controller.media.paused && !controller.media.ended) {
         void resumeContext();
@@ -1641,7 +1404,6 @@
     try {
       await state.context.resume();
     } catch {
-      // Best effort only.
     }
   }
 
@@ -1707,9 +1469,6 @@
       decayDiff1: 0.65 + i * 0.05,
       decay: Math.pow(i, 0.75) * 0.58,
       damping: Math.min(0.5 + Math.pow(i, 0.6) * 0.4, 0.78),
-      // Equal-power crossfade: wet keeps the perceptual i^0.75 curve with full
-      // wet at i=1, and dry = sqrt(1 - wet^2) so the uncorrelated sum holds
-      // 0 dB at every setting (dry is derived at the rampGain sites below).
       wetGain: Math.pow(i, 0.75),
     };
   }
@@ -1719,26 +1478,10 @@
     return { ...base, wetGain: intensity > 0 ? base.wetGain : 0 };
   }
 
-  // Measured wet-path transfer of the Dattorro tank: output RMS per unit of
-  // worklet wetGain, relative to the input RMS, at the quarter points of the
-  // intensity slider. Rendered offline at 48 kHz on music-like material from
-  // test/level-flatness.test.js (which re-measures it), over a 1.5-4.5 s window.
-  // The tank is not unity-sum, so this is below 1 and rises with the decay time.
   const WET_TRANSFER_BY_INTENSITY = [0.5814, 0.6193, 0.6698, 0.7384];
 
-  // Constant mix headroom, -0.92 dB. Fully wet now carries the same RMS as the
-  // dry path, and on a near-full-scale master the tank's own crest factor peaks
-  // above unity (measured worst cell 1.096 at input peak 0.9), so 100 % reverb
-  // would clip the destination. This scales the whole mix - wet and dry cells
-  // alike - which is what keeps the level flat: a wet-only trim would cost
-  // exactly 20*log10 of it at full wet and nothing at zero, which is the very
-  // level change this stage exists to remove. Measured worst cell afterwards:
-  // 0.986. See test/level-flatness.test.js, which gates the peak and re-measures
-  // the flatness.
   const MIX_HEADROOM = 0.9;
 
-  // Linear between the measured points; the end values hold outside 0..1, which
-  // the slider cannot leave.
   function wetTransferForIntensity(intensity) {
     const numeric = Number(intensity);
     const i = Number.isFinite(numeric) ? Math.max(0, Math.min(1, numeric)) : 0;
@@ -1750,10 +1493,6 @@
     return Math.max(1e-6, k);
   }
 
-  // One owner for the audible mix: the worklet params, the dry complement and
-  // the wet compensation. Every call site goes through this, so the three values
-  // cannot drift apart. `masterGain` stays out of it by design - it carries
-  // media.volume only, and folding the mix into it would fight the volume knob.
   function computeMixLevels(intensity) {
     const params = computePostParams(intensity);
     const wet = params.wetGain;
@@ -1769,16 +1508,11 @@
     param.setTargetAtTime(value, state.context.currentTime, tau);
   }
 
-  // Zero-overlap unmute: cancel any scheduled ramp and drop the gain to 0 in
-  // the same sample, so the element's own output and the graph are never both
-  // audible. Order matters: cancel, hard-zero, and only then `muted = false`.
-  // `rampGain` stays for genuine fade-ins (attach, rebuild, correction).
   function hardZero(param) {
     if (!param || !state.context) return;
     try {
       param.cancelScheduledValues(state.context.currentTime);
     } catch {
-      // Already silent or no scheduled events.
     }
     param.setValueAtTime(0, state.context.currentTime);
   }
@@ -1794,8 +1528,6 @@
     applyMixLevels(controller, levels);
   }
 
-  // The only writer of the two gains that carry the mix. `computeMixLevels`
-  // owns the numbers; this ramps them, so no call site can drift.
   function applyMixLevels(controller, levels) {
     if (controller.dryGain) rampGain(controller.dryGain.gain, levels.dry);
     if (controller.reverbCompGain) rampGain(controller.reverbCompGain.gain, levels.comp);
@@ -1810,9 +1542,6 @@
     return true;
   }
 
-  // Clears the mute-correction budget. Called on every fresh playback start
-  // (attach / play / emptied) and on restore, so a paused dampener never
-  // outlives the track it was paused on.
   function resetMuteDampener(controller) {
     if (!controller) return;
     controller.muteCorrections.length = 0;
@@ -1821,9 +1550,6 @@
     controller.budgetBypassedUntil = 0;
   }
 
-  // Rolling-window budget plus a cool-down. Prune corrections older than the
-  // window, then claim one slot; a spent budget sets a deadline instead of a
-  // latch, so corrections resume on their own once the cool-down passes.
   function claimMuteCorrection(controller) {
     const now = Date.now();
     if (now < controller.mutePausedUntil) return false;
@@ -1841,11 +1567,6 @@
     return true;
   }
 
-  // A page volume write bypasses `volumechange` entirely (see the
-  // SLRA_VOLUME_STATE handler), so it needs its own settle: the element value is
-  // what the player actually applied, the graph must ramp to it, and the mute
-  // contract must be re-asserted. The unmute here is our own volume write's side
-  // effect, not a page fight, so it never draws on the mute-correction budget.
   function settleAttachedVolume() {
     for (const controller of state.media.values()) {
       if (!controller.attached || !controller.media) continue;
@@ -1859,21 +1580,15 @@
             controller.internalMuteWrite = false;
           });
         }
-        // We own the mute again: the graph may carry audio.
         controller.budgetBypassed = false;
         controller.budgetBypassedUntil = 0;
       }
-      // `sourceStale` keeps the existing hard-zero until the new tap connects.
       if (controller.masterGain && !controller.sourceStale) {
         rampGain(controller.masterGain.gain, media.volume);
       }
     }
   }
 
-  // `media.muted` mirrors `controller.attached` while the graph plays the
-  // element (AGENTS.md "Mute semantics"). The page can write `muted = false`
-  // during its own start sequence, so re-assert the contract at every
-  // volumechange and from the watchdog instead of only at attach time.
   function enforceElementMute(controller) {
     if (!isAudible(controller)) return;
     const media = controller.media;
@@ -1883,10 +1598,6 @@
       const pausedUntil = controller.mutePausedUntil;
       controller.budgetBypassed = true;
       controller.budgetBypassedUntil = pausedUntil;
-      // Never tear down the live graph: park it at 0 so only the page's own
-      // (still slowed) output is audible, and retry the mute when the cool-down
-      // expires. Keep the graph so the next correction is a single mute write,
-      // not a full re-attach.
       if (controller.masterGain) hardZero(controller.masterGain.gain);
       return;
     }
@@ -1909,10 +1620,6 @@
     }
   }
 
-  // Speed and pitch move together: a non-neutral rate write always forces
-  // pitch-preservation OFF across all three vendor spellings (and the guard
-  // below re-asserts it after the page player writes the aliases); only the
-  // neutral restore puts the element's own pitch state back.
   function intendedPlaybackState(controller, rate) {
     const neutral = Math.abs(rate - 1) < 0.001;
     return {
@@ -1924,10 +1631,6 @@
     };
   }
 
-  // Rate/pitch half of `setMediaPlaybackState`, on its own so a source swap or
-  // a page rate write can put the intended rate on the element through the
-  // silent window. Never touches `media.muted` or any gain, so it cannot
-  // unmute anything. Returns whether the element now carries the slow value.
   function writeIntendedRate(controller, rate) {
     const media = controller.media;
     const { neutral, intendedRate, intendedPitch } = intendedPlaybackState(controller, rate);
@@ -1951,11 +1654,6 @@
     return media.playbackRate === intendedRate && pitchStateMatches(media, intendedPitch);
   }
 
-  // The gate between "the graph is wired" and "the graph may be audible": the
-  // element must already carry the intended rate and pitch, or the first
-  // samples of a fresh source play at the page's own speed and are corrected
-  // afterwards. Aligned opens the graph; not aligned parks it at zero and keeps
-  // the tap stale so the next sync retries the write.
   function alignBeforeAudible(controller) {
     if (!controller.attached) return false;
 
@@ -1985,9 +1683,6 @@
     writeIntendedRate(controller, rate);
 
     if (intendedMuted) {
-      // Same budget as the volumechange path: a page can restore its rate and
-      // fire `ratechange` as easily as `volumechange`, so this write must not
-      // be a free extra correction. Only the deliberate unmute is direct.
       enforceElementMute(controller);
     } else {
       media.muted = false;
@@ -1999,9 +1694,6 @@
     cancelAttachRetry(controller);
     bumpGeneration(controller);
 
-    // Only touch the element's playback state when this controller actually
-    // attached and changed it. While bypassed (or before a first attach) the
-    // extension must not clear the page's own mute/rate on every sync.
     if (controller.attached) {
       disconnectNode(controller.source);
       disconnectNode(controller.dryGain);
@@ -2015,7 +1707,6 @@
           try {
             track.stop();
           } catch {
-            // Track already stopped.
           }
         });
       }
@@ -2039,7 +1730,6 @@
     try {
       maybeSuspendContext();
     } catch {
-      // Best effort only.
     }
 
     if (removeCompletely) {
@@ -2064,14 +1754,10 @@
 
   function restoreMediaPlaybackState(controller) {
     const media = controller.media;
-    // Element swap: a removed element can still be playing while its
-    // replacement attaches. Pause a disconnected element before restoring
-    // playback state so the old output never layers under the new one.
     if (media && media.isConnected === false) {
       try {
         media.pause();
       } catch {
-        // Pause is best effort.
       }
     }
     resetMuteDampener(controller);
@@ -2082,7 +1768,6 @@
       media.playbackRate = controller.originalRate;
       media.muted = false;
     } catch {
-      // Ignore restore failures.
     } finally {
       queueMicrotask(() => {
         controller.internalRateWrite = false;
@@ -2090,12 +1775,6 @@
     }
   }
 
-  // Chromium-only, but DO NOT strip the prefixed aliases below.
-  // Chrome exposes `mozPreservesPitch`/`webkitPreservesPitch` as real,
-  // writable HTMLMediaElement properties, and YouTube's own player reads and
-  // writes them. If we only wrote `preservesPitch`, YouTube could flip
-  // preservation back on and the slow effect would lose its pitch drop: every
-  // rate write has to force all three aliases off.
   function readPitchState(media) {
     return {
       preservesPitch: readMaybe(media, 'preservesPitch'),
@@ -2130,7 +1809,6 @@
     try {
       node.disconnect();
     } catch {
-      // Already disconnected.
     }
   }
 
@@ -2147,8 +1825,6 @@
 
     const totalCount = state.media.size;
     const active = state.eligible && !state.bypass;
-    // Friendly copy only: internal errors live in state.lastError and the
-    // console, never in the status the popup shows.
     let text = 'Waiting for media.';
     if (!state.eligible) {
       text = 'Waiting for tab.';

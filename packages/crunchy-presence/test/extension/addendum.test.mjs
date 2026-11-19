@@ -30,7 +30,6 @@ const base = (overrides = {}) => ({
   ...overrides
 });
 
-// 1. artwork is Crunchyroll-only (reuses the button host rule).
 test("artwork from a non-Crunchyroll https host is dropped", () => {
   const evil = buildActivity(base({ artworkUrl: "https://evil.example/ep.jpg" }), NOW);
   assert.equal(evil.assets, undefined);
@@ -38,7 +37,6 @@ test("artwork from a non-Crunchyroll https host is dropped", () => {
   assert.equal(ok.assets.large_image, "https://img.crunchyroll.com/ep.jpg");
 });
 
-// 2. page predicate and manifest are https-only.
 test("isCrunchyrollPageUrl rejects http", () => {
   assert.equal(isCrunchyrollPageUrl("http://www.crunchyroll.com/watch/G1"), false);
   assert.equal(isCrunchyrollPageUrl("https://www.crunchyroll.com/watch/G1"), true);
@@ -46,13 +44,11 @@ test("isCrunchyrollPageUrl rejects http", () => {
   assert.deepEqual(manifest.content_scripts[0].matches, ["https://*.crunchyroll.com/*"]);
 });
 
-// 3. crp-state requires our sender id and a Crunchyroll URL.
 test("handleState gates on sender.id and Crunchyroll URL", () => {
   assert.match(bgSource, /sender\.id !== chromeApi\.runtime\.id/);
   assert.match(bgSource, /isCrunchyrollPageUrl\(sender\.url\)/);
 });
 
-// 4. native buttons are https Crunchyroll-only.
 test("protocol buttons reject http and foreign hosts", () => {
   const foreign = validateActivity({
     type: 3,
@@ -71,7 +67,6 @@ test("protocol buttons reject http and foreign hosts", () => {
   assert.equal(ok.ok, true);
 });
 
-// 5. docs require Chrome 120.
 test("README and CHANGELOG require Chrome 120", () => {
   assert.match(readme, /120 or newer/);
   assert.doesNotMatch(readme, /156 or newer/);
@@ -79,25 +74,21 @@ test("README and CHANGELOG require Chrome 120", () => {
   assert.doesNotMatch(changelog, /Chrome 156\+/);
 });
 
-// 6. storage writes dedupe identical payloads.
 test("persist dedupes on lastPersistedJson", () => {
   assert.match(bgSource, /lastPersistedJson/);
   assert.match(bgSource, /if \(key === lastPersistedJson\) return;/);
 });
 
-// 7. content poll clears on pagehide and skips while disabled.
 test("content interval clears on pagehide and returns early while disabled", () => {
   assert.match(contentSource, /clearInterval\(pollTimer\)/);
   assert.match(contentSource, /if \(!enabled\) return;/);
 });
 
-// 8. placeholder meets 4.5:1.
 test("options placeholder uses #9aa3af", () => {
   assert.match(optionsCss, /#clientId::placeholder/);
   assert.match(optionsCss, /#9aa3af/);
 });
 
-// 9. popup toggle uses the shared Active vocabulary.
 test("popup toggle reads Active", () => {
   assert.match(popupSource, /Active/);
   assert.doesNotMatch(popupSource, /Presence enabled/);

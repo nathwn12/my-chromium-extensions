@@ -2,19 +2,6 @@
 
 /* global require, process, __dirname */
 
-/*
- * test/mute-enforce.test.js - regression test for the mute contract.
- *
- * Contract (AGENTS.md ## Architecture, "Mute semantics"): while the pipeline is
- * live, `media.muted` is `controller.attached`. The page player can write
- * `video.muted = false` during its own start sequence; the content script must
- * put the mute back in the same turn, at the `volumechange` seam.
- *
- * SAFETY (AGENTS.md ## Verification safety): plain Node only. The REAL
- * content-script.js is evaluated with browser globals stubbed (the same pattern
- * as qa/stub-env.js, which is local-only/gitignored). No browser is launched, no
- * device AudioContext is created, no audio plays.
- */
 
 const fs = require('fs');
 const path = require('path');
@@ -23,8 +10,6 @@ const vm = require('vm');
 function createContentEnv() {
   const stats = { captureCalls: 0, contexts: 0, ramped: 0, rampedValues: [], disconnects: 0, audioOps: [], gains: [], cancelCalls: 0, setValueCalls: 0, pauses: 0, ensureHooksCalls: 0 };
 
-  // Controllable timers: fake setTimeout, inert setInterval (the 2s watchdog is
-  // exercised by the real-browser harness, not here).
   const realSetTimeout = globalThis.setTimeout;
   const realClearTimeout = globalThis.clearTimeout;
   const realSetInterval = globalThis.setInterval;
@@ -50,13 +35,9 @@ function createContentEnv() {
     intervals.delete(id);
   };
 
-  // Origin for the page-message origin check (`event.origin === location.origin`).
   const realLocation = globalThis.location;
   globalThis.location = { origin: 'https://music.youtube.com', href: 'https://music.youtube.com/' };
 
-  // Controllable clock: the mute budget reads Date.now(), so a simulated drive
-  // can span seconds of wall time in milliseconds. Frozen by default so every
-  // burst in this file is deterministic.
   const realNow = Date.now;
   let clock = realNow();
   Date.now = () => clock;
@@ -75,9 +56,6 @@ function createContentEnv() {
     return n;
   }
 
-  // Same as runTimers, but yields between callbacks so queued microtasks run.
-  // The content script clears its internal-write flags in a microtask; a fully
-  // synchronous drain would never observe a second correction.
   async function drainTimers(max = 1000) {
     let n = 0;
     while (timers.size > 0 && n < max) {
@@ -128,8 +106,6 @@ function createContentEnv() {
       return { getAudioTracks: () => [track], getTracks: () => [track], addEventListener() {} };
     }
   }
-  // Assigned after the class body: the repo's eslint config targets ES2020,
-  // where static class fields (and their unrestricted identifiers) parse as errors.
   StubMedia.HAVE_NOTHING = 0;
   StubMedia.HAVE_METADATA = 1;
   StubMedia.HAVE_CURRENT_DATA = 2;
@@ -256,7 +232,6 @@ function createContentEnv() {
   globalThis.AudioContext = StubAudioContext;
   globalThis.AudioWorkletNode = StubWorkletNode;
 
-  // Load the real sources, unmodified.
   const root = path.join(__dirname, '..');
   for (const file of ['shared.js', 'content-script.js']) {
     const full = path.join(root, file);
@@ -315,7 +290,6 @@ function createContentEnv() {
         try {
           entry.cb();
         } catch {
-          // Best effort only.
         }
         await Promise.resolve();
       }
@@ -345,9 +319,6 @@ function check(name, condition, detail) {
   console.log('FAIL ' + message);
 }
 
-// Largest number of timestamps inside any half-open window of `spanMs`,
-// anchored on each timestamp. Mirrors the content script's prune rule
-// (`time <= now - span` is dropped), so a correct budget reports <= 8.
 function maxWindowCount(times, spanMs) {
   let max = 0;
   for (let i = 0; i < times.length; i++) {
@@ -362,7 +333,6 @@ async function main() {
   const env = createContentEnv();
   const media = env.addMedia();
 
-  // Enter through the real content-script seam: document capture 'play'.
   env.fireDoc('play', media);
 
   let attached = false;
@@ -391,10 +361,6 @@ async function main() {
   console.log('ok   attach mutes the element and slows playback');
   const rateAtAttach = media.playbackRate;
 
-  // `#movie_player.setVolume(20)` sets video.volume on the player's own scale
-  // (20 -> 0.148), sets muted=false, and fires NO volumechange. Both the graph
-  // ramp and the mute enforcement hang off volumechange, so the reply itself
-  // must settle them.
   const hookSource = fs.readFileSync(path.join(__dirname, '..', 'page-hook.js'), 'utf8');
   check(
     'page-hook.js only restores a requested mute (never unmutes)',
@@ -420,7 +386,6 @@ async function main() {
   };
 
 
-  // The player API's side effect: new element volume, unmuted, no event.
   media.volume = 0.148;
   media.muted = false;
   const rampsBeforeReply = env.stats.rampedValues.length;
@@ -442,8 +407,6 @@ async function main() {
     'ramps=' + JSON.stringify(env.stats.rampedValues.slice(rampsBeforeReply))
   );
 
-  // A reply that did not apply (the content script wrote media.volume itself)
-  // must not settle anything here: that path already fires volumechange.
   media.volume = 0.3;
   media.muted = false;
   const rampsBeforeMiss = env.stats.rampedValues.length;
@@ -453,7 +416,6 @@ async function main() {
     media.muted === false && env.stats.rampedValues.length === rampsBeforeMiss,
     'muted=' + media.muted + ' newRamps=' + (env.stats.rampedValues.length - rampsBeforeMiss)
   );
-  // Let the settle's internal-write microtask clear before the next scenario.
   await env.settle(2);
 
   media.muted = false;
@@ -503,9 +465,6 @@ async function main() {
     'expected false while bypassed, got ' + media.muted
   );
 
-  // YouTube starts muted; the extension's own `muted = true` must never be
-  // recorded as the page's mute and written back on teardown (bypass must
-  // leave `media.muted === false` with the graph detached).
   env.sendRuntime({
     type: 'APPLY_TAB_STATE',
     eligible: true,
@@ -551,11 +510,6 @@ async function main() {
   );
   autoMuted.isConnected = false;
 
-  // A page that unmutes itself from its own volumechange listener turns mute
-  // enforcement into a fight. The controller must bound its corrections so the
-  // event loop starves instead of spinning, while a fresh play gets a new
-  // budget. This models queued media events: a real `muted` write queues a
-  // `volumechange`, so the extension's own correction is what feeds the loop.
   env.sendRuntime({
     type: 'APPLY_TAB_STATE',
     eligible: true,
@@ -590,7 +544,6 @@ async function main() {
   });
   media.addEventListener('volumechange', () => {
     if (!hostileActive) return;
-    // Hostile page: its own listener always restores playback.
     setTimeout(() => {
       media.muted = false;
     }, 0);
@@ -636,7 +589,6 @@ async function main() {
     'writes continued: ' + (muteCorrections - correctionsWhenPaused)
   );
 
-  // A fresh play is a legitimate new start: it must clear the paused budget.
   hostileActive = false;
   await env.drainTimers(1000);
   env.fireDoc('play', media);
@@ -652,9 +604,6 @@ async function main() {
     'expected a new muting write after play, got none'
   );
 
-  // The page can reach the mute write through `setMediaPlaybackState` from its
-  // own `ratechange`, so that path must draw from the same budget. Six
-  // simulated seconds of this fight must stay bounded and terminate.
   const rateMedia = env.addMedia();
   env.fireDoc('play', rateMedia);
   for (let i = 0; i < 40 && (rateMedia.muted !== true || rateMedia.playbackRate !== 0.8); i++) {
@@ -693,8 +642,6 @@ async function main() {
   rateMedia.addEventListener('volumechange', () => {
     if (!rateHostileActive) return;
     setTimeout(() => {
-      // Hostile page: restore both halves of its own playback state, then
-      // reach the rate seam too.
       rateMedia.muted = false;
       rateMedia.playbackRate = 1;
       rateMedia.dispatchEvent(new Event('ratechange'));
@@ -744,9 +691,6 @@ async function main() {
     'drained ' + drainedAfterRateDrive + ', timers still queued: ' + env.pendingTimers()
   );
 
-  // Nine unmute attempts inside one second exhaust the budget: the controller
-  // fails OPEN to a dry bypass (audible, graph out of the way) and stays there
-  // through the cool-down; a fresh play after the deadline re-attaches.
   const burst = env.addMedia();
   env.fireDoc('play', burst);
   for (let i = 0; i < 40 && burst.muted !== true; i++) {
@@ -832,7 +776,6 @@ async function main() {
   const storeText = fs.readFileSync(path.join(__dirname, '..', 'STORE_SUBMISSION.md'), 'utf8');
   const manifest = JSON.parse(manifestText);
 
-  // A. sourceStale volumechange keeps the graph silent and the mute held.
   const staleM = env.addMedia();
   env.fireDoc('play', staleM);
   for (let i = 0; i < 40 && staleM.muted !== true; i++) {
@@ -865,8 +808,6 @@ async function main() {
     'captures +' + (env.stats.captureCalls - staleCaps) + ' muted=' + staleM.muted
   );
 
-  // B. the contract mute must NOT silence the graph: while attached the
-  // element stays muted and the graph plays at media.volume.
   mark = env.stats.rampedValues.length;
   staleM.dispatchEvent(new Event('volumechange'));
   check(
@@ -880,9 +821,6 @@ async function main() {
     'expected true, got ' + staleM.muted
   );
 
-  // B2. regression: the attach-time contract mute queues a volumechange that
-  // must not ramp the graph to 0 (fails on pre-fix bytes where
-  // volumeHandler mapped media.muted to masterGain 0).
   const contractM = env.addMedia();
   contractM.volume = 0.7;
   env.fireDoc('play', contractM);
@@ -935,7 +873,6 @@ async function main() {
     'expected true, got ' + contractM.muted
   );
 
-  // C. rebuild resets the mute budget.
   const budgetM = env.addMedia();
   env.fireDoc('play', budgetM);
   for (let i = 0; i < 40 && budgetM.muted !== true; i++) {
@@ -956,8 +893,6 @@ async function main() {
   budgetM.dispatchEvent(new Event('volumechange'));
   await Promise.resolve();
   check('setup: budget spent (9th unmute refused)', budgetM.muted === false);
-  // A spent budget bypasses to dry path through the cool-down; a track change
-  // after the deadline gets a fresh budget and rebuilds.
   env.advance(1001);
   budgetM.dispatchEvent(new Event('loadedmetadata'));
   for (let i = 0; i < 40 && budgetM.muted !== true; i++) {
@@ -974,7 +909,6 @@ async function main() {
     'element left unmuted on a live graph, got ' + budgetM.muted
   );
 
-  // D. failed rebuild disconnects the stale tap.
   const failM = env.addMedia();
   env.fireDoc('play', failM);
   for (let i = 0; i < 40 && failM.muted !== true; i++) {
@@ -985,8 +919,6 @@ async function main() {
   const disconnectsBefore = env.stats.disconnects;
   failM.captureStream = () => null;
   failM.dispatchEvent(new Event('emptied'));
-  // Settle only: microtasks run the failed rebuild, but no fake timer fires,
-  // so the retry chain cannot advance to mask the catch path.
   await env.settle(6);
   check(
     'failed rebuild disconnects the stale source tap',
@@ -999,7 +931,6 @@ async function main() {
     'expected false, got ' + failM.muted
   );
 
-  // E. attach-attempt lockout resets at the cap.
   const capM = env.addMedia();
   capM.paused = true;
   env.fireDoc('play', capM);
@@ -1007,8 +938,6 @@ async function main() {
     env.runTimers(20);
     await env.settle(1);
   }
-  // One more not-ready sync after the cap: a reset counter schedules a fresh
-  // retry, while a stuck counter hits the cap again and goes quiet.
   env.fireDoc('play', capM);
   await env.settle(1);
   const pendingAfterCap = env.pendingTimers();
@@ -1030,7 +959,6 @@ async function main() {
   }
   check('attach lockout resets at the cap (element attaches after 20 failures)', capped);
 
-  // F. live status is not Active with zero attached.
   const lonely = env.addMedia();
   lonely.paused = true;
   env.fireDoc('play', lonely);
@@ -1051,7 +979,6 @@ async function main() {
     'got attachedCount=' + (live && live.attachedCount) + ' text=' + JSON.stringify(live && live.text)
   );
 
-  // G. scope is YouTube Music only.
   const granted = manifest.host_permissions || [];
   const injected = (manifest.content_scripts && manifest.content_scripts[0] && manifest.content_scripts[0].matches) || [];
   const warMatches = (((manifest.web_accessible_resources || [])[0] || {}).matches) || [];
@@ -1073,7 +1000,6 @@ async function main() {
     'popup names YouTube or lost the friendly status'
   );
 
-  // H. static guards for the remaining fixes (each fails on the pre-fix bytes).
   const volumeBlock = (src.match(/controller\.volumeHandler = \(\) => \{[\s\S]*?enforceElementMute\(controller\);\s*\};/) || [])[0] || '';
   check(
     'volumeHandler ramps on sourceStale only, never on media.muted (static)',
@@ -1128,7 +1054,6 @@ async function main() {
     'teardown still restores observed mute'
   );
 
-  // I. adversarial repair lane (each fails on the pre-fix bytes).
   const dbl = env.addMedia();
   env.fireDoc('play', dbl);
   for (let i = 0; i < 40 && dbl.muted !== true; i++) {
@@ -1400,11 +1325,6 @@ async function main() {
     'no 1 s rate limit on page-message recovery'
   );
 
-  // The stub models the exponential ramp: setTargetAtTime never touches
-  // .value immediately, while hardZero (cancel + setValueAtTime(0)) does.
-  // Each site first simulates a settled audible graph (gain.value = 1),
-  // then fires the handler synchronously and asserts the immediate gain is
-  // exactly 0 at the unmuted instant with no setTarget(0) ramp.
   env.sendRuntime({
     type: 'APPLY_TAB_STATE',
     eligible: true,
@@ -1436,7 +1356,6 @@ async function main() {
     return ops.some((o) => o.op === 'setValue' && o.value === 0);
   }
 
-  // J1 emptied: hard-zero, mute held, no unmute write at all.
   const jEmptied = await attachZeroProbe();
   check('setup: zero-overlap emptied probe attached muted', jEmptied.muted === true);
   const jEmptiedGain = lastMaster();
@@ -1469,7 +1388,6 @@ async function main() {
   }
   check('emptied source swap completed', env.stats.captureCalls === jEmptiedCaps + 1);
 
-  // J2 loadedmetadata: same ordering (mute held, hardZero, no ramp).
   const jLoad = await attachZeroProbe();
   check('setup: zero-overlap load probe attached muted', jLoad.muted === true);
   const jLoadGain = lastMaster();
@@ -1502,7 +1420,6 @@ async function main() {
   }
   check('loadedmetadata source swap completed', env.stats.captureCalls === jLoadCaps + 1);
 
-  // J3 sourceStale volumechange: graph stays at exactly 0, mute held.
   const jStale = await attachZeroProbe();
   check('setup: zero-overlap stale probe attached muted', jStale.muted === true);
   const jStaleGain = lastMaster();
@@ -1529,7 +1446,6 @@ async function main() {
     env.runTimers(50);
   }
 
-  // J4 mute-budget refusal: keep the graph, park it at 0, retry later.
   const jRefuse = await attachZeroProbe();
   check('setup: zero-overlap refusal probe attached muted', jRefuse.muted === true);
   env.fireDoc('play', jRefuse);
@@ -1561,7 +1477,6 @@ async function main() {
     'gain=' + lastMaster().value + ' muted=' + jRefuse.muted
   );
 
-  // J5 swap: a disconnected element pauses before its state restores.
   const jSwap = await attachZeroProbe();
   check('setup: zero-overlap swap probe attached muted', jSwap.muted === true);
   jSwap.isConnected = false;
@@ -1576,11 +1491,7 @@ async function main() {
     'pauseCalled=' + jSwap.pauseCalled + ' paused=' + jSwap.paused
   );
 
-  // generation-guarded async attach. Each fails on the pre-fix bytes.
-  // Invariant under test: audible(controller) === (attached && !sourceStale).
 
-  // K1 rebuild path: the element stays muted end to end and the gain only
-  // rises after the new tap is connected.
   const kRe = await attachZeroProbe();
   check('setup: rebuild-order probe attached muted', kRe.muted === true);
   const kReCaps = env.stats.captureCalls;
@@ -1631,7 +1542,6 @@ async function main() {
     'ramps after swap=' + JSON.stringify(env.stats.rampedValues.slice(kReRampedMark)) + ' volume=' + kRe.volume
   );
 
-  // K2 no-audio-track path: mute held, graph at 0, old tap retained.
   const kNo = await attachZeroProbe();
   check('setup: no-audio probe attached muted', kNo.muted === true);
   const kNoGain = lastMaster();
@@ -1656,8 +1566,6 @@ async function main() {
     'attached=' + env.queryLive().attachedCount
   );
 
-  // K3 stale generation: an async continuation that resolves after its
-  // generation was bumped must not write muted or gain.
   const kGen = await attachZeroProbe();
   check('setup: stale-generation probe attached muted', kGen.muted === true);
   kGen.paused = true;
@@ -1683,7 +1591,6 @@ async function main() {
     'ops=' + JSON.stringify(env.stats.audioOps.slice(kGenOpsMark))
   );
 
-  // Each fails on the pre-fix bytes (debounced 50 ms scan on every mutation).
   await env.drainTimers(2000);
   check(
     'observer watches documentElement with childList+subtree',
@@ -1698,7 +1605,6 @@ async function main() {
   };
   const mediaRecord = (tag) => [{ addedNodes: [{ tagName: tag }], removedNodes: [] }];
 
-  // S1: a media add scans within one frame, with no 50 ms timer.
   const sFast = env.addMedia();
   sFast.muted = false;
   const qBeforeFast = env.queryCalls();
@@ -1721,7 +1627,6 @@ async function main() {
   }
   check('setup: fast-path probe attached muted', sFast.muted === true);
 
-  // S2: a storm of 50 media records coalesces to exactly one scan.
   await env.drainTimers(2000);
   const qBeforeStorm = env.queryCalls();
   for (let i = 0; i < 50; i++) fireObserver(mediaRecord('VIDEO'));
@@ -1732,7 +1637,6 @@ async function main() {
     'scans=' + (env.queryCalls() - qBeforeStorm)
   );
   await env.drainTimers(2000);
-  // S2b: 50 unrelated (DIV) mutations schedule no scan and no timer.
   const qBeforeDiv = env.queryCalls();
   const debounceBeforeDiv = env.timerDelays().filter((ms) => ms === 50).length;
   for (let i = 0; i < 50; i++) {
@@ -1747,7 +1651,6 @@ async function main() {
       ' pending50=' + env.timerDelays().filter((ms) => ms === 50).length
   );
 
-  // S3: swap pauses/mutes the old element before the new one attaches.
   const sOld = env.addMedia();
   env.fireDoc('play', sOld);
   for (let i = 0; i < 40 && sOld.muted !== true; i++) {
@@ -1795,7 +1698,6 @@ async function main() {
     'order=' + JSON.stringify(swapOrder)
   );
 
-  // S static guards (each fails on the pre-fix bytes).
   const observerBlock = (src.match(/function ensureObserver\(\) \{[\s\S]*?\n  \}/) || [])[0] || '';
   check(
     'observer filters to media adds/removes (static)',
@@ -1825,7 +1727,6 @@ async function main() {
 
   const workletText = fs.readFileSync(path.join(__dirname, '..', 'dattorro-worklet.js'), 'utf8');
 
-  // Z1: page postMessage requires origin + source.
   const hooksBeforeForeign = env.stats.ensureHooksCalls;
   env.fireWin('message', {
     source: {},
@@ -1870,7 +1771,6 @@ async function main() {
     'no origin+source gate in message handler'
   );
 
-  // Z2: hook-ready token (forged READY ignored, correct accepted).
   const hookApi = globalThis.__slowedReverbAudioContent;
   check(
     'Z2 hook token helper exists (static)',
@@ -1936,7 +1836,6 @@ async function main() {
     'no token match in READY handler'
   );
 
-  // Z3: budget exhaustion keeps the live graph at 0 and recovers.
   const z3 = env.addMedia();
   z3.volume = 0.9;
   env.fireDoc('play', z3);
@@ -1978,7 +1877,6 @@ async function main() {
   await Promise.resolve();
   check('Z3 fresh unmute after cool-down re-mutes the same graph', z3.muted === true, 'muted=' + z3.muted);
 
-  // Z4: corrupt stored settings fall back to documented defaults.
   const Shared = globalThis.SlowedReverbShared;
   check(
     'Z4 non-finite slow falls back to 1.00x',
@@ -2002,7 +1900,6 @@ async function main() {
     'got ' + Shared.normalizeSettings({ reverbIntensity: Infinity }).reverbIntensity
   );
 
-  // Z5: storage failure falls back to defaults, page stays eligible.
   check(
     'Z5 storage failure falls back to defaults (static)',
     /async function getStoredSiteSettings\(\) \{\s+try/.test(backgroundText) &&
@@ -2010,7 +1907,6 @@ async function main() {
     'no try/catch fallback in getStoredSiteSettings'
   );
 
-  // Z6: rehydrate flag set only after successful rehydrate.
   check(
     'Z6 rehydrate flag set only after success (static)',
     backgroundText.indexOf('await scheduleRehydrate') !== -1 &&
@@ -2020,7 +1916,6 @@ async function main() {
     'flag still set before rehydrate'
   );
 
-  // Z7: suspend when idle, resume on play.
   const allForSuspend = globalThis.document.querySelectorAll('audio,video');
   for (const m of allForSuspend) m.paused = true;
   env.fireDoc('pause', allForSuspend[0] || z3);
@@ -2050,7 +1945,6 @@ async function main() {
     'contextState=' + (resumedLive && resumedLive.contextState)
   );
 
-  // Z8: worklet skips the tank when dry, invariants hoisted.
   check(
     'Z8 dry fast path skips the tank (static)',
     workletText.indexOf('this.wetGain === 0 && this.wetTarget === 0') !== -1,
@@ -2064,7 +1958,6 @@ async function main() {
     'invariants still inside loop'
   );
 
-  // Z9: 5 s safety poll cleared on pagehide and teardown.
   check(
     'Z9 safety poll has a clear path (static)',
     src.indexOf('function clearSafetyPoll()') !== -1 &&
@@ -2080,7 +1973,6 @@ async function main() {
     'pendingIntervals=' + env.pendingIntervals()
   );
 
-  // Z10: 2 s watchdog gated on visibility + playing.
   check(
     'Z10 watchdog gated on visibility + playing (static)',
     src.indexOf("document.visibilityState === 'hidden'") !== -1 &&
@@ -2088,8 +1980,6 @@ async function main() {
     'no visibility/playing gate in watchdog'
   );
 
-  // M1 attach establishes the contract mute itself (mutation: drop the direct
-  // write and rely on the later volumechange correction).
   const attachBlock = (src.match(/function ensureAttached\(controller\) \{[\s\S]*?\n  \}/) || [])[0] || '';
   const directMute = attachBlock.indexOf('controller.media.muted = true;');
   const attachedFlag = attachBlock.indexOf('controller.attached = true;');
@@ -2099,7 +1989,6 @@ async function main() {
     'no direct mute write before attached=true'
   );
 
-  // M2 media.volume is tracked continuously, with the mute held and no recapture.
   const mv = env.addMedia();
   mv.volume = 0.35;
   env.fireDoc('play', mv);
@@ -2129,9 +2018,6 @@ async function main() {
     'muted=' + mv.muted + ' captures +' + (env.stats.captureCalls - mvCaps)
   );
 
-  // any wheel. The page pushes player-scale truth (an id-less
-  // SLRA_VOLUME_STATE); the content script settles the mute contract and the
-  // gain from it, and never sends a page volume request of its own.
   const pushToken = globalThis.__slowedReverbAudioContent.__testGetHookToken();
   const pushed = env.addMedia();
   pushed.volume = 0.3;
@@ -2141,7 +2027,6 @@ async function main() {
     env.runTimers(50);
   }
   check('setup: push probe attached muted', pushed.muted === true);
-  // Native drag side effects: new element volume, unmuted, NO volumechange.
   pushed.volume = 0.21;
   pushed.muted = false;
   const pagePosts = [];
@@ -2175,7 +2060,6 @@ async function main() {
     pagePosts.length === 0,
     'posted=' + JSON.stringify(pagePosts)
   );
-  // M3 prod copy: internal errors never reach the popup, neutral is Active.
   const StatusShared = globalThis.SlowedReverbShared;
   const friendlyStatus = StatusShared && typeof StatusShared.friendlyStatus === 'function'
     ? StatusShared.friendlyStatus

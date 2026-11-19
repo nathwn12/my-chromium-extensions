@@ -163,7 +163,6 @@ test("the album-fallback line is plain text; button 2 still opens the album", ()
     { label: "View album", url: "https://music.youtube.com/browse/MPREb_album" },
   ]);
 
-  // An album line without an album link still carries no link at all.
   const albumTextOnly = buildActivity(
     "youtube-music",
     musicState({ channel: null, albumUrl: null }),
@@ -276,7 +275,6 @@ test("a track URL over the 512-character button cap falls back to the watch page
     NOW
   );
   assert.deepEqual(linkKeys(activity), []);
-  // Button 1 falls back to the page URL, which is still a usable track link.
   assert.equal(activity.buttons[0].url, watch);
 });
 
@@ -384,8 +382,6 @@ test("an album link still gets a button when the page URL is not usable", () => 
 });
 
 test("a track URL must be a watch page with an 11-character v, or it is not a button", () => {
-  // Same-host is not enough: Home, Explore, a channel and a short id are all
-  // rejected, and the button simply does not appear.
   for (const trackUrl of [
     "https://music.youtube.com/",
     "https://music.youtube.com/explore",
@@ -430,8 +426,6 @@ test("an album URL must be a /browse/MPRE path, or the View album button does no
     );
   }
 
-  // A dropped album URL never becomes another URL: the artist target is its
-  // own candidate, decided by the artist URL's shape.
   const droppedAlbum = buildActivity(
     "youtube-music",
     musicState({ albumUrl: "https://music.youtube.com/explore" }),
@@ -499,9 +493,6 @@ test("the two buttons are the only clickable things", () => {
     { label: "Listen on YouTube Music", url: "https://music.youtube.com/watch?v=song1234567" },
   ]);
 
-  // Labels alone would pass an old linked-card payload, so the whole key set
-  // is pinned: a reintroduced link field is a new key, and every `*_url` key
-  // is banned outright.
   for (const [name, activity] of [
     ["both", both],
     ["artist only", artistOnly],
@@ -541,7 +532,6 @@ test("large_text is the album only when it says something the card does not", ()
   const distinct = buildActivity("youtube-music", musicState(), NOW);
   assert.equal(distinct.assets.large_text, "An Album");
 
-  // The album is the title: line 1 already says it.
   const sameAsTitle = buildActivity(
     "youtube-music",
     musicState({ title: "An Album", album: "An Album" }),
@@ -549,7 +539,6 @@ test("large_text is the album only when it says something the card does not", ()
   );
   assert.equal("large_text" in sameAsTitle.assets, false);
 
-  // The album is the state line.
   const sameAsState = buildActivity(
     "youtube-music",
     musicState({ channel: null, artistUrl: null, album: "An Artist" }),
@@ -558,7 +547,6 @@ test("large_text is the album only when it says something the card does not", ()
   assert.equal(sameAsState.state, "An Artist");
   assert.equal("large_text" in sameAsState.assets, false);
 
-  // The album is the app name.
   const sameAsName = buildActivity(
     "youtube-music",
     musicState({ channel: null, artistUrl: null, album: "YouTube Music" }),
@@ -610,7 +598,6 @@ test("the title is never the cover tooltip", () => {
 });
 
 test("the view count is tooltip-only when it repeats a visible line", () => {
-  // The title owns line 1; a tooltip that repeats it is noise.
   const sameAsTitle = buildActivity(
     "youtube-music",
     musicState({ title: "42 views", album: null, albumUrl: null, views: "42 views" }),
@@ -679,9 +666,6 @@ test("timestamps clamp the position into the duration", () => {
 });
 
 test("elapsed/end come from the real media clock: audio-backed playback still stamps time", () => {
-  // Regression: the extractor reads <audio> as well as <video>, so a song
-  // backed by an audio element keeps its position/duration and this builder
-  // stamps start/end from those real numbers — never invented.
   const activity = buildActivity(
     musicState({ duration: 184.2, position: 42.9, paused: false }),
     NOW
@@ -728,9 +712,7 @@ test("a non-1x countdown is rate-scaled from the un-biased sample second", () =>
   const state = musicState({ position: 10, duration: 200, playbackRate: 0.7, at: biased });
   const activity = buildActivity(state, biased, sample);
 
-  // The elapsed bar still comes from the biased anchor; only the end changes.
   assert.equal(activity.timestamps.start, Math.floor(biased / 1000) - 10);
-  // One floor over the un-biased sample second plus the rate-scaled remainder.
   assert.equal(activity.timestamps.end, Math.floor(sample / 1000 + (200 - 10) / 0.7));
   const trueRemaining = (200 - 10) / 0.7;
   assert.ok(Math.abs(activity.timestamps.end - sample / 1000 - trueRemaining) < 1);

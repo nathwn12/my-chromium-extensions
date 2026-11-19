@@ -23,9 +23,6 @@ function fnSrc(src, name) {
   return src.slice(i);
 }
 
-// Churn harness: the one-shot capture registry is shared across contexts in
-// the sandbox, mirroring the Web Audio rule that a second
-// createMediaElementSource on one element throws InvalidStateError.
 function loadHook({ rejectResume = false } = {}) {
   const src = read('page-hook.js');
   const posted = [];
@@ -157,15 +154,12 @@ function loadHook({ rejectResume = false } = {}) {
   sandbox.globalThis = sandbox;
   vm.createContext(sandbox);
   vm.runInContext(src, sandbox, { filename: 'page-hook.js' });
-  // No page control channel: the worker arms the hook through the dispatcher.
   const control = (action, payload) => (typeof sandbox.__tnHookV6 === 'function'
     ? sandbox.__tnHookV6(action, payload || {})
     : { ok: false, alive: false, active: false, error: 'No hook in this frame.' });
   const stopHook = () => control('stop', {});
   const WORKLET_URL = 'chrome-extension://test-id/audio/normalizer-worklet.js';
   const startHook = () => control('start', { gainDb: 0, workletUrl: WORKLET_URL });
-  // What the content script does before asking the worker to inject again: stage
-  // the worklet URL on the document, then run the file in the same page world.
   const reinject = () => {
     docEl.setAttribute('data-tn-worklet-url', WORKLET_URL);
     vm.runInContext(src, sandbox, { filename: 'page-hook.js#reinject' });
@@ -181,9 +175,6 @@ function loadHook({ rejectResume = false } = {}) {
     stopHook,
     destroyHook: () => control('destroy', {}),
     fireMutations: (mutations) => { if (observerCallback) observerCallback(mutations); },
-    // The page (or a previous hook instance) owns the element: the one-shot
-    // capture is consumed. pageCapture also labels like the patched page
-    // path; consumeCapture leaves it unlabelled (previous-instance case).
     pageCapture: (el) => { el.__tnWebAudio = true; captured.add(el); },
     consumeCapture: (el) => { captured.add(el); },
   };
@@ -334,16 +325,11 @@ test('stop KEEPS the captured context (a live re-enable reuses it); destroy rele
   const source = A.__tnSource;
   const context = h.contexts[0];
 
-  // Removal while active must not close or suspend the running context.
   h.fireMutations([{ addedNodes: [], removedNodes: [A] }]);
   await sleep(300);
   assert.equal(context.state, 'running', 'active context stays running when idle');
   assert.equal(h.counts().closeCalls, 0, 'no close while active');
 
-  // An ordinary disable is a STOP: the worklet goes away and the page plays at
-  // 0 dB, but the context, the source and the ownership all survive. Releasing
-  // them here would make a re-enable impossible without a reload — a captured
-  // element can never be captured twice.
   h.stopHook();
   await sleep(250);
   assert.equal(h.counts().closeCalls, 0, 'stop closes nothing');
@@ -353,20 +339,16 @@ test('stop KEEPS the captured context (a live re-enable reuses it); destroy rele
   assert.equal(A.muted, false, 'and never left muted by us');
   assert.equal(h.status().active, false, 'nothing is processing while off');
 
-  // Re-enable on the same document: live, one context, one source.
   const second = h.startHook();
   await sleep(300);
   assert.equal(second.active, true, 'the re-enabled hook processes again');
   assert.equal(h.contexts.length, 1, 'no second context was created');
-  // The element comes back (a feed re-insert) and plays: it re-attaches to the
-  // SAME source, with no second createMediaElementSource.
   h.fireMutations([{ addedNodes: [A], removedNodes: [] }]);
   await A.play();
   await sleep(300);
   assert.equal(h.counts().createCalls, 1, 'and the element was never captured twice');
   assert.equal(A.__tnAttached, true, 'the re-inserted element is managed again');
 
-  // DESTROY is the exclusion/uninstall path and the only thing that releases.
   h.destroyHook();
   await sleep(250);
   assert.equal(h.counts().closeCalls, 1, 'destroy closes the captured context');
@@ -375,8 +357,6 @@ test('stop KEEPS the captured context (a live re-enable reuses it); destroy rele
   assert.equal(A.__tnAttached !== true, true, 'the element is released from our registry');
   assert.equal(A.muted, false, 'and never left muted by us');
 
-  // A later instance (a fresh injection, as after a reload) builds its OWN
-  // context and never adopts the released one.
   h.reinject();
   h.startHook();
   await sleep(300);
@@ -389,7 +369,6 @@ test('a page-captured element is skipped and left unmuted by us', async () => {
   const h = loadHook();
   await sleep(250);
 
-  // Labelled page capture: our gate skips before any capture attempt.
   const B = new h.FakeMediaElement();
   B.muted = false;
   h.pageCapture(B);
@@ -399,8 +378,6 @@ test('a page-captured element is skipped and left unmuted by us', async () => {
   assert.equal(B.__tnAttached !== true, true, 'never marked attached');
   assert.equal(B.muted, false, 'not muted by us');
 
-  // Unlabelled one-shot consumption (previous hook instance): our attempt
-  // throws InvalidStateError with no cache — skipped, guard restored.
   const C = new h.FakeMediaElement();
   C.muted = false;
   h.consumeCapture(C);
@@ -409,8 +386,6 @@ test('a page-captured element is skipped and left unmuted by us', async () => {
   assert.equal(C.__tnAttached !== true, true, 'throw with no cache never attaches');
   assert.equal(C.muted, false, 'not left muted by us');
 
-  // And the latch never blocks a cached source: label a captured element
-  // as page-wired afterwards, churn it, and it still reuses its route.
   const D = new h.FakeMediaElement();
   await D.play();
   await sleep(300);

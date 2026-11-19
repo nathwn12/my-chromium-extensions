@@ -1,25 +1,5 @@
 'use strict';
 
-/*
- * qa/proof-pitch.js - "speed and pitch move together" proof (pure Node stub harness).
- *
- * Scratch artifact for session ses_ec9c91713ffePHOn6o2dmsFmWo.
- *
- * SAFETY (repo AGENTS.md ## Verification safety): plain Node only. No browser is
- * launched, no AudioContext with a device is created, no audio plays. The REAL
- * content-script.js is evaluated with browser globals stubbed (qa/stub-env.js)
- * and driven through its real seams (chrome runtime messages, media events).
- *
- * Mechanism (source: MDN HTMLMediaElement.preservesPitch, verified 2026-10-14):
- * the property defaults to `true`; when it is `false` the browser does NOT
- * compensate the pitch for playbackRate changes, so pitch follows speed. The
- * extension therefore has to force it OFF on every non-neutral rate write.
- *
- * Supersedes qa/proof-f1.js, which asserts the pre-fix intent
- * (preservesPitch === true at slow=0.8) and is expected to FAIL now.
- *
- * Exit 0 = every check passed, 1 = a check failed, 2 = harness setup problem.
- */
 
 const { createContentEnv } = require('./stub-env');
 
@@ -31,9 +11,6 @@ function semitones(ratio) {
   return 12 * Math.log2(ratio);
 }
 
-// Linear-interpolation resampler: y[n] = x(n * rate) is exactly "play the
-// source at `rate` with pitch not compensated" (no phase vocoder). Returns the
-// measured output frequency by zero-crossing count.
 function measureResampledHz(rate) {
   const n = Math.round(SR * SR_SECONDS);
   const src = new Float64Array(n * 2);
@@ -77,15 +54,12 @@ function measureResampledHz(rate) {
   }
   const original = { rate: 1, pitch: [true, true, true], muted: false };
 
-  // A. the slow rate itself must stop compensating pitch.
   mk(
     'A attach at slow=0.8 forces all three pitch aliases OFF',
     allOff(),
     'rate=' + media.playbackRate + ' flags=' + JSON.stringify(flags()) + ' muted=' + media.muted
   );
 
-  // B. the page player writes the aliases back (the chipmunk-clobber inverse):
-  //    our re-assert must win on the ratechange path, rate included.
   const CYCLES = 12;
   let corrected = 0;
   for (let i = 0; i < CYCLES; i++) {
@@ -103,14 +77,12 @@ function measureResampledHz(rate) {
     'corrected=' + corrected + '/' + CYCLES + ' flags=' + JSON.stringify(flags()) + ' rate=' + media.playbackRate
   );
 
-  // C. a clobber with NO event still gets corrected by the next sync.
   media.preservesPitch = true;
   media.mozPreservesPitch = true;
   media.webkitPreservesPitch = true;
   await applySettings({ slow: 0.8, reverbIntensity: 0.5 });
   mk('C sync path re-asserts OFF after a silent clobber', allOff(), 'flags=' + JSON.stringify(flags()));
 
-  // D. speed slider moves -> pitch follows at every supported rate.
   const rateRows = [];
   let rateOk = true;
   for (const slow of [0.7, 0.9, 1.1, 1.3]) {
@@ -121,7 +93,6 @@ function measureResampledHz(rate) {
   }
   mk('D every speed step: rate applied + pitch aliases OFF', rateOk, JSON.stringify(rateRows));
 
-  // E. neutral restores the element's own state (rate + pitch), still attached.
   await applySettings({ slow: 1, reverbIntensity: 0 });
   mk(
     'E neutral slow=1 restores original rate and pitch, element stays attached',
@@ -131,7 +102,6 @@ function measureResampledHz(rate) {
     'rate=' + media.playbackRate + ' flags=' + JSON.stringify(flags()) + ' muted=' + media.muted
   );
 
-  // F. bypass teardown restores rate/pitch/mute and stops the captured track.
   env.sendRuntime({ type: 'TOGGLE_CHANGED', enabled: false });
   await env.settle();
   env.runTimers();
@@ -149,7 +119,6 @@ function measureResampledHz(rate) {
       ' trackStopped=' + Boolean(track && track.stopped)
   );
 
-  // G. re-enable after teardown: still coupled.
   env.sendRuntime({ type: 'TOGGLE_CHANGED', enabled: true });
   await env.settle();
   env.runTimers();
@@ -157,7 +126,6 @@ function measureResampledHz(rate) {
   await applySettings({ slow: 0.85, reverbIntensity: 0.5 });
   mk('G re-attach at slow=0.85 is coupled again', media.playbackRate === 0.85 && allOff(), 'rate=' + media.playbackRate + ' flags=' + JSON.stringify(flags()));
 
-  // H. numeric: the resampler fed with the REAL element rate, both flag branches.
   const measured = {};
   let hOk = true;
   for (const slow of [0.7, 0.85, 1.3]) {

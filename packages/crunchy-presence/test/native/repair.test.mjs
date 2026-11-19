@@ -55,7 +55,6 @@ function silentClient(pipePath, extra = {}) {
 
 const drain = () => new Promise((resolve) => setTimeout(resolve, 10));
 
-// 7. host backstop matches Discord's documented 5/20 s.
 test('host backstop defaults to 5 per 20 s', () => {
   const client = silentClient('unused');
   assert.equal(client.rateLimit, 5);
@@ -63,7 +62,6 @@ test('host backstop defaults to 5 per 20 s', () => {
   client.close();
 });
 
-// 8. a clear bypasses a full rate window and sends immediately.
 test('clear after five ordinary sends is delivered immediately', async () => {
   const clock = makeClock();
   const client = silentClient('unused', { timers: clock });
@@ -89,7 +87,6 @@ test('clear after five ordinary sends is delivered immediately', async () => {
   client.close();
 });
 
-// 9. a rejected queued payload is kept and retried with backoff.
 test('failed flush keeps the payload and retries until it sends', async () => {
   const clock = makeClock();
   const client = silentClient('unused', { timers: clock, rateLimit: 1, rateWindowMs: 20_000 });
@@ -129,7 +126,6 @@ test('failed flush keeps the payload and retries until it sends', async () => {
   client.close();
 });
 
-// 9b. a newer payload supersedes a failed one.
 test('a newer payload supersedes a failed queued payload', async () => {
   const clock = makeClock();
   const client = silentClient('unused', { timers: clock, rateLimit: 1, rateWindowMs: 60_000 });
@@ -162,7 +158,6 @@ test('a newer payload supersedes a failed queued payload', async () => {
   client.close();
 });
 
-// 10. first hello with nothing to publish sends no SET_ACTIVITY.
 test('hello without prior activity skips the null clear', async () => {
   assert.match(hostSource, /if \(this\.lastActivity === undefined\)/);
   class Capture extends Writable {

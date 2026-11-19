@@ -155,7 +155,6 @@ export function validateMessage(message) {
   if (message.t === 'hello') {
     const r = validateClientId(message.clientId);
     if (!r.ok) return r;
-    // Absent means "auto"; anything else must be a transport we can name.
     if (message.transport !== undefined && !TRANSPORTS.has(message.transport)) {
       return fail(`message.transport must be one of ${[...TRANSPORTS].join(', ')}`);
     }

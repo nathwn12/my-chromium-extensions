@@ -1,13 +1,3 @@
-// Find, launch and cleanly kill a Chromium browser for the audit.
-//
-// The owner's profile is never touched: every run gets a throwaway
-// --user-data-dir under the scratch directory, removed on exit.
-//
-// Loading route: Chrome 157 ignores --load-extension silently (probed:
-// no extension appears in Target.getTargets, and --disable-features=
-// DisableLoadExtensionCommandLineSwitch does not restore it). The CDP
-// `Extensions` domain does load unpacked extensions and reports their ids, so
-// that is the route used here.
 
 import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -49,8 +39,6 @@ export function buildArgs({ profileDir, extraArgs = [], hostMapperRules = [], he
     .map(({ host, ip, port }) => `MAP ${host} ${ip}${port ? `:${port}` : ""}`)
     .join(",");
   return [
-    // --mute-audio is not optional. Every launch path, headless or headed, is
-    // silent: this harness ran audibly once and that must never recur.
     ...(headless ? ["--headless=new"] : []),
     "--mute-audio",
     "--autoplay-policy=no-user-gesture-required",
@@ -213,17 +201,14 @@ export async function stop({ client, child, profileDir }) {
   try {
     client?.close();
   } catch {
-    /* already closed */
   }
   try {
     child?.kill();
   } catch {
-    /* already gone */
   }
   for (let i = 0; i < 40 && child && child.exitCode === null; i++) {
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  // The child may have left helpers behind: kill by profile path, then confirm.
   const strays = killStrays(profileDir);
   if (strays.killed.length) problems.push(`killed stray browser processes by profile path: ${strays.killed.join(", ")}`);
   if (strays.remaining.length) problems.push(`browser processes still alive for ${profileDir}: ${strays.remaining.join(", ")}`);

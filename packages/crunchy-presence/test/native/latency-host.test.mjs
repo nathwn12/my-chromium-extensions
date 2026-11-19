@@ -55,7 +55,6 @@ function silentClient(pipePath, extra = {}) {
   });
 }
 
-// 5. host backstop no longer double-throttles: a burst of 5 sends at once.
 test('host backstop allows a burst of 5 with no queue (extension guard binds)', async () => {
   const clock = makeClock();
   const client = silentClient('unused', { timers: clock });
@@ -77,7 +76,6 @@ test('host backstop allows a burst of 5 with no queue (extension guard binds)', 
   client.close();
 });
 
-// 5b. delay bound: the 5th send in a burst is not deferred a full window.
 test('burst delay bound stays under one window', async () => {
   const clock = makeClock();
   const client = silentClient('unused', { timers: clock });
@@ -90,7 +88,6 @@ test('burst delay bound stays under one window', async () => {
   client.close();
 });
 
-// 6. _flush reschedules when the pipe is down instead of stranding the queue.
 test('_flush reschedules while not ready so a queued update is not stranded', async () => {
   const clock = makeClock();
   const client = silentClient('unused', {
@@ -114,7 +111,6 @@ test('_flush reschedules while not ready so a queued update is not stranded', as
   client.close();
 });
 
-// 3. a successful connect retry emits status connected.
 test('connect retry emits status connected on success', async () => {
   class Capture extends Writable {
     constructor() {

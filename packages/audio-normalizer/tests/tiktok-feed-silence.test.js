@@ -76,8 +76,6 @@ function loadHook(opts = {}) {
     createGain() { const n = new FakeAudioNode(); n.context = this; return n; }
     createMediaElementSource(el) {
       createCalls++;
-      // Web Audio allows exactly ONE source per element: a second attempt throws,
-      // which is what leaves a released element unmanaged on a live document.
       if (captured.has(el)) throw new DOMException('already captured', 'InvalidStateError');
       captured.add(el);
       return { connect() {}, disconnect() {}, _eid: eid++ };
@@ -143,9 +141,6 @@ function loadHook(opts = {}) {
   sandbox.globalThis = sandbox;
   vm.createContext(sandbox);
   vm.runInContext(src, sandbox, { filename: 'page-hook.js' });
-  // There is no page control channel: the hook starts only when the WORKER
-  // calls the dispatcher it installed (`executeScript({func})` in the real
-  // extension), so the harness drives that call exactly like the worker does.
   const control = (action, payload) => (typeof sandbox.__tnHookV6 === 'function'
     ? sandbox.__tnHookV6(action, payload || {})
     : { ok: false, alive: false, active: false, error: 'No hook in this frame.' });
@@ -157,13 +152,10 @@ function loadHook(opts = {}) {
   const stop = () => control('stop', {});
   const WORKLET_URL = 'chrome-extension://test-id/audio/normalizer-worklet.js';
   const reinject = () => {
-    // What the content script does before asking the worker for a new injection.
     docEl.setAttribute('data-tn-worklet-url', WORKLET_URL);
     vm.runInContext(src, sandbox, { filename: 'page-hook.js#reinject' });
   };
   const fireDoc = (t) => { for (const fn of (docListeners[t] || []).slice()) { try { fn(); } catch {} } };
-  // Old premise kept: a frame the content script injected into was armed at
-  // load (the pending-start attribute). The worker's start call is that arming.
   start();
   const fireMutations = (mutations) => {
     if (observerCallback) observerCallback(mutations);
@@ -186,9 +178,6 @@ function isRoutedThroughWorklet(edges, workEids) {
   return intoWorklet && outOfWorklet;
 }
 
-// Bounded poll that rejects loudly on timeout: the hook wires its session
-// on real timers (worklet module load, bounded resume, recovery burst), so a
-// fixed sleep races them under parallel `node --test` load.
 async function waitFor(cond, timeoutMs, label) {
   const start = Date.now();
   while (!cond()) {
@@ -232,20 +221,12 @@ test('maybeCloseIdleMediaSession refuses while sources held', () => {
 
 test('processor error bypasses to audible path', async () => {
   const h = loadHook();
-  // Wait for the routed steady state instead of a fixed sleep: under
-  // parallel `node --test` load the hook's own timers (bounded resume,
-  // 250 ms recovery-burst ticks that re-run routeSession) slip relative to
-  // the test's sleeps, so sleep-then-act races them.
   await waitFor(() => h.workletInstances.length > 0
     && typeof h.workletInstances[h.workletInstances.length - 1]._ope === 'function'
     && isRoutedThroughWorklet(h.edges, new Set(h.workletInstances.map((x) => x._eid))),
     10000, 'worklet routed input->worklet->output');
-  // Always drive the CURRENT worklet: a burst tick may have replaced it.
   const w = h.workletInstances[h.workletInstances.length - 1];
   w._ope(new Error('boom'));
-  // Assert synchronously: the bypass connects input->output inside the
-  // error handler itself, and any await yields to the recovery burst whose
-  // next tick re-routes through a fresh worklet (disconnecting the bypass).
   const workEids = new Set(h.workletInstances.map((x) => x._eid));
   assert.equal(isAudible(h.edges, workEids), true, 'input connected straight to output (audible), not silent');
 });
@@ -265,22 +246,15 @@ test('site off KEEPS the captured graph and routes it at unity (live re-enable)'
   await sleep(250);
   assert.equal(A.__tnAttached, true, 'element captured while running');
   assert.ok(h.workletInstances.length > 0, 'and normalized through the worklet');
-  // Gate the feed: suspend the context before STOP, as an autoplay-gated
-  // tab holds it.
   h.contexts[0].state = 'suspended';
   h.stop();
   await sleep(150);
   const workEids = new Set(h.workletInstances.map((x) => x._eid));
-  // A disable is a BYPASS: the worklet is out of the path and input -> output
-  // stays wired at unity, so the page keeps playing unprocessed and the element
-  // is still ours for the next enable (a released capture could never be taken
-  // again on this document).
   assert.equal(isRoutedThroughWorklet(h.edges, workEids), false, 'the worklet is disconnected');
   assert.equal(isAudible(h.edges, workEids), true, 'and the element still reaches the destination at unity');
   assert.equal(A.__tnAttached, true, 'the element stays owned, so a re-enable needs no re-capture');
   assert.equal(A.muted, false, 'and is never left muted by us');
 
-  // Re-enable in place: the same session, one capture, the worklet back in.
   h.start();
   await waitFor(
     () => isRoutedThroughWorklet(h.edges, new Set(h.workletInstances.map((x) => x._eid))),
@@ -303,8 +277,6 @@ test('a captured context survives a stop and is closed only by destroy', async (
   await sleep(150);
   assert.notEqual(h.contexts[0].state, 'closed', 'stop keeps the captured context');
   assert.equal(A.__tnSource !== undefined, true, 'and the element keeps its source handle');
-  // Exclusion/uninstall destroy it: that is the one-way door, and the only path
-  // that needs a reload to restore the page.
   h.control('destroy', {});
   await sleep(150);
   assert.equal(h.contexts[0].state, 'closed', 'destroy closes the captured context');
@@ -321,8 +293,6 @@ test('removal inside the debounce window is still detached', async () => {
   await sleep(250);
   assert.equal(A.__tnAttached, true, 'A attached');
   assert.equal(B.__tnAttached, true, 'B attached');
-  // Two removals land in the same 100 ms debounce window: the second
-  // must coalesce, not drop.
   h.fireMutations([{ addedNodes: [], removedNodes: [A] }]);
   h.fireMutations([{ addedNodes: [], removedNodes: [B] }]);
   await sleep(300);
@@ -330,10 +300,6 @@ test('removal inside the debounce window is still detached', async () => {
   assert.equal(B.__tnAttached, false, 'debounced removal still detached');
 });
 
-// A destroyed capture cannot be re-taken on a live document. The element is left
-// alone until the page is reloaded; the popup carries the reload notice (see
-// exclusion.test.js). Exclusion is the only path that destroys — a plain disable
-// is a STOP and re-enables live.
 test('exclude (destroy) -> enable on a live document leaves the element unprocessed; a reload normalizes it', async () => {
   const h = loadHook();
   await sleep(200);
@@ -348,8 +314,6 @@ test('exclude (destroy) -> enable on a live document leaves the element unproces
   await sleep(250);
   assert.equal(A.__tnAttached !== true, true, 'released from our registry');
 
-  // Re-enable on the SAME live document: the old source is still held by the
-  // page, so the fresh instance cannot capture the element and leaves it alone.
   h.reinject();
   h.start();
   await sleep(200);
@@ -360,7 +324,6 @@ test('exclude (destroy) -> enable on a live document leaves the element unproces
   assert.equal(A.muted, false, 'and is left untouched by us');
   assert.equal(A.__tnWebAudio, true, 'the one-source rule is recorded, not retried in a loop');
 
-  // After a reload (a fresh page world) the same element normalizes again.
   const reloaded = loadHook();
   await sleep(200);
   const B = new reloaded.FakeMediaElement();

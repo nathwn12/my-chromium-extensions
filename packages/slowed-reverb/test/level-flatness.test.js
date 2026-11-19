@@ -2,28 +2,6 @@
 
 /* global require, process, __dirname */
 
-/*
- * test/level-flatness.test.js - neither effect slider may change loudness.
- *
- * Owner requirement: "zero EFFECT on volume with regards to the knob for the
- * reverb and slowed ... literally just a SLOWED (speed/pitch) + REVERB, plus a
- * volume controller via scrollwheel". Moving the reverb intensity slider or the
- * speed slider must not change how loud the output is; only the wheel volume
- * control may.
- *
- * Method: render a fixed music-like signal through the same graph the extension
- * builds - `source -> dryGain -> masterGain` and
- * `source -> Dattorro worklet -> reverbCompGain -> masterGain` - at a matrix of
- * settings, and compare the output RMS in dBFS. Static and numeric only: the
- * real dattorro-worklet.js runs against stub globals from plain Node and the
- * real content-script.js is read as text, so there is no AudioContext, no device
- * and no playback anywhere in this file.
- *
- * Speed is the element's `playbackRate` with `preservesPitch = false`, which is a
- * resample: the stream the tap captures carries the source at `t * rate`, with
- * the amplitude unchanged. It is modelled here by resampling the test signal,
- * which is exactly what reaches the graph downstream of the element.
- */
 
 const fs = require('fs');
 const path = require('path');
@@ -58,7 +36,6 @@ function db(x) {
 }
 
 
-// Brace-matched slice of a top-level `function name(...) { ... }` declaration.
 function extractFunction(src, name) {
   const start = src.indexOf('function ' + name + '(');
   if (start === -1) return '';
@@ -74,8 +51,6 @@ function extractFunction(src, name) {
   return '';
 }
 
-// Builds the one function every call site must use, straight from the shipped
-// bytes, so this harness cannot drift from the extension.
 function loadLevels() {
   const table = (contentSrc.match(/const WET_TRANSFER_BY_INTENSITY = \[[^\]]*\];/) || [])[0] || '';
   const headroom = (contentSrc.match(/const MIX_HEADROOM = ([0-9.]+);/) || [])[0] || '';
@@ -160,12 +135,6 @@ function normalise(src, peak) {
   return src;
 }
 
-// Ordinary music, not a lab tone: broadband 1/f noise, which is the standard
-// surrogate for a music spectrum. Deliberately no stationary sine: a steady tone
-// whose frequency lands on a tank mode (126.5 Hz is one) makes the *reverb* 12 dB
-// louder at that frequency, which is the plate's character, not the slider's
-// level, and no single scalar gain can correct it. The dark material below keeps
-// the tonal case covered.
 function musicLike(seconds, peak) {
   const total = Math.floor(SR * seconds);
   const rand = mulberry32(0xa11ce);
@@ -183,9 +152,6 @@ function musicLike(seconds, peak) {
   return normalise(src, peak);
 }
 
-// Worst-case dark material: almost all of its energy sits within an octave of
-// the tank's own DC blocker. Kept as a second material so a compensation curve
-// cannot be tuned to one spectrum without the effect showing up here.
 function darkMaterial(seconds, peak) {
   const total = Math.floor(SR * seconds);
   const rand = mulberry32(0x5eed);
@@ -201,7 +167,6 @@ function darkMaterial(seconds, peak) {
   return normalise(src, peak);
 }
 
-// playbackRate with preservesPitch=false: output sample n is source n * rate.
 function resample(src, rate, total) {
   const out = new Float32Array(total);
   const last = src.length - 1;
@@ -272,8 +237,6 @@ function printTable(rows, intensities) {
   }
 }
 
-// Diagnostic, not a gate: the wet path's measured transfer, i.e. what the tank
-// returns per unit of worklet wetGain. A level-neutral mix needs 1/k.
 function reportTransfer(triple, material) {
   const total = Math.floor(SR * SECONDS);
   const input = material(SECONDS * 1.4, 0.5).subarray(0, total);
@@ -415,10 +378,6 @@ function main() {
   );
   check('6. the wet path is compensated, never attenuated', triple(1).comp >= 1, 'comp ' + triple(1).comp.toFixed(3));
   check('7. nothing clips at input peak 0.5', primary.worstPeak <= 1, 'peak ' + primary.worstPeak.toFixed(3));
-  // Full wet now carries the same RMS as dry, so on a near-full-scale master the
-  // tank's own crest factor peaks above unity without the constant trim. The
-  // peak is gated across the whole matrix, not only at full wet, because the
-  // loudest cell is dry and wet summing at an intermediate intensity.
   const hot = measure(triple, musicLike, 0.9, INTENSITIES, SPEEDS);
   const hotCell = hot.rows.filter((r) => r.intensity === 1 && r.speed === 1)[0];
   const hotWorst = hot.rows.reduce((worst, row) => (row.peak > worst.peak ? row : worst), hot.rows[0]);
@@ -437,7 +396,6 @@ function main() {
     'peak ' + hotWorst.peak.toFixed(3) + ' at speed ' + hotWorst.speed + ', intensity ' + hotWorst.intensity
   );
 
-  // --- the slider is continuous, so the curve must be flat between points ----
   const offGrid = measure(triple, musicLike, 0.5, [0, ...OFF_GRID], [1]);
   console.log(
     '     off-grid intensities: ' +
@@ -450,8 +408,6 @@ function main() {
     'spread ' + offGridSpread.toFixed(2) + ' dB'
   );
 
-  // A tolerance test that cannot fail proves nothing, so the same render runs
-  // with comp forced to 1 (the pre-fix mix) and must breach the tolerance.
   const legacy = (intensity) => {
     const mix = triple(intensity);
     return { params: mix.params, dry: mix.dry, comp: 1 };
@@ -468,15 +424,6 @@ function main() {
     'control spread only ' + controlSpread.toFixed(2) + ' dB'
   );
 
-  // Not gated at the primary tolerance. The wet bus is a filtered copy of the
-  // input, so a track whose energy sits almost entirely below the tank's DC
-  // blocker loses a little level at full wet; that is the plate's tone, and a
-  // scalar gain cannot undo it. The intensity axis is therefore gated at the
-  // reference speed, where the material's 110 Hz tone is not on a tank mode.
-  // The speed axis on this material is deliberately reported, not gated: at
-  // speed 1.15 that tone lands at 126.5 Hz, where the tank's own transfer is
-  // -0.1 dB instead of -24.8 dB at 110 Hz, so the mode - not the slider -
-  // sets the level there.
   const dark = measure(triple, darkMaterial, 0.5, INTENSITIES, SPEEDS);
   console.log('\ndark material, output RMS in dBFS (input peak 0.5):');
   printTable(dark.rows, INTENSITIES);

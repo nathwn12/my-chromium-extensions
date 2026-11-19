@@ -8,8 +8,6 @@ const ROOT = path.resolve(__dirname, '..');
 const HOOK_PATH = process.env.PAGE_HOOK_PATH || path.join(ROOT, 'page-hook.js');
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
-// Stub DOM harness for the observer flush: DIV nodes carry M descendants and
-// record every querySelectorAll selector they are asked for.
 function loadHook() {
   const src = fs.readFileSync(HOOK_PATH, 'utf8');
   const windowListeners = {};
@@ -99,7 +97,6 @@ function loadHook() {
   sandbox.globalThis = sandbox;
   vm.createContext(sandbox);
   vm.runInContext(src, sandbox, { filename: 'page-hook.js' });
-  // The worker arms the hook through the dispatcher; there is no auto-start.
   if (typeof sandbox.__tnHookV6 === 'function') {
     sandbox.__tnHookV6('start', {
       gainDb: 0,

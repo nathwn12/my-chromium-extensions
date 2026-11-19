@@ -1,8 +1,4 @@
 'use strict';
-// F2 proof: a NaN block must not poison the loudness estimators permanently.
-// Usage: node qa/proof-f2-nan.cjs [path-to-worklet.js]
-// Settles estimators on a sine, injects one all-NaN block, then feeds clean
-// blocks and checks the estimators + output recover (finite) within 5 blocks.
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');

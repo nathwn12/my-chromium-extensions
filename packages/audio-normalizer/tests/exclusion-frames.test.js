@@ -9,12 +9,6 @@ function src(name) { return fs.readFileSync(path.join(ROOT, name), 'utf8'); }
 const sharedApi = require(path.join(ROOT, 'shared.js'));
 
 async function settle(ms = 50) { await new Promise((r) => setTimeout(r, ms)); }
-// Bounded condition wait. A fixed sleep here races timers the product really
-// schedules - the 400 ms `resumeWithTimeout` watchdog and the recovery-burst
-// ticks - which stay in the frame's `timeouts` map until they actually fire, so
-// under CPU starvation a sleep can return while one is still pending. Polling
-// the condition removes the race; the deadline keeps a condition that never
-// arrives a loud failure of this test instead of a hang or a silent pass.
 async function waitFor(predicate, { timeout = 4000, interval = 25, label = 'condition' } = {}) {
   const started = Date.now();
   while (!predicate()) {
@@ -28,7 +22,6 @@ async function waitFor(predicate, { timeout = 4000, interval = 25, label = 'cond
 function clone(v) { return v === undefined ? undefined : JSON.parse(JSON.stringify(v)); }
 function hostOf(url) { return sharedApi.getSiteKey(sharedApi.extractHostname(url)); }
 
-// ---------- fake chrome.storage.local ----------
 function createFakeStorage(initial = {}) {
   let store = clone(initial);
   let listeners = [];
@@ -65,9 +58,7 @@ function createFakeStorage(initial = {}) {
   };
 }
 
-// inside the frame's own world, exactly as the browser does, and
 function createTabWorld(frames) {
-  // frames: [{ frameId, url }] — frame 0 is the top frame.
   const world = frames.map((frame) => ({
     frameId: frame.frameId,
     url: frame.url,
@@ -81,7 +72,6 @@ function createTabWorld(frames) {
     intervals: new Map(),
     gate: undefined,
     sandbox: null,
-    // Page-world cost counters: what a live document would actually pay.
     pageListeners: 0,
     liveObservers: 0,
     contexts: [],
@@ -89,7 +79,6 @@ function createTabWorld(frames) {
     observers: 0,
     hookInstalled: false,
     listenerSet: [],
-    // Media the page holds, and how many times one element was captured.
     mediaElements: [],
     mediaSourceCalls: 0,
     mediaSourceByElement: new WeakMap(),
@@ -98,17 +87,12 @@ function createTabWorld(frames) {
 
   const scriptingCalls = [];
   const tabId = 7;
-  // The worker's own message dispatcher, so a frame's `chrome.runtime.sendMessage`
-  // really reaches background.js (the real loop, not a stub that answers {ok:true}).
   let deliver = null;
   function useDeliver(fn) { deliver = fn; }
 
   function ensureSandbox(frame) {
     if (frame.sandbox) return frame.sandbox;
     let nextTimer = 1;
-    // A page world real enough for page-hook.js to install itself and be
-    // counted. Listeners are tracked live (added and removed), observers live,
-    // and every AudioContext is kept so "closed" can be told from "live".
     const pageListener = (type, fn) => {
       if (frame.listenerSet.some((entry) => entry.type === type && entry.fn === fn)) return;
       frame.listenerSet.push({ type, fn });
@@ -129,7 +113,6 @@ function createTabWorld(frames) {
         this.paused = true;
         this.tagName = 'VIDEO';
         this.src = '';
-        // Playback position, so a toggle can be proved not to lose it.
         this.currentTime = 42.5;
       }
       addEventListener(type, fn) { pageListener(type, fn); }
@@ -150,8 +133,6 @@ function createTabWorld(frames) {
       close() { this.state = 'closed'; return Promise.resolve(); }
       createGain() { const node = new PageAudioNode(); node.context = this; return node; }
       createMediaElementSource(el) {
-        // The platform rule the whole design turns on: one source per element,
-        // ever. A second attempt throws, exactly like Chromium.
         frame.mediaSourceCalls += 1;
         const before = frame.mediaSourceByElement.get(el) || 0;
         frame.mediaSourceByElement.set(el, before + 1);
@@ -222,11 +203,6 @@ function createTabWorld(frames) {
       chrome: {
         storage: {
           local: { get: (...a) => storageApi.get(...a), set: (...a) => storageApi.set(...a) },
-          // FRAME-LOCAL delivery, like the real extension: every frame owns its
-          // own listener list and receives `storage.onChanged` independently.
-          // The tab world fans a change out to each frame's own list (see
-          // `useStorage`), so a listener registered in one frame is never the
-          // one that runs for another.
           onChanged: {
             addListener: (fn) => { frame.storageListeners.push(fn); },
             removeListener: (fn) => {
@@ -246,27 +222,20 @@ function createTabWorld(frames) {
           getURL: (p) => `chrome-extension://fake/${p}`,
         },
       },
-      // `window` IS the sandbox (set below), exactly as in a real frame: a
-      // page-world addEventListener lands in the frame's counter.
       addEventListener: (type, fn) => { pageListener(type, fn); },
       removeEventListener: (type, fn) => { pageUnlistener(type, fn); },
       postMessage: (msg) => frame.posted.push(msg),
       document: {
         hidden: false,
-        // document_start: the content script may only arm a document it was
-        // registered for, at load.
         readyState: 'loading',
         documentElement,
         querySelector: () => null,
-        // The page's own media, in insertion order, as querySelectorAll would
-        // return it. Empty unless a test parks elements on the frame.
         querySelectorAll: (selector) => (String(selector).includes('audio')
           ? frame.mediaElements.slice()
           : []),
         addEventListener: (type, fn) => { pageListener(type, fn); },
         removeEventListener: (type, fn) => { pageUnlistener(type, fn); },
       },
-      // The page world page-hook.js patches and counts.
       AudioNode: PageAudioNode,
       HTMLMediaElement: PageMediaElement,
       Element: PageMediaElement,
@@ -288,9 +257,6 @@ function createTabWorld(frames) {
   let storageApi = createFakeStorage({});
   function useStorage(storage) {
     storageApi = storage;
-    // The browser delivers a storage change to every extension frame. Do the
-    // same explicitly: one fan-out per frame, into that frame's OWN listener
-    // list, so the frames share a store but never a listener.
     if (storage.__frameFanOut) return;
     storage.__frameFanOut = true;
     storage.onChanged.addListener((changes, area) => {
@@ -319,16 +285,10 @@ function createTabWorld(frames) {
       for (const frame of targets) {
         const sandbox = ensureSandbox(frame);
         if (opts.func) {
-          // Real per-frame execution: compile the function INSIDE the frame's
-          // own context so `globalThis` and `location` are that frame's.
           const fn = vm.runInContext(`(${opts.func.toString()})`, sandbox);
           const result = fn.apply(sandbox, clone(opts.args) || []);
-          // `gate` is the exclusion verdict ONLY; the presence probe also runs
-          // as a function and must not overwrite it.
           if (opts.func.name === 'installFrameGate') frame.gate = result;
           if (opts.func.name === 'contentScriptPresence') frame.presence = result;
-          // Teardown runs through here too: the hook is installed exactly when
-          // the page world exposes its dispatcher.
           frame.hookInstalled = typeof sandbox.__tnHookV6 === 'function';
           results.push({ frameId: frame.frameId, result: clone(result) });
           continue;
@@ -341,9 +301,6 @@ function createTabWorld(frames) {
             }
           }
         } catch (error) {
-          // A file that throws in this world leaves the frame unarmed; the
-          // attempt is recorded so a test can tell "not injected" from
-          // "injected and inert".
           frame.injectError = String((error && error.message) || error);
         }
         results.push({ frameId: frame.frameId, result: null });
@@ -385,7 +342,6 @@ function createTabWorld(frames) {
     frame.observers = 0;
     frame.listenerSet = [];
     frame.hookInstalled = false;
-    // The document's own media, and the one-source counters, start fresh.
     frame.mediaElements = [];
     frame.mediaSourceCalls = 0;
     frame.mediaSourceByElement = new WeakMap();
@@ -404,8 +360,6 @@ function createTabWorld(frames) {
     const perKey = sharedApi.siteStorageKey(host);
     const stored = perKey ? all[perKey] : null;
     const record = stored && typeof stored === 'object' ? sharedApi.normalizeSiteRecord(stored) : null;
-    // Registration matches `seen || enabled`. No record at all, or a record that
-    // is neither, means the browser injects nothing on this document.
     if (!record || !(record.seen || record.enabled)) return frame;
     const sandbox = ensureSandbox(frame);
     for (const file of ['shared.js', 'content-script.js']) {
@@ -417,7 +371,6 @@ function createTabWorld(frames) {
   return { world, scripting, tabId, useStorage, useDeliver, scriptingCalls, navigate };
 }
 
-// Load background.js against the frame graph.
 function loadBackground(tabWorld, storage, tabUrl) {
   const runtimeListeners = [];
   const tabsSent = [];
@@ -442,8 +395,6 @@ function loadBackground(tabWorld, storage, tabUrl) {
         sendMessage: async () => ({ ok: true }),
       },
       tabs: {
-        // Both API shapes: the promise form (teardown/query) and the callback
-        // form (flushSiteBroadcast), exactly like the extension API supports.
         query: (query, callback) => {
           const tabs = [tab];
           if (typeof callback === 'function') {
@@ -455,8 +406,6 @@ function loadBackground(tabWorld, storage, tabUrl) {
         get: async () => ({ ...tab }),
         sendMessage: async (id, msg, options) => {
           tabsSent.push({ tabId: id, msg, options });
-          // Deliver like the browser: frameId targets one frame, no options
-          // reaches every frame; no receiver rejects.
           const targets = options && typeof options.frameId === 'number'
             ? tabWorld.world.filter((f) => f.frameId === options.frameId)
             : tabWorld.world;
@@ -485,8 +434,6 @@ function loadBackground(tabWorld, storage, tabUrl) {
         },
         onUpdated: { addListener: () => {} },
         onRemoved: { addListener: () => {} },
-        // The ONE navigation the extension may ever perform. Tracked like the
-        // real call: the first-ever enable reloads exactly once.
         reload: async (id) => {
           tabsReloaded.push(id);
           if (reloadImpl) return reloadImpl(id);
@@ -514,7 +461,6 @@ function loadBackground(tabWorld, storage, tabUrl) {
     sendMessage,
     tabsSent,
     tabsReloaded,
-    // Make the platform refuse the reload (or remove the API entirely).
     useReload: (impl) => { reloadImpl = impl; },
     removeReloadApi: () => { delete sandbox.chrome.tabs.reload; },
   };
@@ -563,9 +509,6 @@ function loadContentFrame(href, storage) {
           removeListener: (fn) => removedRuntime.push(fn),
         },
         sendMessage: async (msg) => {
-          // Control flows extension -> page only: the content script asks the WORKER,
-          // which is the only party allowed to reach the MAIN world. The harness
-          // records that request; the page itself receives nothing.
           if (msg && msg.type === 'CONTROL_HOOK') {
             const actionType = { start: 'START', stop: 'STOP', setGain: 'SET_GAIN', status: 'STATUS_REQUEST' }[msg.action] || msg.action;
             postedToPage.push({ type: actionType, via: 'worker', action: msg.action, gainDb: (msg.payload || {}).gainDb });
@@ -618,15 +561,12 @@ test('frame-level: an excluded cross-origin frame gets no listener and no patch,
     'site:example.com': { enabled: true, gainDb: 0, seq: 1, mirror: true, excluded: false },
     'site:tiktok.com': { enabled: true, gainDb: 0, seq: 1, mirror: true, excluded: true },
   });
-  // Top frame example.com, embedded frame from the excluded tiktok.com.
   const tab = createTabWorld([
     { frameId: 0, url: 'https://example.com/page' },
     { frameId: 3, url: 'https://www.tiktok.com/embed' },
   ]);
   const bg = loadBackground(tab, storage, 'https://example.com/page');
 
-  // A navigation is what arms a document now: registration injects the pair,
-  // and each frame's gate decides for its OWN host.
   await tab.navigate(0);
   await tab.navigate(3);
   await settle(200);
@@ -639,14 +579,11 @@ test('frame-level: an excluded cross-origin frame gets no listener and no patch,
   assert.equal(inner.gate?.excluded, true, 'the frame gate decided on the FRAME hostname');
   assert.equal(top.gate?.excluded, false);
 
-  // The gate ran for the frame that was injected: the worker runs it in the
-  // target frame's MAIN world immediately before the hook file.
   const gateCall = tab.scriptingCalls.find((c) => c.funcName === 'installFrameGate');
   assert.ok(gateCall, 'the gate is injected as a function with the exclusion list');
   assert.deepEqual(gateCall.target, { tabId: 7, frameIds: [0] }, 'for the frame being injected');
   assert.deepEqual(gateCall.args, [['tiktok.com']], 'the list is passed as an argument');
   assert.equal(gateCall.world, 'MAIN');
-  // The excluded frame never asked for a hook, so it never got a gate either.
   assert.equal(
     tab.scriptingCalls.some((c) => c.funcName === 'installFrameGate' && c.target.frameIds?.includes(3)),
     false,
@@ -707,7 +644,6 @@ test('registration: an excluded parent removes its descendants from matches', as
   };
   const bg = loadBackground({ ...tab, scripting }, storage, 'https://other.test/');
 
-  // Trigger derivation through the storage-change path (the same one install uses).
   await storage.set({ 'site:brand-new.test': { enabled: true, gainDb: 0, seq: 1, mirror: true, excluded: false } });
   await settle(60);
   const registration = Array.from(registered.values())[0];
@@ -721,8 +657,6 @@ test('registration: an excluded parent removes its descendants from matches', as
     ['*://other.test/*', '*://brand-new.test/*'],
     'only genuinely active hosts; the descendant is covered by the parent exclusion alone',
   );
-  // The excluded parent's wildcard covers the descendant, so the host appears
-  // in NO match list of its own and only under excludeMatches.
   assert.ok(registration.excludeMatches.includes('*://*.example.com/*'));
   assert.equal(
     registration.matches.filter((m) => m.includes('a.example.com')).length,
@@ -744,7 +678,6 @@ test('undo: un-excluding a parent does NOT re-arm an open tab; the next navigati
   await settle(80);
   assert.equal(res.excluded, false, 'the exclusion is undone in storage');
 
-  // FINAL RULE: no injection into an already-loaded document, descendant or not.
   assert.deepEqual(
     tab.scriptingCalls.filter((c) => c.files && c.files.includes('content-script.js')),
     [],
@@ -752,7 +685,6 @@ test('undo: un-excluding a parent does NOT re-arm an open tab; the next navigati
   );
   assert.equal(child.sandbox, null, 'and the document is left exactly as it was');
 
-  // The next navigation arms it, through registration.
   await tab.navigate(0);
   await settle(200);
   assert.ok(child.listeners.length > 0, 'the navigation arms the frame');
@@ -772,8 +704,6 @@ test('undo: a stale self-cache cannot block a fresh navigation (gate runs before
   assert.ok(frame.listeners.length > 0, 'armed');
   assert.equal(frame.gate?.excluded, false, 'fresh gate verdict');
 
-  // A stale positive cache in the frame's world, then the next navigation: the
-  // gate the worker runs in that world before the files must overwrite it.
   vm.runInContext(
     'globalThis.__tabNormalizerExclusionCache = { hosts: ["a.example.com"] }; delete globalThis.__tabNormalizerFrameGate;',
     frame.sandbox,
@@ -812,8 +742,6 @@ test('background: a storage read error keeps the extension inactive (fail closed
   assert.equal(ok.ok, true, 'and it recovers once storage answers');
 });
 
-// A frame that is already armed starts a read (storage change), the exclusion
-// broadcast tears it down, and THEN the read lands. It must schedule nothing.
 test('race: a storage read resolving after teardown schedules nothing', async () => {
   const base = createFakeStorage({
     'site:www.tiktok.com': { enabled: true, gainDb: 3, seq: 1, mirror: true, excluded: false },
@@ -825,8 +753,6 @@ test('race: a storage read resolving after teardown schedules nothing', async ()
     onChanged: base.onChanged,
     async get(keys) {
       readCount += 1;
-      // First read: the bootstrap. Second: the sync started by a storage
-      // change. Park exactly that one.
       if (readCount === 2) {
         parked = new Promise((resolve) => { releaseSecondRead = resolve; });
         await parked;
@@ -840,12 +766,10 @@ test('race: a storage read resolving after teardown schedules nothing', async ()
   await settle(60);
   assert.ok(frame.liveListeners().length > 0, 'armed by the first read');
 
-  // A storage change starts the second (parked) read.
   await base.set({ 'site:www.tiktok.com': { enabled: true, gainDb: 4, seq: 2, mirror: true, excluded: false } });
   await settle(20);
   assert.ok(releaseSecondRead, 'the second read is parked');
 
-  // Exclusion arrives and tears the frame down while that read is in flight.
   await frame.sendMessage({ type: 'TOGGLE_CHANGED', siteKey: 'www.tiktok.com', enabled: true, excluded: true });
   await settle(20);
   assert.equal(frame.liveListeners().length, 0, 'torn down');
@@ -882,8 +806,6 @@ test('per-frame signal: an embedded frame on an excluded host tears itself down,
   const bg = loadBackground(tab, storage, 'https://top.test/');
   const liveRuntime = (frame) => frame.runtimeListeners.filter((fn) => !frame.removedListeners.includes(fn));
 
-  // Each frame loads its own document; registration injects the ISOLATED pair
-  // and each frame then decides for its OWN host, so both frames arm.
   await tab.navigate(0);
   await tab.navigate(3);
   await settle(250);
@@ -891,8 +813,6 @@ test('per-frame signal: an embedded frame on an excluded host tears itself down,
   assert.ok(liveRuntime(top).length > 0, 'top frame armed');
   assert.ok(liveRuntime(embedded).length > 0, 'embedded frame armed for its own host');
   assert.ok(top.intervals.size > 0, 'top frame runs its SPA watch');
-  // Two genuinely separate frame worlds, not two views of one sandbox: their
-  // content scripts are distinct instances and each owns its own signal.
   assert.notEqual(top.sandbox, embedded.sandbox, 'the frames are separate contexts');
   assert.ok(top.sandbox.__tabNormalizerContentScriptV5, 'the top frame has its own content script');
   assert.ok(embedded.sandbox.__tabNormalizerContentScriptV5, 'and so does the embedded frame');
@@ -905,20 +825,11 @@ test('per-frame signal: an embedded frame on an excluded host tears itself down,
   assert.equal(embedded.storageListeners.length, 1, 'one signal in the embedded frame');
   const deliveriesBefore = [top.storageDeliveries, embedded.storageDeliveries];
 
-  // Exclude the EMBEDDED host. The worker selects tabs by top-level host, so its
-  // all-frame teardown never targets this tab: the only thing that reaches the
-  // embedded frame is its own storage signal.
   await bg.sendMessage({ type: 'SET_SITE_STATE', siteKey: 'embed.test', set: { excluded: true } });
-  // Wait for the condition, not a fixed 200 ms: the teardown's timers are real
-  // ones. The 400 ms `resumeWithTimeout` watchdog and the recovery-burst ticks
-  // are inside `embedded.timeouts` until they fire, so the sleep returned early
-  // under load. The assertion below still fails if a timeout outlives the wait.
   await waitFor(() => embedded.timeouts.size === 0, {
     label: 'the embedded frame to hold no pending timeout',
   });
 
-  // The change crossed the frame boundary into BOTH worlds; only the frame whose
-  // own host it excludes acts on it.
   assert.ok(
     embedded.storageDeliveries > deliveriesBefore[1],
     'the change was delivered into the embedded frame',
@@ -932,14 +843,11 @@ test('per-frame signal: an embedded frame on an excluded host tears itself down,
   assert.equal(embedded.timeouts.size, 0, 'and no timeout');
   assert.deepEqual(embedded.posted, [], 'and the page got nothing');
 
-  // The dispose path asked the worker for the one teardown it cannot perform
-  // itself, and the worker answered for THAT frame only.
   const destroys = tab.scriptingCalls.filter((c) => c.funcName === 'tnHookControl' && c.args && c.args[0] === 'destroy');
   assert.equal(destroys.length, 1, 'one frame-scoped teardown request');
   assert.deepEqual(destroys[0].target, { tabId: 7, frameIds: [3] }, 'for the embedded frame only');
   assert.equal(destroys[0].world, 'MAIN');
 
-  // The allowed top frame is untouched.
   assert.ok(liveRuntime(top).length > 0, 'top frame keeps its listeners');
   assert.ok(top.intervals.size > 0, 'top frame keeps its SPA watch');
   assert.equal(
@@ -950,8 +858,6 @@ test('per-frame signal: an embedded frame on an excluded host tears itself down,
 });
 
 
-// Work begins on the next navigation, via registration. A document that was open
-// when the state changed is only ever torn down.
 const LIVE_COST = (frame) => ({
   pageListeners: frame.pageListeners,
   liveObservers: frame.liveObservers,
@@ -977,7 +883,6 @@ test('exclude -> enable on a live document leaves it torn down; a navigation arm
   const bg = loadBackground(tab, storage, 'https://top.test/');
   const frame = tab.world[0];
 
-  // A document that loaded with the site enabled: the hook really runs here.
   await tab.navigate(0);
   await settle(200);
   assert.equal(frame.hookInstalled, true, 'the page hook is installed on a loaded document');
@@ -985,13 +890,11 @@ test('exclude -> enable on a live document leaves it torn down; a navigation arm
   assert.ok(frame.observers >= 1, 'and its DOM observer');
   const workletsAfterArming = frame.worklets;
 
-  // Exclude: teardown, no reload required.
   await bg.sendMessage({ type: 'SET_SITE_STATE', siteKey: 'top.test', tabId: 7, set: { excluded: true } });
   await settle(200);
   assert.equal(frame.hookInstalled, false, 'the hook is destroyed in this frame');
   assert.equal(frame.contexts[0].state, 'closed', 'and its session is released');
 
-  // Enable again on the SAME document.
   await bg.sendMessage({ type: 'SET_SITE_STATE', siteKey: 'top.test', tabId: 7, set: { excluded: false } });
   await settle(250);
 
@@ -1000,7 +903,6 @@ test('exclude -> enable on a live document leaves it torn down; a navigation arm
   assert.equal(frame.contexts.length, 1, 'and no audio session was created');
   assert.equal(frame.worklets, workletsAfterArming, 'and no worklet was created');
 
-  // Then a navigation: registration arms it as before.
   await tab.navigate(0);
   await settle(250);
   assert.equal(frame.hookInstalled, true, 'a fresh navigation installs the hook');
@@ -1018,8 +920,6 @@ test('first-ever enable on a live document arms nothing; a navigation arms it', 
   const bg = loadBackground(tab, storage, 'https://top.test/');
   const frame = tab.world[0];
 
-  // The document loaded while the site was off and had NEVER been enabled:
-  // registration does not match, so not even the ISOLATED pair runs.
   await tab.navigate(0);
   await settle(200);
   assert.equal(frame.sandbox, null, 'a never-seen off host gets no content script at all');
@@ -1032,9 +932,6 @@ test('first-ever enable on a live document arms nothing; a navigation arms it', 
     storageListeners: 0,
   }, 'a host that loads off does no work at all');
 
-  // The first-ever enable is the ONE case with no hook to start: the tab is
-  // reloaded once, automatically (a delay lets the popup paint first), and
-  // `seen` is remembered so every later toggle is live.
   const first = await bg.sendMessage({ type: 'SET_SITE_STATE', siteKey: 'top.test', tabId: 7, set: { enabled: true } });
   await settle(250);
   assert.equal(first.ok, true);
@@ -1050,7 +947,6 @@ test('first-ever enable on a live document arms nothing; a navigation arms it', 
   assert.equal(frame.contexts.length, 1);
   assert.ok(frame.pageListeners > 0);
 
-  // Every later enable on the same host is live: no further reload, ever.
   await bg.sendMessage({ type: 'SET_SITE_STATE', siteKey: 'top.test', tabId: 7, set: { enabled: false } });
   await settle(250);
   assert.equal(bg.tabsReloaded.length, 1, 'a disable never reloads');
@@ -1061,7 +957,6 @@ test('first-ever enable on a live document arms nothing; a navigation arms it', 
 });
 
 test('first-ever enable falls back to the notice when the tab cannot be reloaded', async () => {
-  // No tab id (a caller that did not name a tab): nothing to reload.
   const storageA = createFakeStorage({ 'site:a.test': { enabled: false, gainDb: 0, seq: 1, mirror: false, excluded: false } });
   const bgA = loadBackground(createTabWorld([{ frameId: 0, url: 'https://a.test/' }]), storageA, 'https://a.test/');
   const noTab = await bgA.sendMessage({ type: 'SET_SITE_STATE', siteKey: 'a.test', set: { enabled: true } });
@@ -1070,7 +965,6 @@ test('first-ever enable falls back to the notice when the tab cannot be reloaded
   assert.match(String(noTab.activation.message), /reload applies this/i);
   assert.deepEqual(bgA.tabsReloaded, [], 'no reload was attempted');
 
-  // The platform refuses the reload: same honest fallback.
   const storageB = createFakeStorage({ 'site:b.test': { enabled: false, gainDb: 0, seq: 1, mirror: false, excluded: false } });
   const bgB = loadBackground(createTabWorld([{ frameId: 0, url: 'https://b.test/' }]), storageB, 'https://b.test/');
   bgB.useReload(() => { throw new Error('tab was closed'); });
@@ -1079,7 +973,6 @@ test('first-ever enable falls back to the notice when the tab cannot be reloaded
   assert.match(String(refused.activation.message), /reload applies this/i);
   assert.deepEqual(bgB.tabsReloaded, [7], 'the attempt was made once');
 
-  // No reload API at all (a platform without it): notice, no throw.
   const storageC = createFakeStorage({ 'site:c.test': { enabled: false, gainDb: 0, seq: 1, mirror: false, excluded: false } });
   const bgC = loadBackground(createTabWorld([{ frameId: 0, url: 'https://c.test/' }]), storageC, 'https://c.test/');
   bgC.removeReloadApi();
@@ -1107,8 +1000,6 @@ test('seen host loaded off: the page hook is present and passive, nothing is pro
   assert.equal(frame.liveObservers, 0, 'no DOM observer while off');
   assert.equal(frame.mediaSourceCalls, 0, 'and no element is captured');
 
-  // A host that was never seen still pays nothing (positive control for the
-  // difference the reservation makes).
   const other = createFakeStorage({
     'site:quiet.test': { enabled: false, gainDb: 0, seq: 1, mirror: false, excluded: false },
   });
@@ -1132,7 +1023,6 @@ test('seen host loaded off with a playing element: enable starts live, no naviga
   await settle(200);
   assert.equal(frame.hookInstalled, true, 'passive hook present before the enable');
 
-  // The page's own player, already playing, with a position to protect.
   const sandbox = frame.sandbox;
   const Media = vm.runInContext('HTMLMediaElement', sandbox);
   const media = new Media();
@@ -1157,7 +1047,6 @@ test('seen host loaded off with a playing element: enable starts live, no naviga
   );
   assert.equal(res.seen, true, 'the host is seen');
 
-  // Started: one session, one capture, the worklet in the path.
   assert.equal(frame.contexts.filter((c) => c.state !== 'closed').length, 1, 'one audio session');
   assert.equal(frame.worklets, 1, 'one worklet node');
   assert.ok(frame.liveObservers >= 1, 'the DOM observer runs');
@@ -1166,8 +1055,6 @@ test('seen host loaded off with a playing element: enable starts live, no naviga
   assert.equal(media.muted, false, 'never left muted');
   assert.equal(media.currentTime, positionBefore, 'playback position untouched');
   assert.equal(frame.sandbox.__tnHookV6('status', {}).active, true, 'the hook reports Active');
-  // Cold first start: no prior program exists, so no reset-program is minted
-  // (a reset is only for a re-enabled program; resetting at attach is forbidden).
   assert.equal(
     frame.workletMessages.filter((m) => m && m.type === 'reset-program').length,
     0,
@@ -1197,7 +1084,6 @@ test('off/on/off on a seen host: bypass, no teardown, no reload, one source per 
   const positionBefore = media.currentTime;
   const resetsBeforeDisable = frame.workletMessages.filter((m) => m && m.type === 'reset-program').length;
 
-  // DISABLE: bypass, not teardown.
   await bg.sendMessage({ type: 'SET_SITE_STATE', siteKey: 'top.test', tabId: 7, set: { enabled: false } });
   await settle(300);
   assert.deepEqual(bg.tabsReloaded, [], 'a disable never reloads');
@@ -1211,7 +1097,6 @@ test('off/on/off on a seen host: bypass, no teardown, no reload, one source per 
   assert.equal(media.muted, false, 'the element is audible and unprocessed');
   assert.equal(media.currentTime, positionBefore, 'position untouched');
 
-  // ENABLE AGAIN: live, on the same session.
   const injectionsBefore = tab.scriptingCalls.filter((c) => c.files && c.files.includes('content-script.js')).length;
   const again = await bg.sendMessage({ type: 'SET_SITE_STATE', siteKey: 'top.test', tabId: 7, set: { enabled: true } });
   await settle(400);
@@ -1242,8 +1127,6 @@ test('a page-claimed element gets a verdict: no second capture, never muted, no 
   const sandbox = frame.sandbox;
   const Media = vm.runInContext('HTMLMediaElement', sandbox);
   const claimed = new Media();
-  // The page wired this element into its own graph before we could: the one
-  // source is spent, and a second attempt throws InvalidStateError.
   frame.mediaSourceByElement.set(claimed, 1);
   frame.mediaElements.push(claimed);
   await claimed.play();
@@ -1256,8 +1139,6 @@ test('a page-claimed element gets a verdict: no second capture, never muted, no 
   assert.equal(claimed.currentTime >= 42.5, true, 'the page still plays it');
   assert.equal(frame.sandbox.__tnHookV6('status', {}).unprocessed, 1, 'and the verdict reaches the popup');
 
-  // A toggle does not retry the impossible capture, and does not build a second
-  // graph for it.
   await bg.sendMessage({ type: 'SET_SITE_STATE', siteKey: 'top.test', tabId: 7, set: { enabled: false } });
   await settle(200);
   await bg.sendMessage({ type: 'SET_SITE_STATE', siteKey: 'top.test', tabId: 7, set: { enabled: true } });
@@ -1318,8 +1199,6 @@ test('exclude on a live document still tears down within the task', async () => 
     'no runtime listener survives',
   );
   assert.equal(frame.storageListeners.length, 1, 'only the one inert surface');
-  // The hook's bounded resume races are self-clearing and untracked by design;
-  // once they expire the frame holds no timer at all.
   await settle(600);
   assert.equal(frame.timeouts.size + frame.intervals.size, 0, 'and no timer remains');
 });

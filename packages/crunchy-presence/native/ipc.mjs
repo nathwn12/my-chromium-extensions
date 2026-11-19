@@ -77,8 +77,6 @@ export class DiscordFrameDecoder {
       const op = this.buffer.readUInt32LE(0);
       const length = this.buffer.readUInt32LE(4);
       if (length > MAX_DISCORD_FRAME) {
-        // Reset so one bad length does not poison every later chunk; the
-        // caller destroys/reconnects and the next bytes decode cleanly.
         this.buffer = Buffer.alloc(0);
         this.skipped += 1;
         throw new ProtocolError(`discord frame too large: ${length} bytes`);
@@ -111,8 +109,6 @@ export class NativeMessageDecoder {
       if (this.buffer.length < 4) break;
       const length = this.buffer.readUInt32LE(0);
       if (length > MAX_NATIVE_MESSAGE) {
-        // Reset so one bad length does not poison every later chunk: drop
-        // the corrupt prefix and resync on the next frame boundary.
         this.buffer = Buffer.alloc(0);
         this.skipped += 1;
         throw new ProtocolError(`native message too large: ${length} bytes`);
@@ -211,8 +207,6 @@ export class DiscordPipeClient {
       } catch (error) {
         lastError = error;
         this._teardown();
-        // A permanent handshake rejection (dead/wrong application id) will
-        // fail identically on every pipe: stop probing and surface it.
         if (error && error.fatal) break;
         this.logger.warn(`discord ipc probe failed on ${pipePath}: ${error.message}`);
       }
@@ -237,7 +231,6 @@ export class DiscordPipeClient {
         try {
           socket.destroy();
         } catch {
-          /* already dead */
         }
         reject(new ProtocolError(`connect timeout on ${pipePath}`));
       }, this.connectTimeoutMs);
@@ -273,7 +266,6 @@ export class DiscordPipeClient {
       try {
         socket.destroy();
       } catch {
-        /* already dead */
       }
     });
     socket.on('close', () => this._onClose(socket));
@@ -281,7 +273,6 @@ export class DiscordPipeClient {
       try {
         socket.destroy();
       } catch {
-        /* already dead */
       }
     });
   }
@@ -295,7 +286,6 @@ export class DiscordPipeClient {
       try {
         socket.destroy();
       } catch {
-        /* already dead */
       }
     }
   }
@@ -309,13 +299,9 @@ export class DiscordPipeClient {
     this._decoder = null;
     this._failPending(new ProtocolError('discord ipc connection closed'));
     this._readyWaiter?.reject(new ProtocolError('discord ipc connection closed'));
-    // The queued frame is superseded by lastActivity, which reconnect republishes.
     this._queued = undefined;
     if (this.closed) return;
     if (!wasReady) return;
-    // Tell the extension immediately: the bridge is no longer connected. The
-    // client keeps reconnecting in the background, and the next successful
-    // handshake republishes `lastActivity`.
     this.logger.status({
       state: 'disconnected',
       reason: 'discord-closed',
@@ -449,7 +435,6 @@ export class DiscordPipeClient {
       try {
         this.socket?.destroy();
       } catch {
-        /* already dead */
       }
       return;
     }
@@ -462,7 +447,6 @@ export class DiscordPipeClient {
       try {
         this._write(OP.PONG, {});
       } catch {
-        /* socket went away */
       }
       return;
     }
@@ -476,7 +460,6 @@ export class DiscordPipeClient {
       try {
         this.socket?.destroy();
       } catch {
-        /* already dead */
       }
       return;
     }
@@ -486,9 +469,6 @@ export class DiscordPipeClient {
       this._readyWaiter?.resolve(payload);
       return;
     }
-    // A handshake ERROR (dead or wrong application id) carries no nonce, so
-    // the nonce path below would only log it and the hello would time out.
-    // Surface the real reason and fail fast instead of "handshake timed out".
     if (payload?.evt === 'ERROR' && this._readyWaiter) {
       const nonce = payload?.nonce;
       if (typeof nonce !== 'string' || !this._pending.has(nonce)) {
@@ -529,12 +509,9 @@ export class DiscordPipeClient {
   }
 
   async _sendGuarded(activity) {
-    // A null clear bypasses the bucket: it is sent immediately even when the
-    // window is full, so presence never takes ~20 s to clear.
     if (activity === null || activity === undefined) return this._sendNow(null);
     this._prune();
     if (this._sentAt.length >= this.rateLimit) {
-      // Coalesce: the newest activity wins, older deferred ones are dropped.
       this._queued = { activity: activity ?? null };
       this._scheduleFlush();
       return { ok: true, queued: true, appName: this.appName };
@@ -545,14 +522,10 @@ export class DiscordPipeClient {
   _scheduleFlush() {
     if (this._flushTimer) return;
     this._prune();
-    // An empty window sends at once; otherwise wait for the oldest send to
-    // age out.
     const windowWait =
       this._sentAt.length === 0
         ? 1
         : Math.max(0, this._sentAt[0] + this.rateWindowMs - this.timers.now()) + 1;
-    // A rejected flush backs off (1 s, 2 s, 4 s, capped) instead of spinning
-    // on the window edge.
     const retryWait =
       (this._flushFailures || 0) > 0
         ? 1000 * 2 ** (Math.min(this._flushFailures, 3) - 1)
@@ -567,8 +540,6 @@ export class DiscordPipeClient {
   async _flush() {
     if (this._queued === undefined) return;
     if (!this.ready) {
-      // The pipe is down but a payload is queued: reschedule instead of
-      // stranding it, so the next window or reconnect delivers it.
       this._scheduleFlush();
       return;
     }
@@ -580,8 +551,6 @@ export class DiscordPipeClient {
     } else {
       this.logger.warn(`discord activity flush rejected: ${result.error}`);
       if (this._queued === undefined) {
-        // No newer payload superseded the failed one: keep it and retry
-        // with backoff until it sends or a newer payload takes its place.
         this._queued = pending;
         this._flushFailures = Math.min((this._flushFailures || 0) + 1, 3);
       } else {
@@ -612,7 +581,6 @@ export class DiscordPipeClient {
       };
     }
 
-    // Only successful sends seed the rolling window.
     this._sentAt.push(this.timers.now());
     const name = reply?.data?.name;
     if (typeof name === 'string' && name.length > 0) this.appName = name;

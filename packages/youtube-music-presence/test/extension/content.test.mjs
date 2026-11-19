@@ -192,8 +192,6 @@ test("at 1.5x every poll tick re-anchors the card", () => {
   const handle = bootWithClock(page, clock);
   assert.equal(states(handle).length, 1);
 
-  // Discord counts elapsed time in wall time, so a steady 1.5x playback falls
-  // behind half a second per second: every tick has to re-stamp the card.
   for (let tick = 1; tick <= 3; tick += 1) {
     clock.advance(1000);
     page.doc.querySelector("audio").currentTime = 10 + 1.5 * tick;
@@ -309,8 +307,6 @@ test("a stale media event re-reads after the settle window instead of waiting fo
   const handle = bootWithClock(page, clock);
   assert.equal(states(handle).length, 1);
 
-  // The player fires for the next track while the title element still shows
-  // the old song. The event itself still reports: a pause or seek must not wait.
   page.dispatchOnDoc("play", { target: page.doc.querySelector("audio") });
   assert.equal(states(handle).length, 2);
   assert.equal(states(handle).at(-1).state.title, "First Song");
@@ -320,7 +316,6 @@ test("a stale media event re-reads after the settle window instead of waiting fo
   assert.deepEqual(handle.timeoutDelays(), [250], "re-read lands on the settle window");
   assert.deepEqual(handle.intervalDelays(), [1000], "the original poll is unchanged");
 
-  // The DOM flips during the settle window, before the next poll is due.
   page.doc.querySelector("ytmusic-player-bar .title").textContent = "Second Song";
   clock.advance(250);
   handle.flush();

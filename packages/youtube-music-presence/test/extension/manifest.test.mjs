@@ -15,8 +15,6 @@ const DECLARED_ICON_SIZES = [16, 32, 48, 128];
 
 const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
 
-// Stable key generated once via `node scripts/extension-key.mjs --print`.
-// The native host's allowed_origins names the extension ID derived from it.
 const EXPECTED_EXTENSION_ID = "mnmmfbjinpokfnendlbhbbdmfjidgikf";
 
 /** Chrome derives the extension ID from the manifest `key` (see extension-key.mjs). */

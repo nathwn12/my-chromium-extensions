@@ -1,20 +1,5 @@
 'use strict';
 
-/*
- * qa/shared-unit.js - pure-Node unit tests for the REAL shared.js.
- *
- * SAFETY: no browser, no audio device, no network. shared.js is a UMD that assigns
- * globalThis.SlowedReverbShared; it is evaluated here unmodified with vm.runInThisContext.
- * No `chrome` stub is needed: every helper under test is storage-free. (loadSiteState /
- * saveSiteState do need chrome but are out of scope and never called.)
- *
- * Note: clampSlow / clampIntensity are module-private in shared.js - they are NOT part of
- * the exported API. Their clamping/rounding bounds are asserted through normalizeSettings,
- * their only public seam, plus directly through formatRate / formatPercent which both apply
- * the same clamps.
- *
- * Exit code 0 = all assertions pass, 1 = one or more failed, 2 = harness setup problem.
- */
 
 const fs = require('fs');
 const path = require('path');

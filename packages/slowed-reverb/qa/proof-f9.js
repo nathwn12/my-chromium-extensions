@@ -1,14 +1,5 @@
 'use strict';
 
-/*
- * qa/proof-f9.js - F9 unreachable-verdict proof (pure Node, real background.js).
- * Stubs chrome.* (tabs.sendMessage always rejects: no content script), loads the
- * REAL background.js, and calls pushTabState on an eligible tab. The MAIN-world
- * hook has no runtime-message listener, so gating the verdict on a post-inject
- * retry can never succeed: GREEN sends once, keeps the hook inject as
- * best-effort, and returns unreachable. RED sends twice with the same outcome.
- * Exit 0 = holds, 1 = failed, 2 = harness setup problem.
- */
 
 const fs = require('fs');
 const path = require('path');

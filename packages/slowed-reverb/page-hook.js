@@ -2,9 +2,6 @@
   const SENTINEL = '__slowedReverbAudioPageHook';
   const existing = window[SENTINEL];
 
-  // The content script mints a token into the shared DOM and drops any READY
-  // that does not carry it. The hook must echo the live token, not post a
-  // tokenless READY that can never be verified.
   function pageToken() {
     try {
       return (document.documentElement && document.documentElement.dataset.slraToken) || '';
@@ -25,20 +22,10 @@
 
   function revive(reason) {
     emit('SLRA_PAGE_REVIVE', reason);
-    // A re-bind is the normal case here (element replacement, SPA navigation):
-    // re-state the id on every revive; deduped when it has not changed.
     postSong('revive:' + String(reason || ''), false);
-    // Same for volume: the player value survives element replacement, and a
-    // native drag between revives is exactly what the wheel cache must follow.
     postVolume('revive:' + String(reason || ''));
   }
 
-  // Volume only. This hook never writes `muted`: the content script is the only
-  // writer of that flag, and its volumechange enforcement corrects a flip. A
-  // second mute writer is exactly the bug that re-muted a detached graph.
-  //
-  // The token is an anti-collision marker, not authentication: a page script can
-  // read it and forge a volume message, which can only change its own volume.
   function playerApi() {
     try {
       const player = document.querySelector('#movie_player');
@@ -71,8 +58,6 @@
    */
   function playerSong() {
     try {
-      // Two player nodes means the DOM is mid-swap: picking one would be a
-      // guess, and this read is only useful as "what the player holds now".
       if (typeof document.querySelectorAll === 'function') {
         const players = document.querySelectorAll('#movie_player');
         if (players && typeof players.length === 'number' && players.length !== 1) return null;
@@ -144,9 +129,6 @@
   }
 
 
-  // setVolume() changes playback but not the rendered control; without this the
-  // slider sits where the user left it while the audio moves. Mirrors pear's
-  // precise-volume (updateVolumeSlider / setTooltip / showVolumeSlider).
 
   const VOLUME_SLIDER = '#volume-slider';
   const EXPAND_VOLUME_SLIDER = '#expand-volume-slider';
@@ -157,10 +139,6 @@
     '#expand-volume',
   ];
   const VOLUME_SLIDER_HIDE_MS = 2500;
-  // Backstop cadence for native player-volume changes no slider event or
-  // navigation signal carries (media-key steps, programmatic writes). Slider
-  // input posts at once; this only re-reads a cheap getter every two seconds
-  // and the dedup below drops the no-change polls.
   const VOLUME_POLL_MS = 2000;
 
   function setSliderValue(selector, percent) {
@@ -170,7 +148,6 @@
       slider.value = String(percent);
       if (typeof slider.setAttribute === 'function') slider.setAttribute('value', String(percent));
     } catch {
-      // A slider that rejects writes is not worth a failure.
     }
   }
 
@@ -180,7 +157,6 @@
         const target = document.querySelector(selector);
         if (target) target.title = percent + '%';
       } catch {
-        // Ignore a hostile node.
       }
     }
   }
@@ -204,7 +180,6 @@
       try {
         slider.classList.remove('on-hover');
       } catch {
-        // Detached.
       }
     }, VOLUME_SLIDER_HIDE_MS);
   }
@@ -253,20 +228,13 @@
       replyVolume(data, null, false, 'none');
       return;
     }
-    // `setVolume` unmutes the element as a side effect and fires no
-    // volumechange. When the content script owns the audio graph it asks for
-    // its mute back in the same task, so the element never plays alongside the
-    // graph for even one notch. Never unmute here: the content script decides
-    // mute policy, this only restores the state it already held.
     if (data.keepMuted === true) {
       try {
         const media = document.querySelector('video');
         if (media) media.muted = true;
       } catch {
-        // Detached document: the reply settle will try again.
       }
     }
-    // The read-back is the truth: the page may land on its own value.
     const reading = readPlayerVolume();
     const applied = reading.volume === null ? target : Math.round(reading.volume);
     state.lastPostedVolume = applied;
@@ -291,10 +259,6 @@
   function ensureListeners() {
     if (state.listenersReady) return;
 
-    // Volume requests arrive on the same window bus as the lifecycle signals.
-    // The token is an anti-collision marker, not authentication: it keeps a
-    // stale request from an earlier injection from being applied, and a page
-    // script that forges one can only change its own volume.
     window.addEventListener('message', (event) => {
       if (event.source !== window) return;
       const data = event.data;
@@ -306,8 +270,6 @@
       ) return;
       if (typeof data.token !== 'string' || data.token.length === 0) return;
       if (data.token !== pageToken()) return;
-      // The content script asks for the UI sync when it wrote media.volume
-      // itself (no page player API available).
       if (data.type === 'SLRA_QUERY_SONG') {
         replySongState(data);
         return;
@@ -333,9 +295,6 @@
       window.addEventListener(eventName, () => reviveNow(eventName), true);
     });
 
-    // A native slider drag writes the player volume with no wheel involved:
-    // the slider's own input posts it at once. `closest` covers shadow guts;
-    // anything without it is not our slider.
     const sliderHit = (target) => {
       try {
         if (target && typeof target.closest === 'function') {
@@ -356,9 +315,6 @@
       state.volumePollTimer = setInterval(() => postVolume('poll'), VOLUME_POLL_MS);
     }
 
-    // `videodatachange` is dispatched on document and may not bubble; capture
-    // catches both. `loadedmetadata` fires on the replaced <video> and does not
-    // bubble, but capture still traverses it.
     document.addEventListener('videodatachange', () => postSong('videodatachange', true), true);
     document.addEventListener('loadedmetadata', () => postSong('loadedmetadata', true), true);
     window.addEventListener('yt-navigate-finish', () => postSong('yt-navigate-finish', true), true);

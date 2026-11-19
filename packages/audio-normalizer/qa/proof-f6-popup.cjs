@@ -1,9 +1,4 @@
 'use strict';
-// F6 proof: the popup toggle must reflect the authoritative GET_SITE_STATE,
-// not the siteToggles mirror.
-// Usage: node qa/proof-f6-popup.cjs [path-to-popup.js]
-// Scenario A (divergence): mirror ON, authority OFF -> toggle must be OFF.
-// Scenario B (fallback): authority unreachable (undefined) -> mirror used.
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');

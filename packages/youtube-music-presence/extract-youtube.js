@@ -27,7 +27,6 @@
 
   /** Every tunable selector, regex and cap lives here. */
   var RULES = {
-    // The activity builder caps details/state at 128; extraction stays above it.
     maxChars: 256,
     maxUrlChars: 1024,
 
@@ -35,32 +34,20 @@
       "youtube-music": ["music.youtube.com"]
     },
 
-    // YouTube Music keeps one persistent player bar across Home, Explore and
-    // shelves and its SPA never rewrites the URL with `?v=`, so every page on
-    // the host is eligible and a resolved title stands in for the missing id.
-    // No media id is ever required.
     eligibility: {
       requiresMediaId: []
     },
 
-    // The <title> suffix the site appends; never part of the media title.
     noise: {
       suffixes: [" - YouTube Music", " - YouTube", " | YouTube"]
     },
 
-    // A byline segment is a view count only when the whole segment is one:
-    // `1.5M views`, `1,234 views`, `812 views`. `views 1.5M`, a lone `1.5M`
-    // and a bare `2024` never match.
     views: {
       segment: /^\d[\d.,]*\s*[KMB]?\s*views?$/i
     },
 
     dom: {
-      // live probe: the Music player is an audio element on song pages (video
-      // on video pages); read whichever media element is present so timestamps
-      // come from the real clock, never invented.
       video: ["#movie_player video.html5-main-video", "video.html5-main-video", "video", "audio"],
-      // live probe: the watch h1 is the title, #owner #channel-name a the channel
       title: [
         "h1.ytd-watch-metadata yt-formatted-string",
         "h1.title yt-formatted-string",
@@ -72,13 +59,9 @@
       ogTitle: 'meta[property="og:title"]',
       musicTitle: "ytmusic-player-bar .title",
       musicByline: "ytmusic-player-bar .byline",
-      // The title anchor is the canonical track id on the persistent player.
       musicTitleLink: ["ytmusic-player-bar .title a", ".middle-controls .title a"],
-      // Byline anchors are classified in code: /channel/ is an artist,
-      // /browse/MPRE an album. No :last-child and no [href] selectors.
       musicBylineLinks: [".byline.ytmusic-player-bar a", "ytmusic-player-bar .subtitle a"],
       musicAlbumLink: [".complex-string.ytmusic-player-bar a"],
-      // Fallbacks when the player-bar title anchor is missing.
       trackIdFallbacks: ['a.ytp-title-link', 'link[rel="canonical"]'],
       musicArtwork: "ytmusic-player-bar img, ytmusic-player-bar img.image, #song-image img",
       jsonLd: 'script[type="application/ld+json"]'
@@ -498,9 +481,6 @@
   }
 
   function readMusicDom(doc, base) {
-    // The byline is read for the view count only. Its text is never an artist:
-    // only an anchor names one, so `1,5 M vues` (no anchors) cannot become
-    // the artist and needs no localized-count pattern to reject.
     var byline = clean(textOf(queryOne(doc, RULES.dom.musicByline)));
     var views = null;
     if (byline) {
@@ -511,9 +491,6 @@
       }
     }
 
-    // Anchors are classified by their resolved path: /channel/ is an artist,
-    // /browse/MPRE an album. Playlist ids (/browse/VL…) never match, and a
-    // query string that merely mentions one of those paths never qualifies.
     var anchors = collectAnchors(doc, RULES.dom.musicBylineLinks);
     var artistNames = [];
     var artistUrl = null;
@@ -526,7 +503,6 @@
       var resolved = href ? absoluteUrl(href, base) : null;
       if (!resolved) continue;
       if (pathStartsWith(resolved, "/channel/")) {
-        // The first channel anchor decides artistUrl; a rejected host stays null.
         if (!artistSeen) {
           artistSeen = true;
           artistUrl = pageUrlFor(resolved, "youtube-music");
@@ -540,8 +516,6 @@
       }
     }
     if (!albumAnchor) {
-      // No album anchor in the byline: keep the last album link in the
-      // complex-string, never a playlist id.
       var fallbackAnchors = queryAll(doc, RULES.dom.musicAlbumLink);
       for (var f = fallbackAnchors.length - 1; f >= 0; f -= 1) {
         var fallbackHref = absoluteUrl(attrOf(fallbackAnchors[f], "href"), base);
@@ -609,24 +583,13 @@
     var ogTitle = clean(attrOf(queryOne(doc, RULES.dom.ogTitle), "content"));
     var documentTitle = safeDocumentTitle(doc);
 
-    // Music precedence: session first, then the player bar, JSON-LD, OG, title.
     var title = (session && session.title) || dom.title || (ld && ld.name) || ogTitle || documentTitle;
-    // Artist anchors outrank the session; without an anchor MediaSession's
-    // artist is trusted as-is, then JSON-LD's author. A byline segment is
-    // never an artist, so a localized count cannot become one.
     var channel = dom.channel || (session && session.artist) || (ld && ld.author);
-    // Album text and album URL come from the same matched anchor, so the
-    // tooltip can never name an album the link does not open. MediaSession's
-    // album is the only other source: a byline segment is never an album.
     var album = dom.album || (session && session.album);
     var artwork = (session && session.artwork) || dom.artwork || (ld && ld.artwork);
 
-    // A resolved title is the proof that the persistent player is present;
-    // without it there is nothing to show.
     if (!title) return null;
 
-    // The canonical track URL is rebuilt from the id, never copied from an
-    // address bar that may still be sitting on Home or Explore.
     var trackId = dom.trackId || mediaId;
     var trackUrl = trackId ? "https://music.youtube.com/watch?v=" + trackId : null;
 

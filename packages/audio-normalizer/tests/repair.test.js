@@ -68,9 +68,6 @@ async function loadContent(href, storage) {
       runtime: {
         onMessage: { addListener: (fn) => runtimeListeners.push(fn) },
         sendMessage: async (msg) => {
-          // Control flows extension -> page only: the content script asks the WORKER,
-          // which is the only party allowed to reach the MAIN world. The harness
-          // records that request (the page receives nothing).
           if (msg && msg.type === 'CONTROL_HOOK') {
             const actionType = { start: 'START', stop: 'STOP', setGain: 'SET_GAIN', status: 'STATUS_REQUEST' }[msg.action] || msg.action;
             postedToPage.push({ type: actionType, via: 'worker', ...(msg.payload || {}) });
@@ -88,7 +85,6 @@ async function loadContent(href, storage) {
     },
     document: {
       hidden: false,
-      // document_start: this instance was injected while the document loaded.
       readyState: 'loading',
       documentElement: {
         _a: {},
@@ -104,7 +100,6 @@ async function loadContent(href, storage) {
   sandbox.self = sandbox;
   vm.createContext(sandbox);
   vm.runInContext(read('content-script.js'), sandbox, { filename: 'content-script.js' });
-  // FAIL CLOSED: listeners appear only after the storage answer.
   await sleep(40);
   const sendMessage = (message) => new Promise((resolve) => {
     if (typeof runtimeListeners[0] !== 'function') {
@@ -288,15 +283,10 @@ function loadHook({ attrs = null, preHook = null, preConnectPatch = false } = {}
   sandbox.globalThis = sandbox;
   vm.createContext(sandbox);
   vm.runInContext(hookSrc, sandbox, { filename: 'page-hook.js' });
-  // Control arrives only through the dispatcher the worker calls; the hook
-  // never starts itself, and no page channel exists to reach it.
   const control = (action, payload) => (typeof sandbox.__tnHookV6 === 'function'
     ? sandbox.__tnHookV6(action, payload || {})
     : { ok: false, alive: false, active: false, error: 'No hook in this frame.' });
   const WORKLET_URL = 'chrome-extension://test-id/audio/normalizer-worklet.js';
-  // The document carried the content-script-staged attributes: the old premise
-  // was "injected with a pending start", whose new-world equivalent is the
-  // worker starting the hook right after injecting it.
   if (attrs === null) control('start', { gainDb: 0, workletUrl: WORKLET_URL });
   const fireMutations = (mutations) => {
     if (observerCallback) observerCallback(mutations);
@@ -319,9 +309,6 @@ test('item6: github pages hosts get distinct toggles, legacy collapses read-only
   await sleep(60);
   const sa = await alice.sendMessage({ type: 'GET_DOCUMENT_STATUS' });
   assert.equal(sa.enabled, true, 'alice enabled by its own full-key record');
-  // bob has no record at all, so the fail-closed bootstrap installs nothing:
-  // there is no content script to ask, which is the strongest form of "not
-  // enabled by alice's full-key record".
   assert.equal(bob.listenerCount(), 0, 'bob gets no content script at all (unknown host is inactive)');
 });
 
@@ -338,11 +325,6 @@ test('item6: legacy collapsed record migrates to the full key on first write', a
 });
 
 test('item2: content script covers opaque-origin iframes', () => {
-  // The content script is no longer a static `<all_urls>` manifest entry: it
-  // is registered dynamically (background.js `syncContentScriptRegistration`).
-  // The opaque-origin guarantee now lives on that descriptor, so assert both
-  // halves: the manifest no longer injects anywhere, and the registration
-  // carries `matchOriginAsFallback` with `all_frames`.
   const manifest = JSON.parse(read('manifest.json'));
   assert.equal(manifest.content_scripts, undefined, 'no static injection left');
   const bg = read('background.js');
@@ -385,8 +367,6 @@ test('item1: own createMediaElementSource capture is not marked __tnWebAudio', a
 });
 
 test('item3: foreign-extension START never becomes the worklet URL', async () => {
-  // Forged START as the FIRST start (no pinned origin, no pinned fallback):
-  // the pinned validator refuses the foreign id and loads no module at all.
   const h = loadHook({ attrs: {} });
   await sleep(80);
   h.addedModuleUrls.length = 0;
@@ -437,9 +417,6 @@ test('item3b: content corrects a drifted hook gain from stored truth', async () 
   const c = await loadContent('https://example.com/watch', storage);
   await sleep(60);
   c.postedToPage.length = 0;
-  // The worker's control response reports the DRIFTED gain. The content script
-  // never adopts it: the stored record is the only truth, and the next sync
-  // re-asserts it through the worker.
   const requests = [];
   c.sandbox.chrome.runtime.sendMessage = async (msg) => {
     requests.push(clone(msg));
@@ -506,14 +483,9 @@ test('item7: no DOM pending marker can re-arm a stopped hook', async () => {
   h.control('stop', {});
   await sleep(30);
   const stopped = h.control('status', {});
-  // A STOP is a bypass and keeps the dispatcher alive on purpose (a later
-  // enable revives this instance); it must still report inactive, and it must
-  // never be re-armed by anything the PAGE does.
   assert.equal(stopped.alive, true, 'the dispatcher survives a stop for a live re-enable');
   assert.equal(stopped.active, false, 'and stops processing');
   assert.equal(typeof h.sandbox.__tnHookV6, 'function', 'the worker can still control it');
-  // The page can still write the old pending-start marker; nothing consumes it,
-  // because the file reads it once at load and there is no listener left.
   const before = h.addedModuleUrls.length;
   h.documentElementStub.setAttribute('data-tab-normalizer-pending', '1');
   h.documentElementStub.setAttribute('data-tn-worklet-url', 'chrome-extension://test-id/audio/normalizer-worklet.js');
@@ -521,7 +493,6 @@ test('item7: no DOM pending marker can re-arm a stopped hook', async () => {
   assert.equal(h.addedModuleUrls.length, before, 'no worklet module was loaded after stop');
   assert.equal(h.control('status', {}).active, false, 'and the page marker started nothing');
 
-  // DESTROY is the path that removes the dispatcher outright.
   h.control('destroy', {});
   await sleep(30);
   assert.equal(typeof h.sandbox.__tnHookV6, 'undefined', 'destroy deleted the dispatcher');
@@ -534,9 +505,6 @@ test('item7: disabled tab posts STOP when an active hook reports in', async () =
   const c = await loadContent('https://example.com/watch', storage);
   await sleep(60);
   c.postedToPage.length = 0;
-  // The worker's control answer says the hook is alive AND active while this
-  // tab has just been disabled: the backstop asks for one STOP, through the
-  // worker, and never starts anything.
   await c.sendMessage({
     type: 'SET_DOCUMENT_STATE',
     siteKey: 'example.com',
@@ -574,7 +542,6 @@ test('item7: an off tab asks the worker for exactly one STOP across repeated res
   await sleep(60);
   const stops = c.postedToPage.filter((m) => m.type === 'STOP');
   assert.equal(stops.length, 1, 'one STOP per disable, not one per resync');
-  // Re-enabling resets the latch so the NEXT disable can stop again.
   await c.sendMessage({
     type: 'SET_DOCUMENT_STATE',
     siteKey: 'example.com',
@@ -727,7 +694,6 @@ test('item13: drag persists once on release with one broadcast', async () => {
   popup.els['gain-slider'].disabled = false;
   popup.els.toggle.checked = true;
   bg.tabsSent.length = 0;
-  // A 5-step drag: ticks preview only, release persists once.
   for (const v of ['2', '4', '6', '8', '10']) {
     popup.els['gain-slider'].value = v;
     await popup.els['gain-slider'].fire('input');

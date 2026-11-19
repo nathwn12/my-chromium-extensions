@@ -1,16 +1,3 @@
-// qa/hook-guard-silent.cjs
-// Pure-Node node:vm harness for the page-hook silence-until-routed guard.
-// No browser, no Chromium, no audio playback — fully stubbed DOM/WebAudio.
-// Loads the page-hook source, activates it via the START message, and asserts:
-//   S1: patched play() mutes synchronously, stays muted while routing is
-//       pending, restores the prior value after connect completes.
-//   S2: worklet module load rejects -> muted restored, no permanent silence.
-//   S3: addModule never resolves -> muted restored by the 1.5 s timeout.
-//   S4: element already muted before attach -> restored to true (never false).
-//   S5: STOP while guarding -> muted restored.
-//   S6: __tnWebAudio element -> no mute applied (control).
-// Usage: node qa/hook-guard-silent.cjs [--source <path-to-page-hook.js>]
-// Exit code is non-zero on any failure.
 'use strict';
 
 const fs = require('node:fs');
@@ -44,7 +31,6 @@ async function waitFor(cond, { timeoutMs = 3000, intervalMs = 25 } = {}) {
   }
 }
 
-// addModuleBehavior: 'resolve' | 'reject' | 'never' | 'deferred'
 function loadHook(sourceText, filename, addModuleBehavior) {
   const posted = [];
   const messageListeners = [];

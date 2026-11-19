@@ -194,7 +194,6 @@ export class ArRpcClient {
       try {
         socket.close();
       } catch {
-        // A socket that is already gone has nothing left to close.
       }
     }
   }
@@ -212,7 +211,6 @@ export class ArRpcClient {
           try {
             socket.close();
           } catch {
-            // Probing a port that refused the connection; nothing to close.
           }
         }
         resolve(result);

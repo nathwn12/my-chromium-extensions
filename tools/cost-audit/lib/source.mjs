@@ -1,5 +1,3 @@
-// Reading the packages, never writing them: the harness needs to tell a
-// feature that is missing from a feature that is present and wrong.
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";

@@ -62,8 +62,6 @@ export async function removeHost(options = {}) {
       await exec(registryDeleteArgs(key));
       removed.push({ name: `delete ${slot.label} registry`, ok: true, detail: key });
     } catch (error) {
-      // A missing key is the desired end state, so it is not a failure here;
-      // the read-back below decides whether anything survived.
       removed.push({ name: `delete ${slot.label} registry`, ok: true, detail: 'already absent' });
     }
   }

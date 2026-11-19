@@ -14,8 +14,6 @@ function parseCompound(token) {
     compound.tag = tagMatch[1] === "*" ? "" : tagMatch[1].toLowerCase();
     rest = rest.slice(tagMatch[1].length);
   }
-  // [attr], [attr=value], [attr*="value" i] — the four CSS substring operators
-  // plus the case-insensitive flag the synopsis selectors rely on.
   const partRe = /#([\w-]+)|\.([\w-]+)|\[([a-zA-Z0-9_:.-]+)(?:([*^$~|]?)=["']?([^"'\]]*)["']?(?:\s+([iIsS]))?)?\]/g;
   let m;
   while ((m = partRe.exec(rest))) {

@@ -147,7 +147,6 @@ function main(argv) {
     return 0;
   }
 
-  // The ID stands alone on its first line so it can be matched exactly.
   process.stdout.write(`${result.id}\nkey: ${result.key}\n`);
   process.stderr.write(
     `${result.created ? 'generated' : 'reused'} key in ${result.path}\n`,

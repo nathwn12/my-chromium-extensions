@@ -2,15 +2,6 @@
 
 /* global require, process, __dirname */
 
-/*
- * test/dsp-regression.test.js - offline DSP regression for the Dattorro repair.
- *
- * Plain Node only: the real dattorro-worklet.js is evaluated with stub
- * globals (same pattern as mute-enforce.test.js) at 44.1/48/96 kHz, and the
- * real content-script.js is read as text with its mix expressions eval'd.
- * No browser, no AudioContext, no playback. Each numbered item fails on the
- * pre-fix bytes and passes on the repaired bytes.
- */
 
 const fs = require('fs');
 const path = require('path');
@@ -54,8 +45,6 @@ function loadWorkletClass(sr) {
   return { cls: registered || cls, src };
 }
 
-// Run `seconds` of audio through a fresh processor; fill(L, R, start) writes
-// the input blocks; returns { outL, outR } concatenated.
 function runAudio(Cls, sr, params, seconds, fill) {
   const p = new Cls();
   if (params) p.handleMessage({ type: 'setParams', params });
@@ -117,9 +106,6 @@ function peakOf(l, r) {
   return m;
 }
 
-// 128-frame blocks. `input` may be null to model a disconnected source; the
-// output arrays are reused when `holder` is passed, exactly like a live render
-// quantum, so a worklet that writes nothing replays stale samples.
 function pumpBlocks(p, sr, seconds, input, holder) {
   const total = Math.floor(sr * seconds);
   const out = new Float32Array(total);
@@ -185,7 +171,6 @@ function mulberry32(seed) {
   };
 }
 
-// Music-like: low-passed noise plus a 110 Hz tone, normalised to `peak`.
 function makeMusic(sr, seconds, peak) {
   const total = Math.floor(sr * seconds);
   const src = new Float32Array(total);
@@ -240,9 +225,6 @@ function main() {
   check('2. capped *0.42 wet mapping is gone', csrc.indexOf('* 0.42') === -1);
   const wetSrc = (csrc.match(/wetGain:\s*(Math\.pow\(i, 0\.75\)[^,\n]*),/) || [])[1] || '';
   const wetFn = new Function('I', 'return (' + wetSrc.replace(/\bi\b/g, 'I') + ');');
-  // The dry complement is owned by computeMixLevels: one formula there, and
-  // every dry-gain ramp takes its value from that owner instead of re-deriving
-  // it, so the sites cannot drift apart.
   const dryExpr = ((csrc.match(/dry:\s*([^\n]+)/) || [])[1] || '').replace(/,\s*$/, '').trim();
   const dryOwners = csrc.match(/Math\.sqrt\(Math\.max\(0, 1 - [^)]*\)\)/g) || [];
   const headroomSrc = (csrc.match(/const MIX_HEADROOM = ([0-9.]+);/) || [])[1] || '';
@@ -268,8 +250,6 @@ function main() {
   const dryFn = dryExpr
     ? new Function('W', 'H', 'return (' + dryExpr.replace(/MIX_HEADROOM/g, 'H').replace(/\bwet\b/g, 'W') + ');')
     : () => NaN;
-  // Divided by the headroom: the complement itself must still sum to unity
-  // power, and the constant is a separate, uniform trim.
   const dry = (w) => dryFn(w, headroom) / headroom;
   let worstDip = 0;
   for (let k = 0; k <= 100; k++) {
@@ -405,7 +385,6 @@ function main() {
   check('5. DC-blocker corner identical at all rates', spread(fcs.map((f) => f.hpf)) < 1e-3);
   check('5. wet-beam corner identical at all rates', spread(fcs.map((f) => f.lpf)) < 1e-3);
   check('5. LFO rate identical at all rates', spread(fcs.map((f) => f.lfoHz)) < 1e-3);
-  // Empirical -3 dB of the live lowpass coefficient at 48 kHz.
   const live48 = loadWorkletClass(48000).cls;
   const c48 = new live48().lpfCoeff;
   const fcTheory = (-Math.log(1 - c48) * 48000) / (2 * Math.PI);

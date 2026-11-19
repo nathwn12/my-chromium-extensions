@@ -40,7 +40,6 @@ function loadExtractor() {
   return context.CrunchyrollExtract;
 }
 
-// 1. A keepalive must not steal the winner.
 test("1: keepalive cannot re-rank the multi-tab winner", () => {
   assert.equal(typeof worker.pickBestTab, "function");
   const mk = (tabId) => ({ tabId, top: null, frames: {}, pageUrl: "https://www.crunchyroll.com/watch/G1", updatedAt: 0, rankAt: 0 });
@@ -50,22 +49,18 @@ test("1: keepalive cannot re-rank the multi-tab winner", () => {
   mergeFrame(b, { frameId: 0, series: "B", hasVideo: true, paused: false, position: 10, duration: 100, visible: true, signals: ["video"] }, 2000);
   let tabs = { 1: resolveTab(a, 2100), 2: resolveTab(b, 2100) };
   assert.equal(pickBestTab(tabs).tabId, 2, "newer real event wins first");
-  // A keepalive from the loser arrives later: liveness advances, rank does not.
   mergeFrame(a, { frameId: 0, series: "A", hasVideo: true, paused: false, position: 10, duration: 100, visible: true, signals: ["video"], keepalive: true }, 3000);
   tabs = { 1: resolveTab(a, 3100), 2: resolveTab(b, 3100) };
   assert.equal(pickBestTab(tabs).tabId, 2, "keepalive must not steal the winner");
   assert.ok((tabs[1].rankAt ?? 0) < (tabs[2].rankAt ?? 0) || (tabs[1].rankAt === tabs[2].rankAt && false), "rankAt unchanged by keepalive");
 });
 
-// 2. Disabled: single clear then silence + content media-event gate.
 test("2: disabled sends one clear then stays silent; content gates media events", () => {
   assert.match(contentSource, /function onMediaEvent[\s\S]*?if \(!enabled\) return;/, "media events gated while disabled");
   assert.match(bgSource, /lastSentJson !== "null"/, "disabled clear sent once");
-  // Limiter bypass still dedupes via the worker guard; content never reports while disabled.
   assert.match(contentSource, /report\(isKeepalive/, "report carries keepalive flag");
 });
 
-// 3. Pause/resume bypass the limiter like clears.
 test("3: pause after a full window sends immediately", () => {
   const sent = [];
   const scheduled = [];
@@ -83,13 +78,11 @@ test("3: pause after a full window sends immediately", () => {
   limiter.push({ details: "paused", state: "S1 E1" });
   assert.deepEqual(sent.length, 5, "pause bypasses a full window");
   assert.equal(sent.at(-1).details, "paused");
-  // Resume (timestamps return) also bypasses.
   now = 1000;
   limiter.push(playing(99));
   assert.equal(sent.at(-1).details, "p99", "resume bypasses too");
 });
 
-// 4. Handshake ERROR surfaces the real reason and stops retrying.
 test("4: handshake ERROR rejects with the real reason and is fatal", async () => {
   const client = new DiscordPipeClient({
     clientId: "123456789012345678",
@@ -100,7 +93,6 @@ test("4: handshake ERROR rejects with the real reason and is fatal", async () =>
   client._readyWaiter = { resolve: () => {}, reject: (e) => { err = e; } };
   client.socket = { destroy() {} };
   client._decoder = { push: () => { throw new Error("unused"); } };
-  // Call _onFrame directly with a handshake ERROR (no nonce).
   client._onFrame({ op: 1, payload: { evt: "ERROR", data: { code: 4000, message: "Invalid client ID" } } });
   assert.ok(err, "handshake ERROR must reject the waiter");
   assert.match(err.message, /Invalid client ID/);
@@ -110,7 +102,6 @@ test("4: handshake ERROR rejects with the real reason and is fatal", async () =>
   client.close();
 });
 
-// 5. Missing pong marks the bridge disconnected.
 test("5: pong overdue is bounded and pure", () => {
   assert.equal(typeof isPongOverdue, "function");
   const now = 1_700_000_000_000;
@@ -122,7 +113,6 @@ test("5: pong overdue is bounded and pure", () => {
   assert.match(bgSource, /pong timeout/i, "overdue triggers reconnect");
 });
 
-// 6. Framing error resets so the next chunk decodes.
 test("6: bad length resets; the next good frame still decodes", () => {
   const decoder = new NativeMessageDecoder();
   const bad = Buffer.alloc(4);
@@ -134,7 +124,6 @@ test("6: bad length resets; the next good frame still decodes", () => {
   assert.equal(out[0].t, "ping");
 });
 
-// 7. Bidi/zero-width stripped before capping.
 test("7: clean strips bidi controls and zero-width chars", () => {
   assert.match(extractSource, /202E/, "bidi strip present");
   const api = loadExtractor();
@@ -150,7 +139,6 @@ test("7: clean strips bidi controls and zero-width chars", () => {
   assert.doesNotMatch(joined, /[‪-‮⁦-⁩​-‏﻿]/, "no bidi/zero-width survives");
 });
 
-// 8. Button URLs capped at 512 with fallback.
 test("8: long button URLs rejected with fallback", () => {
   const longPath = `https://www.crunchyroll.com/watch/G123/${"a".repeat(600)}`;
   assert.equal(pickButtonUrl(longPath), null);
@@ -168,7 +156,6 @@ test("8: long button URLs rejected with fallback", () => {
   for (const b of activity.buttons) assert.ok(b.url.length <= 512);
 });
 
-// 9. Only the top frame (or same-origin watch frame) supplies metadata.
 test("9: subdomain frame cannot forge metadata", () => {
   assert.equal(typeof isTrustedFrameUrl, "function");
   assert.equal(isTrustedFrameUrl("https://evil.crunchyroll.com/x", "https://www.crunchyroll.com/watch/G123/x"), false);
@@ -181,7 +168,6 @@ test("9: subdomain frame cannot forge metadata", () => {
   assert.equal(resolved.hasVideo, true, "video truth still merges");
 });
 
-// 10. Details/state enforce 2-char minimum with fallback.
 test("10: single-char details fall back instead of sending invalid", () => {
   assert.equal(clampText("A"), null);
   assert.equal(clampText("AB"), "AB");
@@ -191,7 +177,6 @@ test("10: single-char details fall back instead of sending invalid", () => {
   assert.equal(fallback.details, "Valid Title");
 });
 
-// 11. URL changes via events/observer; interval only with video.
 test("11: hashchange + observer replace the always-on poll", () => {
   assert.match(contentSource, /hashchange/, "hashchange covered");
   assert.match(contentSource, /MutationObserver/, "observer watches the player container");
@@ -199,7 +184,6 @@ test("11: hashchange + observer replace the always-on poll", () => {
   assert.match(contentSource, /if \(!video\)/, "interval stops without a video");
 });
 
-// 12. README states the ad break freezes the card instead of showing ad progress.
 test("12: README states ad breaks freeze the episode card", () => {
   assert.doesNotMatch(readme, /Presence clears while the ad runs/);
   assert.match(readme, /ad break/i);

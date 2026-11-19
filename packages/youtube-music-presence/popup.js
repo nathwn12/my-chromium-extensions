@@ -28,8 +28,6 @@ function describeActivity(activity) {
   if (!activity || typeof activity !== "object") return { title: "Nothing playing", detail: "" };
   const title = typeof activity.details === "string" && activity.details ? activity.details : "Listening";
   const rawState = typeof activity.state === "string" ? activity.state : "";
-  // Header is static ("YouTube Music"); the row shows the artist from
-  // `state`. Collapse a state that merely repeats the track.
   const detail =
     rawState && rawState.toLowerCase() !== title.toLowerCase() ? rawState : "";
   return { title, detail };
@@ -39,8 +37,6 @@ function renderStatus(status, enabled) {
   const view = presentStatus(status);
   enabledEl.checked = enabled;
 
-  // Turning presence off is a deliberate state, not a bridge failure: say so
-  // plainly and leave the pill neutral instead of red.
   bridgeEl.textContent = enabled ? view.label : "Off";
   bridgeEl.dataset.state = enabled ? view.state : "idle";
   bridgeEl.dataset.tone = !enabled
@@ -51,8 +47,6 @@ function renderStatus(status, enabled) {
         ? "connected"
         : "waiting";
 
-  // The reason has its own live region so a playing activity never hides why
-  // presence is paused. Priority is announced, an expected absence is not.
   const reason = enabled ? view.reason : null;
   reasonEl.hidden = !reason;
   reasonEl.textContent = reason || "";
@@ -106,8 +100,6 @@ async function render() {
 
 enabledEl.addEventListener("change", async () => {
   const next = enabledEl.checked;
-  // Optimistic: the pill must not keep claiming the previous state while the
-  // worker persists the toggle and tears the port down.
   bridgeEl.textContent = next ? "Waiting" : "Off";
   bridgeEl.dataset.state = next ? "connecting" : "idle";
   bridgeEl.dataset.tone = next ? "waiting" : "off";

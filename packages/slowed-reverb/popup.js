@@ -155,7 +155,6 @@ async function applyLiveSettings(settings) {
     try {
       await chrome.tabs.sendMessage(activeTabId, { type: 'APPLY_LIVE_SETTINGS', settings: normalized });
     } catch {
-      // Best effort only: the tab may not have a content script yet.
     }
   }
 }
@@ -211,8 +210,6 @@ async function refreshLiveStatus() {
       return;
     }
 
-    // Details stay in the console; the popup shows only the four friendly
-    // states. A neutral graph is Active, never an error.
     if (live.error) console.debug('[Slowed Reverb]', live.error);
     const dotColor = live.bypass ? 'gray' : live.attachedCount ? 'green' : 'gray';
     renderStatus(dotColor, buildStatusText(live));

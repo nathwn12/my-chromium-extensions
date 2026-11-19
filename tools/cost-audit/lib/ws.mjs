@@ -1,11 +1,3 @@
-// Minimal RFC 6455 WebSocket client over node:net.
-//
-// Why not the global WebSocket: Chrome's DevTools endpoint rejects any upgrade
-// that carries an `Origin` header, and Node's built-in WebSocket always sends
-// one. Speaking the protocol directly sends no Origin, so the harness needs no
-// `--remote-allow-origins=*` argument and no dependency.
-//
-// Scope: text frames, fragmentation, ping/pong, close. That is all CDP needs.
 
 import { connect as netConnect } from "node:net";
 import { randomBytes, createHash } from "node:crypto";
@@ -111,7 +103,6 @@ export function openWebSocket(url, { timeoutMs = 15000 } = {}) {
           try {
             socket.end();
           } catch {
-            /* already gone */
           }
           for (const fn of closeHandlers) fn("peer closed");
           return;
@@ -164,7 +155,6 @@ export function openWebSocket(url, { timeoutMs = 15000 } = {}) {
       try {
         socket.write(Buffer.concat([header, mask, masked]));
       } catch {
-        /* write after close is not an error worth surfacing */
       }
     }
 
@@ -181,7 +171,6 @@ export function openWebSocket(url, { timeoutMs = 15000 } = {}) {
       try {
         socket.end();
       } catch {
-        /* already gone */
       }
     }
   });

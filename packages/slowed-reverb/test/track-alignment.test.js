@@ -2,27 +2,6 @@
 
 /* global require, process, __dirname */
 
-/*
- * test/track-alignment.test.js - ordering regression for a track change.
- *
- * Two ordering defects made the first moment of a new song audible at the page's
- * own rate and then corrected it in real time:
- *
- *   1. `syncMediaController` returned without writing the intended rate while
- *      the tap was stale, so the element kept whatever `playbackRate` the page
- *      wrote (usually 1.0) through the whole swap window.
- *   2. `rebuildStreamSource` cleared `sourceStale` and ramped the master gain
- *      back BEFORE writing the intended rate, so the fresh tap became audible at
- *      the page's rate and was slowed afterwards.
- *
- * Contract asserted here: the graph may carry audio only once the element
- * already carries the intended rate, and a live page rate write is covered by a
- * short fade before the rate is restored.
- *
- * SAFETY (AGENTS.md ## Verification safety): plain Node only. The REAL
- * content-script.js runs against stubbed browser globals. No browser is
- * launched, no AudioContext device is created, no audio plays.
- */
 
 const fs = require('fs');
 const path = require('path');
@@ -40,8 +19,6 @@ function createEnv() {
     ops: [],
     unmutes: [],
   };
-  // The element the op log samples: every gain command records the rate and
-  // mute state it was issued under, which is the ordering evidence.
   let probe = null;
 
   const realSetTimeout = globalThis.setTimeout;
@@ -148,7 +125,6 @@ function createEnv() {
       this._muted = next;
       this.mutedWrites.push(next);
       if (!next) {
-        // An unmute is only legal while the graph carries zero.
         const master = masterParam();
         stats.unmutes.push({ master: master ? master.value : 0, rate: this.playbackRate });
       }
@@ -222,7 +198,6 @@ function createEnv() {
       const node = {
         gain,
         connect(target) {
-          // dryGain -> masterGain node, masterGain -> destination.
           if (target && target === context.destination) gain.label = 'master';
           else if (!gain.label) gain.label = 'dry';
         },
@@ -397,9 +372,6 @@ async function main() {
     'master=' + (master ? master.value : 'none')
   );
 
-  // The player parks the element for the new track and writes its own rate;
-  // Chromium queues the `ratechange` event, so a sync can run while the element
-  // is still at 1.0. That ordering is the reported bug.
   media.currentSrc = '';
   media.paused = true;
   media.readyState = 0;

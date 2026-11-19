@@ -1,7 +1,4 @@
 (() => {
-  // A page-defined `window.__tabNormalizerHookV5` never blocks the real
-  // hook: always install/overwrite below. Early-return ONLY when our own
-  // connect patch is already present (a real hook is installed).
   if (typeof AudioNode !== 'undefined' && AudioNode.prototype
     && /** @type {any} */ (AudioNode.prototype).__tnConnect) {
     return;
@@ -13,13 +10,6 @@
   const RECOVERY_BURST_COUNT = 6;
   const HOOK_GUARD_TIMEOUT_MS = 1500;
   const RESUME_TIMEOUT_MS = 400;
-  // Tracked teardown collection.
-  //
-  // Every listener and timer this hook owns is registered through these four
-  // helpers, so STOP releases them from ONE place instead of relying on each
-  // subsystem remembering to clean up. The `message` listener is the single
-  // deliberate survivor: it is the hook's only channel for a later START, and
-  // removing it would make re-enabling a page impossible without a reload.
   /** @type {Array<{ target: any, type: string, fn: any, options: any, keepOnStop?: boolean }>} */
   let trackedListeners = [];
   /** @type {Set<any>} */
@@ -143,12 +133,6 @@
       new Promise((resolve) => setTimeout(resolve, timeoutMs)),
     ]).then(() => {});
   }
-  // Cheap re-armed resume for attached elements: a single document-level
-  // play/playing capture pair resumes any suspended session that still
-  // holds elements. Registered once, removed only when no session holds
-  // elements. Gesture listeners in createMediaSession cover click/touch/
-  // key/pointerdown; this covers feed autoplay (play events with no
-  // gesture) while the tab is active.
   let attachedResumeArmed = false;
   function resumeAttachedSessions() {
     for (const session of sessions) {
@@ -181,19 +165,6 @@
     untrackListener(document, 'play', resumeAttachedSessions, true);
     untrackListener(document, 'playing', resumeAttachedSessions, true);
   }
-  // Worklet URL contract: the ONLY trusted source is the START message from
-  // the ISOLATED content script (which knows chrome.runtime.getURL). The
-  // page-writable DOM attribute is kept ONLY as the pending-start fallback
-  // (set just before injection when the hook auto-starts before any START
-  // arrives). Anything else — page-relative fallback, missing value, or an
-  // origin that is not the content-script-set one pinned at load — fails
-  // closed with a clear status error. Never fetch a non-chrome-extension URL.
-  //
-  // Origin pinning: a bare `chrome-extension://` prefix check lets a page
-  // START pin ANY extension id's worklet path. At load the hook captures the
-  // exact origin of the content-script-set attribute value; every candidate
-  // must match that origin plus the exact worklet path. No pinned origin
-  // (attribute missing at load) means nothing validates — fail closed.
   /** @type {string} */
   let pinnedWorkletOrigin = '';
   /** @param {unknown} value */
@@ -218,16 +189,11 @@
     try {
       document.documentElement?.removeAttribute(WORKLET_ATTR);
     } catch {}
-    // Structural pre-check only (origin pinning happens right after from
-    // whatever this captures); the pinned `isValidWorkletUrl` gates use.
     const ok = typeof value === 'string'
       && value.startsWith('chrome-extension://')
       && value.endsWith(WORKLET_SUFFIX);
     return ok ? value : null;
   }
-  // Capture the pending-start fallback value once at load; the attribute is
-  // removed immediately so the page cannot swap it afterwards. The value's
-  // origin is pinned: only it (plus the exact worklet path) ever validates.
   const pendingWorkletUrlFallback = readWorkletUrlAttribute();
   try {
     if (pendingWorkletUrlFallback) {
@@ -264,49 +230,22 @@
   const originalConnect = AudioNode.prototype.connect;
   const originalPlay = HTMLMediaElement.prototype.play;
   const originalCreateMediaElementSource = AudioContext.prototype.createMediaElementSource;
-  // Originals of the constructor patches, so a dispose can put the page back
-  // exactly as it was instead of leaving half-patched globals behind.
   /** @type {{ AudioContext?: any, OfflineAudioContext?: any, webkitAudioContext?: any }} */
   const patchedConstructorOriginals = {};
 
-  // Per-instance session registry — deliberately NOT page-durable.
-  //
-  // Design cut: a captured element cannot be recaptured (Web Audio allows one
-  // source per element), so a live document can never be re-normalized after its
-  // graph is released. Rather than retain a captured context and its sources for
-  // a later instance (which pins the graph and the removed elements for the life
-  // of the document), STOP/DESTROY release everything for good, and the popup
-  // tells the user that a reload restores the page.
   const sessions = new Set();
   const contextSessions = new WeakMap();
   const mediaSessions = new WeakMap();
   /** @type {ReturnType<typeof createMediaSession> | null} */
   let mediaSessionPromise = null;
   const guardedMediaElements = new Set();
-  // Elements the page wired into its own Web Audio graph. They cannot be
-  // captured by us (one MediaElementSource per element, ever) and are left
-  // playing untouched; the set is what turns that into a visible verdict.
   const unmanagedMediaElements = new Set();
   /** @type {ReturnType<typeof trackTimeout> | null} */
   let recoveryBurstTimer = null;
   let recoveryBurstRemaining = 0;
   let recoveryBurstRunning = false;
 
-  // Program-boundary tracking (feed fix, page-hook half): exactly one
-  // {type:'reset-program', generation} per new program to each active
-  // session's worklet port. Per-element generation counter lives on the
-  // element (__tnProgramGen) mirrored in elementProgramGenerations;
-  // the tab-wide generation is currentProgramGeneration; each session
-  // tracks lastResetGeneration / pendingResetGeneration; the active
-  // program element is activeProgramElement.
   const elementProgramGenerations = new WeakMap();
-  // Durable per-document map: element -> { source, session }. NEVER deleted
-  // for the life of the document (WeakMap key, so a discarded element can
-  // still be collected; the live AudioNodes stay pinned only by the owning
-  // session's `sources` set). Removal never disconnects and never drops the
-  // entry: a re-inserted element reuses the SAME source with zero re-capture
-  // (a second createMediaElementSource on one element throws). Per instance, and
-  // released with the session: see releaseSessions.
   const elementSources = new WeakMap();
   let currentProgramGeneration = 0;
   let activeProgramElement = null;
@@ -323,24 +262,10 @@
     stopped: false,
   };
 
-  // The frame gate (written by the background in the MAIN world just before
-  // this file, from the frame's OWN hostname) is the first thing consulted: an
-  // excluded frame gets no listener, no observer and no patch.
   if (globalThis.__tabNormalizerFrameGate?.excluded === true) {
     return;
   }
 
-  // There is NO page -> extension control channel. Nothing here listens on
-  // `window`: a page posting START/STATUS_REQUEST/SET_GAIN reaches nothing.
-  // Control arrives only through the background's `executeScript({func})`,
-  // which calls the dispatcher below. `stop` leaves the dispatcher in place on
-  // purpose (a later enable must revive this instance, not a fresh one), and
-  // `destroy` removes it — after that the only way back is a fresh injection
-  // from the worker.
-  //
-  // `__tnDisposeV6` is the one inert marker left behind: it can only tear the
-  // hook down (never start it), and it exists so a re-injection does not stack
-  // a second instance on a live one. It costs no timer, observer or listener.
   try {
     if (typeof globalThis.__tnDisposeV6 === 'function') {
       globalThis.__tnDisposeV6();
@@ -358,17 +283,10 @@
       return status();
     }
     if (action === 'status') return status();
-    // 'stop' is a BYPASS, not a teardown: the worklet is disconnected and the
-    // page plays unprocessed at 0 dB, while the dispatcher, the sessions and
-    // every captured source stay alive. That is what makes a later enable live
-    // (a captured element can never be re-captured, so releasing it here would
-    // make re-enable impossible without a reload).
     if (action === 'stop') {
       stop();
       return status();
     }
-    // 'destroy' is the exclusion/uninstall path: full teardown, dispatcher
-    // removed, sessions released. Nothing survives it by design.
     if (action === 'destroy') {
       dispose();
       return { ok: true, alive: false, active: false, error: '' };
@@ -388,8 +306,6 @@
     try {
       releaseSessions();
     } catch {}
-    // stop() keeps the session-context watchers (the sessions survive it); a
-    // destroy releases the sessions, so their listeners go with them.
     try {
       untrackListeners();
     } catch {}
@@ -456,9 +372,6 @@
       active: isHookActive(),
       gainDb: state.gainDb,
       error: state.lastError,
-      // Elements the page owns (it created its own MediaElementSource) can never
-      // be captured by us: reported so the popup can show a verdict instead of
-      // pretending the page is normalized.
       unprocessed: unmanagedMediaElements.size,
     };
   }
@@ -513,8 +426,6 @@
     if (nextState && typeof nextState === 'object') {
       state.gainDb = normalizeGainDb(nextState.gainDb);
     }
-    // Worklet URL contract: START payload first, stored value next,
-    // pending-start DOM fallback last. Fail closed on anything else.
     const resolvedUrl = ensureWorkletUrl(
       nextState && typeof nextState === 'object' ? nextState.workletUrl : null,
     );
@@ -527,9 +438,6 @@
     state.lastError = '';
     bindLifecycleListeners();
 
-    // Owner-directed seamless start: pre-warm the media session (AudioContext +
-    // AudioWorklet module + node) so it is ready before the first media element
-    // plays. The CPU cost is accepted. Never awaited; failures surface via setError.
     if (!mediaSessions.has(document) && !mediaSessionPromise) {
       void ensureMediaSession().catch(() => {});
     }
@@ -554,12 +462,6 @@
     routeSessions();
     updateSessionGains();
     notifySessionStarts();
-    // Re-enable transition (inactive -> active after a previous program):
-    // mint one fresh program generation and broadcast exactly one
-    // reset-program per session so the re-enabled hook never resumes on the
-    // previous program's stale AGC/limiter state. Never reset at attach time
-    // (attach paths only flush this pending generation); the first cold start
-    // (no prior program) needs no reset because every worklet is already cold.
     if (currentProgramGeneration > 0 || activeProgramElement) {
       currentProgramGeneration += 1;
       broadcastProgramReset(currentProgramGeneration);
@@ -578,7 +480,6 @@
   function stop() {
     if (!state.active) return;
     state.active = false;
-    // The recovery burst must not re-route audio after an explicit stop.
     state.stopped = true;
     clearRecoveryBurst();
     console.log('[hook] stopping');
@@ -593,9 +494,6 @@
       state.observer = null;
     }
 
-    // Close hook-created media contexts that no longer route anything; a
-    // fresh one is pre-warmed on the next start. Sessions that ever
-    // captured stay alive (their sources cannot be re-captured elsewhere).
     for (const session of Array.from(sessions)) {
       maybeCloseIdleMediaSession(session);
     }
@@ -604,18 +502,11 @@
     } catch {}
     maybeDisarmAttachedResume();
 
-    // Complete teardown: every tracked listener, every tracked timer, every
-    // per-element listener. `dispose()` goes further afterwards — it restores
-    // the patched prototypes and releases the sessions — so what remains here is
-    // the part `stop()` owns when it is called on its own.
     unbindLifecycleListeners();
     untrackTimeout(lifecycleTimer);
     lifecycleTimer = null;
     teardownElementListeners();
-    // Session context watchers survive: the sessions do (see watchSessionContext).
     untrackListeners((entry) => entry.keepOnStop === true);
-    // The armed flag must follow the sweep, or the next START would not re-add
-    // the document-level resume pair.
     if (attachedResumeArmed) {
       attachedResumeArmed = false;
       untrackListener(document, 'play', resumeAttachedSessions, true);
@@ -626,18 +517,9 @@
     reportStatus('HOOK_STOPPED');
   }
 
-  // Close a hook-created (media-kind) context once it routes nothing and the
-  // hook is inactive. A context that ever captured NEVER closes: its
-  // sources cannot be re-captured elsewhere, and closing would make every
-  // later retry throw and latch __tnWebAudio forever. When such a context
-  // is idle (no present elements) and the hook is inactive it is suspended
-  // to release CPU instead; the next attach resumes it. The media session
-  // is pre-warmed per document so the close saves nothing.
   function maybeCloseIdleMediaSession(session) {
     if (!session || session.kind !== 'media') return;
     if (session.captured) {
-      // Captured latch: close is impossible after any capture — suspend
-      // when idle and inactive, never close, never tear down.
       if (session.mediaElements.size !== 0) return;
       if (state.active) return;
       try {
@@ -719,7 +601,6 @@
   function scanExistingContexts() {
     const candidates = new Set();
 
-    // Fast path: check known common variable names
     const knownKeys = ['audioCtx', 'audioContext', 'ctx', 'context', 'actx', 'ac'];
     for (const key of knownKeys) {
       try {
@@ -728,7 +609,6 @@
       } catch {}
     }
 
-    // Fallback: scan window keys with audio/context pattern, capped at 200
     if (candidates.size === 0) {
       let scanned = 0;
       try {
@@ -768,11 +648,6 @@
     };
   }
 
-  // Pending play() attempts, per element. Every play() call adds its own
-  // token and removes it when its promise settles; the listener gate is
-  // "this element has at least one unresolved attempt". A single boolean
-  // was cleared by whichever attempt settled first, so a still-pending
-  // attempt's later play/playing events could reset (SPEC F1).
   /** @type {WeakMap<object, Set<object>>} */
   const pendingPlayAttempts = new WeakMap();
 
@@ -799,10 +674,6 @@
       attempts.delete(token);
       if (attempts.size === 0) pendingPlayAttempts.delete(mediaElement);
     }
-    // The promise, not the event stream, owns the reset decision: a resolved
-    // attempt confirms a start even while another attempt is still pending.
-    // The token set above keeps the listeners closed until the LAST attempt
-    // settles, so an earlier settle can never open that gate.
     if (confirmed) handleElementPlaybackStart(mediaElement);
   }
 
@@ -822,10 +693,6 @@
       let attempt = null;
       if (managed) {
         watchProgramBoundaries(this);
-        // Close the play/playing listener path for THIS attempt until its
-        // promise settles: a listener must not reset ahead of a start that
-        // is then rejected. Muting still happens synchronously in
-        // attachMediaElement, before the original play().
         attempt = beginPlayAttempt(this);
         void attachMediaElement(this);
       }
@@ -836,9 +703,6 @@
         if (attempt) finishPlayAttempt(this, attempt, false);
         throw err;
       }
-      // Single reset decision: a confirmed start. The promise path owns it
-      // while an attempt is pending; the listeners take over only when
-      // play() returns no promise to confirm with.
       if (attempt && started && typeof started.then === 'function') {
         started.then(
           () => { finishPlayAttempt(this, attempt, true); },
@@ -856,9 +720,6 @@
     AudioContext.prototype.__tnMediaSource = true;
 
     AudioContext.prototype.createMediaElementSource = function (el) {
-      // Our own attach path runs under `state.internalWiring` (see
-      // attachMediaElement): never label our own wiring as page WebAudio, or
-      // the element could never re-attach after a context close/recover.
       if (el && !state.internalWiring) el.__tnWebAudio = true;
       return originalCreateMediaElementSource.call(this, el);
     };
@@ -867,8 +728,6 @@
   function observeDom() {
     patchAttachShadow();
     if (state.observer) {
-      // Observer already runs: still sweep for shadow roots added since the
-      // last sweep (open roots created while inactive are never patched).
       scanShadowRoots();
       return;
     }
@@ -876,9 +735,6 @@
     /** @type {ReturnType<typeof trackTimeout> | null} */
     let observerTimer = null;
     let pendingBatches = [];
-    // Feed-starvation guard: one flush never walks an unbounded queue.
-    // A mutation storm is sliced into capped flushes; the remainder is
-    // carried over to the next tick, never dropped.
     const MAX_MUTATIONS_PER_FLUSH = 200;
 
     function flushMutations() {
@@ -887,9 +743,6 @@
       pendingBatches = pendingBatches.slice(batch.length);
       for (const m of batch) {
         for (const node of m.removedNodes ?? []) {
-          // Detach first so removed elements leave the present set: the
-          // source stays connected and the cache entry is kept.
-          // (A later re-insert re-attaches, reusing the live source.)
           try {
             if (!(node instanceof Element)) continue;
             if (isMediaElement(node)) {
@@ -898,10 +751,6 @@
             for (const media of node.querySelectorAll?.('audio, video') ?? []) {
               detachMediaElement(media);
             }
-            // No querySelectorAll('*') walk here: removals inside a shadow
-            // tree arrive as their own mutations (every open root is
-            // observed), so a descendant sweep would only re-walk the
-            // subtree at O(size) per mutation.
           } catch {}
         }
         for (const node of m.addedNodes) {
@@ -912,10 +761,6 @@
           for (const media of node.querySelectorAll?.('audio, video') ?? []) {
             void attachMediaElement(media);
           }
-          // A subtree added under a shadow host arrives as one Element:
-          // observe its own open root. Descendant hosts need no sweep —
-          // patchAttachShadow captures every root created after injection
-          // and scanShadowRoots covers roots that already existed.
           try {
             if (node.shadowRoot) observeShadowRoot(node.shadowRoot);
           } catch {}
@@ -928,8 +773,6 @@
 
     state.observer = new MutationObserver((mutations) => {
       if (!state.active) return;
-      // Coalesce, never drop: a removal landing inside the 100 ms window
-      // is queued and detached on the next flush.
       for (const m of mutations ?? []) pendingBatches.push(m);
       if (observerTimer) return;
 
@@ -943,18 +786,9 @@
     scanShadowRoots();
   }
 
-  // Open-shadow-root walk: the MutationObserver on document never sees nodes
-  // inside a shadow tree, so a <video> in an open shadow root would never be
-  // attached. Observe each open root with the same observer and attach any
-  // media already inside. Closed roots have no observable handle — the
-  // play() patch still catches those at playback time.
   /** @param {any} root */
   function observeShadowRoot(root) {
     if (!root) return;
-    // Re-enable fix: stop() disconnects + nulls the observer, so a later
-    // start creates a new instance. A bare __tnObserved flag would
-    // early-return forever for previously seen roots. Track the observing
-    // instance and re-observe when it differs from the live observer.
     if (state.observer && /** @type {any} */ (root).__tnObserver !== state.observer) {
       try {
         state.observer.observe(root, { childList: true, subtree: true });
@@ -1060,10 +894,6 @@
 
     console.log('[hook] AudioContext created, state:', context.state, 'sampleRate:', context.sampleRate);
 
-    // Autoplay-policy fix: gesture listeners MUST be registered before any
-    // resume await, so a context created before the first gesture still
-    // resumes on click/touch/key. The resume itself must never block session
-    // creation: race it against a short timeout and retry on gesture.
     const resumeOnInteraction = async () => {
       try {
         await context.resume();
@@ -1082,8 +912,6 @@
     document.addEventListener('pointerdown', resumeOnInteraction);
     ensureAttachedResumeListeners();
 
-    // Bounded resume: never blocks session creation under the autoplay
-    // policy; the gesture listeners above retry on interaction.
     await resumeWithTimeout(context, RESUME_TIMEOUT_MS);
 
     if (context.state === 'running') {
@@ -1115,9 +943,6 @@
   function watchSessionContext(session) {
     const context = session && session.context;
     if (!context) return;
-    // `keepOnStop`: a session survives a STOP, so its context watcher must
-    // survive it too. Without this a re-enabled hook would stop noticing a
-    // closed or interrupted context until the next recovery pass.
     trackListener(context, 'statechange', () => {
       if (!sessions.has(session) || session.context !== context) return;
       if (!state.active) return;
@@ -1135,8 +960,6 @@
       }
       if (context.state === 'suspended' && session.mediaElements.size > 0
         && !session.suspensionRecoveryPending) {
-        // Context lifecycle is independent of page visibility: interruptions
-        // can suspend a live graph in either a visible or dormant tab.
         session.suspensionRecoveryPending = true;
         scheduleRecoveryBurst();
       }
@@ -1183,7 +1006,6 @@
           console.log('[hook] skipping worklet for closed context');
           return;
         }
-        // Bounded resume before worklet node: never blocks readiness.
         await resumeWithTimeout(context, RESUME_TIMEOUT_MS);
         session.readyResolved = true;
         if (!state.active || session.workletNode) return;
@@ -1220,9 +1042,6 @@
 
       workletNode.onprocessorerror = (e) => {
         console.error('[hook] worklet processor error:', e);
-        // Never leave a dead worklet wired: bypass at once so the element
-        // keeps playing unprocessed, then retry with backoff. Repeated
-        // failure stays in bypass (audible) rather than silent.
         try { session.inputNode.disconnect(workletNode); } catch {}
         try { workletNode.disconnect(session.outputNode); } catch {}
         try { session.inputNode.disconnect(session.outputNode); } catch {}
@@ -1268,8 +1087,6 @@
       session.inputNode.connect(workletNode);
       workletNode.connect(session.outputNode);
     } catch {
-      // A throwing connect must never leave input->worklet with no path
-      // to output: fall back to the direct (unprocessed but audible) path.
       bypassSession(session);
       return;
     }
@@ -1291,8 +1108,6 @@
     try {
       session.inputNode.connect(session.outputNode);
     } catch {}
-    // Best-effort resume toward audible: when the site is disabled the
-    // graph is input->destination, which is silent while suspended.
     try {
       if (session.context.state === 'suspended'
         && typeof session.context.resume === 'function') {
@@ -1328,14 +1143,6 @@
     flushPendingProgramReset(session);
   }
 
-  // Program-boundary detection. New program: first playback of a newly
-  // attached managed element; loadstart/emptied followed by playback; a
-  // different element begins playing while another was the active
-  // program; replay after ended. Not a new program: pause/resume, seek
-  // within the same program, waiting/playing buffer stall, repeated
-  // play() while already playing. Never resets at attach time; only
-  // after a confirmed start — the resolved play() promise, or a start
-  // event with no play() attempt pending.
   /** @param {any} mediaElement */
   function watchProgramBoundaries(mediaElement) {
     if (!mediaElement || mediaElement.__tnProgramWatched) return;
@@ -1344,9 +1151,6 @@
       trackElementListener(mediaElement, 'loadstart', () => markProgramDirty(mediaElement));
       trackElementListener(mediaElement, 'emptied', () => {
         markProgramDirty(mediaElement);
-        // The program is spent: leave the present set so a replay
-        // re-attaches (reusing the cached source). The source stays
-        // connected and the cache entry is kept.
         detachMediaElement(mediaElement);
       });
       trackElementListener(mediaElement, 'ended', () => {
@@ -1362,9 +1166,6 @@
     } catch {}
   }
 
-  // Re-arm the per-element program listeners after a STOP cleared them. The
-  // element keeps its captured source and __tnAttached flag across a stop, so
-  // attachMediaElement alone would not re-watch it.
   function rewatchAttachedMediaElements() {
     for (const session of sessions) {
       for (const mediaElement of session.mediaElements) {
@@ -1376,10 +1177,6 @@
     }
   }
 
-  // The only gate on the listener path: while ANY play() attempt for the
-  // element is unresolved its play/playing events must not reset; a start
-  // outside play() (autoplay, a resumed element) has no pending attempt and
-  // resets as before.
   /** @param {any} mediaElement */
   function handlePlaybackSignal(mediaElement) {
     if (!mediaElement || hasPendingPlayAttempt(mediaElement)) return;
@@ -1397,8 +1194,6 @@
   /** @param {any} mediaElement */
   function handleElementPlaybackStart(mediaElement) {
     if (!state.active || !mediaElement) return;
-    // Elements wired by the page through WebAudio are unmanaged; elements
-    // wired by our own attach carry __tnAttached and stay managed.
     if (mediaElement.__tnWebAudio && !mediaElement.__tnAttached) return;
     let isNewProgram = false;
     try {
@@ -1416,8 +1211,6 @@
       try { mediaElement.__tnPlaying = true; } catch {}
       return;
     }
-    // New program: bump the per-element counter, mint one tab-wide
-    // generation, broadcast exactly once per session (or stash pending).
     try {
       const next = (elementProgramGenerations.get(mediaElement) || 0) + 1;
       elementProgramGenerations.set(mediaElement, next);
@@ -1446,9 +1239,6 @@
       } catch {}
       return;
     }
-    // Worklet not ready: keep a single pending generation per session;
-    // never queue duplicates. A newly created worklet is already cold,
-    // so a pending reset is harmless.
     if (session.lastResetGeneration !== generation) {
       session.pendingResetGeneration = generation;
     }
@@ -1471,13 +1261,6 @@
     session.pendingResetGeneration = null;
   }
 
-  // Silence-until-routed guard: while the extension is active, a managed media
-  // element is muted synchronously at attach time (before the patched play()
-  // reaches the original) so it cannot play un-processed audio at full volume
-  // while createMediaElementSource + connect are still pending. The previous
-  // muted value is restored once routing is live (source connected to the
-  // session input), on any attach error, on STOP/teardown, or by a 1.5 s safety
-  // timer — never a permanent mute; on failure the element plays raw as before.
   /** @param {any} mediaElement */
   function armHookGuard(mediaElement) {
     if (mediaElement.__tnGuarding) return;
@@ -1495,11 +1278,6 @@
       untrackTimeout(mediaElement.__tnGuardTimer);
       mediaElement.__tnGuardTimer = null;
     }
-    // Guard-window race: restore the pre-guard muted value ONLY while the
-    // element is still guard-muted (muted === true from armHookGuard). A mute
-    // state the user or page set during the 1.5 s window must never be undone
-    // — e.g. unmuting a muted video, or muting-then-unmuting, must survive.
-    // Guard bookkeeping is always cleared; only the muted write is gated.
     if (mediaElement.muted === true) {
       mediaElement.muted = mediaElement.__tnGuardPrevMuted;
     }
@@ -1515,12 +1293,6 @@
     }
   }
 
-  // Detach one element: drop only the present-element membership
-  // (session.mediaElements) and `__tnAttached` so a replay re-attaches.
-  // The source stays connected and the elementSources entry is NEVER
-  // deleted: the element simply stops producing audio while removed, and a
-  // re-insert reuses the SAME source with zero re-capture (a second
-  // createMediaElementSource on one element throws InvalidStateError).
   /** @param {any} mediaElement */
   function detachMediaElement(mediaElement) {
     if (!mediaElement) return;
@@ -1538,8 +1310,6 @@
     } catch {}
   }
 
-  // Forget sessions whose contexts closed: they route nothing and their
-  // source sets would otherwise pin removed elements forever.
   function pruneClosedSessions() {
     for (const session of Array.from(sessions)) {
       try {
@@ -1550,9 +1320,6 @@
     }
   }
 
-  // Deferred capture: elements skipped while the context is suspended
-  // re-attempt once on the next user gesture or play event. Never more
-  // than one pending retry per element; dropped when the site disables.
   const deferredCaptureElements = new Set();
   function queueDeferredCapture(mediaElement) {
     if (!mediaElement || deferredCaptureElements.has(mediaElement)) return;
@@ -1591,10 +1358,6 @@
   /** @param {any} mediaElement */
   async function attachMediaElement(mediaElement) {
     if (!state.active || !isMediaElement(mediaElement) || mediaElement.__tnAttached) return;
-    // Durable reuse first: a cached source is reconnected and reused even
-    // when the element was later labelled page-wired (a failed page-side
-    // capture labels __tnWebAudio, but that must never block our own cached
-    // route). createMediaElementSource is never called twice per element.
     const cachedEntry = elementSources.get(mediaElement);
     const cachedSource = cachedEntry && cachedEntry.source
       ? cachedEntry.source
@@ -1602,22 +1365,14 @@
     if (cachedSource) {
       watchProgramBoundaries(mediaElement);
       if (/** @type {any} */ (mediaElement).__tnGuarding) return;
-      // Arm synchronously (before the first await) so the patched play(),
-      // which calls the original right after this, can only produce silence
-      // until routing.
       armHookGuard(mediaElement);
       try {
         const session = await ensureMediaSession();
         await resumeWithTimeout(session.context, RESUME_TIMEOUT_MS);
-        // A stop landing mid-attach must not capture, connect or re-arm the
-        // resume listeners after the sweep: the hook is inactive, so leave the
-        // element exactly as the page has it.
         if (!state.active) {
           restoreHookGuard(mediaElement);
           return;
         }
-        // Prefer the session that owns the source; it stays alive because a
-        // captured context never closes.
         let owner = session;
         try {
           const s = cachedEntry && cachedEntry.session;
@@ -1631,7 +1386,6 @@
             owner.mediaElements.add(mediaElement);
           }
         } catch {}
-        // Routing is live: restore the pre-guard muted value.
         restoreHookGuard(mediaElement);
         mediaElement.__tnAttached = true;
         ensureAttachedResumeListeners();
@@ -1647,22 +1401,15 @@
     if (mediaElement.__tnWebAudio) return;
     watchProgramBoundaries(mediaElement);
     if (/** @type {any} */ (mediaElement).__tnGuarding) return;
-    // Arm synchronously (before the first await) so the patched play(), which
-    // calls the original right after this, can only produce silence until routing.
     armHookGuard(mediaElement);
 
     try {
       const session = await ensureMediaSession();
       await resumeWithTimeout(session.context, RESUME_TIMEOUT_MS);
-      // Same mid-attach stop guard as the cached-source path above.
       if (!state.active) {
         restoreHookGuard(mediaElement);
         return;
       }
-      // Gate: per Web Audio, createMediaElementSource permanently steals
-      // the element's direct output. A suspended/closed context therefore
-      // means permanent silence — never capture into one. Restore the
-      // guard (unmuted, untouched) and retry on the next gesture/play.
       if (!session || session.context.state !== 'running') {
         restoreHookGuard(mediaElement);
         try {
@@ -1672,12 +1419,6 @@
         ensureAttachedResumeListeners();
         return;
       }
-      // Fresh capture only: any cached source was already handled above
-      // (reused before the page-wiring gate), so reaching here with a cache
-      // entry means it arrived concurrently — capture would throw, the
-      // catch below skips cleanly. Our own capture must not be mistaken
-      // for page wiring (see patchCreateMediaElementSource): run it under
-      // internalWiring.
       {
         state.internalWiring = true;
         /** @type {MediaElementAudioSourceNode} */
@@ -1695,7 +1436,6 @@
         session.sources.add(source);
         session.captured = true;
       }
-      // Routing is live: restore the pre-guard muted value.
       restoreHookGuard(mediaElement);
       mediaElement.__tnAttached = true;
       session.mediaElements.add(mediaElement);
@@ -1705,10 +1445,6 @@
     } catch (e) {
       restoreHookGuard(mediaElement);
       if (e instanceof DOMException && e.name === 'InvalidStateError') {
-        // No cached source and capture threw: the page (or a previous hook
-        // instance, whose release left the element's source in the page) owns
-        // this element. Record it and leave it alone — unmuted, untouched, and
-        // unprocessed until a reload rebuilds the page.
         mediaElement.__tnWebAudio = true;
         unmanagedMediaElements.add(mediaElement);
         console.log('[hook] media element already connected to another source, left unprocessed until reload');
@@ -1795,11 +1531,6 @@
       }
     } catch {}
 
-    // Teardown runs only for contexts that never captured or are already
-    // closed (captured sessions suspend instead and never reach here via
-    // idle): disconnect every element source and drop the strong
-    // references so dead contexts can be collected; elements that
-    // are still in the document re-attach on the next recovery pass.
     for (const source of Array.from(session.sources)) {
       try { source.disconnect(); } catch {}
     }
@@ -1835,8 +1566,6 @@
    */
   function reportStatus(type) {
     if (type === 'HOOK_STATUS') {
-      // Re-assert the live worklet gains from `state.gainDb` on every status
-      // report, so a drifted worklet is corrected at once.
       updateSessionGains();
     }
   }

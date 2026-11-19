@@ -94,8 +94,6 @@ export class ArRpcClient {
       throw new ProtocolError('arrpc needs a WebSocket implementation');
     }
     let lastError = null;
-    // One bounded budget for the whole probe: auto must fall back to Discord
-    // IPC quickly rather than spend a timeout on every one of ten ports.
     const deadline = this.timers.now() + this.connectTimeoutMs;
 
     for (const port of this.ports) {
@@ -104,8 +102,6 @@ export class ArRpcClient {
       if (remaining <= 0) break;
       try {
         const ready = await this._openPort(port, remaining);
-        // A socket that closes between READY and this line must not leave a
-        // ready client with nothing behind it.
         if (!this.ws) throw new ProtocolError(`arrpc closed before ready on ${port}`);
         this.ready = true;
         this._backoff = this.backoffStart;
@@ -165,7 +161,6 @@ export class ArRpcClient {
         },
       };
 
-      // A discarded socket must never speak for the current one.
       const owns = () => this.ws === ws;
 
       ws.addEventListener('open', () => {
@@ -191,7 +186,6 @@ export class ArRpcClient {
       try {
         ws.close();
       } catch {
-        /* already dead */
       }
     }
   }
@@ -206,8 +200,6 @@ export class ArRpcClient {
     this._readyWaiter?.reject(new ProtocolError('arrpc connection closed'));
     if (this.closed) return;
     if (!wasReady) return;
-    // A probe that closes before READY is handled by connect(); only a live
-    // session is worth telling the extension about.
     this.logger.status({
       state: 'disconnected',
       reason: 'arrpc-closed',

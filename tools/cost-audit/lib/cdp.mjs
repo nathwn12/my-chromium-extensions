@@ -1,8 +1,3 @@
-// Minimal Chrome DevTools Protocol client.
-// Zero dependencies: lib/ws.mjs over node:net, and node:http for discovery.
-//
-// One socket to the browser endpoint, flattened sessions per target
-// (Target.attachToTarget { flatten: true }), so every call carries a sessionId.
 
 import { openWebSocket } from "./ws.mjs";
 
@@ -42,7 +37,6 @@ export async function connect(url, { timeoutMs = 30000 } = {}) {
       try {
         fn(msg);
       } catch {
-        /* a listener must never break the socket pump */
       }
     }
   });

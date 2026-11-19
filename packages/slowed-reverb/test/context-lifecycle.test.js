@@ -2,18 +2,6 @@
 
 /* global require, process, __dirname */
 
-/*
- * test/context-lifecycle.test.js - AudioContext lifecycle proof.
- *
- * A browser-initiated suspend (device switch, OS interruption, sleep/wake)
- * must recover without waiting for the 2 s watchdog, a closed context must be
- * recreated with every node/stream released, and an autoplay-policy suspended
- * context must attach as soon as it runs without burning the attach-retry
- * ladder.
- *
- * The stub deliberately models the spec: `state` flips on a LATER task and
- * `onstatechange` fires, unlike the older synchronous stubs. Plain Node only.
- */
 
 const fs = require('fs');
 const path = require('path');
@@ -167,8 +155,6 @@ function createEnv(startState) {
       if (typeof this.onstatechange === 'function') this.onstatechange();
     }
     setState(next) {
-      // Spec-shaped: a browser-initiated transition lands on a later task and
-      // fires statechange. Nothing is resumed for us.
       queueMicrotask(() => {
         this.state = next;
         if (typeof this.onstatechange === 'function') this.onstatechange();
@@ -315,7 +301,6 @@ async function attach(env, media) {
 }
 
 async function main() {
-  // L1: a browser-initiated suspend recovers without the 2 s watchdog.
   {
     const env = createEnv('running');
     await env.settle(6);
@@ -325,7 +310,6 @@ async function main() {
     const resumesBefore = env.stats.resumes;
     ctx.setState('suspended');
     await env.settle(10);
-    // No interval is run here on purpose: the statechange seam must recover.
     const live = env.queryLive();
     check(
       'L1 external suspend resumes without waiting for the watchdog',
@@ -335,8 +319,6 @@ async function main() {
     env.restoreTimers();
   }
 
-  // L2: autoplay-policy suspended context attaches as soon as it runs, with no
-  // multi-second silent window and without burning the retry ladder.
   {
     const env = createEnv('suspended');
     const releaseRuntime = env.holdRuntime();
@@ -376,7 +358,6 @@ async function main() {
     env.restoreTimers();
   }
 
-  // L3: a closed context while attached is recreated with everything released.
   {
     const env = createEnv('running');
     await env.settle(6);
@@ -406,7 +387,6 @@ async function main() {
     env.restoreTimers();
   }
 
-  // L4: a closed context with nothing playing releases the mute (dry audio).
   {
     const env = createEnv('running');
     await env.settle(6);

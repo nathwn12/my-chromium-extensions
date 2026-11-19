@@ -1,13 +1,5 @@
 'use strict';
 
-/*
- * qa/proof-f6.js - F6 retry-cap proof (pure Node stub harness, real content-script.js).
- * captureStream permanently fails. Drives three exhaust-and-resync cycles
- * (syncAllMedia + run all queued retry timers) and counts capture attempts.
- * RED: every cycle restarts the 20-attempt chain (~63 attempts, unbounded).
- * GREEN: attempts are capped on the controller (~23 total, then quiet).
- * Exit 0 = holds, 1 = failed, 2 = harness setup problem.
- */
 
 const { createContentEnv } = require('./stub-env');
 

@@ -1,12 +1,4 @@
 'use strict';
-// F3 proof: the lookahead limiter must account for user gain.
-// Usage: node qa/proof-f3-limiter.cjs [path-to-worklet.js]
-// Hot sine (peak 0.5) with set-gain-db +12 (x4 -> peak ~2.0 pre-limiter).
-// Counts samples where the pre-knee signal exceeds the limiter ceiling,
-// i.e. samples the last-resort soft knee had to rescue (sustained hard
-// clipping) instead of the clean lookahead limiter. Patched into the loaded
-// source string only; the repo file is untouched. Float32 output quantizes
-// exact-ceiling flat-tops, so a black-box output comparison cannot see them.
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');

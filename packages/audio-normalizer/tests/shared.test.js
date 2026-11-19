@@ -26,7 +26,6 @@ test('getSiteKey collapses localhost ports', () => {
 test('getSiteKey keeps the full hostname (no shared toggles)', () => {
   assert.equal(getSiteKey('www.youtube.com'), 'www.youtube.com');
   assert.equal(getSiteKey('music.youtube.com'), 'music.youtube.com');
-  // The reported defect: GitHub Pages sites must not share one toggle.
   assert.equal(getSiteKey('alice.github.io'), 'alice.github.io');
   assert.equal(getSiteKey('bob.github.io'), 'bob.github.io');
   assert.notEqual(getSiteKey('alice.github.io'), getSiteKey('bob.github.io'));
@@ -174,10 +173,6 @@ test('repeated disables converge to the same stored config', () => {
     gainDb: 4,
   });
   const once = setSiteConfig(enabled, {}, 'youtube.com', { enabled: false });
-  // Mirrors the runtime order on a popup disable: background SET_SITE_STATE
-  // persists enabled:false, then the live-tab SET_DOCUMENT_STATE path
-  // re-reads stored truth (content-script.js is read-only and performs no
-  // storage write) and converges. The second application is a no-op.
   const twice = setSiteConfig(once, {}, 'youtube.com', { enabled: false });
   assert.deepEqual(twice, once);
   assert.deepEqual(twice, {
@@ -186,8 +181,6 @@ test('repeated disables converge to the same stored config', () => {
 });
 
 test('migrateSiteSettings merges two raw keys that normalise to one site', () => {
-  // Precedence: last-explicit-field-wins; absent fields preserve the earlier
-  // value; the `true` shorthand asserts only enabled.
   const merged = migrateSiteSettings({
     'youtube.com': { enabled: true, gainDb: 5 },
     'www.youtube.com': { enabled: true },
@@ -204,10 +197,6 @@ test('migrateSiteSettings merges two raw keys that normalise to one site', () =>
 });
 
 test('normalizeSiteRecord ignores an unknown legacy field on a stored record', () => {
-  // A record persisted by an older version may carry fields this version no
-  // longer knows. They are ignored on read and never emitted on write.
-  // `excluded` is the one field added since: it is emitted as `false` when a
-  // stored record predates it (no migration needed).
   assert.deepEqual(normalizeSiteRecord({
     enabled: true,
     gainDb: 3,
@@ -220,7 +209,6 @@ test('normalizeSiteRecord ignores an unknown legacy field on a stored record', (
     seq: 0,
     mirror: true,
     excluded: false,
-    // Derived, not stored before this version: enabled implies seen.
     seen: true,
   });
 });
@@ -233,29 +221,16 @@ test('getContentAction and getPopupIndicator reflect hook state', () => {
 });
 
 test('seen is derived, never lost: an enabled record is seen, a disabled seen record stays seen', () => {
-  // Missing `seen` on an existing record: enabled implies the host was used
-  // once, so the upgrade needs no data migration and no extra reload.
   assert.equal(normalizeSiteRecord({ enabled: true, gainDb: 2, seq: 1, mirror: true }).seen, true);
-  // A disabled record written before `seen` existed is NOT seen: it keeps the
-  // zero-cost path until the user enables it once.
   assert.equal(normalizeSiteRecord({ enabled: false, gainDb: 2, seq: 1, mirror: false }).seen, false);
-  // Disabling never forgets that the host was seen.
   assert.equal(normalizeSiteRecord({ enabled: false, seen: true }).seen, true);
-  // Hostile input is normalised to a boolean.
   assert.equal(normalizeSiteRecord({ seen: 'yes' }).seen, true);
 });
 
 test('getContentAction reserves the passive hook for a seen host that is off', () => {
-  // Seen but off, no hook yet: load the hook passively, start nothing.
   assert.equal(getContentAction({ enabled: false, injected: false, hookAlive: false, seen: true }), 'reserve');
-  // Never seen and off: nothing at all.
   assert.equal(getContentAction({ enabled: false, injected: false, hookAlive: false, seen: false }), 'idle');
-  // Seen but off with the hook already loaded: keep it (STOP is idempotent and
-  // re-asserts the bypass), never re-inject — a second MediaElementSource
-  // capture on the same element is impossible.
   assert.equal(getContentAction({ enabled: false, injected: true, hookAlive: true, seen: true }), 'stop');
-  // Enabled with the hook present after a STOP: live re-start, no injection.
   assert.equal(getContentAction({ enabled: true, injected: true, hookAlive: true, seen: true }), 'start');
-  // Enabled with no hook in this document: the single residual reload case.
   assert.equal(getContentAction({ enabled: true, injected: false, hookAlive: false, seen: true }), 'inject');
 });

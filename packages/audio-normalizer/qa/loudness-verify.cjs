@@ -1,47 +1,4 @@
 'use strict';
-/*
- * qa/loudness-verify.cjs — independent verification harness for the
- * browser-extension audio loudness normalizer.
- *
- * SAFETY: pure Node, no browser, no Chromium, no Playwright, no audio device,
- * no sound. The worklet source is executed inside node:vm with a stub
- * AudioWorkletProcessor / registerProcessor / sampleRate (same pattern as
- * qa/worklet-silent-analysis.cjs). Banned QA scripts
- * (qa/responsive-normalizer-qa.cjs, qa/extension-qa.cjs) are never launched.
- *
- * Usage:
- *   node qa/loudness-verify.cjs            # full verify (fixtures + oracle + worklet + report)
- *   node qa/loudness-verify.cjs --self-test # harness self-check only (fast, no worklet render)
- *
- * Exit codes: 0 = all PASS; 2 = any FAIL or UNTESTED; 1 = harness broken / usage error.
- *
- * Artifact family: this file + qa/fixtures/* (generated input WAVs + manifest) +
- * qa/reference-values.json (schema documented below; filled in by another worker) +
- * qa/fixtures/out/* (generated PROCESSOR-OUTPUT WAVs: full output plus the
- * settled-tail slice the closed-loop oracle measures; listed under the
- * manifest's `outputs` array in the same entry shape as the inputs).
- *
- * Closed loop (added): for every fixture the harness captures the processor's
- * OUTPUT Float32Arrays, concatenates them, writes qa/fixtures/out/*.out.wav,
- * slices the converged tail (see analyzeSettle) to *.out.tail.wav, and runs the
- * SAME ffmpeg ebur128 oracle over both. The output (tail) integrated LUFS is
- * asserted against the -20 LUFS program target (the set-gain-db trim, if any,
- * moves only the expected TAIL to target + trim — never the target itself;
- * clamp bounds parsed from the worklet source), and the output true peak
- * against the ceiling. A fixture whose
- * applied gain never settles is UNTESTED, never PASS.
- *
- * Reference-values schema (qa/reference-values.json):
- *   { "version": 1,
- *     "fixtures": {
- *       "<basename-without-ext>": {
- *         "integratedLufs": <number>,     // reference integrated loudness, LUFS
- *         "truePeakDbTp": <number|null>,  // reference true peak, dBTP (null = unknown)
- *         "source": "<human string: who measured, with what>"
- *       } } }
- * Missing file, missing fixture key, or non-numeric integratedLufs all mean
- * "not yet available" -> that comparison is UNTESTED, never PASS.
- */
 
 const fs = require('node:fs');
 const path = require('node:path');
@@ -63,50 +20,16 @@ const BLOCK = 128;
 const SEED = 0xC10C; // fixed seed: every fixture is bit-exact reproducible
 const LOUDNESS_OFFSET = -0.691; // mirrored from audio/normalizer-worklet.js (read-only)
 const CEILING_DBTP = -1.0; // pass criterion: processed true peak must be <= -1 dBTP (single ceiling since 5.4.1)
-// Documented default program target, as a LITERAL -20 independent of the
-// worklet source. The closed loop asserts the parsed worklet TARGET_LUFS_DEFAULT
-// against this literal (main flow exits 1 on mismatch; --self-test fails), so
-// retuning the worklet default to -21 without updating the documented target
-// fails loudly instead of silently following the source. (A previous revision
-// parsed the expected target out of the worklet itself, which made the check
-// circular: mutating -20 to -21 still PASSED.)
-// -20 is a judgment inside the published -20.0 to -16.0 LUFS window
-// (EBU R 128 s2 interim; AES TD1008 speech -18 / music -16), below the
-// platforms' ≈-14 so the levelling stage has headroom before the ceiling.
 const DOCUMENTED_DEFAULT_TARGET_LUFS = -20;
 const DELTA_TOL_LU = 0.1; // pass criterion: |processor LUFS - reference LUFS| <= 0.1 LU
 const EPS_DB = 1e-6;
-// set-target-lufs probe: retarget to -24 LUFS (deliberately off the -20 default,
-// so a retarget that did nothing sits 4 LU away and FAILS) and converge within
-// closed-loop tolerance.
 const TARGET_PROBE_LUFS = -24;
 
-// Closed-loop acceptance gate (item 2): the converged OUTPUT integrated loudness
-// must land within this of the effective target (or of the clamp-bound value).
 const CLOSED_LOOP_TOL_LU = 0.2;
-// "Long enough" is demonstrated, never assumed: the applied-gain trace from
-// proc.telemetry must be unchanged within this spread over the final several
-// seconds, otherwise the fixture is UNTESTED (never PASS).
 const SETTLED_WINDOW_SECONDS = 5;
 const SETTLED_MAX_SPREAD_DB = 0.1;
-// Tail slice (the converged steady state the closed-loop oracle measures):
-// gain must sit within this of its final value for the whole slice, and the
-// slice must be at least this long or the fixture is UNTESTED.
 const TAIL_SETTLE_DB = 0.05;
 const MIN_TAIL_SECONDS = 5;
-// CONVERGENCE SCOPE (SPEC A1, docs/SPEC_COMFORT.md:132-135: "Program
-// convergence. Fixtures: steady programs at -30, -20, and -12 LUFS").
-// The settle/convergence apparatus above (0.1 dB / 5 s settling, 0.05 dB tail
-// proximity, 5 s minimum tail, +-0.2 LU convergence) is the A1 gate: it binds
-// on STEADY programs only. Fixtures with sections, steps or silence gaps
-// belong to A2/A3 (section loudness, dynamics, LRA) and A5/H2 (step recovery
-// measured by output short-term loudness; SPEC S4 states the averaged loop
-// "does not catch steps"). Listing them here changes NOTHING about their
-// renders, oracle measurements, or A2/A3 rows: the closed-loop numbers are
-// still computed and reported, but no A1 PASS/FAIL verdict is entered for
-// them, and the CLOSED-LOOP / 44.1kHz summaries count steady fixtures only.
-// The constants above are untouched (a scope correction, not a tolerance
-// change). comfort-step (A5) is changing by construction (60 s quiet + step).
 const CHANGING_PROGRAMS = new Set([
   'gated-silence', 'quiet-passage',
   'comfort-dialogue', 'comfort-shortform',
@@ -120,28 +43,14 @@ function closedLoopScope(fixtureKey) {
   }
   return { inScope: true, reason: '' };
 }
-// set-gain-db trim applied to every render (HARNESS_GAIN_DB = 0: the program
-// target under test is exactly worklet TARGET_LUFS_DEFAULT; a nonzero trim
-// would move only the expected tail to target + trim).
 const HARNESS_GAIN_DB = 0;
 const OUT_DIR = path.join(FIXTURE_DIR, 'out');
 
-// Comfort-levelling gates (acceptance: spread shrinks by >= 3 dB and the quiet
-// passage's own loudness rises by >= 3 dB — the clause the gated-only design
-// fails by construction). A no-op leveller gives 0.00 dB and cannot pass.
 const LEVEL_MIN_SPREAD_REDUCTION_DB = 3.0;
 const LEVEL_MIN_QUIET_RISE_DB = 3.0;
-// Worst-case true-peak reference readings under the PREVIOUS 0.6 dB detector
-// margin (high-tone-11k program output — then named inter-sample-peak —
-// measured 2026-10-18 under margin 0.6): the margin's effect
-// is visible by comparing these with the freshly measured values below.
 const PREV_MARGIN_FFMPEG_TP = -1.40;
 const PREV_MARGIN_HARNESS_TP = -1.60;
-// Standard worst-case 4x under-read the shipped margin must cover (BS.1770-4
-// Annex 2 Attachment 1, n = 4, fnorm = 0.5; see TP_DETECTOR_MARGIN_DB).
 const MARGIN_STANDARD_UNDERREAD_DB = 0.688;
-
-/* CLI                                                                 */
 
 const SELF_TEST_ONLY = process.argv.includes('--self-test');
 for (const a of process.argv.slice(2)) {
@@ -151,8 +60,6 @@ for (const a of process.argv.slice(2)) {
   }
 }
 
-/* Deterministic RNG (seeded LCG — never Math.random)                   */
-
 function makeLcg(seed) {
   let s = seed >>> 0;
   return () => {
@@ -160,8 +67,6 @@ function makeLcg(seed) {
     return s / 4294967296 - 0.5; // [-0.5, 0.5)
   };
 }
-
-/* Fixture synthesis (pure Node, Float32Array, deterministic)           */
 
 function sineIntoAt(x, sr, t0, t1, amp, freq, phase = 0) {
   const i0 = Math.max(0, Math.round(t0 * sr));
@@ -173,9 +78,6 @@ function sineInto(x, t0, t1, amp, freq, phase = 0) {
   sineIntoAt(x, SR, t0, t1, amp, freq, phase);
 }
 
-// Planar variant: write the sine into one channel of a planar (multi-channel)
-// fixture. The mono fixtures below use sineInto; the multichannel fixtures
-// use this so every channel's content is explicit per channel.
 function sineIntoPlanarAt(planar, ch, sr, t0, t1, amp, freq, phase = 0) {
   sineIntoAt(planar[ch], sr, t0, t1, amp, freq, phase);
 }
@@ -184,7 +86,6 @@ function sineIntoPlanar(planar, ch, t0, t1, amp, freq, phase = 0) {
   sineIntoAt(planar[ch], SR, t0, t1, amp, freq, phase);
 }
 
-// Paul Kellett pink-ish filter bank, driven by the seeded LCG (deterministic).
 function pinkInto(x, seed, peakTarget) {
   const rnd = makeLcg(seed);
   let b0 = 0, b1 = 0, b2 = 0, b3 = 0, b4 = 0, b5 = 0, b6 = 0;
@@ -253,19 +154,6 @@ const FIXTURES = [
     name: 'high-tone-11k',
     seconds: 30,
     description: 'honestly-labelled mid-high tone (renamed 2026-10-18; was "inter-sample-peak" with a wrong fnorm-0.5 worst-case claim): continuous 11.025 kHz sine amp 0.98, fnorm 0.2297, bound ~0.14 dB — NOT the Nyquist worst case; genuine near-Nyquist stress lives in the adversarial sweep',
-    // HONEST LABEL (renamed 2026-10-18: this fixture was previously called
-    // "inter-sample-peak" and its comment claimed the Nyquist worst case,
-    // fnorm = 0.5 — wrong). 48 kHz, ~30 s, one continuous 11.025 kHz sine at
-    // amplitude 0.98, no segments. fnorm = f/fs for this tone is
-    // 11025/48000 = 0.2296875, for which the BS.1770-4 Annex 2 Attachment 1
-    // bound 20*log10(cos(pi*fnorm/4)) gives only ~0.14 dB (the published table
-    // quotes 0.554 dB at fnorm 0.45 and 0.688 dB at fnorm 0.5). This tone is a
-    // mid-high-frequency program, NOT the detector's worst case; genuine
-    // near-Nyquist stress (alternating bursts with phase breaks, fnorm 0.4+,
-    // full-scale alternating) lives in the ADVERSARIAL_SWEEP below, which owns
-    // the worst-case ceiling claim. Kept uniform so the applied gain settles
-    // (spread over the final 5 s <= 0.1 dB); input true peak already exceeds
-    // the -1 dB ceiling so the limiter path is exercised.
     build: () => { const x = new Float32Array(SR * 30); sineInto(x, 0, 30, 0.98, 11025); return x; },
   },
   {
@@ -385,12 +273,6 @@ const FIXTURES = [
   },
 ];
 
-// 44.1 kHz counterparts: same programs, same durations, same amplitudes and
-// frequencies, rendered at 44100 Hz. Names carry a `-44100` suffix so the
-// 48 kHz bytes never change. The high-tone-11k tone keeps 11025 Hz: at
-// 44.1 kHz fnorm = f/fs = 11025/44100 = 0.25 (bound 0.168 dB), still a
-// mid-high point that proves the derivation is rate-dependent correct rather
-// than a per-rate table (it is NOT a Nyquist worst case at either rate).
 const FIXTURES_441 = [
   {
     name: 'sine-1khz-fs-20-44100',
@@ -573,16 +455,6 @@ const FIXTURES_441 = [
   },
 ];
 
-/* Adversarial true-peak sweep spec (module level: main renders it,          */
-/* --self-test inspects its shape without rendering)                         */
-
-// SHORT (8192-frame, limiter-only regime) adversarial signals. Added
-// 2026-10-18 after a demonstrated ceiling breach: the 30 s program fixtures
-// never stress the detector's step-transient response. Members: the exact
-// reported counterexample burst; near-Nyquist alternating bursts of several
-// lengths and amplitudes with a mid-burst phase break; clean alternating
-// bursts; isolated single-sample spikes; sine bursts at fnorm 0.4/0.45/0.48;
-// a full-scale alternating pattern; a steady full-scale 11.025 kHz tone.
 const ADVERSARIAL_SWEEP = (() => {
   const N = 8192;
   const AT = 2040;
@@ -600,9 +472,6 @@ const ADVERSARIAL_SWEEP = (() => {
     for (let k = 0; k < len; k++) x[AT + k] = amp * Math.sin(2 * Math.PI * freq * (AT + k) / SR);
     return x;
   };
-  // The exact reported counterexample (reviewer brief 2026-10-18): 18-frame
-  // ±0.8 burst 0.8 x [1,-1,1,-1,1,-1,1,-1,1,1,-1,1,-1,1,-1,1,-1,1], with a
-  // single mid-burst phase break (consecutive 1,1 at offsets 8-9).
   const briefPattern = [1, -1, 1, -1, 1, -1, 1, -1, 1, 1, -1, 1, -1, 1, -1, 1, -1, 1];
   const briefBurst = new Float32Array(N);
   for (let k = 0; k < 18; k++) briefBurst[AT + k] = 0.8 * briefPattern[k];
@@ -632,8 +501,6 @@ const ADVERSARIAL_SWEEP = (() => {
     { name: 'steady-11k-0.98', description: 'steady full-scale 11.025 kHz tone (oracle overshoot end of the margin)', build: () => steady11k.slice() },
   ];
 })();
-
-/* WAV IO: 48 kHz mono 32-bit float (deterministic, no dither)          */
 
 function writeWavFloat32Rate(filePath, samples, rate) {
   const n = samples.length;
@@ -666,10 +533,6 @@ function readWavFloat32Mono(filePath) {
   return planar.planar[0];
 }
 
-// Planar reader: 32-bit float WAV with any channel count, plain (format 3)
-// or WAVE_FORMAT_EXTENSIBLE (subformat float). Accepts 48 kHz and 44.1 kHz
-// fixture rates (both harness-owned); anything else is a harness error.
-// Returns { sampleRate, channels, planar: Float32Array[] }.
 function readWavFloat32Planar(filePath) {
   const buf = fs.readFileSync(filePath);
   if (buf.toString('ascii', 0, 4) !== 'RIFF' || buf.toString('ascii', 8, 12) !== 'WAVE') {
@@ -709,9 +572,6 @@ function readWavFloat32Planar(filePath) {
   return { sampleRate: rate, channels, planar };
 }
 
-// Planar writer for multichannel fixtures/outputs: WAVE_FORMAT_EXTENSIBLE,
-// 32-bit float, channel mask 0x3F (FL|FR|FC|LFE|BL|BR) for 6 channels.
-// Mono fixtures keep using writeWavFloat32 above so their bytes never change.
 function writeWavFloat32PlanarRate(filePath, planar, rate, channelMask) {
   const channels = planar.length;
   const n = planar[0].length;
@@ -747,11 +607,7 @@ function writeWavFloat32PlanarRate(filePath, planar, rate, channelMask) {
 }
 
 function writeWavFloat32Planar(filePath, planar, channelMaskOrRate, maybeMask) {
-  // Back-compat: (filePath, planar, mask?) vs (filePath, planar, rate, mask?).
-  // A 6-channel mask (0x3f=63) collides numerically with no valid rate, and
-  // rates are >= 8000, so disambiguate by magnitude when 3 args are given.
   if (typeof channelMaskOrRate === 'number' && channelMaskOrRate >= 8000 && maybeMask === undefined) {
-    // Called as (path, planar, rate) with default mask.
     writeWavFloat32PlanarRate(filePath, planar, channelMaskOrRate, undefined);
     return;
   }
@@ -764,8 +620,6 @@ function writeWavFloat32Planar(filePath, planar, channelMaskOrRate, maybeMask) {
 
 function sha256Hex(buf) { return crypto.createHash('sha256').update(buf).digest('hex'); }
 
-/* Fixture generator                                                   */
-
 function toPlanar(built) {
   return Array.isArray(built) ? built : [built];
 }
@@ -777,7 +631,6 @@ function generateFixtures() {
   for (const f of allDefs) {
     const rate = f.sampleRate || SR;
     const nCh = f.workletChannels || (Array.isArray(f.build()) ? f.build().length : 1);
-    // Prove bit-exact reproducibility: build twice, require identical bytes.
     const aP = toPlanar(f.build());
     const bP = toPlanar(f.build());
     if (aP.length !== bP.length) throw new Error(`HARNESS BROKEN: ${f.name} rebuild channel-count mismatch`);
@@ -797,7 +650,6 @@ function generateFixtures() {
       else writeWavFloat32PlanarRate(wavPath, aP, rate);
     }
     const sha = sha256Hex(fs.readFileSync(wavPath));
-    // Round-trip check: what the worklet driver reads must equal what we wrote.
     const back = readWavFloat32Planar(wavPath);
     if (back.sampleRate !== rate) throw new Error(`HARNESS BROKEN: ${f.name} WAV round-trip rate mismatch (got ${back.sampleRate}, want ${rate})`);
     if (back.channels !== aP.length) throw new Error(`HARNESS BROKEN: ${f.name} WAV round-trip channel mismatch`);
@@ -830,9 +682,6 @@ function generateFixtures() {
     format: '32-bit float WAV (IEEE float, no dither); mono fixtures 1ch plain, surround-51 6ch WAVE_FORMAT_EXTENSIBLE SMPTE (mask 0x3F); 48 kHz names bare, 44.1 kHz names carry -44100',
     files,
   };
-  // Preserve a previous run's closed-loop outputs listing (same entry shape as
-  // `files`; see recordClosedLoopOutputs). The full harness run refreshes it;
-  // --self-test leaves whatever is there untouched.
   try {
     const prev = JSON.parse(fs.readFileSync(MANIFEST_PATH, 'utf8'));
     if (prev && Array.isArray(prev.outputs)) manifest.outputs = prev.outputs;
@@ -840,8 +689,6 @@ function generateFixtures() {
   fs.writeFileSync(MANIFEST_PATH, JSON.stringify(manifest, null, 2));
   return files;
 }
-
-/* ffmpeg oracle                                                       */
 
 function checkFfmpeg() {
   const r = spawnSync('ffmpeg', ['-version'], { encoding: 'utf8' });
@@ -852,13 +699,6 @@ function checkFfmpeg() {
   return { present: true, version: firstLine, note: `ffmpeg present: ${firstLine}` };
 }
 
-// Exact oracle command (cited in the report):
-//   ffmpeg -hide_banner -f wav -i <wav> -af ebur128=peak=true:framelog=quiet -f null -
-// `-f wav` is load-bearing, not cosmetic: ffmpeg's auto-prober scores
-// high-amplitude sine content as MPEG-TS (mpegts probe 100 beats wav probe
-// 99 on e.g. a full-scale 1 kHz tone), so without a forced demuxer the
-// oracle flakily fails to open our own generated files depending on their
-// CONTENT. Forcing wav removes content-dependent file-type detection.
 function runOracle(wavPath) {
   const args = ['-hide_banner', '-f', 'wav', '-i', wavPath, '-af', 'ebur128=peak=true:framelog=quiet', '-f', 'null', '-'];
   const r = spawnSync('ffmpeg', args, { encoding: 'utf8' });
@@ -873,10 +713,6 @@ function runOracle(wavPath) {
 }
 
 function parseEbur128(stderr) {
-  // Summary block looks like:
-  //   Integrated loudness:\n    I:         -23.0 LUFS\n ...
-  //   Loudness range:\n    LRA:         0.0 LU\n ...
-  //   True peak:\n    Peak:      -20.0 dBFS
   const pick = (re) => {
     const m = re.exec(stderr);
     return m ? Number(m[1]) : NaN;
@@ -887,8 +723,6 @@ function parseEbur128(stderr) {
     truePeakDbTp: pick(/^\s*Peak:\s*(-?\d+(?:\.\d+)?)\s+dBFS/m),
   };
 }
-
-/* Worklet driver (node:vm pattern, cf. qa/worklet-silent-analysis.cjs)*/
 
 function loadProcessor(source, rate = SR) {
   let Captured = null;
@@ -906,10 +740,6 @@ function loadProcessor(source, rate = SR) {
   return Captured;
 }
 
-// Options-aware proc factory: same messages the extension sends, plus the
-// new set-target-lufs / set-mode / reset-meter paths under test. Defaults
-// preserve the historical render (gain 0, normalize mode, single -1 dBTP
-// ceiling since 5.4.1).
 function makeProc(Proc, opts = {}) {
   const { gainDb = HARNESS_GAIN_DB, mode = null, targetLufs = null } = opts;
   const proc = new Proc();
@@ -964,10 +794,6 @@ function gainTraceBounds(trace) {
   return { min: mn, max: mx, hasNaN: false };
 }
 
-// Feed real PCM in 128-frame quanta, mono duplicated to stereo (matches the
-// extension's stereo path). Returns output + white-box internals + the
-// per-quantum applied-gain trace (proc.telemetry.appliedGainDb, the documented
-// surface — the convergence demonstration reads this, never internals).
 function renderThroughWorklet(Proc, signal, gainDbOrOpts = HARNESS_GAIN_DB) {
   const opts = typeof gainDbOrOpts === 'object' && gainDbOrOpts !== null
     ? gainDbOrOpts
@@ -992,12 +818,6 @@ function renderThroughWorklet(Proc, signal, gainDbOrOpts = HARNESS_GAIN_DB) {
     normTrace.push(Number.isFinite(proc.telemetry.normGainDb) ? proc.telemetry.normGainDb : proc.telemetry.appliedGainDb);
   }
 
-  // Documented telemetry surface: the worklet keeps this.telemetry fresh on every
-  // process() call and posts {type:'meter', ...} on the port about every 48
-  // quanta. White-box read repointed at that surface (no poking at internals).
-  // The convergence trace below reads telemetry.normGainDb (the SLOW loop):
-  // levelling is intentionally time-varying, so settle is the slow loop's
-  // property; the oracle tail still checks the actual OUTPUT.
   const tel = proc.telemetry || {};
   const internals = {
     hasQueryApi: true,
@@ -1014,7 +834,6 @@ function renderThroughWorklet(Proc, signal, gainDbOrOpts = HARNESS_GAIN_DB) {
     limiterGainDb: 20 * Math.log10(Math.max(proc.currentLimiterGain, 1e-12)),
   };
 
-  // Measured end-to-end gain (independent of internals): output RMS vs input RMS.
   let si = 0, so = 0;
   for (let i = 0; i < n; i++) { si += signal[i] * signal[i]; so += outL[i] * outL[i]; }
   internals.measuredGainDb = 10 * Math.log10((so + 1e-18) / (si + 1e-18));
@@ -1022,12 +841,6 @@ function renderThroughWorklet(Proc, signal, gainDbOrOpts = HARNESS_GAIN_DB) {
   return { outL, outR, internals, gainTrace, normTrace };
 }
 
-/* N-channel render + hard-clip backstop counter (Parts 3-4)             */
-
-// N-channel variant: feed the worklet N input channels and capture N output
-// channels (inputs[0] = all channels, the Web Audio node-input shape). The
-// mono fixture uses 1 channel; surround-51 uses 6. Returns the same shape as
-// renderThroughWorklet but with per-channel outputs (outs[c]).
 function renderThroughWorkletChannels(Proc, planar, gainDbOrOpts = HARNESS_GAIN_DB) {
   const opts = typeof gainDbOrOpts === 'object' && gainDbOrOpts !== null
     ? gainDbOrOpts
@@ -1073,8 +886,6 @@ function renderThroughWorkletChannels(Proc, planar, gainDbOrOpts = HARNESS_GAIN_
     limiterGainDb: 20 * Math.log10(Math.max(proc.currentLimiterGain, 1e-12)),
   };
 
-  // Measured end-to-end gain (independent of internals): total output power
-  // vs total input power across ALL channels.
   let si = 0, so = 0;
   for (let c = 0; c < nCh; c++) {
     for (let i = 0; i < n; i++) { si += planar[c][i] * planar[c][i]; so += outs[c][i] * outs[c][i]; }
@@ -1084,16 +895,6 @@ function renderThroughWorkletChannels(Proc, planar, gainDbOrOpts = HARNESS_GAIN_
   return { outs, internals, gainTrace, normTrace };
 }
 
-// Hard-clip backstop counter (Part 3). The worklet header documents a final
-// sample hard-clip to the ceiling as "the last resort"; a hard clip is
-// waveform distortion, so it must be an unreachable backstop, not a working
-// part of the limiter. The worklet clips with `if (o > ceiling) o = ceiling;
-// else if (o < -ceiling) o = -ceiling`, so a clipped sample is EXACTLY
-// ±ceiling once stored to the Float32Array output. Count exact matches
-// against float32(ceiling) across every output channel; legitimate
-// limiter-held output sits at (ceiling - margin) or below and never lands
-// exactly on the rail, so exact equality is the backstop firing, not normal
-// limiting. Returns { count, rail }.
 function countHardClips(outs, ceilingDb) {
   const rail = Math.fround(Math.pow(10, ceilingDb / 20));
   let count = 0;
@@ -1105,15 +906,12 @@ function countHardClips(outs, ceilingDb) {
   return { count, rail };
 }
 
-/* Independent true-peak estimator (4x cubic Lagrange, own code)        */
-
 function truePeakOf(samples) {
   let peak = 0;
   for (let i = 0; i < samples.length; i++) {
     const a = Math.abs(samples[i]);
     if (a > peak) peak = a;
   }
-  // Inter-sample peaks via cubic Lagrange through (x0..x3) at t in {0.25,0.5,0.75}.
   for (let i = 0; i + 3 < samples.length; i++) {
     const y0 = samples[i], y1 = samples[i + 1], y2 = samples[i + 2], y3 = samples[i + 3];
     for (const t of [0.25, 0.5, 0.75]) {
@@ -1131,27 +929,10 @@ function truePeakOf(samples) {
 
 const toDb = (v) => 20 * Math.log10(Math.max(v, 1e-12));
 
-/* LIVE production verdicts (single source of truth for pass/fail)      */
-
-// These are the LIVE expressions the verdicts use — the main loop, the
-// 44.1 kHz loop, the user-gain gate, and the adversarial sweep
-// below all call these functions, AND the --self-test calls the SAME functions.
-// A previous revision tested locally-copied predicates (ceilOk/ceilOkBG) in the
-// self-test, so blinding a real production comparison left the self-test green.
-// Now a production gate disabled to always-PASS (or a ceiling raised to hide a
-// breach) fails --self-test, proven by mutation (see the report's mutation
-// proofs): peakVerdictDbTp(-0.5, -1) must be FAIL, and making it return PASS
-// breaks the self-test run.
 function peakVerdictDbTp(tpDb, ceilingDb) {
   if (!Number.isFinite(tpDb)) return 'UNTESTED';
   return tpDb <= ceilingDb + EPS_DB ? 'PASS' : 'FAIL';
 }
-
-// NOTE (5.4.1, owner-directed 2026-10-19): single -1 dBTP ceiling — it is
-// asserted by peakVerdictDbTp on every render; no second clamp verdict
-// remains.
-
-/* Comparator                                                          */
 
 function compareLufs(measured, expected) {
   if (!Number.isFinite(measured) || !Number.isFinite(expected)) return { verdict: 'UNTESTED', delta: NaN };
@@ -1159,10 +940,6 @@ function compareLufs(measured, expected) {
   return { verdict: Math.abs(delta) <= DELTA_TOL_LU ? 'PASS' : 'FAIL', delta };
 }
 
-/* Closed loop: worklet constants, settle analysis, convergence check   */
-
-// Single source of truth stays in audio/normalizer-worklet.js: parse the
-// default target and clamp bounds out of the source instead of copying them.
 function parseWorkletConstants(source) {
   const num = (name) => {
     const m = new RegExp(`var ${name} = (-?\\d+(?:[.]\\d+)?);`).exec(source);
@@ -1178,12 +955,6 @@ function parseWorkletConstants(source) {
   };
 }
 
-// Where does the converged steady state begin? The applied-gain trace is one
-// sample per render quantum. settled = max deviation from the final value over
-// the final SETTLED_WINDOW_SECONDS is within SETTLED_MAX_SPREAD_DB ("unchanged
-// over the final several seconds"). settleQuantum = earliest quantum from
-// which the gain stays within TAIL_SETTLE_DB of final; the closed-loop oracle
-// measures output from there to end-of-file.
 function analyzeSettleAt(gainTrace, sr) {
   const n = gainTrace.length;
   const perSec = sr / BLOCK;
@@ -1215,10 +986,6 @@ function analyzeSettle(gainTrace) {
   return analyzeSettleAt(gainTrace, SR);
 }
 
-// Convergence verdict on the settled-tail output loudness vs the expected
-// value (effective target, or the clamp-bound value with its note recorded by
-// the caller). UNTESTED unless the gain demonstrably settled AND the tail is
-// long enough to gate a measurement AND both numbers are finite.
 function checkClosedLoop(outputLufs, expectedLufs, settled, tailSeconds) {
   if (!settled) return { verdict: 'UNTESTED', delta: NaN, reason: 'applied gain did not settle' };
   if (!Number.isFinite(tailSeconds) || tailSeconds < MIN_TAIL_SECONDS) {
@@ -1232,7 +999,6 @@ function checkClosedLoop(outputLufs, expectedLufs, settled, tailSeconds) {
   return { verdict: 'FAIL', delta, reason: `|${delta.toFixed(2)}| LU > ${CLOSED_LOOP_TOL_LU} LU` };
 }
 
-// One applied-gain sample per second (for the report's trace column).
 function perSecondTraceAt(gainTrace, sr) {
   const perSec = Math.round(sr / BLOCK);
   const out = [];
@@ -1244,17 +1010,11 @@ function perSecondTrace(gainTrace) {
   return perSecondTraceAt(gainTrace, SR);
 }
 
-// Merge generated processor-output entries into the fixture manifest under
-// `outputs` (same entry shape as `files`: name/seconds/samples/description/
-// sha256; names are `out/`-relative so qa/reference-meter.cjs --all, which
-// globs only qa/fixtures/*.wav, never picks them up).
 function recordClosedLoopOutputs(entries) {
   const manifest = JSON.parse(fs.readFileSync(MANIFEST_PATH, 'utf8'));
   manifest.outputs = entries;
   fs.writeFileSync(MANIFEST_PATH, JSON.stringify(manifest, null, 2));
 }
-
-/* Reference values (another worker fills these in)                     */
 
 function loadReference() {
   if (!fs.existsSync(REFERENCE_PATH)) {
@@ -1269,11 +1029,6 @@ function loadReference() {
   return { status: 'present', values: (raw && raw.fixtures) || {} };
 }
 
-// Fixture renamed 2026-10-18 (inter-sample-peak -> high-tone-11k: the old name
-// and its "worst-case fnorm 0.5" comment were wrong; the tone is fnorm 0.23).
-// qa/reference-values.json is OWNED FROZEN (another worker fills it; this
-// harness must not touch it), so its keys still carry the old names — honor
-// them through this alias instead of orphaning the reference comparison.
 const LEGACY_REFERENCE_ALIASES = {
   'high-tone-11k': 'inter-sample-peak',
   'high-tone-11k-44100': 'inter-sample-peak-44100',
@@ -1285,8 +1040,6 @@ function referenceEntryFor(values, key) {
   return undefined;
 }
 
-/* Self-check: prove the harness itself works before trusting it        */
-
 function selfCheckHarness(oracle /* oracle of sine-1khz-fs-20 */) {
   const problems = [];
   if (!oracle || !Number.isFinite(oracle.integratedLufs)) {
@@ -1297,21 +1050,16 @@ function selfCheckHarness(oracle /* oracle of sine-1khz-fs-20 */) {
   if (!Number.isFinite(oracle.truePeakDbTp)) {
     problems.push('HARNESS BROKEN: ffmpeg parser returned NaN/no true peak for sine-1khz-fs-20');
   }
-  // A harness that cannot fail proves nothing: a deliberately-wrong expected
-  // value MUST report FAIL.
   const wrong = compareLufs(oracle.integratedLufs, oracle.integratedLufs + 5);
   if (wrong.verdict !== 'FAIL') {
     problems.push(`HARNESS BROKEN: comparator reported ${wrong.verdict} for a deliberately-wrong expected value (+5 LU); it must report FAIL`);
   }
-  // And the comparator must be able to pass: exact oracle value MUST report PASS.
   const right = compareLufs(oracle.integratedLufs, oracle.integratedLufs);
   if (right.verdict !== 'PASS') {
     problems.push(`HARNESS BROKEN: comparator reported ${right.verdict} for the exact oracle value; it must report PASS`);
   }
   return problems;
 }
-
-/* Main                                                                */
 
 function fmt(n, digits = 2) {
   if (!Number.isFinite(n)) return 'n/a';
@@ -1322,11 +1070,9 @@ function main() {
   console.log('LOUDNESS VERIFY HARNESS (pure Node, node:vm; no browser, no Chromium, no audio device)');
   console.log(`repo: ${repoRoot}`);
 
-  // 1. Fixtures.
   const files = generateFixtures();
   console.log(`fixtures: wrote ${files.length} generated WAVs + manifest to ${FIXTURE_DIR}`);
 
-  // 2. ffmpeg oracle availability — FIRST, with the exact observed output.
   const ff = checkFfmpeg();
   console.log(`ffmpeg check command: ffmpeg -version`);
   if (ff.present) console.log(`ffmpeg check observed: ${ff.version}`);
@@ -1350,12 +1096,7 @@ function main() {
   const Proc48 = Proc;
   const Proc441 = loadProcessor(workletSource, SR441);
 
-  // Worklet-declared constants (parsed, never copied): the closed loop
-  // asserts against THESE, so a retune fails loudly instead of silently.
   const wc = parseWorkletConstants(workletSource);
-  // The documented default target is a LITERAL in this harness (-20), never
-  // parsed out of the worklet: a circular check (expected = parsed) would pass
-  // even with the worklet retuned to -19. This assert fails loudly instead.
   if (wc.targetDefault !== DOCUMENTED_DEFAULT_TARGET_LUFS) {
     console.error(`HARNESS BROKEN: parsed TARGET_LUFS_DEFAULT=${wc.targetDefault}, documented literal is ${DOCUMENTED_DEFAULT_TARGET_LUFS} (update the worklet AND the documented target together, never one side alone)`);
     process.exit(1);
@@ -1371,7 +1112,6 @@ function main() {
   const reference = loadReference();
   console.log(`reference-values.json: ${reference.status}`);
 
-  // 6 (first). Harness self-check on the loud sine BEFORE trusting anything.
   let oracle20 = null;
   if (ff.present) {
     oracle20 = runOracle(path.join(FIXTURE_DIR, 'sine-1khz-fs-20.wav'));
@@ -1387,11 +1127,6 @@ function main() {
     process.exit(1);
   }
 
-  // 3+4. Drive every 48 kHz fixture through oracle + worklet, compare.
-  // (44.1 kHz fixtures are exercised separately below with the 44.1 kHz
-  // processor; the 9 historical 48 kHz rows keep their exact shape so the
-  // meter 9/9, closed-loop 9/9, true-peak 9/9, hard-clip 0 baseline cannot
-  // regress silently.)
   const rows = [];
   const outputEntries = [];
   fs.mkdirSync(OUT_DIR, { recursive: true });
@@ -1407,9 +1142,6 @@ function main() {
       integratedLufs: NaN, lraLu: NaN, truePeakDbTp: NaN,
     });
 
-    // Render path: legacy fixtures (no workletChannels) keep the exact
-    // historical stereo-duplicated call; fixtures with workletChannels use
-    // the explicit N-channel render (1 = mono, 6 = 5.1).
     let outs, internals, gainTrace, normTrace;
     if (f.workletChannels && f.workletChannels !== 2) {
       ({ outs, internals, gainTrace, normTrace } = renderThroughWorkletChannels(Proc, planar, HARNESS_GAIN_DB));
@@ -1424,19 +1156,13 @@ function main() {
     const procLufs = internals.processorLufsProgram;
     let procTruePeak = 0;
     for (const ch of outs) procTruePeak = Math.max(procTruePeak, truePeakOf(ch));
-    // Part 3: hard-clip backstop count over EVERY output channel.
     const hardClip = countHardClips(outs, CEILING_DBTP);
 
-    // Full output WAV (item 1): every render quantum concatenated, generated,
-    // gitignored under qa/, listed in the manifest's `outputs` array.
     const settle = analyzeSettle(normTrace);
     const outBase = `${key}.out`;
     const outPath = path.join(OUT_DIR, `${outBase}.wav`);
     const outLen = outs[0].length;
     const multi = outs.length > 1 && !(outs.length === 2 && !f.workletChannels);
-    // Legacy stereo-duplicated renders store channel 0 only (outR is the
-    // untouched zero fill of the historical call shape); N-channel renders
-    // store all channels. `multi` is true only for genuine multichannel.
     const storedOuts = multi ? outs : [outs[0]];
     if (multi) {
       writeWavFloat32Planar(outPath, storedOuts);
@@ -1459,11 +1185,6 @@ function main() {
       description: `generated processor OUTPUT for ${key} (${storedOuts.length}ch; render set-gain-db ${HARNESS_GAIN_DB} dB; closed-loop oracle input)`,
       sha256: sha256Hex(fs.readFileSync(outPath)),
     });
-    // Converged tail: output from the settle point to EOF. A causal gated
-    // normalizer holds unity through warm-up, then slews over seconds, so the
-    // whole-file integrated value necessarily includes the acquisition
-    // transient; convergence IS the settled steady state, and the settle point
-    // is demonstrated by the applied-gain trace, never assumed.
     const tailStart = Math.min(settle.settleQuantum * BLOCK, outLen);
     const tailPlanar = storedOuts.map((ch) => ch.subarray(tailStart));
     let tailPath = null;
@@ -1505,11 +1226,6 @@ function main() {
     }
     const cl = checkClosedLoop(oracleTail.integratedLufs, expectedLufs, settle.settled, settle.tailSeconds);
     const outPeakVerdict = peakVerdictDbTp(oracleOut.truePeakDbTp, CEILING_DBTP);
-    // Licensed scope correction (SPEC A1, docs/SPEC_COMFORT.md:132-135): the
-    // convergence verdict binds on steady programs only. Changing programs
-    // keep every measurement below (still rendered, still oracle-measured,
-    // still reported) but enter no A1 verdict; A2/A3/A5 bind on them instead.
-    // The ceiling half (S5) still binds everywhere via verdictCeiling.
     const scope = closedLoopScope(key);
     let closedVerdict;
     let closedReason = cl.reason;
@@ -1541,8 +1257,6 @@ function main() {
 
     const ceilingVerdict = peakVerdictDbTp(toDb(procTruePeak), CEILING_DBTP);
 
-    // Overall: PASS only if every exercised comparison passed AND ceiling held.
-    // Anything unexercised -> UNTESTED (never PASS). Any exercised failure -> FAIL.
     const exercised = [];
     if (ff.present) exercised.push(vsOracle.verdict);
     if (Number.isFinite(refLufs)) exercised.push(vsRef.verdict);
@@ -1551,7 +1265,6 @@ function main() {
     if (exercised.includes('FAIL')) verdict = 'FAIL';
     else if (exercised.includes('UNTESTED') || exercised.length === 0) verdict = 'UNTESTED';
     else verdict = 'PASS';
-    // No comparison source at all (no ffmpeg, no reference) -> UNTESTED even if ceiling held.
     if (!ff.present && !Number.isFinite(refLufs)) verdict = ceilingVerdict === 'FAIL' ? 'FAIL' : 'UNTESTED';
 
     rows.push({
@@ -1611,27 +1324,8 @@ function main() {
   }
   recordClosedLoopOutputs(outputEntries);
 
-  // 1b. ADVERSARIAL TRUE-PEAK SWEEP (added 2026-10-18 after a demonstrated
-  // ceiling breach). The 30 s program fixtures above never stress the
-  // detector's step-transient response: a near-Nyquist alternating burst with
-  // a phase break drove the worklet output over the ceiling while every gate
-  // above stayed green.
-  // This sweep renders SHORT (8192-frame, gain never warms up: limiter-only
-  // regime, the worst case for peak protection) adversarial signals through
-  // the real worklet at unity gain and asserts the ffmpeg oracle true peak
-  // of the worklet's OUTPUT is <= the single -1 dBTP ceiling for EVERY
-  // signal. Members: the exact reported
-  // counterexample burst; near-Nyquist alternating bursts of several lengths
-  // (4/8/18/32/64) and amplitudes (0.5/0.8/1.0) with a mid-burst phase break;
-  // clean alternating bursts; isolated single-sample spikes; sine bursts at
-  // fnorm 0.4/0.45/0.48; a full-scale alternating pattern; a steady
-  // full-scale 11.025 kHz tone. The existing long fixtures are covered by the
-  // TRUE-PEAK section above (cited, not re-rendered).
-  // (Signal spec lives at module level as ADVERSARIAL_SWEEP so --self-test
-  // can inspect its shape; renders run here in main.)
   const advRows = [];
   for (const spec of ADVERSARIAL_SWEEP) {
-    // Bit-exact reproducibility: build twice, require identical bytes.
     const sigA = spec.build();
     const sigB = spec.build();
     if (sigA.length !== sigB.length) throw new Error(`HARNESS BROKEN: adversarial ${spec.name} rebuild length mismatch`);
@@ -1669,8 +1363,6 @@ function main() {
   const advUntested = advRows.filter((r) => r.verdict === 'UNTESTED').length;
   const advSummary = advFails > 0 ? 'FAIL' : (advUntested > 0 ? `${advUntested} UNTESTED` : 'PASS');
 
-  // 2. 44.1 kHz worklet coverage. Same meter + closed-loop assertions at
-  // 44100 Hz with the rate-correct processor (sampleRate stub = 44100).
   const rate441Rows = [];
   for (const f of files441) {
     const wavPath = path.join(FIXTURE_DIR, f.name);
@@ -1741,11 +1433,6 @@ function main() {
     }
     const cl = checkClosedLoop(oracleTail.integratedLufs, expectedLufs, settle.settled, settle.tailSeconds);
     const outPeakVerdict = peakVerdictDbTp(oracleOut.truePeakDbTp, CEILING_DBTP);
-    // Licensed scope correction (SPEC A1, docs/SPEC_COMFORT.md:132-135): the
-    // convergence verdict binds on steady programs only. Changing programs
-    // keep every measurement but enter no A1 verdict. The row verdict below
-    // therefore counts the A1 convergence half only for in-scope fixtures;
-    // the ceiling half (S5) still binds everywhere via the TRUE-PEAK section.
     const scope441 = closedLoopScope(key);
     let closedVerdict;
     let closedReason441 = cl.reason;
@@ -1797,17 +1484,6 @@ function main() {
   }
   recordClosedLoopOutputs(outputEntries);
 
-  // 3. COMFORT LEVELLING (acceptance clause 2: within-program levelling).
-  // Fixture comfort-dialogue carries the long-form profile (quiet dialogue
-  // against loud music/effects): INPUT spread (unprocessed program) vs OUTPUT
-  // spread (comfort chain). The levelling stage must shrink the loud:quiet
-  // spread by >= LEVEL_MIN_SPREAD_REDUCTION_DB (3 dB) AND raise the quiet
-  // passage's own loudness by >= LEVEL_MIN_QUIET_RISE_DB (3 dB) — the clause
-  // the gated-only design fails by construction. The settled tail must still
-  // converge to the -20 program target (slow loop measured from the levelled
-  // signal), and the true peak must respect the ceiling. Rendered with
-  // set-mode 'level' (same comfort chain in both modes; preserves the
-  // set-mode message path).
   function sectionRmsDb(outs, sr, t0, t1) {
     const i0 = Math.round(t0 * sr), i1 = Math.round(t1 * sr);
     let sum = 0, n = 0;
@@ -1824,10 +1500,8 @@ function main() {
     const levelKey = 'comfort-dialogue';
     const levelWav = path.join(FIXTURE_DIR, `${levelKey}.wav`);
     const levelPlanar = readWavFloat32Planar(levelWav).planar;
-    // Input spread measured on the UNPROCESSED program samples.
     const inSpread = sectionSpreadDb(levelPlanar, SR, 0, 10, 10, 20);
     const inQuietDb = sectionRmsDb(levelPlanar, SR, 10, 20);
-    // Level render (fresh processor, mode 'level' — same comfort chain).
     let outsL, internalsL, gainTraceL, normTraceL;
     const r = renderThroughWorklet(Proc48, levelPlanar[0], { mode: 'level' });
     outsL = [r.outL];
@@ -1849,7 +1523,6 @@ function main() {
     const baseRow = rows.find((rr) => rr.fixture === levelKey);
     const oracleIn = baseRow ? { integratedLufs: baseRow.oracleLufs, lraLu: baseRow.oracleLra, truePeakDbTp: baseRow.oracleTruePeakDbTp } : { integratedLufs: NaN, lraLu: NaN, truePeakDbTp: NaN };
     const oracleLevel = ff.present ? runOracle(levelOutPath) : { integratedLufs: NaN, lraLu: NaN, truePeakDbTp: NaN, command: 'n/a', exit: null, rawStderr: '' };
-    // Output spread + quiet rise measured on the actual output samples.
     const outSpread = sectionSpreadDb(outsL, SR, 0, 10, 10, 20);
     const outQuietDb = sectionRmsDb(outsL, SR, 10, 20);
     const spreadReduction = inSpread - outSpread;
@@ -1858,8 +1531,6 @@ function main() {
       && spreadReduction >= LEVEL_MIN_SPREAD_REDUCTION_DB && quietRise >= LEVEL_MIN_QUIET_RISE_DB;
     const hardClipL = countHardClips(outsL, CEILING_DBTP);
     const nanL = hasNaNOuts(outsL) || normTraceL.some((v) => !Number.isFinite(v)) || !Number.isFinite(internalsL.appliedGainDb);
-    // Target check: the settled tail of the LEVELLED program must converge to
-    // the -20 program target (slow loop measured from the levelled signal).
     const levelTailStart = Math.min(analyzeSettle(normTraceL).settleQuantum * BLOCK, outsL[0].length);
     const levelTail = outsL[0].subarray(levelTailStart);
     let levelTailLufs = NaN;
@@ -1913,9 +1584,6 @@ function main() {
   }
   recordClosedLoopOutputs(outputEntries);
 
-  // 4a. set-target-lufs: retarget to TARGET_PROBE_LUFS (-24) on sine-1khz-fs-20.
-  // The probe sits 4 LU off the -20 default, so a retarget that did nothing
-  // still sits at the default and FAILS.
   let targetRow = null;
   {
     const tKey = 'sine-1khz-fs-20';
@@ -1959,8 +1627,6 @@ function main() {
     const clT = checkClosedLoop(oracleTailT.integratedLufs, TARGET_PROBE_LUFS, settleT.settled, settleT.tailSeconds);
     let verdictT = clT.verdict;
     if (!ff.present && verdictT === 'FAIL') verdictT = 'UNTESTED';
-    // Guard: a retarget that did nothing would still sit at the -20 default,
-    // 4 LU off the probe.
     const stuckAt18 = checkClosedLoop(EFFECTIVE_TARGET, TARGET_PROBE_LUFS, true, 12);
     targetRow = {
       fixture: tKey,
@@ -1976,8 +1642,6 @@ function main() {
   }
   recordClosedLoopOutputs(outputEntries);
 
-  // 4b. reset-meter: after a normal render, reset must clear warm +
-  // integrated and re-acquire from scratch on the SAME processor.
   let resetRow = null;
   {
     const rKey = 'sine-1khz-fs-20';
@@ -2011,11 +1675,6 @@ function main() {
     const preTel = { warm: procR.telemetry.warm, integratedLufs: procR.telemetry.integratedLufs, appliedGainDb: procR.telemetry.appliedGainDb, totalFrames: procR.totalFrames };
     const preInternal = { warm: procR.warm, integratedLufs: procR.integratedLufs };
     procR.port.onmessage({ data: { type: 'reset-meter' } });
-    // Immediate audit BEFORE any further input: every per-block history must
-    // already read cleared (a reset that only clears on the next process()
-    // still leaks stale detector history into that quantum's decisions).
-    // Telemetry now also clears immediately; the silent quantum below proves
-    // the documented surface on silence, not the clearing itself.
     const maxAbs2d = (arrs) => { let m = 0; for (const a of arrs) for (let i = 0; i < a.length; i++) { const v = Math.abs(a[i]); if (v > m) m = v; } return m; };
     const allOnes = (a) => { for (let i = 0; i < a.length; i++) if (a[i] !== 1) return false; return true; };
     const immInterpMax = maxAbs2d(procR.interpZ);
@@ -2027,10 +1686,6 @@ function main() {
     const immTelOk = !Number.isFinite(procR.telemetry.integratedLufs) && procR.telemetry.truePeakDb === -Infinity && procR.telemetry.warm === false;
     const immOk = immInterpMax === 0 && immInterpZiOk && immPRingOk && immBlocksOk && immDelayOk && immTargetsOk && immTelOk
       && procR.totalFrames === 0 && procR.warm === false && !Number.isFinite(procR.integratedLufs) && procR.truePeakTrack === 0;
-    // Post-reset silence on the documented surface: one silent quantum must
-    // report -Infinity true peak, emit exact zeros, and schedule zero
-    // limiter engagements (stale interpZ otherwise interpolates the old
-    // loud content into a phantom peak and phantom gain cuts).
     const silence = rPlanar.map(() => new Float32Array(BLOCK));
     const silRes = driveProc(procR, silence);
     let silOutZero = true;
@@ -2041,16 +1696,9 @@ function main() {
     for (let i = 0; i < procR.limiterTargets.length; i++) if (procR.limiterTargets[i] !== 1) silEngagements++;
     const silPeakMinusInf = postTel.truePeakDb === -Infinity && postInternal.truePeakTrack === 0;
     const silZeroEng = silEngagements === 0 && procR.currentLimiterGain === 1;
-    // Re-acquire: feed 5 s of the same tone through the SAME (reset) proc.
     const snip = rPlanar.map((ch) => ch.subarray(0, SR * 5));
     driveProc(procR, snip);
     const reacqTel = { warm: procR.telemetry.warm, integratedLufs: procR.telemetry.integratedLufs, appliedGainDb: procR.telemetry.appliedGainDb, totalFrames: procR.totalFrames };
-    // Equivalence: reset again to realign to zero frames, then a fresh
-    // instance with identical settings driven with the same subsequent
-    // quiet tone must produce bit-identical outputs (and identical
-    // telemetry). Quiet 1 kHz exposes the stale-history limiter ducking
-    // (-3.9 dB measured pre-fix on following quiet content); the silence
-    // equivalence above covers the phantom-peak half.
     procR.port.onmessage({ data: { type: 'reset-meter' } });
     const procF = makeProc(Proc48, {});
     const settingsKept = procR.targetLufs === procF.targetLufs && procR.trimTargetDb === procF.trimTargetDb
@@ -2077,8 +1725,6 @@ function main() {
       && procR.telemetry.appliedGainDb === procF.telemetry.appliedGainDb
       && procR.telemetry.truePeakDb === procF.telemetry.truePeakDb
       && procR.telemetry.warm === procF.telemetry.warm;
-    // 44.1 kHz equivalence (same defect measured -3.91 dB at 44.1 kHz):
-    // short loud pre-roll to dirty history, reset, then quiet tone vs fresh.
     let equiv441Ident = false;
     let equiv441MaxDiff = NaN;
     try {
@@ -2150,21 +1796,6 @@ function main() {
     };
   }
 
-  // 5. USER-TRIM (set-gain-db slider, -12..+12 dB): the slider is an IMMEDIATE
-  // output trim, separate from the program target. It never moves targetLufs
-  // and never perturbs the integrated measurement; it ramps per sample within
-  // one render quantum (no 128-frame step buzz) and the limiter still holds
-  // the ceiling because the detector is scaled by the trim. Every render to
-  // date used trim 0, which is blind to a double application (trim folded
-  // into the target AND multiplied again in the output chain: at trim 0 both
-  // are invisible). These rows render at the slider's real settings and
-  // assert, per row: (a) the settled tail lands on target + trim within
-  // CLOSED_LOOP_TOL_LU (the trim delivers end-to-end); (b) the trim shifts the
-  // output by exactly the trim amount vs the trim-0 render of the same
-  // fixture (a doubled trim would read 2x and FAIL); (c) the integrated
-  // measurement and targetLufs are unchanged vs trim 0 (the trim is not a
-  // retarget). Fixture per row chosen so the slow-loop requirement sits
-  // inside the worklet clamp.
   const GAIN_ROWS_SPEC = [
     { gainDb: 0, fixture: 'sine-1khz-fs-20' }, // trim 0, expected tail -20
     { gainDb: 6, fixture: 'sine-1khz-fs-20' }, // trim +6, expected tail -14
@@ -2197,12 +1828,9 @@ function main() {
       gainTrace = r.gainTrace;
       normTrace = r.normTrace;
     }
-    // Message wiring without rendering: the trim arms trimTargetDb and leaves
-    // targetLufs at the default (a slider-wired-to-target regression fails here).
     const probe = makeProc(Proc48, { gainDb: spec.gainDb });
     const targetOk = probe.targetLufs === wc.targetDefault;
     const trimArmed = probe.trimTargetDb === spec.gainDb;
-    // Integrated measurement unchanged vs the trim-0 render of the same fixture.
     const integratedTrim = internals.processorLufsProgram;
     const integratedRef = baseRow ? baseRow.processorLufs : NaN;
     const integratedDelta = (Number.isFinite(integratedTrim) && Number.isFinite(integratedRef)) ? integratedTrim - integratedRef : NaN;
@@ -2245,10 +1873,7 @@ function main() {
     const noOracle = { command: 'n/a', exit: null, rawStderr: '', integratedLufs: NaN, lraLu: NaN, truePeakDbTp: NaN };
     const oracleTail = (ff.present && tailPath) ? runOracle(tailPath) : { ...noOracle };
     const oracleOut = ff.present ? runOracle(gPath) : { ...noOracle };
-    // (a) Trim delivers: settled tail lands on target + trim.
     const cl = checkClosedLoop(oracleTail.integratedLufs, expectedTail, settle.settled, settle.tailSeconds);
-    // (b) Exactly once: tail-RMS shift vs the trim-0 render of the same
-    // fixture equals the trim (a doubled trim reads 2x and FAILS).
     let tailShiftDb = NaN;
     let shiftOk = false;
     if (baseRow && baseRow.closedLoop && Number.isFinite(baseRow.closedLoop.settleFromSeconds)) {
@@ -2264,21 +1889,6 @@ function main() {
     }
     let verdict = 'PASS';
     let reason = '';
-    // SCOPE CORRECTION (owner-authorized, this release): the settle-based
-    // closed-loop tail check is OUT OF SCOPE for the sparse gated-silence
-    // fixture (5 s loud / 40 s silence / 5 s loud). Its applied-gain trace can
-    // never settle over a final 5 s window by construction — the second loud
-    // return IS the last 5 s — so checkClosedLoop is UNTESTED for it
-    // ("applied gain did not settle"), not FAIL: pre-existing, identical in the
-    // clean-HEAD baseline and the M3 run (gainRows[2] in
-    // qa/loudness-verify.json). Same class as the CHANGING_PROGRAMS scope
-    // correction at the top of this file: A SCOPE CORRECTION, NOT A TOLERANCE
-    // CHANGE — no A1 settle verdict is entered for a fixture the convergence
-    // gate was never designed for. The row's verdict therefore binds the
-    // assertions that ARE computable on it — targetOk, trimArmed, integratedOk,
-    // shiftOk — all of which can still FAIL (a broken or doubled trim trips
-    // shiftOk/integratedOk; see the negative control in the release report),
-    // and the skipped cl verdict is recorded as evidence, never discarded.
     const settleOutOfScope = spec.fixture === 'gated-silence';
     if (!targetOk || !trimArmed) {
       verdict = 'FAIL';
@@ -2293,9 +1903,6 @@ function main() {
       verdict = 'FAIL';
       reason = `output shift ${fmt(tailShiftDb)} dB != trim ${spec.gainDb} dB (limit 0.75 dB — a doubled trim reads 2x)`;
     }
-    // Loudest legitimate setting (+12): the output true peak must still
-    // respect the ceiling and the hard-clip backstop must stay at 0. The trim
-    // is covered by the detector scaling, so the limiter holds.
     let peakTp = Number.isFinite(oracleOut.truePeakDbTp) ? oracleOut.truePeakDbTp : NaN;
     let peakVerdict = null;
     let hardClipCount = null;
@@ -2364,14 +1971,6 @@ function main() {
   const gainUntested = gainRows.filter((g) => g.verdict === 'UNTESTED').length;
   const gainSummary = gainFails > 0 ? 'FAIL' : (gainUntested > 0 ? `${gainUntested} UNTESTED` : 'PASS');
 
-  // 6. COMFORT ACCEPTANCE (the five pre-committed clauses, at 48 and 44.1 kHz).
-  // Uses renders already on disk (rows/rate441Rows/levelRow) plus small
-  // dedicated renders (trim immediacy at both rates — sample comparisons,
-  // immediacy at both rates — sample comparisons, no oracle needed).
-  // Outcome bound (EBU R 128 s4, no dialogue anchor needed): LDR proxy is the
-  // oracle LRA plus the loud:quiet section spread; fidelity caveat recorded in
-  // the report (a dialogue-free extension cannot reproduce dialogue LDR —
-  // see docs/RESEARCH_COMFORT_NORMALIZER.md §2.5 note).
   function comfortSectionRmsDb(outs, sr, t0, t1) {
     const i0 = Math.round(t0 * sr), i1 = Math.round(t1 * sr);
     let sum = 0, n = 0;
@@ -2394,13 +1993,6 @@ function main() {
     }
     return mx;
   }
-  // Trim immediacy at one rate: settle on a null-band tone, flip trim 0 -> +6,
-  // and prove the output moves by exactly the trim — with the delay-line
-  // topology (trim written INTO the line before the detector, §1.4). A trim
-  // change takes effect after the 5 ms lookahead flushes: the switch quantum
-  // itself still carries old-trim samples (|d| <= 0.5 dB — a read-side trim
-  // would already show +6 here), and the full +6 lands a few quanta later.
-  // The target and the integrated measurement must not move at all.
   function trimImmediacy(ProcHere, srHere, rateTag) {
     const N = srHere * 20;
     const x = new Float32Array(N);
@@ -2441,8 +2033,6 @@ function main() {
   const comfortCheck = (clause, fixture, rateTag, measured, threshold, verdict, note) => {
     comfortRows.push({ clause, fixture, rate: rateTag, measured, threshold, verdict, note: note || '' });
   };
-  // Clause 1: cross-program consistency — quiet (~-30) and loud (~-10) each
-  // land within +-0.5 LU of -20 at their settled tails, at both rates.
   for (const fx of ['comfort-quiet', 'comfort-loud']) {
     const row48 = rows.find((r) => r.fixture === fx);
     const row441 = rate441Rows.find((r) => r.fixture === `${fx}-44100`);
@@ -2457,26 +2047,6 @@ function main() {
     evalTail(row48, '48000');
     evalTail(row441, '44100');
   }
-  // Clause 2: the dead-band (EBU R 128 s4 clause k via loudnorm INNER_FRAME).
-  // Two dedicated 60 s fixtures (0-15 s loud, 15-30 s quiet, 30-60 s loud
-  // again — the 30 s stable tail settles the slow gain like the other
-  // comfort fixtures). The 3 s ST window settles mid-section, so loud is
-  // read at 32.5-37.5 s and quiet at 22.5-27.5 s, both settled. 48 kHz reuses
-  // the closed-loop rows' output WAVs; 44.1 kHz reads its own rate441 output
-  // WAVs.
-  //   comfort-pair12  (12.04 dB sections): the gate must FIRE — spread
-  //     reduction >= 4 dB and quiet-section rise >= 3 dB.
-  //   comfort-varying4 (4.0 dB sections, inLRA ~4.0 — a varying program that
-  //     engages the processor, replacing the constant-tone control whose zero
-  //     LRA stays zero under any compression and therefore cannot fail):
-  //     the gate must NOT fire — spread reduction <= 1.0 dB and the quiet
-  //     section rises no differently from the loud section (differential rise
-  //     <= 1.0 dB: the slow loop lifts both toward the program target — that
-  //     is cross-program consistency, not adaptation).
-  // Residual spread on both stays >= 3.0 LU (OUR no-flatten floor: no
-  // published residual-LRA floor exists, §2.4; the standard bounds the
-  // adaptation at LDR <= 5 LU, and the +6 dB published boost cap lands a
-  // 12 dB pair near 6 rather than exactly 5 — documented in the fixture).
   const deadbandWindows = [
     ['comfort-pair12', '48000', SR, 32.5, 37.5, 22.5, 27.5],
     ['comfort-pair12', '44100', SR441, 32.5, 37.5, 22.5, 27.5],
@@ -2501,10 +2071,6 @@ function main() {
         comfortCheck('deadband-quiet-rise', fxD, tagD, riseD, '>= 3 dB (must FIRE)', riseD >= 3 ? 'PASS' : 'FAIL', `quiet ${fmt(inQuiet)} -> ${fmt(outQuiet)} dB`);
       } else {
         comfortCheck('deadband-no-reduction', fxD, tagD, redD, '<= 1.0 dB (must NOT fire)', redD <= 1.0 ? 'PASS' : 'FAIL', `in ${fmt(inSpreadD)} out ${fmt(outSpreadD)} dB`);
-        // Differential rise: the slow loop lifts BOTH sections toward the
-        // program target (a -24 LUFS program must be lifted — that is the
-        // cross-program clause, not adaptation); the leveller must treat them
-        // identically, so the section-to-section difference must not move.
         const diffRiseD = riseD - riseLoudD;
         comfortCheck('deadband-quiet-untouched', fxD, tagD, diffRiseD, '|dRise| <= 1.0 dB (must NOT fire)', Math.abs(diffRiseD) <= 1.0 ? 'PASS' : 'FAIL', `quiet rise ${fmt(riseD)} vs loud rise ${fmt(riseLoudD)} dB`);
       }
@@ -2513,15 +2079,6 @@ function main() {
       comfortCheck(fxD === 'comfort-pair12' ? 'deadband-spread-reduction' : 'deadband-no-reduction', fxD, tagD, NaN, 'n/a', 'FAIL', `readback failed: ${e.message}`);
     }
   }
-  // Dead-band LRA evidence at both rates — this is the 44.1 kHz LRA evidence
-  // the comfort section was missing. Oracle LRA on a settled 20-45 s slice of
-  // input and output (15-30 s quiet + 30-45 s loud, both settled, AGC engaged
-  // throughout): no acquisition transient (which full-file LRA would misread
-  // as range) and no stable-tail dilution (which settled-tail LRA would
-  // misread as compliance). varying4 (NOT-fire): |slice LRA out - in| <=
-  // 1.0 LU (OURS — replaces the constant-tone control, whose zero LRA cannot
-  // fail). pair12 (FIRE): input-minus-output reduction >= 3 LU with residual
-  // slice LRA >= 3.0 LU (OURS floor).
   for (const fxL of ['comfort-varying4', 'comfort-pair12']) {
     for (const [tagL, srHere] of [['48000', SR], ['44100', SR441]]) {
       const suffixL = tagL === '48000' ? '' : '-44100';
@@ -2568,12 +2125,6 @@ function main() {
     }
   }
   recordClosedLoopOutputs(outputEntries);
-  // Supporting outcome on the extreme short-form profile (26 dB masters,
-  // 5 s sections + hot Nyquist bursts): spread reduction (supporting) and the
-  // no-flatten floor, at both rates, input vs output WAVs. The quiet section
-  // gates out of the gated mean like dialogue, so the +6 dB published boost
-  // cap binds the lift and the residual stays large — reduction, not
-  // flattening, is the assertion.
   for (const [fxS, tagS, srHere, w0a, w0b, w1a, w1b] of [
     ['comfort-shortform', '48000', SR, 0, 5, 5, 10],
     ['comfort-shortform', '44100', SR441, 0, 5, 5, 10],
@@ -2591,15 +2142,6 @@ function main() {
       comfortCheck('shortform-spread-reduction', fxS, tagS, NaN, 'n/a', 'FAIL', `readback failed: ${e.message}`);
     }
   }
-  // Clause 3: no maximizer — sustained output within target + 0.5 LU, and
-  // the maximum 3 s short-term window of the full output stays within
-  // program + 5.5 LU. That is EBU R 128 s1's Maximum Short-term Loudness
-  // (-18.0 LUFS, +5.0 LU relative to the -23 LUFS target) restated relative
-  // to this chain's -20 program target — a published bound, and it is named
-  // for what it measures (maximum short-term), never "LDR": §2.5's quantity
-  // is programme-to-dialogue loudness, which a dialogue-free chain cannot
-  // compute. LRA is reported, never gated, here: lifting the quiet passage
-  // is the intended effect, and LRA is not LDR.
   for (const fx of ['comfort-dialogue', 'comfort-shortform', 'comfort-music', 'comfort-pair12', 'comfort-varying4']) {
     for (const [rowSet, tag, srHere] of [[rows, '48000', SR], [rate441Rows, '44100', SR441]]) {
       const suffix = tag === '48000' ? '' : '-44100';
@@ -2622,10 +2164,6 @@ function main() {
       comfortCheck('max-short-term', fx, tag, stOverC, '<= 5.5 above whole (R128 s1)', (Number.isFinite(stOverC) && Number.isFinite(wholeOutC)) ? (stOverC <= 5.5 ? 'PASS' : 'FAIL') : 'UNTESTED', `max 3 s ${fmt(stMaxDbC)} dB vs whole-output ${fmt(wholeOutC)} LUFS`);
     }
   }
-  // Clause 4: slider instantaneity at both rates (delay-line topology: the
-  // switch quantum still carries old-trim samples, the full +6 lands after
-  // the lookahead flush; a read-side trim would already show +6 in the
-  // switch quantum and would punch the ceiling — see the trim-step rows).
   for (const [ProcHere, srHere, tag] of [[Proc48, SR, '48000'], [Proc441, SR441, '44100']]) {
     const ti = trimImmediacy(ProcHere, srHere, tag);
     const v = ti.verdict;
@@ -2634,11 +2172,6 @@ function main() {
     comfortRows.push({ clause: 'slider-target-untouched', fixture: 'trim-probe', rate: tag, measured: ti.tgtAfter, threshold: `stays ${wc.targetDefault}`, verdict: ti.targetOk ? 'PASS' : 'FAIL', note: '' });
     comfortRows.push({ clause: 'slider-measure-untouched', fixture: 'trim-probe', rate: tag, measured: ti.intAfter - ti.intBefore, threshold: '|delta| <= 0.05 LU', verdict: ti.intOk ? 'PASS' : 'FAIL', note: '' });
   }
-  // Clause 4b (F1 baked in): the trim-step reproducer — silence, quantum 4
-  // carries a 64-sample ±0.9 alternating burst, quantum 5 sends
-  // set-gain-db:12 — at both rates under the single ceiling. The read-side
-  // topology measured +1.6 dBTP with exact rail hits; the write-side topology
-  // must hold the ceiling with zero rail hits.
   for (const [ProcHere, srHere, tag] of [[Proc48, SR, '48000'], [Proc441, SR441, '44100']]) {
     {
       const ceilDb = CEILING_DBTP;
@@ -2677,13 +2210,6 @@ function main() {
       comfortCheck('trim-step-ceiling', 'burst-then-trim-12', tag, tpT, `<= ${ceilDb} dBTP + 0 rails`, vT, `oracle ${fmt(tpT)} dBTP, rail hits ${railsT}`);
     }
   }
-  // Clause 4b (SPEC S1 + A4, the control the burst-then-trim case cannot
-  // supply): +12 is armed BEFORE the burst, so the burst samples inside the
-  // 5 ms lookahead are scaled by +12 when the write-side detector measures
-  // them — the trim is inside the detector's view. Same 64-sample ±0.9
-  // burst placement (samples 512–575), both rates, single ceiling: the oracle
-  // must read <= -1 dBTP with zero hard clips.
-  // The pre-existing burst-then-trim rows above are untouched.
   for (const [ProcHere, srHere, tag] of [[Proc48, SR, '48000'], [Proc441, SR441, '44100']]) {
     {
       const ceilDb = CEILING_DBTP;
@@ -2721,9 +2247,6 @@ function main() {
     }
   }
   recordClosedLoopOutputs(outputEntries);
-  // Clause 5: ceiling intact on comfort programs at both rates (single -1
-  // dBTP ceiling), hard-clip 0. 48 kHz reuses rows; 44.1 kHz reuses
-  // rate441Rows.
   for (const fx of ['comfort-quiet', 'comfort-loud', 'comfort-dialogue', 'comfort-shortform', 'comfort-music', 'comfort-pair12', 'comfort-varying4']) {
     const row = rows.find((r) => r.fixture === fx);
     const tpN = row ? row.closedLoop.outputFullPeakDbTp : NaN;
@@ -2736,25 +2259,6 @@ function main() {
   const comfortUntested = comfortRows.filter((r) => r.verdict === 'UNTESTED').length;
   const comfortSummary = comfortFails > 0 ? 'FAIL' : (comfortUntested > 0 ? `${comfortUntested} UNTESTED` : 'PASS');
 
-  // 6c. STEP RECOVERY (SPEC A5 + H2 + S4: 60 s quiet program followed by
-  // 30 s ~10 LU louder). Licensed addition: docs/SPEC_COMFORT.md A5 requires
-  // it, and no fixture or row in this harness has ever exercised it.
-  // Method: oracle short-term loudness of the worklet OUTPUT, sampled each
-  // second after the step as the gated integrated loudness of the 3 s window
-  // ending at that second — a genuine oracle measurement at every sample
-  // point, at both rates (comfort-step + comfort-step-44100).
-  // FIRE case: comfort-step — the chain must engage and return ST to within
-  // +-1.0 LU of target within 10 s (H2, a house bound). A chain that ignored
-  // the step still sits ~+10 LU out at t=70 and FAILS; the early samples
-  // (t=61..63) also FAIL the same gate on the passing tree, proving it bites.
-  // NOT case: the pre-step steady program must show no pumping — oracle ST at
-  // 60 s vs 55 s within 0.5 LU (SPEC A5 control text). Output-ST stability is
-  // the external observable of gain stability; no verdict here is conditioned
-  // on telemetry the artifact itself reports.
-  // AGC responsibility: reported descriptively (max AGC excursion after the
-  // step from the documented gain traces: appliedGainDb minus normGainDb).
-  // The AGC and the slow loop act together after a step, and this control
-  // does not isolate causation between them — stated plainly, not asserted.
   const STEP_FIRE_TOL_LU = 1.0;
   const STEP_PUMP_TOL_LU = 0.5;
   const stepRows = [];
@@ -2763,8 +2267,6 @@ function main() {
     for (const [fxStep, tagStep, srHere, ProcHere] of [['comfort-step', '48000', SR, Proc48], ['comfort-step-44100', '44100', SR441, Proc441]]) {
       try {
         const stepOut = readWavFloat32Planar(path.join(OUT_DIR, `${fxStep}.out.wav`)).planar;
-        // Instrumented render on the real path for the descriptive AGC
-        // excursion (reported, never gated).
         const stepPlanar = readWavFloat32Planar(path.join(FIXTURE_DIR, `${fxStep}.wav`)).planar;
         const inst = renderThroughWorkletChannels(ProcHere, stepPlanar, {});
         const q0 = Math.round((60 * srHere) / BLOCK);
@@ -2837,45 +2339,6 @@ function main() {
   const stepUntested = stepRows.filter((r) => r.verdict === 'UNTESTED').length;
   const stepSummary = stepFails > 0 ? 'FAIL' : (stepUntested > 0 ? `${stepUntested} UNTESTED` : 'PASS');
 
-  // 6d. ONSET (release 5.4.2, house H5/A6: cold-start onset convergence).
-  // Before the first gated levelled block the slow loop has no measurement;
-  // the onset guard drives a cut-only pre-cut from a ~50 ms levelled-power
-  // probe (FAST_ONSET_SECONDS 0.05, was ~100 ms in 5.4.1) while cold, slewed
-  // with a fast ~0.08 s log-domain TC (was ~0.12 s), then hands off to the
-  // slow loop from the current gain.
-  // Method: fresh processor per fixture, feed the onset signal in 128-frame
-  // quanta (same silent node:vm pattern as every other render), sample
-  // proc.telemetry.appliedGainDb per quantum (the documented surface).
-  // (a) loud onset (comfort-loud at 48 kHz + comfort-loud-44100 at 44.1 kHz):
-  //     appliedGainDb <= -6.0 dB by t=0.5 s (original bound, restored
-  //     2026-10-21 after a 0.3 s tightening proved unusable — see (c));
-  //     <= -8.0 dB by t=1.0 s; settled
-  //     tail within +-1.0 LU of -20 (oracle on the settled-tail slice, same
-  //     settle machinery as the closed loop); never deeper than
-  //     (settled gain - 1.5 dB).
-  //     Measured offline 2026-10-21 (48 kHz): -9.90 dB at 0.5 s, -9.96 dB
-  //     at 1.0 s, time to -6 dB 0.123 s, to -8 dB 0.179 s, settled -10.00
-  //     (44.1 kHz: -9.90 at 0.5 s, -9.96 at 1.0 s, t6 0.125 s, t8 0.180 s,
-  //     settled -10.01).
-  // (b) quiet-onset control (comfort-quiet): |appliedGainDb| <= 0.1 dB for
-  //     the pre-measurement window (guard adds no boost), then the standard
-  //     path proceeds (settles, lifting toward the target).
-  //     Measured offline 2026-10-21: max |applied| 0.000 dB over the first
-  //     0.4 s, settled +10.00 dB.
-  // (c) negative control (REQUIRED): the same (a) measurement against a
-  //     guard-disabled variant of the CURRENT worklet source must FAIL the
-  //     0.5 s bound. The variant sets FAST_ONSET_SECONDS to 2 so the fast
-  //     probe never fills during the 1 s render and the cold branch never
-  //     cuts: it must read above -6.0 dB at 0.5 s. A `git show HEAD` comparison is no longer
-  //     usable — HEAD (5.4.1) already contains the ~100 ms onset guard and
-  //     reads -8.11 dB at 0.3 s (-9.30 dB at 0.5 s), so it PASSES the bound
-  //     and the control could never bite. The variant is synthesized at
-  //     runtime from WORKLET_PATH; the replacement must apply or the
-  //     harness fails loudly.
-  // (d) no-NaN on every onset trace + digital silence renders bit-zero.
-  // SEE ALSO: qa/feed-transition-qa.cjs (reset-program F1-F6 + A6-INFO cold
-  // onset probes) and qa/program-boundary-qa.cjs (page-hook generation
-  // handoff, 8/8 rows).
   const ONSET_BOUND_05_DB = -6.0;
   const ONSET_BOUND_10_DB = -8.0;
   const ONSET_QUIET_TOL_DB = 0.1;
@@ -2946,18 +2409,9 @@ function main() {
         onsetRows.push({ clause: 'onset-loud', fixture: fixtureName, rate: tag, verdict: 'UNTESTED', note: 'ffmpeg absent: tail oracle unavailable' });
       }
     }
-    // (b) quiet-onset control: no boost in the first 0.5 s, then proceeds.
     {
       const mono = readWavFloat32Planar(path.join(FIXTURE_DIR, 'comfort-quiet.wav')).planar[0];
       const { outs, gainTrace } = renderThroughWorkletChannels(Proc48, [mono], {});
-      // Guard-domain window (MEASUREMENT-FORCED, 2026-10-19: the brief's 0.5 s
-      // window is already standard-path territory — the first gated block
-      // lands at 0.4 s (BS.1770 floor) and the slow loop legitimately starts
-      // lifting this +10 dB-needy program from the next quantum, reaching
-      // +0.32 dB by 0.5 s identically pre-change, so no 0.5 s bound can
-      // isolate the guard. The guard only exists pre-measurement; its no-boost
-      // control binds the pre-measurement quanta at the brief's +-0.1 dB, and
-      // the lift thereafter is asserted as the standard path proceeding).
       const ONSET_QUIET_WINDOW_SECONDS = 0.4;
       const firstN = Math.min(gainTrace.length, Math.floor((ONSET_QUIET_WINDOW_SECONDS * SR) / BLOCK));
       let maxAbs = 0;
@@ -2978,12 +2432,6 @@ function main() {
         nanFree, verdict,
       });
     }
-    // (c) negative control: a guard-disabled variant of the CURRENT worklet
-    // must FAIL the 0.5 s bound on the same measurement. The variant sets
-    // FAST_ONSET_SECONDS to 2 (a 2 s / 96000-sample window: allocates fine
-    // but never fills during the 1 s A6 render, so the cold probe never
-    // cuts; the slow loop's 0.6 s down-slew only reaches ~-1.5 dB at 0.5 s);
-    // `git show HEAD` is unusable (5.4.1 already guards).
     {
       try {
         const liveSource = fs.readFileSync(WORKLET_PATH, 'utf8');
@@ -3023,7 +2471,6 @@ function main() {
         onsetRows.push({ clause: 'onset-negative-control', fixture: 'comfort-loud.wav', rate: '48000', verdict: 'FAIL', note: onsetNeg.note });
       }
     }
-    // (d) bit-silence: digital silence renders bit-zero; traces carry no NaN.
     {
       const zeros = new Float32Array(SR);
       const { outs, gainTrace } = renderThroughWorkletChannels(Proc48, [zeros], {});
@@ -3046,7 +2493,6 @@ function main() {
   const onsetUntested = onsetRows.filter((r) => r.verdict === 'UNTESTED').length;
   const onsetSummary = onsetFails > 0 ? 'FAIL' : (onsetUntested > 0 ? `${onsetUntested} UNTESTED` : 'PASS');
 
-// 5. Report table.
   console.log('');
   console.log('fixture              | oracle LUFS | processor LUFS |  delta | oracle TP | processor TP | verdict');
   console.log('---------------------|-------------|----------------|--------|-----------|--------------|--------');
@@ -3087,22 +2533,12 @@ function main() {
       console.log(`NOTE: ${r.fixture} — required gain ${fmt(c.requiredGainDb)} dB exceeds the clamp; ${c.boundNote}, expected ${fmt(c.expectedLufs)} LUFS.`);
     }
   }
-  // Licensed scope correction (SPEC A1): the CLOSED-LOOP convergence summary
-  // counts steady-program fixtures only. Changing fixtures are still rendered,
-  // oracle-measured and printed above (no row disappears); their convergence
-  // cell reads UNTESTED with the scope reason instead of an A1 verdict.
   const clScoped = rows.filter((r) => r.closedLoop.convergenceInScope);
   const clFails = clScoped.filter((r) => r.closedLoop.verdict === 'FAIL').length;
   const clUntested = clScoped.filter((r) => r.closedLoop.verdict === 'UNTESTED').length;
   const clSummary = clFails > 0 ? 'FAIL' : (clUntested > 0 ? `${clUntested} UNTESTED` : 'PASS');
   console.log(`CLOSED-LOOP: ${clSummary} (A1 scope: ${clScoped.length} steady fixtures; ${rows.length - clScoped.length} changing fixtures scoped to A2/A3/A5)`);
 
-  // TRUE-PEAK (Part 2): the processor's OUTPUT measured by two independent
-  // detectors — ffmpeg's ebur128 true-peak (the stricter reading: this
-  // project measured a 0.066 dB divergence on transient content, so the
-  // ffmpeg reading is the one that must clear the ceiling) and the
-  // harness's own 4x cubic-Lagrange estimator. PASS requires the ffmpeg
-  // output reading at/below the -1 dBTP ceiling.
   console.log('');
   console.log('TRUE-PEAK (processor OUTPUT measured by two independent detectors; ffmpeg is binding):');
   console.log('fixture              | input TP ffmpeg | output TP ffmpeg | output TP harness | verdict');
@@ -3118,7 +2554,6 @@ function main() {
   const tpSummary = tpFails > 0 ? 'FAIL' : (tpUntested > 0 ? `${tpUntested} UNTESTED` : 'PASS');
   console.log(`TRUE-PEAK: ${tpSummary}`);
 
-  // ADVERSARIAL SWEEP table: short-burst limiter-only regime, single ceiling.
   console.log('');
   console.log('ADVERSARIAL SWEEP (short-burst worklet OUTPUT true peak by the ffmpeg oracle; ffmpeg is binding):');
   console.log('signal               | out TP | verdict');
@@ -3130,14 +2565,6 @@ function main() {
   }
   console.log(`ADVERSARIAL: ${advSummary}`);
 
-  // WORST-CASE gate (rewritten 2026-10-18): the ceiling claim is owned by the
-  // ADVERSARIAL sweep, not by any single long fixture. The old gate named the
-  // 11.025 kHz tone fixture ("inter-sample-peak", now honestly renamed
-  // high-tone-11k) as the worst case — wrong: that tone is fnorm 0.23, while
-  // the breach came from near-Nyquist phase-break bursts. This gate reports
-  // the sweep's hottest output plus the high-tone-11k program row for
-  // continuity. Both detectors are reported so the margin's
-  // effect stays visible next to the previous-margin (0.6 dB) numbers above.
   let worstRow = null;
   {
     const advWorst = advRows.reduce((a, b) => (a.outputPeak > b.outputPeak ? a : b), advRows[0]);
@@ -3156,9 +2583,6 @@ function main() {
   }
   const worstSummary = !worstRow ? 'UNTESTED' : worstRow.verdict;
 
-  // HARD-CLIP BACKSTOP (Part 3): the worklet's final sample hard-clip to the
-  // ceiling must be unreachable in normal operation. Counts are exact
-  // rail hits (±ceiling) across every output channel of every fixture.
   console.log('');
   console.log('HARD-CLIP BACKSTOP (exact rail hits across every output channel; must be 0):');
   console.log('fixture              | ch | hard-clip count | verdict');
@@ -3182,10 +2606,6 @@ function main() {
   }
   console.log(`HARD-CLIP: ${hardClipSummary}`);
 
-  // MULTICHANNEL + MONO WORKLET COVERAGE (Part 4): the worklet's own channel
-  // handling, exercised at 1 channel and at 6 channels with load-bearing
-  // weights, asserted against the ffmpeg oracle within ±0.1 LU, plus the
-  // ceiling on the 6-channel path.
   console.log('');
   console.log('MULTICHANNEL/MONO WORKLET COVERAGE (worklet integrated LUFS vs ffmpeg oracle, ±0.1 LU):');
   console.log('fixture              | layout                                                            | ch | worklet LUFS | oracle LUFS |  delta | verdict');
@@ -3201,7 +2621,6 @@ function main() {
   const multiSummary = multiFails > 0 ? 'FAIL' : (multiUntested > 0 ? `${multiUntested} UNTESTED` : (multiRows.length > 0 ? 'PASS' : 'UNTESTED'));
   console.log(`MULTICHANNEL/MONO: ${multiSummary}`);
 
-  // 44.1 kHz table: worklet vs oracle at 44100, closed-loop convergence.
   console.log('');
   console.log('44.1 kHz WORKLET COVERAGE (processor at 44100 Hz vs ffmpeg oracle, ±0.1 LU; closed loop to -20):');
   console.log('fixture                   | 48k worklet | 44.1k worklet | 44.1k oracle |  delta | tail 44.1k | verdict');
@@ -3216,7 +2635,6 @@ function main() {
   const r441Summary = r441Fails > 0 ? 'FAIL' : (r441Untested > 0 ? `${r441Untested} UNTESTED` : 'PASS');
   console.log(`44.1kHz: ${r441Summary} (A1 convergence scoped to steady fixtures; changing fixtures judged on meter accuracy + A2/A3/A5)`);
 
-  // LEVEL mode table.
   console.log('');
   console.log('COMFORT LEVELLING (set-mode level on comfort-dialogue; dead-band AGC with ±2.5 LU band and +6 dB boost cap, input vs output):');
   if (levelRow) {
@@ -3228,7 +2646,6 @@ function main() {
     console.log(`LEVEL: ${levelRow.verdict}`);
   }
   const levelSummary = levelRow ? levelRow.verdict : 'UNTESTED';
-  // MESSAGES table: set-target-lufs + reset-meter.
   console.log('');
   console.log('MESSAGES (set-target-lufs + reset-meter):');
   if (targetRow) {
@@ -3242,29 +2659,9 @@ function main() {
   const msgUntested = [targetRow, resetRow].filter((r) => !r || r.verdict === 'UNTESTED').length;
   const msgSummary = msgFails > 0 ? 'FAIL' : (msgUntested > 0 ? 'UNTESTED' : 'PASS');
   console.log(`MESSAGES: ${msgSummary}`);
-  // TRANSITION: switching normalize->level clears ONLY the
-  // loudness measurement; applied gain, delay line and detector histories
-  // carry through continuously. Same 60 s mono 1 kHz 0.04-amp tone at 48 and
-  // 44.1 kHz (null-band steady program: ST == global, so the dead-band AGC
-  // is exactly 0 before and after — the test is switch continuity, not
-  // levelling onset): one instance runs 30 s normalize then switches to
-  // level for 30 s, the other runs the full 60 s in level. Asserts BOTH (a)
-  // final-5 s output RMS agrees within 0.5 dB AND (b) the applied-gain trace
-  // across the switch never steps: the immediate |after-before| is exactly 0
-  // (the message touches no gain) and every per-quantum step stays within
-  // the configured slow-loop slew (<= 1.0 dB/quantum: slow max is 32 dB *
-  // (1-exp(-128/(sr*0.6))) ~= 0.15 dB, so 1.0 dB is ~7x headroom; the AGC is
-  // frozen at 0 on this signal). A full-reset snap is ~9 dB and fails the
-  // immediate gate below. The switch fires between the two 30 s drives, so
-  // both rates switch exactly once at the 30 s boundary.
   let transitionRow = null;
   {
     const TRANSITION_TOL_DB = 0.5;
-    // Per-quantum applied-gain slew bound (configured slow-loop slew plus
-    // headroom — not a guess: the AGC contributes exactly 0 on this steady
-    // null-band program, so only the 0.6 s down-TC slow loop can move, at most
-    // ~0.15 dB/quantum; 1.0 dB is ~7x headroom. A reset-to-unity snap is ~9
-    // dB and fails the immediate gate below anyway.
     const GAIN_STEP_TOL_DB = 1.0;
     const IMMEDIATE_STEP_TOL_DB = 1e-9;
     const rates = [
@@ -3276,10 +2673,6 @@ function main() {
       const srHere = cfg.sr;
       const ProcHere = cfg.Proc;
       const TR_N = srHere * 60;
-      // Null-band tone (peak -27.96 dBFS, dead-band AGC exactly 0): the test
-      // is switch continuity, not levelling onset — a loud tone would spend
-      // its first quanta in levelling action and trip the per-quantum slew
-      // gate for reasons unrelated to the switch.
       const tone = new Float32Array(TR_N);
       for (let i = 0; i < TR_N; i++) tone[i] = 0.04 * Math.sin(2 * Math.PI * 1000 * i / srHere);
       const first30 = tone.subarray(0, srHere * 30);
@@ -3321,9 +2714,6 @@ function main() {
       const swDb = rmsDbTail(outSwTail, srHere, 5);
       const div = Math.abs(swDb - freshDb);
       let maxStep = 0;
-      // Skip the first 5 s (levelling onset out of digital silence): the gate
-      // below is the configured STEADY-STATE slew plus switch continuity,
-      // and the onset boost is covered by the telemetry/comfort rows.
       const skipQuanta = Math.round(5 * srHere / BLOCK);
       for (let i = Math.max(1, skipQuanta); i < swTrace.length; i++) {
         const d = Math.abs(swTrace[i] - swTrace[i - 1]);
@@ -3342,35 +2732,11 @@ function main() {
     transitionRow.divergenceDb = perRate[0].divergenceDb;
   }
 
-  // TELEMETRY: truePeakDb is a DECAYING PEAK-HOLD on the delayed post-limiter
-  // output (1.5 s TC), not a per-quantum peak. Fresh zero-output quantum
-  // reports -Inf (track exactly 0); after prior audio a zero-output quantum
-  // reports the decayed hold predicted by track*exp(-N/(sr*1.5)), never -Inf.
-  // On a stationary tone the reported hold matches the captured output's own
-  // interpolated peak (harness cubic Lagrange estimator) within 0.01 dB and
-  // never under-reports it. On the limiter-history burst the hold sits above
-  // the capture by a small systematic amount (measured 0.06 dB): a decaying
-  // max over-reports a signal whose early history was hotter — that is the
-  // hold's documented purpose (never under-report), not estimator sloppiness.
-  // The burst row therefore gates HONESTY tightly (reported >= captured -
-  // 0.01 dB, the safety property) and agreement within 0.25 dB (OUR headroom
-  // for hold-vs-estimator divergence on limiter-history signals); the tone
-  // row keeps the tight ±0.01 dB agreement, so the agreement gate still bites
-  // (a broken hold fails the tone row). The hot clip row is agreement-free
-  // (reported, never gated): cubic and polyphase legitimately disagree on
-  // flat-topped clipped waves.
   let telemetryRow = null;
   {
     const TP_TOL_DB = 0.01;
     const TP_BURST_AGREE_DB = 0.25;
     const HOLD_TOL_DB = 0.01;
-    // Telemetry tones: TEL_TONE_AMP sits INSIDE the levelling null band
-    // (-31..-26 dBFS peak): amp 0.04 peaks at -27.96 dBFS, so the levelling
-    // gain is exactly 0 (the levelling chain is exercised by the comfort
-    // rows, not here). TEL_VALUE_AMP is a -20 LUFS program (0.1413 peak):
-    // the comfort chain must hold it at unity total program gain, so the
-    // reported output peak must equal the input peak — the value check below
-    // is that the program target holds, not just that the detector works.
     const TEL_TONE_AMP = 0.04;
     const TEL_VALUE_AMP = 0.1413;
     const p0 = makeProc(Proc48, {});
@@ -3384,16 +2750,6 @@ function main() {
     for (let i = 0; i < BLOCK; i++) { const a = Math.abs(oA0[i]); if (a > outPeak0) outPeak0 = a; }
     const tel0 = p0.telemetry.truePeakDb;
     const zeroOk = outPeak0 === 0 ? !Number.isFinite(tel0) : true;
-    // Stationary capture under levelling: 1 s pre-roll settles the levelling
-    // (50 ms smoothing) while the slow loop is still unity (total < 3 s
-    // warm), then 1.5 s captured. Reported (end of capture) vs cubic (same
-    // capture) must agree: both describe the same stationary output.
-    // Long steady render (12 s: onset blip and slow-loop slew are ancient
-    // history, the 1.5 s hold has fully decayed): the decaying hold (end) and
-    // the cubic (last 2 s) describe the same stationary output. A fresh
-    // feedforward leveller legitimately boosts the first milliseconds out of
-    // silence while the envelope crosses the boost region — comparing across
-    // that blip would test the hold's memory, not its honesty.
     const p1 = makeProc(Proc48, {});
     const N2 = Math.round(SR * 15);
     const capTone = new Float32Array(N2);
@@ -3411,15 +2767,6 @@ function main() {
     const cubTone = toDb(truePeakOf(capTone.subarray(capTone.length - 2 * SR)));
     const toneDiff = Number.isFinite(tel1) ? tel1 - cubTone : NaN;
     const toneOk = Number.isFinite(tel1) && Math.abs(toneDiff) <= TP_TOL_DB && tel1 >= cubTone - TP_TOL_DB;
-    // Limiter engagement under the comfort chain: 1 s pre-roll at trim 0
-    // settles the levelling on a mid-level tone (slow loop still unity), then
-    // the trim goes to +6 — smooth output below the ceiling, so the reported
-    // peak (end) vs the captured cubic must agree within 0.01 dB and never
-    // under-report. A second, hotter render (+12 on a near-full-scale tone)
-    // proves the limiter holds the ceiling with zero rail hits (cubic TP +
-    // backstop count; interpolators legitimately disagree on flat-topped
-    // clipped waves, so no tight agreement gate there — and a trim-blind
-    // detector is caught by that row plus the +12 user-trim row).
     const pB = makeProc(Proc48, { gainDb: 6 });
     const NB = Math.round(SR * 12);
     const capBurst = new Float32Array(NB);
@@ -3433,8 +2780,6 @@ function main() {
       pB.process([[a], [b]], [[oa], [ob]]);
       for (let i = 0; i < len; i++) capBurst[pos + i] = oa[i];
     }
-    // Hot clipped case (+12 on near-full-scale): limiter must hold the
-    // ceiling with zero backstop rail hits (cubic TP + exact-rail count).
     const pC = makeProc(Proc48, { gainDb: 12 });
     const NCLIP = Math.round(SR * 12);
     const capClip = new Float32Array(NCLIP);
@@ -3496,10 +2841,6 @@ function main() {
     telemetryRow = { outPeak0, tel0: Number.isFinite(tel0) ? tel0 : -Infinity, zeroOk, tel1: Number.isFinite(tel1) ? tel1 : -Infinity, expectDb, valueOk, cubTone, toneDiff, toneOk, cubBurst, burstDiff, burstHonest, burstOk, burstAgreeTolDb: TP_BURST_AGREE_DB, telB: Number.isFinite(telB) ? telB : -Infinity, telC: Number.isFinite(telC) ? telC : -Infinity, cubClip, clipRail, clipNeverUnder, clipOk, trackBefore, telBefore, zOutPeak, telAfter, predictedDb, holdDiff, holdOk, tpTolDb: TP_TOL_DB, holdTolDb: HOLD_TOL_DB, verdict: verdictTel };
   }
 
-
-  // USER-TRIM table: trim settings vs target + trim, with the
-  // applied-gain trace per row (a doubling is visible in the numbers: the
-  // tail shift must equal the trim, not twice the slider).
   console.log('');
   console.log('USER-TRIM (set-gain-db is an immediate output trim: settled tail vs target+trim, ±0.20 LU; shift exactly 1x; integrated + target unchanged):');
   console.log('gain | fixture              | input LUFS | prog targ | exp tail |    slow | tail LUFS | shift dB | int dLU | verdict');
@@ -3581,7 +2922,6 @@ function main() {
   const telemetrySummary = telemetryRow ? telemetryRow.verdict : 'UNTESTED';
   console.log('TELEMETRY: ' + telemetrySummary);
 
-
   const report = {
     generatedAt: new Date().toISOString(),
     harness: 'qa/loudness-verify.cjs',
@@ -3648,8 +2988,6 @@ function main() {
   if (!rows.every((r) => r.verdict === 'PASS') || clSummary !== 'PASS' || tpSummary !== 'PASS' || worstSummary !== 'PASS' || advSummary !== 'PASS' || hardClipSummary !== 'PASS' || multiSummary !== 'PASS' || r441Summary !== 'PASS' || levelSummary !== 'PASS' || msgSummary !== 'PASS' || gainSummary !== 'PASS' || comfortSummary !== 'PASS' || stepSummary !== 'PASS' || onsetSummary !== 'PASS' || transitionSummary !== 'PASS' || telemetrySummary !== 'PASS') process.exitCode = 2;
 }
 
-/* --self-test: prove the harness can both pass and fail                */
-
 function runSelfTestOnly(ff) {
   console.log('SELF-TEST mode: validating the harness itself (no worklet conformance verdicts).');
   let ok = true;
@@ -3662,7 +3000,6 @@ function runSelfTestOnly(ff) {
   if (ff.present) console.log(`self-test ffmpeg version: ${ff.version}`);
   else console.log('self-test UNTESTED: ffmpeg absent — oracle parser checks cannot run; say so plainly.');
 
-  // Parser self-check on a real generated fixture.
   const wavPath = path.join(FIXTURE_DIR, 'sine-1khz-fs-20.wav');
   if (ff.present) {
     const oracle = runOracle(wavPath);
@@ -3671,16 +3008,12 @@ function runSelfTestOnly(ff) {
     check(`parsed integrated ${fmt(oracle.integratedLufs)} LUFS is sane for a -20 dBFS 1 kHz sine (in [-35, -15])`,
       Number.isFinite(oracle.integratedLufs) && oracle.integratedLufs <= -15 && oracle.integratedLufs >= -35);
     check('parser returns finite true peak', Number.isFinite(oracle.truePeakDbTp));
-    // Deliberately-wrong expected value MUST fail.
     const wrong = compareLufs(oracle.integratedLufs, oracle.integratedLufs + 5);
     check(`deliberate +5 LU error reports FAIL (got ${wrong.verdict}, delta=${fmt(wrong.delta)})`, wrong.verdict === 'FAIL');
-    // Exact value MUST pass (the comparator can go green).
     const right = compareLufs(oracle.integratedLufs, oracle.integratedLufs);
     check(`exact oracle value reports PASS (got ${right.verdict})`, right.verdict === 'PASS');
   }
 
-  // Closed-loop convergence check self-test (pure comparator, no worklet
-  // render — --self-test stays fast). A check that cannot fail proves nothing.
   {
     const exact = checkClosedLoop(-18, -18, true, 12);
     check(`closed-loop exact target reports PASS (got ${exact.verdict})`, exact.verdict === 'PASS');
@@ -3697,22 +3030,10 @@ function runSelfTestOnly(ff) {
     check(`closed-loop missing oracle value reports UNTESTED, never PASS (got ${noOracle.verdict})`, noOracle.verdict === 'UNTESTED');
   }
 
-  // True-peak ceiling, hard-clip backstop, and multichannel comparator
-  // self-tests (pure functions, no worklet render — --self-test stays fast).
-  // These call the LIVE production verdict function (peakVerdictDbTp), the
-  // same function the main loop, user-gain gate, and adversarial sweep call —
-  // user-gain gate, and adversarial sweep call — never local copies. A prior
-  // revision tested copied predicates here, so disabling a production peak
-  // gate left this green; now blinding the production gate breaks this run
-  // (mutation proof: forcing peakVerdictDbTp to always PASS makes the
-  // over-ceiling checks below FAIL).
   {
     check('true-peak at ceiling reports PASS (live verdict)', peakVerdictDbTp(CEILING_DBTP, CEILING_DBTP) === 'PASS');
     check('true-peak 0.5 dB over ceiling reports FAIL (live verdict)', peakVerdictDbTp(CEILING_DBTP + 0.5, CEILING_DBTP) === 'FAIL');
     check('true-peak NaN is UNTESTED, never PASS (live verdict)', peakVerdictDbTp(NaN, CEILING_DBTP) === 'UNTESTED');
-    // Hard-clip counter: a buffer with an exact rail hit MUST count, a
-    // clean buffer MUST count 0 (proves the backstop check can both pass
-    // and fail).
     const rail = Math.fround(Math.pow(10, CEILING_DBTP / 20));
     const dirty = [new Float32Array([0.1, -0.2, rail, 0.3]), new Float32Array([0.0, -rail])];
     const clean = [new Float32Array([0.1, -0.2, rail - 1e-4, 0.3]), new Float32Array([0.0, 0.5])];
@@ -3720,21 +3041,12 @@ function runSelfTestOnly(ff) {
     const cleanCount = countHardClips(clean, CEILING_DBTP).count;
     check(`hard-clip counter finds exact rail hits (got ${dirtyCount})`, dirtyCount === 2);
     check(`hard-clip counter ignores near-rail samples (got ${cleanCount})`, cleanCount === 0);
-    // Multichannel comparator reuses compareLufs at ±0.1 LU: just inside
-    // passes, just outside fails.
     const inside = compareLufs(-18.0, -17.91);
     const outside = compareLufs(-18.0, -17.5);
     check(`worklet-vs-oracle +0.09 LU reports PASS (got ${inside.verdict})`, inside.verdict === 'PASS');
     check(`worklet-vs-oracle +0.5 LU reports FAIL (got ${outside.verdict})`, outside.verdict === 'FAIL');
   }
 
-  // Detector-margin and level-target self-tests (pure predicates plus a
-  // read-only parse of the worklet source — no render, so --self-test stays
-  // fast). The shipped margin must cover the standard worst-case under-read
-  // U = 0.688 dB (n = 4, fnorm = 0.5); a deliberately too-small margin must
-  // FAIL the same predicate. A stuck level-mode tail (-13.90 vs the -18
-  // target, the pre-fix behaviour) must FAIL the convergence check that a
-  // converged tail passes.
   {
     const marginHolds = (marginDb) => marginDb >= MARGIN_STANDARD_UNDERREAD_DB - 1e-9;
     let shippedMargin = NaN;
@@ -3749,11 +3061,6 @@ function runSelfTestOnly(ff) {
     check(`converged level-mode tail reports PASS (got ${convergedLevel.verdict})`, convergedLevel.verdict === 'PASS');
   }
 
-  // Documented default target self-test (gap-1 fix): the worklet's parsed
-  // TARGET_LUFS_DEFAULT must equal the harness literal
-  // DOCUMENTED_DEFAULT_TARGET_LUFS (-18). The main flow exits 1 on mismatch;
-  // this self-test fails too, so mutating the worklet default to -19 breaks
-  // BOTH entry points (mutation proof in the report).
   {
     let parsedDefault = NaN;
     try { parsedDefault = parseWorkletConstants(fs.readFileSync(WORKLET_PATH, 'utf8')).targetDefault; } catch {}
@@ -3763,12 +3070,6 @@ function runSelfTestOnly(ff) {
       !(Number.isFinite(parsedDefault) && parsedDefault === -19));
   }
 
-  // Honest-fixture self-test (gap-3 fix): the old "worst-case fnorm 0.5"
-  // label on the 11.025 kHz tone was wrong (fnorm 0.2297). The renamed
-  // fixture must say so honestly, and the adversarial sweep spec must contain
-  // a genuine near-Nyquist case (mid-burst phase break / full-scale
-  // alternating / fnorm >= 0.48 sine burst) — otherwise the rename is cosmetic
-  // and the sweep is not adversarial.
   {
     const ht = FIXTURES.find((f) => f.name === 'high-tone-11k');
     const htDesc = ht && typeof ht.description === 'string' ? ht.description : '';
@@ -3782,11 +3083,6 @@ function runSelfTestOnly(ff) {
     check('adversarial sweep contains an fnorm-0.48 sine burst', sweepNames.includes('sine-23040-64f-0.8'));
     check('adversarial sweep renders every signal once under the single ceiling (live verdict)',
       ADVERSARIAL_SWEEP.length >= 10);
-    // The counterexample fixture must encode the EXACT reviewer signal
-    // 0.8 x [1,-1,1,-1,1,-1,1,-1,1,1,-1,1,-1,1,-1,1,-1,1] (a prior revision
-    // differed at offsets 5-8 and 10-17, so the named fixture did not encode
-    // the signal that actually failed). Locate the 18-sample burst in the
-    // built signal and compare sample-for-sample.
     const reviewerPattern = [1, -1, 1, -1, 1, -1, 1, -1, 1, 1, -1, 1, -1, 1, -1, 1, -1, 1];
     const briefSpec = ADVERSARIAL_SWEEP.find((s) => s.name === 'burst-brief-18f-0.8');
     let briefExact = false;
@@ -3808,29 +3104,16 @@ function runSelfTestOnly(ff) {
     check('counterexample fixture encodes the exact reviewer pattern (offsets 5-8 and 10-17 match)', briefExact === true);
   }
 
-  // set-target-lufs retarget self-test (pure comparator): converging to the
-  // -24 probe must PASS against -24 and FAIL against the -20 default (proves
-  // the message actually retargets — asserting the probe while the worklet is
-  // still on the default must FAIL).
   {
     const atProbe = checkClosedLoop(TARGET_PROBE_LUFS, TARGET_PROBE_LUFS, true, 12);
     check(`set-target-lufs tail at probe vs probe reports PASS (got ${atProbe.verdict})`, atProbe.verdict === 'PASS');
     const stuckDefault = checkClosedLoop(DOCUMENTED_DEFAULT_TARGET_LUFS, TARGET_PROBE_LUFS, true, 12);
     check(`set-target-lufs stuck at default vs probe reports FAIL (got ${stuckDefault.verdict}, delta=${fmt(stuckDefault.delta)})`, stuckDefault.verdict === 'FAIL');
-    // reset-meter predicate shape: cleared means warm false + non-finite
-    // integrated; a reset that does nothing (warm still true) is a finding.
     const resetCleared = (warm, lufs) => warm === false && !Number.isFinite(lufs);
     check('reset-meter cleared state reports PASS', resetCleared(false, -Infinity) === true);
     check('reset-meter uncleared state reports FAIL', resetCleared(true, -18) === false);
   }
 
-  // set-gain-db trim self-test: the slider is an output trim, never a target.
-  // (a) Pure comparator: a +6 trim lands the settled tail on target + 6.
-  // (b) A simulated doubling (+6 applied twice lands 6 LU hotter) must FAIL
-  // the same check — otherwise a double-application regression could not be
-  // caught. (c) Static wiring: the set-gain-db handler must arm trimTargetDb
-  // and must NOT assign targetLufs (a slider-wired-to-target regression fails
-  // here without rendering anything).
   {
     let targetDefault = NaN;
     let workletSrc = '';
@@ -3851,10 +3134,6 @@ function runSelfTestOnly(ff) {
     check('set-gain-db handler never assigns targetLufs (slider is not a retarget)', !/targetLufs\s*=/.test(handler));
   }
 
-  // Fixture determinism was already proven by generateFixtures (double-build
-  // assert + WAV round-trip); confirm manifest exists and lists all 34 files
-  // (17 at 48 kHz + 17 at 44.1 kHz with -44100 suffix: 10 historical + 7 comfort,
-  // including the A5 comfort-step pair).
   let manifest = null;
   try { manifest = JSON.parse(fs.readFileSync(MANIFEST_PATH, 'utf8')); } catch {}
   check('manifest lists all 34 generated fixtures (17x48k + 17x44100)',

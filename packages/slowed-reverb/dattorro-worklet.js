@@ -35,12 +35,6 @@ class DelayLine {
   }
 }
 
-// Dattorro's 1997 paper specifies its delay lengths in milliseconds; the integer
-// sample counts printed in it are exact only at the paper's 29.761 kHz rate. This
-// worklet runs at the host AudioContext rate (44.1/48 kHz), where those counts
-// would be ~62-67% of the designed lengths - a smaller, denser, brighter plate.
-// The millisecond lengths are therefore converted at the live sampleRate, so the
-// paper's counts are reproduced exactly when the rate is 29761.
 const INPUT_DIFF_MS = [4.771345, 3.595309, 12.734787, 9.307483]; // 142, 107, 379, 277
 const MOD_DELAY_MS = [22.579886, 30.509727]; // 672, 908
 const PRE_DAMP_MS = [149.625349, 141.695508]; // 4453, 4217
@@ -73,16 +67,12 @@ class DattorroReverbProcessor extends AudioWorkletProcessor {
     }
     if (data.type === 'setParams') {
       const p = data.params || {};
-      // Validate and clamp at the message boundary: one NaN or out-of-range
-      // value must not latch non-finite state into the tank for the page
-      // lifetime. Every field is finite-gated and range-limited.
       if (Number.isFinite(p.preDelay)) this.predelay = this.clamp(p.preDelay, 0, 0.99);
       if (Number.isFinite(p.preFilter)) this.preFilterAmt = this.clamp(p.preFilter, 0, 0.99);
       if (Number.isFinite(p.inputDiff1)) this.inputDiff1Amt = this.clamp(p.inputDiff1, 0, 0.99);
       if (Number.isFinite(p.inputDiff2)) this.inputDiff2Amt = this.clamp(p.inputDiff2, 0, 0.99);
       if (Number.isFinite(p.decayDiff1)) this.decayDiff1Amt = this.clamp(p.decayDiff1, 0, 0.99);
       if (Number.isFinite(p.decay)) {
-        // Loop gain is decay-squared, so >0.95 runs away and eventually NaNs.
         this.decayAmt = Math.min(0.95, Math.max(0, p.decay));
         this.decayDiff2Amt = Math.min(Math.max(this.decayAmt + 0.15, 0.25), 0.50);
       }
@@ -101,7 +91,6 @@ class DattorroReverbProcessor extends AudioWorkletProcessor {
     return Math.min(hi, Math.max(lo, x));
   }
 
-  // Convert a Dattorro millisecond delay length to samples at the live rate.
   msToSamples(ms) {
     return Math.round((ms * this.sr) / 1000);
   }
@@ -112,9 +101,6 @@ class DattorroReverbProcessor extends AudioWorkletProcessor {
     return { buf: new Float32Array(size), mask: size - 1, off: size - delay };
   }
 
-  // The modulated tank lines sweep +-modDepth samples around their base delay, so
-  // the power-of-two buffer reserves that headroom; a negative read offset would
-  // otherwise wrap and collapse the delay to a few samples.
   modDelay(ms) {
     const delay = this.msToSamples(ms);
     const dl = new DelayLine(delay + this.modDepth);
@@ -146,13 +132,7 @@ class DattorroReverbProcessor extends AudioWorkletProcessor {
     this.inDiff = INPUT_DIFF_MS.map((ms) => this.allpassLine(ms));
 
     this.modDepth = 8;
-    // LFO triangle period is 65536 samples at the 44.1 kHz reference (1.486 s);
-    // the per-sample step scales with the live rate so the shimmer rate in Hz
-    // is identical at 44.1/48/96 kHz.
     this.lfoInc = 44100 / (2048 * this.sr);
-    // One-pole corners measured from the 44.1 kHz reference coefficients
-    // (hpf 0.025 -> ~178 Hz DC blocker, lpf 0.5 -> ~4.87 kHz wet beam); the
-    // live coefficients invert the mapping so the corners stay put at any rate.
     const hpfFc = (-Math.log(1 - 0.025) * 44100) / (2 * Math.PI);
     const lpfFc = (-Math.log(1 - 0.5) * 44100) / (2 * Math.PI);
     this.hpfCoeff = 1 - Math.exp((-2 * Math.PI * hpfFc) / this.sr);
@@ -231,9 +211,6 @@ class DattorroReverbProcessor extends AudioWorkletProcessor {
     const out = outputs[0];
     if (!out || !out.length || !out[0]) return true;
 
-    // A disconnected source must decay through the tank, never freeze it: an
-    // early return leaves `t` advancing without writes, so the next real source
-    // replays scrambled stale audio. Run the tank with silence instead.
     const hasInput = Boolean(inp && inp.length && inp[0] && inp[0].length);
     const L = hasInput ? inp[0] : null;
     const R = hasInput ? (inp.length > 1 ? inp[1] : inp[0]) : null;
@@ -247,9 +224,6 @@ class DattorroReverbProcessor extends AudioWorkletProcessor {
     const hpfCoeff = this.hpfCoeff;
     const dry = this.wetGain === 0 && this.wetTarget === 0;
 
-    // The denormal sweep touches 56k buffer words. Sweeping it every 128-frame
-    // block made the dry path 12x more expensive than the tank it skips, so it
-    // is throttled instead.
     this.flushCount += 1;
     if (this.flushCount % 64 === 0) this.flushDenormals();
 
@@ -258,7 +232,6 @@ class DattorroReverbProcessor extends AudioWorkletProcessor {
 
       this.preBuf[this.preIdx] = x;
       this.preIdx = (this.preIdx + 1) % this.preBuf.length;
-      // Fractional pre-delay with linear interpolation: no integer stepping.
       let rPos = this.preIdx - pdFloat;
       if (rPos < 0) rPos += this.preBuf.length;
       const r0 = Math.floor(rPos);
@@ -279,9 +252,6 @@ class DattorroReverbProcessor extends AudioWorkletProcessor {
         x = this.allpassAp(d.buf, d.mask, d.off, g, x);
       }
 
-      // Slow triangle LFO, continuous per-sample step (no 2048-sample integer
-      // ticks): the offsets below stay fractional and are read with linear
-      // interpolation, so there is no sample-to-sample click.
       this.modPhase += this.modDir * this.lfoInc;
       if (this.modPhase >= this.modDepth) {
         this.modPhase = this.modDepth;
@@ -338,9 +308,6 @@ class DattorroReverbProcessor extends AudioWorkletProcessor {
         this.wetLpf[0] += lpfCoeff * (wL - this.wetLpf[0]);
         this.wetLpf[1] += lpfCoeff * (wR - this.wetLpf[1]);
 
-        // The raw tank runs ~1.85x the input peak, so a hard clamp fired on
-        // ordinary material. A fixed -5.2 dB bus gain keeps the voice and leaves
-        // the clamp as a final safety net only.
         outL[i] = Math.max(-1, Math.min(1, 0.55 * this.wetGain * this.wetLpf[0]));
         outR[i] = Math.max(-1, Math.min(1, 0.55 * this.wetGain * this.wetLpf[1]));
       }

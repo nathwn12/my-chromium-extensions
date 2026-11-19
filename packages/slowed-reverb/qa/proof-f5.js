@@ -1,12 +1,5 @@
 'use strict';
 
-/*
- * qa/proof-f5.js - F5 mute-restore proof (pure Node stub harness, real content-script.js).
- * Starts with a user-muted element, attaches, then tears down via bypass and
- * asserts the original muted state is restored. RED: muted === false (unmuted
- * a video the user had muted). GREEN: muted === true.
- * Exit 0 = holds, 1 = failed, 2 = harness setup problem.
- */
 
 const { createContentEnv } = require('./stub-env');
 

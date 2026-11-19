@@ -1,12 +1,4 @@
 #!/usr/bin/env node
-// Bump one extension package to the next version across every file that carries it.
-// Usage: node scripts/release.mjs <package> <major|minor|patch|x.y.z> [--dry-run]
-//
-// Reads the current version from the package's manifest.json, computes the next
-// version, and writes it to manifest.json, package.json (when it carries a
-// version) and the CHANGELOG (promoting `## [Unreleased]` to the new version and
-// leaving a fresh empty `## [Unreleased]` above it). Prints the exact git
-// commands to commit, tag and push; this script never commits, tags or pushes.
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -33,7 +25,6 @@ function compare(a, b) {
   return 0;
 }
 
-// Keep the file's own line endings so the diff touches only version lines.
 function eolOf(text) {
   return text.includes("\r\n") ? "\r\n" : "\n";
 }
@@ -96,7 +87,6 @@ if (!new RegExp(`^## \\[Unreleased\\][ \\t]*$`, "m").test(changelogRaw)) {
 const latestMatch = [...changelogRaw.matchAll(/^## \[(\d+\.\d+\.\d+)\].*$/gm)][0];
 const latest = latestMatch ? latestMatch[1] : null;
 
-// The one check that can fail: every versioned copy must agree before the bump.
 const disagreements = [];
 if (packageHasVersion && packageJson.version !== current.join(".")) {
   disagreements.push(`package.json is ${packageJson.version}`);

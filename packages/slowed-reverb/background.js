@@ -19,9 +19,6 @@ const SITE_TOGGLES_KEY = 'siteToggles';
 const TAB_SESSION_KEY = 'tabSessionById';
 const PLAYER_ACTIONS_KEY = 'playerActions';
 const PLAYER_SECTIONS_LIMIT = 100;
-// Local operator gate: a packaged, gitignored file dropped into the unpacked
-// extension. Nothing on the page, in the popup or in another extension can
-// reach it; only someone who can write this extension's own files can use it.
 const DEV_IMPORT_PATH = '.dev/section-import.json';
 const DEV_IMPORT_KEY = 'devSectionImport';
 const DEV_IMPORT_SUMMARY_KEY = 'devSectionImportSummary';
@@ -29,9 +26,6 @@ const DEV_IMPORT_SUMMARY_KEY = 'devSectionImportSummary';
 const tabBypassById = new Map();
 const tabSessionById = new Map();
 
-// One writer for the saved section list across every tab. Each save is a full
-// read-modify-write, so running two of them concurrently would let the second
-// overwrite the first; the chain makes the pair sequential and lossless.
 let playerSectionSaveChain = Promise.resolve();
 
 function normalizeSectionTime(value) {
@@ -68,12 +62,6 @@ function queuePlayerSectionSave(entry) {
   return playerSectionSaveChain;
 }
 
-// Bulk import for the owner, run from the service-worker devtools console:
-//   await importPlayerSections(sections)
-// It is a worker-global function on purpose, not a message type: the popup, the
-// content script and any page have no route to it. The batch is validated whole
-// before the save chain is touched, and the saved list must already be well
-// formed, so a bad entry on either side writes nothing.
 function isPlainObject(value) {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
@@ -95,7 +83,6 @@ function validateSectionImport(entries) {
   for (let index = 0; index < entries.length; index += 1) {
     const entry = entries[index];
     if (!isValidSectionEntry(entry)) return { error: 'invalid_entry', index };
-    // One id twice in one batch is ambiguous; the source is malformed.
     if (seen.has(entry.videoId)) return { error: 'duplicate_entry', index };
     seen.add(entry.videoId);
     batch.push(normalizeSectionEntry(entry));
@@ -160,7 +147,6 @@ async function importPlayerSections(entries) {
         const merged = mergeSavedLists(existing.list, validated.batch, PLAYER_SECTIONS_LIMIT);
         if (merged.ok !== true) return merged;
         if (merged.imported > 0) {
-          // Only `sections` belongs to this path; every other field is kept.
           const next = isPlainObject(raw) ? { ...raw, sections: merged.sections } : { sections: merged.sections };
           const write = {};
           write[PLAYER_ACTIONS_KEY] = next;
@@ -178,7 +164,6 @@ async function importPlayerSections(entries) {
   return playerSectionSaveChain;
 }
 
-// Local section import gate
 
 async function sha256Hex(text) {
   if (!globalThis.crypto || !globalThis.crypto.subtle) throw new Error('No SHA-256.');
@@ -216,7 +201,6 @@ async function reportDevImport(summary) {
   try {
     await chrome.storage.local.set({ [DEV_IMPORT_SUMMARY_KEY]: summary });
   } catch {
-    // Best effort: the page marker is the primary read.
   }
   try {
     const tabs = await chrome.tabs.query({ url: 'https://music.youtube.com/*' });
@@ -232,11 +216,9 @@ async function reportDevImport(summary) {
         });
         return true;
       } catch {
-        // Try the next eligible tab.
       }
     }
   } catch {
-    // No tabs permission or no tab: the stored summary remains.
   }
   return false;
 }
@@ -274,8 +256,6 @@ async function executeDevImport() {
     const seen = marker ? marker[DEV_IMPORT_KEY] : null;
     if (seen && seen.hash === hash) return null;
   } catch {
-    // An unreadable marker is not a reason to write again or to stop: fall
-    // through and let the import decide from the saved list itself.
   }
 
   const result = await importPlayerSections(entries);
@@ -288,7 +268,6 @@ async function executeDevImport() {
     try {
       summary.digest = await canonicalSectionsDigest(result.sections);
     } catch {
-      // Counts still describe the write; the digest is an extra receipt.
     }
   } else {
     summary.error = result.error;
@@ -310,7 +289,6 @@ async function executeDevImport() {
         },
       });
     } catch {
-      // The import already landed; a lost marker only means a retry next start.
     }
   }
   await reportDevImport(summary);
@@ -355,29 +333,22 @@ async function injectMainWorldHook(tabId) {
 }
 
 async function getTabBypass(tabId, siteKey) {
-  // Storage is authoritative per site: an explicit siteToggles entry wins in
-  // both directions (last write wins across tabs). Memory only covers a
-  // storage outage within this session, and only for the host it was set on.
   if (siteKey) {
     try {
       const stored = await chrome.storage.local.get({ [SITE_TOGGLES_KEY]: {} });
       const toggles = stored[SITE_TOGGLES_KEY] || {};
       if (siteKey in toggles) return toggles[siteKey] === false;
     } catch {
-      // Best effort only; fall through to memory below.
     }
   }
   if (tabBypassById.has(tabId)) {
     if (tabBypassById.get(tabId) === siteKey) return true;
-    // Stale entry (tab navigated to another host since): drop it.
     tabBypassById.delete(tabId);
   }
   return false;
 }
 
 async function setTabBypass(tabId, bypass) {
-  // Resolve the host first: memory records the siteKey the bypass was set
-  // for, so a later navigation to another host cannot inherit it.
   let siteKey = '';
   try {
     const tab = await getEligibleTab(tabId);
@@ -397,7 +368,6 @@ async function setTabBypass(tabId, bypass) {
     toggles[siteKey] = !bypass;
     await chrome.storage.local.set({ [SITE_TOGGLES_KEY]: toggles });
   } catch {
-    // Best effort only; memory state still applies for this session.
   }
 }
 
@@ -485,10 +455,6 @@ async function pushTabState(tabId) {
     });
     return { ok: true };
   } catch {
-    // No receiver: after an extension reload/update the old content script is an
-    // orphan and a new service worker cannot message it. Re-install the ISOLATED
-    // content script (content-script.js re-enters through its adoption guard),
-    // then retry once. A dead MAIN-world hook cannot receive runtime messages.
     try {
       await chrome.scripting.executeScript({
         target: { tabId },
@@ -553,9 +519,6 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   ]).catch(() => {});
 });
 
-// Note: if onRemoved fires before onReplaced for the same tab, the entries
-// below are already gone and there is nothing to migrate; persistent storage
-// (siteToggles/siteSettings) remains the fallback, so the tab still hydrates.
 chrome.tabs.onReplaced.addListener((addedTabId, removedTabId) => {
   if (tabBypassById.has(removedTabId)) {
     tabBypassById.set(addedTabId, tabBypassById.get(removedTabId));
@@ -568,8 +531,6 @@ chrome.tabs.onReplaced.addListener((addedTabId, removedTabId) => {
   pushTabState(addedTabId).catch(() => {});
 });
 
-// Concurrent full rehydrates (import + onStartup + onInstalled all fire at
-// startup) are deduped behind one in-flight run.
 let rehydratePromise = null;
 function scheduleRehydrate() {
   if (rehydratePromise) return rehydratePromise;
@@ -585,9 +546,6 @@ chrome.runtime.onInstalled.addListener(() => {
   void scheduleRehydrate();
 });
 
-// The local import gate reads its file at every worker start; the stored hash
-// makes a repeat a no-op. onStartup/onInstalled are extra chances for a reload
-// that does not keep the worker alive long enough for the fetch.
 chrome.runtime.onStartup.addListener(() => {
   void runDevSectionImport();
 });
@@ -599,29 +557,22 @@ chrome.runtime.onInstalled.addListener(() => {
 try {
   void runDevSectionImport();
 } catch {
-  // Never throw at import.
 }
 
-// onStartup does not fire when the worker wakes from idle, so rehydrate
-// best-effort once, gated by a session flag so idle wakes do not reflood
-// every tab. Must never throw at import.
 try {
   void (async () => {
     try {
       const flag = await chrome.storage.session.get({ slowedReverbRehydrated: false });
       if (flag && flag.slowedReverbRehydrated) return;
     } catch {
-      // No session storage: fall through to a single rehydrate.
     }
     await scheduleRehydrate().catch(() => {});
     try {
       await chrome.storage.session.set({ slowedReverbRehydrated: true });
     } catch {
-      // Best effort only.
     }
   })().catch(() => {});
 } catch {
-  // Never throw at import.
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -638,9 +589,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return buildTabState(sender.tab?.id || message.tabId);
       }
       case 'SET_SITE_SETTINGS': {
-        // The content script's sticky-volume write is a field-level patch
-        // (`{ volume }`), so it merges over the stored object before the shared
-        // normalizer fills the rest. The popup still sends every field.
         const tabId = Number(message.tabId ?? sender.tab?.id);
         const patch = message.settings && typeof message.settings === 'object' ? message.settings : {};
         const current = message.siteKey ? (await getStoredSiteSettings())[message.siteKey] : null;

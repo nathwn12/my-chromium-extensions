@@ -1,29 +1,3 @@
-// The in-page instrument, installed through
-// Page.addScriptToEvaluateOnNewDocument before any page or content script runs.
-//
-// It counts what a page can observe about an extension that is present:
-//   listenerRegistrations - EventTarget.prototype.addEventListener calls seen in
-//                 the page world. It is a REGISTRATION count, not a live listener
-//                 count: duplicate adds land as duplicate registrations (the
-//                 platform deduplicates them), a `once` listener that already
-//                 fired still counts, capture is not modelled, AbortSignal
-//                 removals are invisible, isolated-world registrations never reach
-//                 this prototype, and the log is capped. removeEventListener
-//                 calls are counted separately as `listenerRemovalCalls`; nothing
-//                 here subtracts one from the other.
-//   timers      - setTimeout / setInterval / requestAnimationFrame calls
-//   observers   - Mutation/Intersection/Resize/PerformanceObserver constructions
-//                   and observe() calls
-//   audioContexts, workletNodes, mediaElementSources - audio graph construction
-//   patches     - key prototypes/methods whose source text changed since install
-//   scriptElements - <script> elements in the document (injection as a script tag)
-//
-// Every registration records the first stack frame that names an extension, so
-// counts can be attributed per extension. Isolated-world (content script)
-// registration is NOT visible from here: an isolated world has its own
-// EventTarget.prototype, so the content script's own calls never reach this
-// wrapper. The harness counts isolated worlds separately through CDP runtime
-// execution contexts.
 
 export const PROBE_SOURCE = `(() => {
   var SENTINEL = "__costProbe";
@@ -44,12 +18,6 @@ export const PROBE_SOURCE = `(() => {
     inlineScriptCalls: 0
   };
   var CAP = 500;
-  // How many removeEventListener calls this page world saw. Deliberately NOT
-  // paired with registrations: the platform deduplicates duplicate adds, honours
-  // capture, drops once-listeners after they fire and accepts an AbortSignal,
-  // none of which this instrument can observe. A "live listener count" built by
-  // subtracting these would be a guess dressed as a measurement, so only the
-  // observed registration count is published.
   var listenerRemovalCalls = 0;
 
   function push(list, value) {
@@ -85,7 +53,6 @@ export const PROBE_SOURCE = `(() => {
     }
   }
 
-  // 1. natives, captured before anything is replaced
   var nativeAdd = EventTarget.prototype.addEventListener;
   var nativeRemove = EventTarget.prototype.removeEventListener;
   var nativeSetTimeout = window.setTimeout;
@@ -95,8 +62,6 @@ export const PROBE_SOURCE = `(() => {
   var NativeWorkletNode = window.AudioWorkletNode;
   var NativeMediaElementSource = NativeAudioContext && NativeAudioContext.prototype.createMediaElementSource;
 
-  // 2. uncaught errors, registered through the untouched native so they are not
-  //    counted as page listeners
   function noteError(kind, detail) {
     push(state.uncaught, { kind: kind, detail: String(detail || "").slice(0, 300) });
   }
@@ -111,8 +76,6 @@ export const PROBE_SOURCE = `(() => {
     noteError("install", "error listeners: " + error);
   }
 
-  // 3. audio graph instruments. Constructed through a subclass so instanceof and
-  //    the prototype chain still point at the real classes.
   var NativeAudioContextRef = NativeAudioContext;
   if (typeof NativeAudioContext === "function") {
     var CostAudioContext = class AudioContext extends NativeAudioContextRef {
@@ -171,7 +134,6 @@ export const PROBE_SOURCE = `(() => {
     }
   }
 
-  // 4. baseline AFTER our own instruments, so our shims never read as patches
   var surfaces = {
     AudioContext: function () { return window.AudioContext; },
     webkitAudioContext: function () { return window.webkitAudioContext; },
@@ -186,7 +148,6 @@ export const PROBE_SOURCE = `(() => {
     baseline[key] = srcOf(surfaces[key]());
   });
 
-  // 5. listener / timer / observer instruments
   EventTarget.prototype.addEventListener = function (type) {
     var stack = stackNow();
     push(state.listeners, {

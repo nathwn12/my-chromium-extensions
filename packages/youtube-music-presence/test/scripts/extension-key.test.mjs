@@ -13,9 +13,6 @@ import {
   extensionIdFromKey,
 } from '../../scripts/extension-key.mjs';
 
-/* Node 26 dropped execFile[util.promisify.custom], so promisify(execFile)
-   resolves to a bare stdout string and `{ stdout }` destructures to undefined.
-   Wrap the callback ourselves so the test sees the documented shape. */
 function execFileAsync(file, args, options) {
   return new Promise((resolve, reject) => {
     execFile(file, args, options, (error, stdout, stderr) => {
@@ -31,7 +28,6 @@ function execFileAsync(file, args, options) {
 }
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
-// A real 2048-bit SPKI public key and the ID Chrome derives from it.
 const FIXTURE_KEY =
   'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAxB0a4bZDIwpOqpLUZX/Ts/ZGLikMWY5mnBKK+8PJmeyiwVeMhokLqjLqHBR7QyywF+5bkuGuKyL7jwwgY9vD+DlxvLt5Qdt5GDNzdm/KeS1bw3yzIy1OTosUCSLhbk7zNgLIQAB8zjkqEuchyeUDTu5lmpqtbiPwK3VyYBwQGxfUdkuFHAqKWW8syX4ZUC4ejM980k+qTlHBsMuU8e6v0Rbl8ROQTLKesxKzsN9zQoTgIeWkRl6fakXTcaFoPbSqOc/nThEja5Ke9LUZIKY48LJQ6m/K3LbjXKczS2H5Jmo86sNwvJXut8y/dN8D3GfYum5B0X/pyBOxYkE37+DyzwIDAQAB';
 const FIXTURE_ID = 'hhbjhcmpjldibcbeiogfnaohjnnmppgk';

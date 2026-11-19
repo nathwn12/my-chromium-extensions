@@ -2,17 +2,6 @@
 
 /* global require, __dirname */
 
-/*
- * test/injection-lifecycle.test.js - extension reload / injection lifecycle.
- *
- * After a Chrome extension reload or update, the old ISOLATED content script is
- * an orphan: its chrome.runtime is dead and a new service worker cannot message
- * it. Re-injection must retire the orphan instead of adopting it, re-install the
- * ISOLATED script path, and never throw out of the watchdog. Main-world READY
- * must authenticate itself.
- *
- * Plain Node + vm stubs only. No browser, no audio.
- */
 
 const { test } = require('node:test');
 const assert = require('node:assert');
@@ -36,7 +25,6 @@ function loadPageHook(opts) {
     Math,
     JSON,
     String,
-    // A real MAIN world always has timers; the hook polls player volume on one.
     setTimeout(fn, ms) {
       const id = timerId++;
       timers.push({ id, fn, ms, repeat: false });
@@ -67,7 +55,6 @@ function loadPageHook(opts) {
   sandbox.document = {
     documentElement: { dataset: { slraToken: 'token-minted-by-content-script' } },
     visibilityState: 'visible',
-    // The hook binds song events on document; keep them off the window count.
     addEventListener() {},
     removeEventListener() {},
     querySelector: () => opts.player || null,
@@ -172,7 +159,6 @@ function createContentEnv(opts = {}) {
     queueMicrotask,
   };
 
-  // A test can hold timeouts to model "no answer yet" for an async request.
   const heldTimeouts = [];
   sandbox.setTimeout = (cb) => {
     if (env.holdTimeouts) {
@@ -397,8 +383,6 @@ function createContentEnv(opts = {}) {
 
   Object.assign(env, opts);
 
-  // The content script reads the facade off globalThis. A test that needs to
-  // observe the hand-off swaps in a recorder instead of the real UI module.
   if (env.playerActions) sandbox.SlowedReverbPlayerActions = env.playerActions;
 
   vm.createContext(sandbox);
@@ -497,12 +481,6 @@ test('G: after a reload the re-injected script retires the orphan instead of ado
   assert.ok(delays.filter((d) => d === 5000).length <= 1, 'at most one 5 s safety poll: ' + JSON.stringify(delays));
 });
 
-/*
- * The volume hand-off: the content script owns the stored wheel volume, the
- * player controller is the only thing that can apply it. These tests record the
- * facade the content script actually calls, so a wiring regression shows up as
- * a missing or duplicated call instead of as a green static pattern.
- */
 function createPlayerActionsRecorder() {
   const instances = [];
   const api = {
@@ -616,7 +594,6 @@ test('M: a source change asks the player for its id instead of guessing', async 
   await env.settle(2);
   assert.equal(songQueries(env).length, 0, 'no read before the source changes');
 
-  // The element loads a new source: the event is a trigger, never an identity.
   env.fireDoc('loadedmetadata', media);
   await env.settle(2);
   const query = songQueries(env)[0];
@@ -670,14 +647,11 @@ test('S: a source change after playback voids a same-id push', async () => {
   pushPageSong(env, { videoId: 'song-a', href });
   await env.settle(2);
 
-  // The song has played, then the element reports a new source.
   media.currentTime = 45;
   env.fireDoc('timeupdate', media);
   env.fireDoc('loadedmetadata', media);
   await env.settle(2);
 
-  // The player still reports the old song: that is not evidence the new source
-  // is that song, so the section must not be re-applied.
   pushPageSong(env, { videoId: 'song-a', href });
   await env.settle(2);
   assert.equal(recorder.instances[0].invalidations, 1, 'a same-id read after a source change invalidates');
@@ -732,10 +706,6 @@ test('S2: a same-id query after a source change confirms the visit when URL, hre
   replyPageSongState(env, { id: songQueries(env)[0].id, videoId: 'song-a', href });
   await env.settle(2);
 
-  // A same song reloaded on its own element is a confirmation, not a swap: the
-  // visit survives, the id is re-delivered with its own provenance, and the
-  // armed section keeps its From/To (it still loops back to From at the To mark
-  // instead of running on to the end of the song).
   assert.equal(recorder.instances[0].invalidations, 0, 'the armed section is not dropped');
   assert.deepEqual(
     recorder.instances[0].songIds.at(-1),
@@ -828,8 +798,6 @@ test('F1: a provenance-complete same-id push after a timeout re-adopts, but repl
   await env.settle(2);
   assert.equal(recorder.instances[0].invalidations, 1, 'the timeout invalidates (pinned P)');
 
-  // Clause 2: a recreated controller must not replay the invalidated id. Only
-  // a new provenance-complete push may bring it back.
   env.sendRuntime({ type: 'APPLY_TAB_STATE', bypass: true, settings: { slow: 0.8, reverbIntensity: 0.5 } });
   await env.settle(2);
   env.sendRuntime({ type: 'APPLY_TAB_STATE', bypass: false, settings: { slow: 0.8, reverbIntensity: 0.5 } });
@@ -837,8 +805,6 @@ test('F1: a provenance-complete same-id push after a timeout re-adopts, but repl
   const recreated = recorder.instances.at(-1);
   assert.equal(recreated.songIds.length, 0, 'ensurePlayerActions does not replay an invalidated id');
 
-  // Clause 1: the URL, the href, the push and the element all still name A, so
-  // a later same-id push is a fresh vouch, not another invalidation.
   pushPageSong(env, { videoId: 'song-a', href: watch });
   await env.settle(2);
   const current = recorder.instances.at(-1);
@@ -890,8 +856,6 @@ test('V: a first load is not a change of song', async () => {
   pushPageSong(env, { videoId: 'song-a', href });
   await env.settle(2);
 
-  // Nothing has played yet: metadata for this same song is not a source change
-  // under a live identity.
   env.fireDoc('loadedmetadata', media);
   await env.settle(2);
   pushPageSong(env, { videoId: 'song-a', href });
@@ -916,8 +880,6 @@ test('Q: a stale read cannot move the cached provenance of an unchanged id', asy
   pushPageSong(env, { videoId: 'song-a', href: hrefA });
   await env.settle(2);
 
-  // The URL moves to B; a source event triggers a read while the player still
-  // reports A. The hook's own href is the URL it is in now (B).
   env.sandbox.location.href = 'https://music.youtube.com/watch?v=song-b';
   env.fireDoc('loadedmetadata', media);
   await env.settle(2);
@@ -928,7 +890,6 @@ test('Q: a stale read cannot move the cached provenance of an unchanged id', asy
   });
   await env.settle(2);
 
-  // A recreated controller replays the cached push.
   env.sendRuntime({ type: 'APPLY_TAB_STATE', bypass: true, settings: { slow: 0.8, reverbIntensity: 0.5 } });
   await env.settle(2);
   env.sendRuntime({ type: 'APPLY_TAB_STATE', bypass: false, settings: { slow: 0.8, reverbIntensity: 0.5 } });
@@ -1021,10 +982,8 @@ test('O: a push that lands before the reply wins, and a stale reply is discarded
   env.fireDoc('emptied', media);
   await env.settle(2);
   const first = songQueries(env)[0];
-  // The player pushes the real id while the read is in flight.
   pushPageSong(env, { videoId: 'song-b', href: 'https://music.youtube.com/' });
   await env.settle(2);
-  // The read comes back for the old song: it is older than the push.
   replyPageSongState(env, { id: first.id, videoId: 'song-a', href: 'https://music.youtube.com/' });
   await env.settle(2);
   assert.deepEqual(
@@ -1057,8 +1016,6 @@ test('H: the stored wheel volume reaches the live player controller, once', asyn
     'the stored volume must be handed to the controller that can apply it'
   );
 
-  // A later state push carries the last saved settings; re-arming the hand-off
-  // is what wrote an older volume over a fresh wheel step.
   env.sendRuntime({
     type: 'APPLY_TAB_STATE',
     eligible: true,
@@ -1102,9 +1059,6 @@ test('J: a recreated controller replays the push with the href it was taken in',
     'the first delivery carries the href the push was taken in'
   );
 
-  // Bypass off and on tears the controller down and builds a new one, which
-  // replays the cached push. The href must travel with it: anchoring a stale id
-  // to the current URL is what let song A's section run on song B.
   env.sendRuntime({ type: 'APPLY_TAB_STATE', bypass: true, settings: { slow: 0.8, reverbIntensity: 0.5 } });
   await env.settle(2);
   env.sendRuntime({ type: 'APPLY_TAB_STATE', bypass: false, settings: { slow: 0.8, reverbIntensity: 0.5 } });
@@ -1137,24 +1091,20 @@ test('K: only a trusted move of the volume slider is a user change', async () =>
   await env.settle(6);
   const calls = recorder.instances[0].playerVolumeCalls;
 
-  // A page script can post this message with a correct token.
   pushPageVolume(env, { volume: 65, reason: 'slider' });
   await env.settle(4);
   assert.deepEqual(calls[0], { percent: 65, user: false }, 'a forged push may adopt the value, never the intent');
 
-  // A trusted gesture that is not the volume slider is not this control.
   env.fireDoc('input', { closest: () => null }, { isTrusted: true });
   pushPageVolume(env, { volume: 66, reason: 'slider' });
   await env.settle(4);
   assert.deepEqual(calls[1], { percent: 66, user: false }, 'a click elsewhere must not authorise the push');
 
-  // An untrusted event on the slider is synthetic, not the user.
   env.fireDoc('input', volumeSliderTarget());
   pushPageVolume(env, { volume: 67, reason: 'slider' });
   await env.settle(4);
   assert.deepEqual(calls[2], { percent: 67, user: false }, 'an untrusted slider event is not a gesture');
 
-  // A trusted slider input is the user.
   env.fireDoc('input', volumeSliderTarget(), { isTrusted: true });
   pushPageVolume(env, { volume: 70, reason: 'slider' });
   await env.settle(4);
@@ -1172,8 +1122,6 @@ test('L: a slow drag keeps its trust alive and an old one expires', async () => 
   await env.settle(6);
   const calls = recorder.instances[0].playerVolumeCalls;
 
-  // A drag lasting several seconds emits input events the whole way; the final
-  // value is pushed at the end, far from the first event.
   env.fireDoc('input', volumeSliderTarget(), { isTrusted: true });
   env.advance(2000);
   env.fireDoc('input', volumeSliderTarget(), { isTrusted: true });
@@ -1182,7 +1130,6 @@ test('L: a slow drag keeps its trust alive and an old one expires', async () => 
   await env.settle(4);
   assert.deepEqual(calls[0], { percent: 40, user: true }, 'the drag end is still the user');
 
-  // Long after any input, trust is gone.
   env.advance(3500);
   pushPageVolume(env, { volume: 80, reason: 'slider' });
   await env.settle(4);
@@ -1199,7 +1146,6 @@ test('I: only a native slider drag outranks a pending restore', async () => {
   env.fireDoc('play', media);
   await env.settle(6);
 
-  // A real drag is a trusted input on the volume slider itself.
   env.fireDoc('input', volumeSliderTarget(), { isTrusted: true });
   pushPageVolume(env, { volume: 65, reason: 'slider' });
   pushPageVolume(env, { volume: 40, reason: 'poll' });

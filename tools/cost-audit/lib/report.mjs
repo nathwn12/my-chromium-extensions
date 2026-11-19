@@ -1,13 +1,3 @@
-// Pure report layer: assertions, verdict text, the per-extension table, exit
-// codes. No browser, no clock, no I/O — so it is unit-testable on its own.
-//
-// Three verdicts:
-//   pass   - measured and true
-//   fail   - measured and false, OR a precondition was empty (vacuous)
-//   limit  - the environment cannot reach the question; carries the probe used
-// A vacuous assertion is a failure, never a pass and never a limit: a zero that
-// was satisfied by an empty registration or by an extension that never injected
-// proves nothing, and must say so.
 
 import { patternsCoverHost } from "./source.mjs";
 
@@ -144,10 +134,6 @@ export function registrationAssertions(report) {
         }),
       };
       if (!entries.length) {
-        // An extension may answer exclusion by registering nothing at all. That
-        // is stronger than an excludeMatches entry, but it is only evidence if
-        // an earlier phase in the same run saw a registration and this phase saw
-        // no injection.
         const provenEarlier = registration.phases.some(
           (other) =>
             other !== phase &&
@@ -279,11 +265,6 @@ export function buildAssertions(report, options = {}) {
       const name = ext?.name ?? pkg;
 
       if (scenario.kind === "seen-off") {
-        // A host the user has enabled before, currently off: the content script
-        // must be there (registration matches `seen || enabled`, and that is what
-        // makes a later enable live) while the page pays NOTHING — no listener,
-        // no timer, no observer, no patched global, no audio graph. "Excluded is
-        // zero" is asserted separately and is unchanged.
         const scripts = Number(value.scripts ?? 0);
         const violations = violationsOf(value, PAGE_COST_KEYS);
         const graphs = Number(value.workletNodes ?? 0);
@@ -382,9 +363,6 @@ export function buildAssertions(report, options = {}) {
         expected: "0 everywhere",
         actual: Object.fromEntries(FOOTPRINT_KEYS.map((k) => [k, value[k] ?? 0])),
       };
-      // A zero is only evidence when this extension was seen injecting somewhere
-      // in the run. Without a signal the zero is either unfalsifiable (it could
-      // have run here) or unreachable (its manifest never matches this host).
       if ((signals.get(pkg) ?? 0) === 0) {
         const reach = report.reach?.[pkg];
         const reachable = reach?.patterns?.length ? patternsCoverHost(reach.patterns, scenario.host) : false;

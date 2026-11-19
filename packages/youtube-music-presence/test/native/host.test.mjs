@@ -103,8 +103,6 @@ function collect() {
   return { frames, send: (message) => frames.push(message) };
 }
 
-// The roster is whatever config.js declares, so this assertion outlives the
-// Music-only source table instead of hard-coding its keys.
 const idleSources = Object.fromEntries(Object.keys(SOURCE_META).map((source) => [source, "idle"]));
 
 const statusOf = (frames, state) =>
@@ -141,7 +139,6 @@ test("a valid hello announces the host as connecting with the transport it will 
     },
   ]);
 
-  // The same hello twice is not a second announcement.
   await host.handle({ t: "hello", clientId: DEFAULT_CLIENT_ID, version: 1, transport: "ipc" });
   assert.equal(frames.length, 1);
   host.close();
@@ -269,11 +266,6 @@ test("a reconnect resends the last activity and reports connected", async () => 
   host.close();
 });
 
-/*
- * The installed Discord desktop app is reached over one IPC socket per source.
- * Closing Discord, or losing that socket, must not lose the card already
- * published: the host reconnects and resends it.
- */
 test("a YouTube Music activity is resent after a Discord IPC disconnect and reconnect", async () => {
   const { frames, send } = collect();
   const ipc = makeFakeIpcClients();
@@ -297,7 +289,6 @@ test("a YouTube Music activity is resent after a Discord IPC disconnect and reco
   assert.equal(client.connects, 1);
   assert.deepEqual(client.sent, [activity]);
 
-  // Discord closes: the socket reports its own close and the host waits.
   client.ready = false;
   client.options.onClose({ reason: "discord-closed" });
 
@@ -306,7 +297,6 @@ test("a YouTube Music activity is resent after a Discord IPC disconnect and reco
   assert.equal(waiting.sources["youtube-music"], "waiting");
   assert.equal(timers.size(), 1, "a reconnect is armed");
 
-  // Discord reopens: the armed reconnect connects again and resends the card.
   timers.fire();
   await new Promise((resolve) => setImmediate(resolve));
 

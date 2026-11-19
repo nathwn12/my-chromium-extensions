@@ -14,7 +14,6 @@
 (function () {
   "use strict";
 
-  // The manifest matches every frame; subframes must stay silent.
   try {
     if (typeof top !== "undefined" && top && top !== globalThis) return;
   } catch (_) {
@@ -36,18 +35,9 @@
     "emptied"
   ];
   var POLL_MS = 1000;
-  // `storage.local` key the popup switch and the worker both use.
   var ENABLED_KEY = "enabled";
-  // A live position this far from the anchored one is a seek, a rate change or
-  // an event we never saw — not rounding.
   var DRIFT_SECONDS = 2.5;
-  // Discord counts elapsed time in wall time and has no field for the playback
-  // rate, so any non-1x playback falls behind by `rate - 1` every second.
-  // Reporting on every tick re-anchors the card before the gap is visible.
-  // Classic content scripts cannot import, so this literal is pinned to
-  // activity.js's exported RATE_EPSILON by rate-epsilon.test.mjs.
   var RATE_EPSILON = 0.01;
-  // YouTube's player swaps its DOM after the URL changes; read once it settles.
   var SPA_SETTLE_MS = 250;
 
   var lastHref = href();
@@ -57,12 +47,8 @@
   var lastSample = null;
   var reported = false;
   var settleTimer = null;
-  // One-shot re-read after a media event whose DOM title has not flipped yet.
   var staleTimer = null;
   var pollTimer = null;
-  // The master presence switch (on unless explicitly stored `false`). Off means
-  // the page is not read at all: the poll stops and every report is dropped,
-  // because the worker holds no port and has nothing to publish.
   var enabled = true;
 
   function href() {
@@ -79,7 +65,6 @@
         void chrome.runtime.lastError;
       });
     } catch (_) {
-      /* extension reloaded under us — nothing to do */
     }
   }
 
@@ -191,7 +176,6 @@
 
   function onSpaNavigation() {
     checkUrl();
-    // Same-URL re-renders (yt-page-data-updated) need no settle wait.
     if (settleTimer === null) reportNow();
   }
 
@@ -200,9 +184,6 @@
     var tag = String(target && target.tagName || "").toUpperCase();
     if (tag !== "VIDEO" && tag !== "AUDIO") return;
     var state = readState();
-    // A same-title (or title-less) report means the player fired before the DOM
-    // flipped. Keep the event's own report — pause, seek and rate still land at
-    // once — and re-read shortly so the new title is not left to the next poll.
     if (enabled && state && (!state.title || state.title === lastTitle)) armStaleReRead();
     report(state);
   }
@@ -291,7 +272,6 @@
         });
       }
     } catch (_) {
-      /* storage unavailable — presence stays on */
     }
   }
 
@@ -330,7 +310,6 @@
     }
     gone();
   });
-  // bfcache restore: republish without waiting for a fresh load.
   window.addEventListener("pageshow", function () {
     lastHref = href();
     reportNow();

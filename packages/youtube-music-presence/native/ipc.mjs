@@ -67,8 +67,6 @@ export class DiscordFrameDecoder {
       const op = this.#buffer.readUInt32LE(0);
       const length = this.#buffer.readUInt32LE(4);
       if (length > MAX_DISCORD_FRAME) {
-        // Reset so one bad length cannot poison every later chunk: the caller
-        // destroys the socket and the next connection decodes cleanly.
         this.#buffer = Buffer.alloc(0);
         throw new RangeError(`discord frame of ${length} bytes exceeds ${MAX_DISCORD_FRAME}`);
       }
@@ -79,7 +77,6 @@ export class DiscordFrameDecoder {
       try {
         payload = JSON.parse(body.toString("utf8"));
       } catch {
-        // A frame that is not JSON carries nothing this client can match.
         continue;
       }
       frames.push({ op, payload });
@@ -141,10 +138,6 @@ export class DiscordIpcClient {
     pipes = DISCORD_PIPES,
     connectImpl = (pipePath) => net.connect(pipePath),
     pid = process.pid,
-    // The worker paces every update (1.5 s gap, 8 per 20 s; 2.5 s apart with
-    // the same ceiling when the playback rate is not 1x) and this guard only
-    // exists for a host driven directly, so its budget must never bind under
-    // the worker's: 40 per 20 s leaves the worker's ceiling in charge.
     rateLimit = 40,
     rateWindowMs = 20_000,
     connectTimeoutMs = DEFAULT_CONNECT_TIMEOUT_MS,
@@ -224,7 +217,6 @@ export class DiscordIpcClient {
     if (this.#closed || !this.#ready || !this.#socket || this.#socket.destroyed) {
       return { ok: false, error: "discord-closed" };
     }
-    // A clear bypasses the budget: presence never takes a window to disappear.
     if (activity === null) return this.#send(null);
 
     this.#prune();
@@ -355,7 +347,6 @@ export class DiscordIpcClient {
       try {
         socket.destroy();
       } catch {
-        // A socket that is already gone has nothing left to destroy.
       }
     });
     socket.on("close", () => this.#handleClose(socket));
@@ -363,7 +354,6 @@ export class DiscordIpcClient {
       try {
         socket.destroy();
       } catch {
-        // A socket that is already gone has nothing left to destroy.
       }
     });
   }
@@ -378,7 +368,6 @@ export class DiscordIpcClient {
       try {
         socket.destroy();
       } catch {
-        // A socket that is already gone has nothing left to destroy.
       }
     }
   }
@@ -482,7 +471,6 @@ export class DiscordIpcClient {
       try {
         this.#socket?.destroy();
       } catch {
-        // A socket that is already gone has nothing left to destroy.
       }
       return;
     }
@@ -495,7 +483,6 @@ export class DiscordIpcClient {
       try {
         this.#write(OP.PONG, {});
       } catch {
-        // The pipe went away between the ping and the pong.
       }
       return;
     }
@@ -511,8 +498,6 @@ export class DiscordIpcClient {
       this.#readyWaiter?.resolve(payload);
       return;
     }
-    // A handshake ERROR carries no nonce, so only the nonce path below can
-    // match it; surface the real reason instead of "handshake timed out".
     if (payload?.evt === "ERROR" && this.#readyWaiter) {
       const nonce = payload?.nonce;
       if (typeof nonce !== "string" || !this.#pending.has(nonce)) {
@@ -558,8 +543,6 @@ export class DiscordIpcClient {
   async #flush() {
     if (this.#queued === undefined) return;
     if (!this.#ready) {
-      // The pipe is down but a payload is queued: keep it for the host's
-      // reconnect instead of stranding it.
       this.#scheduleFlush();
       return;
     }
@@ -590,7 +573,6 @@ export class DiscordIpcClient {
       };
     }
 
-    // Only successful sends seed the rolling window.
     this.#sentAt.push(this.#timers.now());
     const name = reply?.data?.name;
     if (typeof name === "string" && name.length > 0) this.#appName = name;

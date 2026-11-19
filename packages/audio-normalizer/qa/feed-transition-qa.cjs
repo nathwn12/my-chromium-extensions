@@ -1,22 +1,4 @@
 'use strict';
-/*
- * qa/feed-transition-qa.cjs — feed-boundary (reset-program) transition harness.
- * Local-only (qa/ is gitignored).
- *
- * SAFETY: pure Node, no browser, no Chromium, no Playwright, no audio device,
- * no sound, no ffmpeg. The worklet source runs inside node:vm with a stub
- * AudioWorkletProcessor / registerProcessor / sampleRate (same pattern as
- * qa/loudness-verify.cjs renderThroughWorkletChannels: proc.process([ins],
- * [ous]) with 128-frame quanta, gain trace from proc.telemetry.appliedGainDb).
- * NOTE: qa/worklet-equivalence-qa.cjs is browser/OfflineAudioContext-based and
- * has no vm loadProcessor pattern; this harness follows the repo's canonical
- * vm pattern (loudness-verify / worklet-silent-analysis) instead.
- *
- * Flow: settle programme A (1 kHz sine), post reset-program, switch to
- * programme B ~6 dB louder. References G_A / G_B come from cold solo renders.
- *
- * Exit codes: 0 = all rows PASS; 2 = any FAIL or UNTESTED; 1 = harness error.
- */
 
 const fs = require('node:fs');
 const path = require('node:path');
@@ -62,8 +44,6 @@ function makeSine(amp, seconds) {
   return x;
 }
 
-// Render a mono signal duplicated to NCH channels; per-quantum telemetry gain
-// trace plus full outputs. Returns { outs, trace, badGain, badOut }.
 function render(proc, signal) {
   const n = signal.length;
   const outs = [];
@@ -138,7 +118,6 @@ function main() {
     rows.push({ name, measured, bound, pass, note: note || '' });
   };
 
-  // References from cold.
   const procA = new Proc();
   procA.port.onmessage({ data: { type: 'set-gain-db', gainDb: 0 } });
   const rA = render(procA, makeSine(AMP_A, PRE_A_SEC));
@@ -156,7 +135,6 @@ function main() {
     push('REF-settled', 'spreadA=' + fmt(sA.spread) + ' spreadB=' + fmt(sB.spread), '<=0.300', true, '');
   }
 
-  // MAIN: A -> reset-program (missing generation, then numbered generation) -> B.
   const proc = new Proc();
   proc.port.onmessage({ data: { type: 'set-gain-db', gainDb: 0 } });
   render(proc, makeSine(AMP_A, PRE_A_SEC));
@@ -174,7 +152,6 @@ function main() {
   push('F3 @250ms', fmt(g250.v - GB) + ' dB (g=' + fmt(g250.v) + ' GB=' + fmt(GB) + ')', '<=1.500', Math.abs(g250.v - GB) <= 1.5, '');
   push('F3 @500ms', fmt(g500.v - GB) + ' dB (g=' + fmt(g500.v) + ' GB=' + fmt(GB) + ')', '<=0.500', Math.abs(g500.v - GB) <= 0.5, '');
 
-  // SAME-loudness control: A -> reset -> A.
   const procS = new Proc();
   procS.port.onmessage({ data: { type: 'set-gain-db', gainDb: 0 } });
   render(procS, makeSine(AMP_A, PRE_A_SEC));
@@ -183,7 +160,6 @@ function main() {
   const s250 = atTime(rSame.trace, 0.25);
   push('SAME @250ms', fmt(s250.v - GA) + ' dB (g=' + fmt(s250.v) + ' GA=' + fmt(GA) + ')', '<=0.500', Math.abs(s250.v - GA) <= 0.5, '');
 
-  // QUIETER control: A -> reset -> quiet; no positive gain in first 400 ms.
   const procQ = new Proc();
   procQ.port.onmessage({ data: { type: 'set-gain-db', gainDb: 0 } });
   render(procQ, makeSine(AMP_A, PRE_A_SEC));
@@ -199,9 +175,6 @@ function main() {
   }
   push('QUIET max+400ms', fmt(maxUp) + ' dB', '<=+0.100', Number.isFinite(maxUp) && maxUp <= 0.1, 'pre=' + fmt(preQ));
 
-  // DELAYED DUPLICATE after resume: once generation N has been applied, a
-  // replayed N (or any older token) arriving later must not clear the fresh
-  // measurements accumulated since N — generation tokens are exactly-once.
   const procDup = new Proc();
   procDup.port.onmessage({ data: { type: 'set-gain-db', gainDb: 0 } });
   render(procDup, makeSine(AMP_A, PRE_A_SEC));
@@ -228,14 +201,12 @@ function main() {
   const afterDup = dupSnapshot();
   const dupChanged = Object.keys(beforeDup).filter((k) => !Object.is(beforeDup[k], afterDup[k]));
   push('DUP delayed-dup', 'fields changed=' + dupChanged.length + (dupChanged.length ? ' [' + dupChanged.join(',') + ']' : ''), '0', dupChanged.length === 0, 'gen 7 replayed + gen 6 after resume');
-  // Positive control: a NEW generation must still apply the full reset.
   procDup.port.onmessage({ data: { type: 'reset-program', generation: 8 } });
   const afterNew = dupSnapshot();
   const newApplied = afterNew.integratedLufs === -Infinity && afterNew.hasGated === false &&
     afterNew.fastCount === 0 && afterNew.blockCount === 0 && afterNew.onsetCutDb === 0 && afterNew.warm === false;
   push('DUP new gen applies', 'cleared=' + (newApplied ? 'yes' : 'no'), 'yes', newApplied, 'gen 8');
 
-  // NEGATIVE control: A -> B with NO reset must FAIL the 250 ms bound.
   const procN = new Proc();
   procN.port.onmessage({ data: { type: 'set-gain-db', gainDb: 0 } });
   render(procN, makeSine(AMP_A, PRE_A_SEC));
@@ -244,7 +215,6 @@ function main() {
   const negDev = Math.abs(n250.v - GB);
   push('NEG no-reset', fmt(n250.v - GB) + ' dB (must FAIL 1.5)', '>1.500', negDev > 1.5, negDev > 1.5 ? 'control valid' : 'HARNESS BROKEN');
 
-  // NaN sweep over every trace and output.
   let badG = rA.badGain + rB.badGain + rMain.badGain + rSame.badGain + rQuiet.badGain + rNeg.badGain;
   let badO = rA.badOut + rB.badOut + rMain.badOut + rSame.badOut + rQuiet.badOut + rNeg.badOut;
   for (const r of [rA, rB, rMain, rSame, rQuiet, rNeg]) {
@@ -252,7 +222,6 @@ function main() {
   }
   push('NAN sweep', 'gain=' + badG + ' out=' + badO, '0/0', badG === 0 && badO === 0, '');
 
-  // Digital silence stays bit-zero (fresh processor).
   const procZ = new Proc();
   procZ.port.onmessage({ data: { type: 'set-gain-db', gainDb: 0 } });
   const rZ = render(procZ, new Float32Array(512));
@@ -260,7 +229,6 @@ function main() {
   for (const ch of rZ.outs) for (let i = 0; i < ch.length; i++) if (ch[i] !== 0) nz++;
   push('SILENCE bit-zero', nz + ' nonzero', '0', nz === 0, rZ.badOut === 0 ? '' : 'non-finite in silence out');
 
-  // A6-INFO (non-gating, for T3): loud onset from cold + quiet onset.
   const procL = new Proc();
   procL.port.onmessage({ data: { type: 'set-gain-db', gainDb: 0 } });
   const rL = render(procL, makeSine(AMP_LOUD, 3));
@@ -276,10 +244,6 @@ function main() {
   const procQz = new Proc();
   procQz.port.onmessage({ data: { type: 'set-gain-db', gainDb: 0 } });
   const rQz = render(procQz, makeSine(AMP_QUIET, 2));
-  // Guard behavior binds only over the cold window (~400 ms to first gated
-  // block): there the probe must never boost. Past gating the SLOW loop takes
-  // over and lifts a far-quiet program toward target by design (A1
-  // convergence), so the 2 s max is reported separately, not asserted.
   const kCold = Math.min(rQz.trace.length, Math.round(0.4 * SR / BLOCK));
   let qmax = 0;
   let qmax2 = 0;

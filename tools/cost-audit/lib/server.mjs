@@ -1,11 +1,3 @@
-// Network-free fixtures: two localhost servers, pages generated in memory, and
-// a WAV data URI so audio cases need no file and no fetch.
-//
-// https exists only so a page can carry a real https origin for the extensions
-// whose manifest matches are pinned to https://music.youtube.com/*. Chrome is
-// pointed at it with --host-resolver-rules, so no DNS and no external host is
-// ever contacted; the certificate is minted into the throwaway profile and
-// thrown away with it.
 
 import { createServer as createHttpServer } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
@@ -50,9 +42,6 @@ export function mintCertificate(dir, { host = "music.youtube.com", openssl = fin
   }
 }
 
-// The page carries no behaviour of its own: one inline script marks itself so
-// the probe can prove script-element counting works, and nothing else runs.
-// Any listener, timer or observer recorded here therefore came from elsewhere.
 function page({ title, media = false, mediaUri = "" }) {
   return `<!doctype html>
 <html lang="en">

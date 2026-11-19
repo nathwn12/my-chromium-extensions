@@ -1,24 +1,4 @@
 'use strict';
-/*
- * worklet-silent-analysis.cjs
- * Local-only, PURE NODE silent verification harness (qa/ is gitignored).
- * Session scratch id: ses_f07d8d804ffePLpg7UON9NAcAF
- *
- * SAFETY: no browser, no Chromium, no chrome-devtools/MCP, no
- * audio device, no sound. Worklet sources are executed inside node:vm with a
- * stub AudioWorkletProcessor. This file must never launch a browser.
- *
- * Produces (in <parent>/loudness-<SESSION_ID>/):
- *   silent-analysis.json
- *   silent-analysis-transcript.txt
- *   silent-unit.txt        (node tests/shared.test.js)
- *   silent-typecheck.txt   (npm run typecheck)
- *
- * Variants:
- *   baseline = `git show HEAD:audio/normalizer-worklet.js` (written to temp, never hand-edited)
- *   opt      = current worklet with ONLY the B1 band anchor reverted (bandDb=shortDb -> programDb)
- *   patched  = current worklet
- */
 
 const fs = require('node:fs');
 const os = require('node:os');
@@ -40,8 +20,6 @@ const SR = 48000;
 const BLOCK = 128;
 const CEILING_LINEAR = Math.pow(10, -1 / 20); // -1 dBFS soft-knee / limiter ceiling
 
-// Worklet band boundaries, mirrored from audio/normalizer-worklet.js (read-only constants).
-// lufsToInternalDb(lufs) = lufs - LOUDNESS_OFFSET (LOUDNESS_OFFSET = -0.691).
 const LOUDNESS_OFFSET = -0.691;
 const BAND_LIMITS = {
   quietFloorInternalDb: (-23.5 - LOUDNESS_OFFSET) - 1.3, // COMFORT_MIN_LUFS - BAND_DEADBAND_DB
@@ -49,17 +27,10 @@ const BAND_LIMITS = {
   comfortMinInternalDb: (-23.5 - LOUDNESS_OFFSET),
   comfortMaxInternalDb: (-18 - LOUDNESS_OFFSET),
 };
-// AM base amplitude: the prior 0.2 parked the short-window level at the loud ceiling
-// (measured short mean ~ -16.02 dB vs ceiling -16.01 dB) so B1 never activated.
-// 0.25 lifts the short-window level ~1.9 dB so the whole modulation range sits clearly
-// above the loud ceiling; peak = 0.25*10^(5/20) = 0.4446 << 0.891 ceiling (limiter inactive).
 const AM_BASE_AMP = 0.25;
 const AM_DEPTH_DB = 5;
 const AM_RATE_HZ = 1.5;
 const AM_CARRIER_HZ = 200;
-// Duration extended from 15 s to 60 s so the baseline's 13 s program window reaches
-// steady state BEFORE the 8 s measurement window. At 15 s the baseline was still
-// converging (its "ripple" was really a monotonic settling trend), which is not AM ripple.
 const AM_DURATION_SECONDS = 60;
 const AM_ANALYSIS_START = 52; // last 8 s
 const AM_ANALYSIS_END = 60;
@@ -72,7 +43,6 @@ const THRESHOLDS = {
   amRippleDb: 0.25,
 };
 
-/* Variants                                                            */
 
 function gitShowBaseline() {
   return execFileSync('git', ['show', 'HEAD:audio/normalizer-worklet.js'], {
@@ -80,11 +50,6 @@ function gitShowBaseline() {
   }).replace(/\r\n/g, '\n');
 }
 
-// opt = current worklet with ONLY the B1 band anchor reverted:
-//   delete the `const bandDb = shortDb;` declaration, then rename the comfort-band
-//   comparisons from bandDb to programDb. The rename uses a WORD-BOUNDARY match so the
-//   unrelated `localDeadbandDb` identifier (which contains the substring "bandDb") is
-//   never touched. Fails loudly if the transform is not exactly as advertised.
 function revertB1(src) {
   const marker = '    const bandDb = shortDb;\n';
   if (!src.includes(marker)) throw new Error('B1 revert: `const bandDb = shortDb;` line not found');
@@ -92,7 +57,6 @@ function revertB1(src) {
   const before = out;
   out = out.replace(/\bbandDb\b/g, 'programDb');
 
-  // Self-check: only the comfort-band anchor tokens may have changed.
   if (/\bbandDb\b/.test(out)) throw new Error('B1 revert self-check failed: a bandDb token survived');
   if (out.includes('localDeadprogramDb')) throw new Error('B1 revert self-check failed: localDeadbandDb was corrupted');
   const deadbandBefore = (before.match(/localDeadbandDb/g) || []).length;
@@ -114,12 +78,9 @@ function buildVariants() {
   const patched = fs.readFileSync(path.join(repoRoot, 'audio', 'normalizer-worklet.js'), 'utf8').replace(/\r\n/g, '\n');
   const opt = revertB1(patched);
 
-  // Sanity: baseline must be the pre-change worklet.
   if (!baseline.includes('const SOFT_KNEE_DB = 3;')) throw new Error('baseline sanity failed');
   if (baseline.includes('SOFT_KNEE_RATIO')) throw new Error('baseline sanity failed: HEAD already has B3');
   if (baseline.includes('const bandDb = shortDb;')) throw new Error('baseline sanity failed: HEAD already has B1');
-  // opt must have B1 reverted but keep the micro-opts, and must NOT have disturbed the
-  // unrelated local-dynamics deadband identifier.
   if (/\bbandDb\b/.test(opt)) throw new Error('opt sanity failed: a bandDb token still present');
   if (opt.includes('const bandDb')) throw new Error('opt sanity failed: bandDb declaration still present');
   if (opt.includes('localDeadprogramDb')) throw new Error('opt sanity failed: localDeadbandDb corrupted');
@@ -130,7 +91,6 @@ function buildVariants() {
   if (!opt.includes('programDb < quietFloorDb')) throw new Error('opt sanity failed: quietFloor comparison not rewritten');
   if (!opt.includes('programDb > loudCeilingDb')) throw new Error('opt sanity failed: loudCeiling comparison not rewritten');
   if (!opt.includes('SOFT_KNEE_RATIO')) throw new Error('opt sanity failed: B3 missing (opt should keep micro-opts)');
-  // patched must have B1.
   if (!patched.includes('const bandDb = shortDb;')) throw new Error('patched sanity failed: B1 anchor missing');
 
   fs.writeFileSync(path.join(variantsDir, 'baseline.js'), baseline);
@@ -151,7 +111,6 @@ function buildVariants() {
   };
 }
 
-/* Silent loader (node:vm) and driver                                  */
 
 function loadProcessor(source) {
   let Captured = null;
@@ -178,8 +137,6 @@ function makeSine(amp, freq, seconds) {
   return x;
 }
 
-// Render a mono signal (duplicated to both channels) through a variant.
-// Records currentGain (the loudness gain) once per 128-frame block.
 function renderVariant(source, signal, opts = {}) {
   const Proc = loadProcessor(source);
   const proc = new Proc();
@@ -209,7 +166,6 @@ function renderVariant(source, signal, opts = {}) {
   return { outL, outR, gains, shorts, blockDt: BLOCK / SR };
 }
 
-/* Stimuli                                                             */
 
 function fillSineSeg(x, t0, t1, amp, freq) {
   const i0 = Math.max(0, Math.round(t0 * SR));
@@ -229,11 +185,6 @@ function buildEquivalence() {
   return x;
 }
 
-// Transition levels, chosen to isolate B1 (see rationale in JSON/transcript):
-//   A_Q internal ~ -16.2 dBFS : inside the comfort deadband -> band correction ~0
-//   A_L internal ~ -13.3 dBFS : above loud ceiling -> band correction active (~1.5 dB)
-//   step = ~2.9 dB < LOCAL_DEADBAND_DB (3.5) -> shared local-dynamics term dormant.
-//   peak 0.306 << 0.891 ceiling -> limiter inactive.
 const TRANSITION_QUIET_AMP = 0.219;
 const TRANSITION_LOUD_AMP = 0.306;
 
@@ -260,8 +211,6 @@ function buildAm() {
   return x;
 }
 
-// Analyze the AM render: gain ripple (peak-to-peak) over the last 8 s plus the
-// short-window loudness range and its margins to the band boundaries.
 function computeAm(V, sigAm) {
   const amBase = renderVariant(V.baseline, sigAm, {});
   const amPatched = renderVariant(V.patched, sigAm, {});
@@ -323,7 +272,6 @@ function computeAm(V, sigAm) {
   return am;
 }
 
-/* f32 ULP comparison                                                  */
 
 const _f32 = new Float32Array(1);
 const _u32 = new Uint32Array(_f32.buffer);
@@ -372,7 +320,6 @@ function comparePair(A, B) {
   };
 }
 
-/* Metrics                                                             */
 
 function median(arr) {
   const a = Array.from(arr).sort((x, y) => x - y);
@@ -410,7 +357,6 @@ function trajectory(gains, times) {
   return times.map((t) => ({ t: Number(t.toFixed(3)), gainDb: Number(gainAt(gains, t).toFixed(4)) }));
 }
 
-// Long constant-level probe -> asymptotic steady-state loudness gain.
 function probeGain(source, amp, seconds = 60) {
   const r = renderVariant(source, makeSine(amp, 300, seconds), {});
   const nBlocks = r.gains.length;
@@ -435,7 +381,6 @@ function cpuMedianMs(source, totalSamples, repeats = 5) {
     return Number(process.hrtime.bigint() - t0) / 1e6;
   }
 
-  // warm-up (JIT), untimed
   runOnce(Proc0);
 
   const samples = [];
@@ -443,7 +388,6 @@ function cpuMedianMs(source, totalSamples, repeats = 5) {
   return { samplesMs: samples.map((v) => Number(v.toFixed(4))), medianMs: median(samples) };
 }
 
-/* Test subprocesses                                                   */
 
 function runNode(args) {
   try {
@@ -463,7 +407,6 @@ function runNpm(script) {
   }
 }
 
-/* Main                                                                */
 
 function fmt(n, d = 4) {
   if (!Number.isFinite(n)) return String(n);
@@ -506,7 +449,6 @@ function main() {
     loud: { baseline: probeGain(V.baseline, TRANSITION_LOUD_AMP), patched: probeGain(V.patched, TRANSITION_LOUD_AMP) },
     quiet: { baseline: probeGain(V.baseline, TRANSITION_QUIET_AMP), patched: probeGain(V.patched, TRANSITION_QUIET_AMP) },
   };
-  // Common asymptotic references (identical physical steady state for both variants).
   const refLoud = probe.loud.patched.gainDb;
   const refQuiet = probe.quiet.patched.gainDb;
 
@@ -518,7 +460,6 @@ function main() {
     const loud = segmentStats(r.gains, 2, 10);
     const lastV = lastViolationTime(r.gains, 2, 10, refLoud, 0.5);
     const lastVR = lastViolationTime(r.gains, 10, 16, refQuiet, 0.5);
-    // "settled" = last 0.5 dB violation occurs before the segment boundary.
     const settledLoud = lastV === null || lastV < 10 - BLOCK_DT;
     const releasedQuiet = lastVR === null || lastVR < 16 - BLOCK_DT;
     return {
@@ -529,9 +470,7 @@ function main() {
         settleTimeSeconds: lastV === null ? 0 : (settledLoud ? Number((lastV - 2).toFixed(4)) : null),
         settledWithinLoudWindow: settledLoud,
         lastViolationTimeSec: lastV === null ? null : Number(lastV.toFixed(4)),
-        // overshoot = gain driven *past* the final target (deeper cut than steady state)
         overshootDownDb: Number(Math.max(0, refLoud - loud.min).toFixed(4)),
-        // max gain above target (here it is the initial condition, not overshoot)
         maxAboveRefDb: Number(Math.max(0, loud.max - refLoud).toFixed(4)),
         endDeviationDb: Number(Math.abs(gainAt(r.gains, 10) - refLoud).toFixed(4)),
       },
@@ -802,8 +741,6 @@ function writeOutputs(json, testsWritten = true) {
   }
 }
 
-// Re-run only the AM check against the persisted JSON, preserving the
-// equivalence/transition/CPU/test results from the previous full run.
 function amOnly() {
   fs.mkdirSync(sessionDir, { recursive: true });
   const json = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));

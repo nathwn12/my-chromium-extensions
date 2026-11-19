@@ -49,13 +49,10 @@ test("the package version is aligned across package, manifest, lockfile, changel
   const manifest = JSON.parse(read("manifest.json"));
   assert.match(pkg.version, /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/, "strict semver");
   assert.equal(manifest.version, pkg.version, "manifest matches package.json");
-  // bun.lock is JSONC: the workspace block carries the resolved version.
   const locked = rootLock.match(/"packages\/youtube-music-presence":\s*\{[^}]*?"version":\s*"([^"]+)"/)?.[1];
   assert.equal(locked, pkg.version, "bun.lock workspace version matches");
   assert.ok(changelog.includes(`[${pkg.version}]`), "the changelog has this version");
   assert.ok(research.includes(`version is ${pkg.version}`), "research notes carry this version");
-  // The root README version cell belongs to scripts/verify-integration.mjs,
-  // which owns the estate-wide package index.
   assert.equal(DEFAULT_CLIENT_ID, "1566530911514923188");
 });
 

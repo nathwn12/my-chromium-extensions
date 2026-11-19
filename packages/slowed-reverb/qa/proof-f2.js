@@ -1,13 +1,5 @@
 'use strict';
 
-/*
- * qa/proof-f2.js - F2 pre-delay units proof (pure Node, real dattorro-worklet.js).
- * Stubs AudioWorkletProcessor/registerProcessor/sampleRate, posts preDelay=0.5 s,
- * feeds an impulse, and measures the onset of wet output. Seconds-everywhere
- * means silence for the first preDelay*sr samples. RED (*0.1 bug): onset ~= 0.05 s.
- * GREEN: onset ~= 0.5 s. Also asserts preBuf holds >= 0.6 s.
- * Exit 0 = assertions hold, 1 = failed, 2 = harness setup problem.
- */
 
 const fs = require('fs');
 const path = require('path');

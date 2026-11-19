@@ -2,16 +2,6 @@
 
 /* global require, __dirname, setImmediate */
 
-/*
- * test/background-section-import.test.js - local saved-section import, Node only.
- *
- * The real background.js runs in a vm context whose importScripts executes the
- * real shared.js and player-actions.js. The path under test is the worker's own
- * code: the packaged payload file, its SHA-256 marker, the one serialized save
- * chain SAVE_PLAYER_SECTION already uses, and the hidden summary.
- *
- * Every id below is synthetic. No browser, no DOM library, no audio.
- */
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -491,7 +481,6 @@ test('background: a failed write reports storage_failed and the chain keeps work
   assert.deepEqual(storage.sections().map((item) => item.videoId), ['vid-after']);
 });
 
-// The local startup gate
 
 test('gate: a packaged file merges onto the destination and reports a receipt', async () => {
   const destination = [

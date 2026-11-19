@@ -1,6 +1,4 @@
 /* eslint-disable */
-// Global type declarations for the Audio Normalizer extension
-// These ensure tsc --checkJs passes on the JS source files
 
 /** Typed interface matching the API returned by shared.js factory function */
 interface TabNormalizerSharedApi {
@@ -42,8 +40,6 @@ interface TabNormalizerSharedApi {
     hookActive: boolean;
     lastError: string;
   }) => string;
-  // NOTE: `saveSiteState` (the whole-map `siteToggles` mirror writer) was
-  // deleted to close the recurrence path. It is deliberately absent here.
   SITE_KEY_PREFIX: string;
   siteStorageKey: (siteKey: string) => string;
   legacySiteStorageKey: (siteKey: string) => string;
@@ -73,12 +69,10 @@ interface Window {
   webkitAudioContext?: typeof AudioContext;
 }
 
-// Augment AudioNode for patched connect tracking
 interface AudioNode {
   __tnConnect?: boolean;
 }
 
-// Augment AudioContext for patched AudioContext tracking
 interface AudioContextConstructor {
   __tnPatched?: boolean;
 }
@@ -91,13 +85,11 @@ interface AudioContext {
   __tnMediaSource?: boolean;
 }
 
-// Augment HTMLMediaElement for element tracking
 interface HTMLMediaElement {
   __tnPlay?: boolean;
   __tnWebAudio?: boolean;
   __tnAttached?: boolean;
 }
 
-// No augmentation needed for HTMLOrSVGScriptElement (it's a type alias, not an interface)
 
 declare function importScripts(...urls: string[]): void;

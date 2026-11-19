@@ -40,9 +40,6 @@ export class Host {
     this.retryTimer = null;
     this.retryDelay = CONNECT_RETRY_START;
 
-    // Which transport this process is on. `preference` is what the extension
-    // asked for; `transport` is what was actually chosen and is what the status
-    // frame reports.
     this.preference = null;
     this.transport = null;
 
@@ -86,7 +83,6 @@ export class Host {
         statusMessage('error', {
           detail: status.detail,
           code: status.code,
-          // A transient diagnostic never becomes a permanent error.
           fatal: status.fatal !== false,
           transport: this.transport ?? undefined,
         }),
@@ -168,8 +164,6 @@ export class Host {
           error: valid.error,
         });
       } else {
-        // A malformed envelope is a local defect, not a Discord absence:
-        // keep the wording neutral on the wire and non-fatal.
         this.write(statusMessage('error', { detail: valid.error, code: null, fatal: false }));
       }
       return Promise.resolve();
@@ -189,7 +183,6 @@ export class Host {
   }
 
   async onHello(message) {
-    // Missing transport means "auto": Discord IPC first, arRPC as the fallback.
     const preference = message.transport ?? 'auto';
     const sameClient =
       this.client &&
@@ -230,8 +223,6 @@ export class Host {
       await this.connectClient(message.clientId);
     } catch (error) {
       this.emitFailure(error);
-      // A permanent handshake rejection (invalid client id) never recovers
-      // on retry: hold the error until a new hello carries a new id.
       if (!error || !error.fatal) this.scheduleConnectRetry();
       else this.log(`discord ipc permanent failure, waiting for a new client id: ${error.message}`);
       return;
@@ -239,8 +230,6 @@ export class Host {
 
     this.retryDelay = CONNECT_RETRY_START;
     if (this.lastActivity === undefined) {
-      // First connect with nothing to publish: report connected without
-      // pushing a null clear to Discord.
       this.write(
         statusMessage('connected', {
           appName: this.client.appName ?? 'Discord',
@@ -268,7 +257,6 @@ export class Host {
       this.transport = 'arrpc';
       return true;
     }
-    // `ipc`, and the primary leg of `auto`: desktop Discord over the pipe.
     this.client = this.makeClient(clientId);
     this.transport = 'discord-ipc';
     return true;
@@ -501,7 +489,6 @@ export async function selftest() {
   const checks = [];
   const record = (name, ok, detail = '') => checks.push({ name, ok: Boolean(ok), detail });
 
-  // 1. Chrome framing survives a split at every byte boundary.
   const sample = { t: 'status', state: 'connected', appName: 'x', user: 'y' };
   const encoded = encodeNativeMessage(sample);
   let splits = 0;
@@ -517,11 +504,9 @@ export async function selftest() {
   }
   record('native-framing-byte-split', splitOk, `${splits} split points`);
 
-  // 2. Activity validation accepts a watching activity and rejects a bad type.
   record('activity-valid', validateActivity({ type: 3, details: 'Episode 1' }).ok);
   record('activity-rejects-type-0', !validateActivity({ type: 0, details: 'x' }).ok);
 
-  // 3. Full host round trip against the fake pipe.
   const capture = new Capture();
   const fake = fakeDiscordPipe();
   let connected = false;
@@ -577,9 +562,6 @@ export async function selftest() {
   host.client?.close();
   if (!connected) record('connected', false, 'host never reported connected');
 
-  // 4. Transport selection: auto uses Discord IPC when it is available, falls
-  //    back to arRPC only when IPC is absent, and a forced transport never
-  //    falls back.
   const transportRun = async (preference, { ipcFails = false, arrpcFails = false } = {}) => {
     const out = new Capture();
     const created = [];
@@ -688,8 +670,6 @@ export async function selftest() {
     JSON.stringify(explicitIpc.status ?? null),
   );
 
-  // A forced ipc with no Discord must wait, not silently become the arRPC
-  // fallback: only `auto` may cross transports.
   const strictIpc = await transportRun('ipc', { ipcFails: true });
   record(
     'transport-ipc-never-falls-back',
@@ -700,7 +680,6 @@ export async function selftest() {
     JSON.stringify(strictIpc.status ?? null),
   );
 
-  // Auto with neither transport: the primary absence is what the user reads.
   const autoNone = await transportRun(undefined, { ipcFails: true, arrpcFails: true });
   record(
     'transport-auto-reports-the-primary-absence',

@@ -79,8 +79,6 @@ function fakeChrome({
   };
   const store = {};
   if (enabled !== undefined) store.enabled = enabled;
-  // Stored transport, site and client-id settings are accepted and ignored:
-  // the Music-only worker always uses the built-in app over desktop IPC.
   for (const key of ["clientId", "transport", "youtubeEnabled", "youtubeMusicEnabled"]) {
     if (arguments[0] && arguments[0][key] !== undefined) store[key] = arguments[0][key];
   }
@@ -288,7 +286,6 @@ test("cancelPending drops the deferred payload and keeps the send window", () =>
     "the dropped payload never fires"
   );
 
-  // The history is intact: the gap still binds for the next payload.
   limiter.push({ details: "three" });
   assert.equal(sent.length, 1, "the cancelled payload did not move the window");
   clock.advance(1);
@@ -468,8 +465,6 @@ test("at 1.5x the anchor is biased half an interval earlier", async () => {
   const biased = Math.floor((sample - 625) / 1000) - 10;
   assert.equal(frame.activity.timestamps.start, biased, "the builder sees sample - 625 ms");
   assert.equal(biased - unbiased, -1, "625 ms earlier crosses one whole second here");
-  // The countdown is rate-scaled from the un-biased sample, not from the
-  // biased anchor that positions the elapsed bar.
   assert.equal(frame.activity.timestamps.end, Math.floor(sample / 1000 + (200 - 10) / 1.5));
 });
 
@@ -546,8 +541,6 @@ test("at 1.5x a second update one second later waits for the 2500 ms interval", 
   assert.equal(activities(port).length, 1);
 
   clock.advance(1000);
-  // A distinct payload: the whole-second `start` must differ for the limiter
-  // to see a second update at all.
   sendState(chrome, 1, musicState({ playbackRate: 1.5, position: 12.4 }));
   assert.equal(activities(port).length, 1, "the 2.5 s interval holds");
 
@@ -582,7 +575,6 @@ test("at 1x the ninth update inside twenty seconds is still deferred", async () 
   connect(port);
   for (let tick = 1; tick <= 9; tick += 1) {
     clock.advance(2000);
-    // Distinct payloads, same identity: an ordinary update, never urgent.
     sendState(chrome, 1, musicState({ playbackRate: 1, position: 1 + 3 * tick }));
   }
   assert.equal(activities(port).length, MAX_UPDATES, "the default budget is unchanged at 1x");
@@ -734,15 +726,12 @@ test("a port loss drops the deferred payload and the reconnect sends only the cu
   sendState(chrome, 1, musicState({ position: 180 }));
   assert.equal(activities(port).length, 1, "the seek is deferred inside the gap");
 
-  // The port dies with that payload still queued, and the truth moves on
-  // before the backoff opens the next port.
   port.onDisconnect.fire();
   sendState(chrome, 1, musicState({ position: 190 }));
   clock.advance(BACKOFF_MIN_MS);
   const reconnected = chrome.ports[1];
   assert.equal(reconnected.sent[0].t, "hello");
 
-  // Past the old gap deadline: a surviving payload would fire down the new port.
   clock.advance(MIN_GAP_MS - 200 - BACKOFF_MIN_MS);
   assert.equal(activities(reconnected).length, 0, "a dead port's queue is dropped, never replayed");
 
@@ -1041,7 +1030,6 @@ test("a later report from a paused tab does not move the playing tab's anchor", 
 test("a future-dated sample falls back to the stored instant, not to the clock", async () => {
   const { chrome, clock, worker, port } = await boot();
   connect(port);
-  // 60 s ahead of its own receipt: junk, so the receipt time is the anchor.
   sendState(chrome, 1, musicState({ position: 40, at: BASE + 60_000 }));
   const publish = activities(port);
   assert.equal(publish.length, 1);

@@ -1,16 +1,4 @@
 #!/usr/bin/env node
-// Zero-dependency, network-free browser harness that measures what the four
-// unpacked extensions cost a page, and proves the exclusion claim instead of
-// asserting it.
-//
-// Usage
-//   node tools/cost-audit/run.mjs                          table only, exit 0
-//   node tools/cost-audit/run.mjs --assert                 exit 1 on any violation
-//   node tools/cost-audit/run.mjs --json <path>            write the full report
-//   node tools/cost-audit/run.mjs --package slowed-reverb  load just one extension
-//
-// Exit codes: 0 ok (skips allowed, printed), 1 assertion failed (--assert), 2 the
-// harness itself could not run (no browser, no extension, CDP failure).
 
 import { rmSync, writeFileSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
@@ -64,12 +52,7 @@ const LOCAL_HOST = "127.0.0.1";
 const EXCLUDED_KEY = "excluded.test";
 const EXCLUDED_SUB_HOST = `sub.${EXCLUDED_KEY}`;
 const NEVER_CONFIGURED_HOST = "never-configured.test";
-// Seen once, switched off: registration still matches (`seen || enabled`), so the
-// content script and the passive page hook are present while the page pays
-// nothing and no audio graph exists. Enabling it later is live, no reload.
 const SEEN_OFF_HOST = "seen-off.test";
-// Kept opted in throughout so a registration stays alive while A is excluded;
-// without it the extension unregisters entirely and excludeMatches is invisible.
 const OTHER_ENABLED_HOST = "elsewhere.test";
 
 /**
@@ -136,7 +119,6 @@ function seedItems(pkg, { host, excluded = false, seen = false }) {
   if (pkg === "slowed-reverb") {
     return {
       siteToggles: { [host]: true },
-      // reverbIntensity is 0..1, not a percentage: 30 clamps to 0 (neutral).
       siteSettings: { [host]: { slow: 1.2, reverbIntensity: 0.3 } },
     };
   }
@@ -275,8 +257,6 @@ async function main() {
   };
 
   try {
-    // Headless first. If the extensions will not load headless, the fallback is
-    // a HEADED window that is still muted — never an audible one.
     const loadErrors = [];
     let client = null;
     for (const headless of [true, false]) {
@@ -289,9 +269,6 @@ async function main() {
           profileDir,
           hostMapperRules,
           headless,
-          // Only the mapped https origin uses this; without it the throwaway
-          // cert makes the navigation land on chrome-error:// and every audio
-          // case measures an error page.
           extraArgs: servers.httpsPort ? ["--ignore-certificate-errors"] : [],
         });
         const loaded = await loadUnpacked(launched.client, selected);
@@ -348,8 +325,6 @@ async function main() {
       name: ext.name,
       version: ext.version,
     }));
-    // What each package is even allowed to touch, so a zero on a host it can
-    // never match is reported as a limit instead of a pass.
     report.reach = Object.fromEntries(
       report.extensions.map((ext) => {
         const patterns = manifestPatterns(ext.dir);
@@ -407,12 +382,6 @@ async function main() {
       }
     };
 
-    // The claim under test is causal, so it runs as one sequence on named
-    // hosts with registration snapshots taken between the storage writes:
-    //   A = the key that gets excluded, S = its subdomain, B = never configured.
-    // S stays opted in throughout, which keeps a registration alive while A is
-    // excluded — otherwise the extension unregisters entirely and "A is absent
-    // from matches" would be satisfied by an empty array.
     const A = EXCLUDED_KEY;
     const S = EXCLUDED_SUB_HOST;
     const B = NEVER_CONFIGURED_HOST;
@@ -522,9 +491,6 @@ async function main() {
         await snapshotRegistration("seen-off", SEEN_OFF_HOST, "covers-host", "seen-off", scriptsOn("seen-off")),
       );
 
-      // `seen` is cleared here too (a record written without the field derives
-      // `seen: false`), because a seen host is registered on purpose now; what
-      // this phase still proves is that no ENABLED site is left behind.
       await seed(client, audio, "audio-normalizer", {
         [`site:${A}`]: { enabled: false, gainDb: 0, seq: 3, mirror: false },
         [`site:${S}`]: { enabled: false, gainDb: 0, seq: 2, mirror: false },
@@ -557,8 +523,6 @@ async function main() {
         url: `${servers.httpsUrl}/watch`,
         host: "music.youtube.com",
         expectInert: false,
-        // Only the two audio engines build a graph; the presence extension must
-        // cost the page nothing at all.
         graphExpected: ["audio-normalizer", "slowed-reverb"].filter((pkg) => byName.has(pkg)),
         inspect: async ({ client: cdp, tab, scenario }) => {
           const out = {};
@@ -588,8 +552,6 @@ async function main() {
       for (const problem of leftovers) notes.push(`cleanup: ${problem}`);
     }
     await servers.close();
-    // Every throwaway directory this run created, including the cert and any
-    // profile from a failed launch attempt.
     const leftovers = [];
     for (const dir of [certDir, ...profiles]) {
       try {
@@ -618,7 +580,6 @@ async function main() {
     });
   }
   const loadedNames = new Set(report.extensions.map((ext) => ext.package));
-  // Any injection anywhere in the run is evidence the package can run at all.
   report.signals = report.scenarios.flatMap((scenario) =>
     Object.entries(scenario.extensions)
       .filter(([, value]) => (value.scripts ?? 0) > 0)
@@ -626,8 +587,6 @@ async function main() {
   );
 
   const assertions = [...report.assertions, ...buildAssertions(report, { limits })];
-  // A scenario that yields no assertion silently measures nothing. That is a
-  // harness bug: every scenario must be judged by at least one assertion.
   for (const scenario of report.scenarios) {
     if (!assertions.some((entry) => entry.scenario === scenario.id)) {
       throw Object.assign(

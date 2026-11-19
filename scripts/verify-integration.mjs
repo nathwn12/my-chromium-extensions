@@ -1,10 +1,4 @@
 #!/usr/bin/env node
-// Verify the root workspace wires in packages/youtube-music-presence.
-// Each wiring point is a predicate with a negative self-test, so a check
-// that cannot go red cannot ship: breaking any wiring point fails this script.
-// Usage: node scripts/verify-integration.mjs [--prove-red]
-//   --prove-red runs the predicates against broken fixtures and exits 0 only
-//   when every predicate fails there (proves each check can go red).
 import { execFileSync } from "node:child_process";
 import {
   existsSync,
@@ -54,33 +48,18 @@ function collectTests(dir) {
   return out;
 }
 
-// Playwright is banned in this repo: Gladius is the only browser tester, and a
-// stray dependency or import reinstalls a Chromium download on every install.
-// Each clause of the ban is a predicate, so one lockfile entry or one import
-// fails this script by name instead of quietly coming back.
-// The names are spelled in pieces so this guard file passes its own scan: no
-// path is exempt from the ban, this one included.
 const PW = "play" + "wright";
 const PLAYWRIGHT = [PW, `${PW}-core`, `@${PW}/test`];
 const PLAYWRIGHT_SPECIFIER =
   /["'](?:@playwright\/test|playwright-core|playwright)(?:\/[^"']*)?["']/;
 
-// Directories that hold state or dependencies rather than source: node_modules
-// is installed output, .git is history, .stack is this workbench's own notes
-// (which discuss the ban and must not be mistaken for an import).
 const SCAN_EXCLUDED_DIRS = new Set(["node_modules", ".git", ".stack"]);
 
-// Assets a specifier cannot be written in, and which read as noise in UTF-8:
-// images, web fonts, archives and PDFs. Everything else is source.
 const SCAN_ASSET_EXTENSIONS = new Set([
   ".png", ".ico", ".jpg", ".jpeg", ".gif", ".webp",
   ".woff", ".woff2", ".ttf", ".zip", ".pdf",
 ]);
 
-// Every path a commit would carry: tracked files plus untracked files that no
-// ignore rule covers. Ignored output (installed packages, media fixtures,
-// stale per-package lockfiles) is not repository source, and git is the only
-// authority on which is which -- no path is exempted by name here.
 function commitSurface() {
   const raw = execFileSync(
     "git",
@@ -90,8 +69,6 @@ function commitSurface() {
   return new Set(raw.split("\0").filter(Boolean));
 }
 
-// Strict walk: no catch. An unreadable directory or entry throws, and the
-// error carries the path, so the scan fails by name instead of passing.
 function walk(dir, out = []) {
   for (const entry of readdirSync(dir).sort()) {
     if (SCAN_EXCLUDED_DIRS.has(entry)) continue;
@@ -104,9 +81,6 @@ function walk(dir, out = []) {
   return out;
 }
 
-// Every file the ban can appear in: the manifests that declare it, the sources
-// that import it, and the CI steps that would install it. The tree walk decides
-// what exists on disk; the commit surface decides what is source.
 function collectPlaywrightSurface() {
   const scan = { walked: 0, files: 0, failures: [] };
   let surface = new Set();
@@ -169,8 +143,6 @@ function zipFiles(release) {
   return files && files.length > 0 ? files : null;
 }
 
-// Every local file the manifest points at: the loader, content scripts,
-// popup and options pages, and all icons. Remote URLs never appear here.
 function manifestLocalFiles(manifest) {
   if (!manifest || typeof manifest !== "object") return null;
   const out = [];
@@ -193,9 +165,6 @@ function manifestLocalFiles(manifest) {
   return [...new Set(out)];
 }
 
-// The root README is the only list of every extension: each row is a package
-// link plus a version cell. Both are checkable against the manifests, so a new
-// package, a deleted row, or a stale version fails here by name.
 const README_ROW = /^\|\s*\[[^\]]+\]\(packages\/([^)/]+)\)\s*\|[^|]*\|\s*(\S+)\s*\|\s*$/gm;
 const NUMBER_WORDS = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"];
 
@@ -205,7 +174,6 @@ function readmeRows(readme) {
   return rows;
 }
 
-// Predicates over loaded content. Each returns true when the wiring holds.
 const predicates = {
   "workspaces cover packages/*": ({ rootPkg }) => {
     if (!rootPkg?.workspaces || !Array.isArray(rootPkg.workspaces)) return false;
@@ -219,7 +187,6 @@ const predicates = {
   "package test script runs every test under test/": ({ wdrPkg }) => {
     const script = wdrPkg?.scripts?.test;
     if (typeof script !== "string") return false;
-    // Must point at the directory (runner or glob), never an explicit file list.
     if (!/(run-tests\.mjs\s+test|node\s+--test\s+test\/?(\s|$|"))/.test(script))
       return false;
     return true;
@@ -310,8 +277,6 @@ const predicates = {
   },
   "the lockfile resolves no Playwright package": ({ lock }) => {
     if (typeof lock !== "string" || lock.length === 0) return "no lockfile was read";
-    // bun.lock keys every resolved package as `"name": [ ... ]`; a dependency that
-    // only mentions Playwright still resolves it, so a key scan is the honest test.
     const bad = PLAYWRIGHT.filter((name) =>
       new RegExp(`"${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"\\s*:`).test(lock),
     );
@@ -345,8 +310,6 @@ function loadContext() {
   const rootRaw = read("package.json");
   const wdrRaw = read(`packages/${WDR}/package.json`);
   const manifestRaw = read(`packages/${WDR}/manifest.json`);
-  // Every directory under packages/ that carries a manifest is an extension the
-  // root README must list. The directory name is the path segment the README links.
   const packages = (() => {
     let entries;
     try {
@@ -404,13 +367,9 @@ const names = Object.keys(predicates);
 
 if (process.argv.includes("--prove-red")) {
   const ctx = brokenContext();
-  // Filesystem predicates must go red too: run them against an empty root.
   const realRoot = ROOT;
   const emptyRoot = mkdtempSync(join(tmpdir(), "wdr-verify-red-"));
   let bad = 0;
-  // The walker must see the file types the old .js/.ts filter missed. Plant a
-  // quoted specifier in an .html file inside the real tree, watch the real scan
-  // fail by name, then remove it so the tree is left as it was found.
   const plantedDir = mkdtempSync(join(realRoot, ".prove-red-scan-"));
   const plantedFile = join(plantedDir, "planted.html");
   const plantedRel = plantedFile.slice(realRoot.length + 1).replace(/\\/g, "/");
@@ -443,15 +402,12 @@ if (process.argv.includes("--prove-red")) {
   for (const name of names) {
     let checkCtx = ctx;
     if (name === "every file in the release zip step exists") {
-      // A zip step that names a file that does not exist must fail.
       checkCtx = {
         ...ctx,
         release: `(cd packages/${WDR} && zip -r ../../dist/${WDR}.zip manifest.json no-such-file.js)\ngh release create x dist/${WDR}.zip`,
       };
     }
     if (name === "no source or CI step imports Playwright") {
-      // A planted import must fail by name. The path is the one the old skip
-      // hid, so a returning skip shows up here as a check that stayed green.
       const planted = ["import { chromium } from '", PW, "-core';\n"].join("");
       checkCtx = {
         ...ctx,
@@ -461,7 +417,6 @@ if (process.argv.includes("--prove-red")) {
       };
     }
     if (name === "the Playwright scan reads every source file") {
-      // An unreadable path must fail by name, not pass silently.
       checkCtx = {
         ...ctx,
         scan: {
@@ -474,8 +429,6 @@ if (process.argv.includes("--prove-red")) {
       };
     }
     if (name === "README lists every package once") {
-      // The stated count and the row count both say two, but only one row is
-      // present: the missing row alone must turn the check red.
       checkCtx = {
         ...ctx,
         readme: [
@@ -493,7 +446,6 @@ if (process.argv.includes("--prove-red")) {
       };
     }
     if (name === "README lists each package at its manifest version") {
-      // A single stale version cell must fail by name.
       checkCtx = {
         ...ctx,
         readme: "| [Slowed Reverb](packages/slowed-reverb) | slow | 1.0.3 |\n",

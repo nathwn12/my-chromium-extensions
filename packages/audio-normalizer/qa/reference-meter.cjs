@@ -1,47 +1,4 @@
 'use strict';
-/*
- * qa/reference-meter.cjs — INDEPENDENT reference loudness meter (second oracle).
- *
- * Purpose: an offline, whole-file, float64, textbook re-implementation of the
- * EBU R128 / ITU-R BS.1770 measurement chain, used to cross-check the
- * production worklet. It is deliberately written the slow, obvious way: no
- * streaming, no incremental state, no ring buffers, no optimisation. If this
- * meter disagrees with the worklet, one of the two is wrong — investigate,
- * never adjust numbers to match.
- *
- * Primary source (read, not recalled — coefficients and thresholds below are
- * transcribed from it):
- *   URL: https://github.com/jiixyj/libebur128/blob/master/ebur128/ebur128.c
- *        (raw: https://raw.githubusercontent.com/jiixyj/libebur128/master/ebur128/ebur128.c)
- *   Functions transcribed: ebur128_init_filter (both K-weighting stages),
- *        EBUR128_FILTER macro (4th-order direct-form difference equations),
- *        ebur128_calc_gating_block (400 ms blocks, 75% overlap, mean square,
- *        surround weight 1.41, dual-mono 2.0, UNUSED/LFE excluded),
- *        ebur128_gated_loudness + ebur128_energy_to_loudness
- *          (absolute gate -70 LUFS, relative gate -10 LU,
- *           L = -0.691 + 10*log10(mean gated energy)),
- *        ebur128_loudness_range_multiple, non-histogram path (3 s windows,
- *          -20 LU relative gate — see LRA note below),
- *        interp_create + interp_process (true-peak 4x polyphase FIR:
- *          49 taps, factor 4, sinc * Hanning window, float delay line).
- *
- * Loudness Range note: integrated loudness uses a RELATIVE gate of -10 LU
- * below the absolute-gated level, but Loudness Range per EBU Tech 3342 uses a
- * different, lower relative gate of -20 LU below the mean of the absolute-
- * gated 3-second short-term blocks. The two gates serve different purposes
- * (programme loudness vs. spread of loudness) and must not be confused.
- *
- * True peak note: BS.1770-4 Annex 2 specifies 4x oversampling followed by
- * peak-picking. This meter implements the oversampler exactly as the primary
- * source does (polyphase FIR, 49 taps, interpolation factor 4, sinc kernel
- * with Hanning window). Reported in dBTP = 20*log10(peak).
- *
- * Usage:
- *   node qa/reference-meter.cjs --wav <path>   print one JSON object
- *   node qa/reference-meter.cjs --all           measure qa/fixtures/*.wav and
- *                                               (atomically) write
- *                                               qa/reference-values.json
- */
 
 const fs = require('node:fs');
 const path = require('node:path');
@@ -54,19 +11,14 @@ const BLOCK_SECONDS = 0.4;             // 400 ms gating blocks
 const HOP_SECONDS = 0.1;               // 75% overlap -> 100 ms hop
 const SHORT_TERM_SECONDS = 3.0;        // LRA window: 3 s
 const SHORT_TERM_HOP_SECONDS = 1.0;    // LRA hop: 1 s (matches primary source,
-                                       // which emits a 3 s block every 1 s)
 const TRUE_PEAK_TAPS = 49;             // true-peak oversampler taps
 const TRUE_PEAK_FACTOR_BELOW_96K = 4;  // 4x oversampling below 96 kHz
 
-// WAV input. Supports PCM 16/24/32-bit int and 32-bit float, plus
-// WAVE_FORMAT_EXTENSIBLE. Whole file is decoded up front into float64.
 function readWav(filePath) {
   const buf = fs.readFileSync(filePath);
   if (buf.length < 44 || buf.toString('ascii', 0, 4) !== 'RIFF') {
     throw new Error('not a RIFF WAV file: ' + filePath);
   }
-  // Walk chunks; never assume fixed offsets (fmt may be 16/18/40 bytes,
-  // and bext/fact/etc. chunks may precede data).
   let offset = 12;
   let audioFormat = 0;
   let numChannels = 0;
@@ -86,8 +38,6 @@ function readWav(filePath) {
       sampleRate = buf.readUInt32LE(body + 4);
       bitsPerSample = buf.readUInt16LE(body + 14);
       if (audioFormat === 0xfffe && size >= 40) {
-        // WAVE_FORMAT_EXTENSIBLE: extension starts at body+16
-        // (cbSize, valid-bits, channel mask, SubFormat GUID).
         const subFormat = buf.readUInt16LE(body + 24);
         channelMask = buf.readUInt32LE(body + 20);
         hasMask = true;
@@ -126,15 +76,9 @@ function readWav(filePath) {
   return { sampleRate, channels: numChannels, frames, planar, channelMask, hasMask };
 }
 
-// Channel weights per BS.1770: front/centre channels count 1.0, surrounds
-// count 1.41 (+1.5 dB power), LFE is excluded (weight 0). Mono/stereo files
-// weight every channel 1.0.
 function channelWeights(channels, channelMask, hasMask) {
   if (channels <= 2) return new Array(channels).fill(1.0);
   if (hasMask && channelMask !== 0) {
-    // WAVEFORMATEXTENSIBLE speaker bits: 0x1 FL, 0x2 FR, 0x4 FC, 0x8 LFE,
-    // 0x10 BL, 0x20 BR. LFE -> excluded; surrounds -> 1.41; rest -> 1.0.
-    // Only the first six positions are mapped; anything else is excluded.
     const table = [0x1, 0x2, 0x4, 0x8, 0x10, 0x20];
     const weights = [];
     for (let c = 0; c < channels; c++) {
@@ -145,7 +89,6 @@ function channelWeights(channels, channelMask, hasMask) {
     }
     return weights;
   }
-  // Default SMPTE order L R C LFE Ls Rs; anything beyond is excluded.
   const weights = [];
   for (let c = 0; c < channels; c++) {
     if (c <= 2) weights.push(1.0);
@@ -156,11 +99,7 @@ function channelWeights(channels, channelMask, hasMask) {
   return weights;
 }
 
-// K-weighting. Both stages are derived from the file's actual sample rate
-// (transcribed from ebur128_init_filter), cascaded into one 4th-order
-// section, applied as plain direct-form difference equations in float64.
 function designKWeighting(sampleRate) {
-  // Stage 1: high shelf, f0 = 1681.974450955533 Hz.
   const f0Stage1 = 1681.974450955533;
   const gainDb = 3.999843853973347;
   const qStage1 = 0.7071752369554196;
@@ -174,7 +113,6 @@ function designKWeighting(sampleRate) {
   const pa1 = (2 * (k1 * k1 - 1)) / a0;
   const pa2 = (1 - k1 / qStage1 + k1 * k1) / a0;
 
-  // Stage 2: high-pass (RLB), f0 = 38.13547087602444 Hz.
   const f0Stage2 = 38.13547087602444;
   const qStage2 = 0.5003270373238773;
   const k2 = Math.tan(Math.PI * f0Stage2 / sampleRate);
@@ -185,7 +123,6 @@ function designKWeighting(sampleRate) {
   const rb1 = -2;
   const rb2 = 1;
 
-  // Cascade the two biquads into a single 4th-order section.
   const b = [
     pb0 * rb0,
     pb0 * rb1 + pb1 * rb0,
@@ -209,7 +146,6 @@ function applyKWeighting(planar, filter) {
   for (let c = 0; c < planar.length; c++) {
     const input = planar[c];
     const output = new Float64Array(input.length);
-    // Filter state, zero-initialised, carried across the whole file.
     let v1 = 0;
     let v2 = 0;
     let v3 = 0;
@@ -227,9 +163,6 @@ function applyKWeighting(planar, filter) {
   return filtered;
 }
 
-// Gating blocks: 400 ms long, 100 ms hop. Block energy = mean square of the
-// K-weighted signal over the block, summed across channels with weights.
-// Trailing partial blocks (< 400 ms) are dropped, as in the primary source.
 function gatingBlockEnergies(filtered, sampleRate, weights) {
   const blockLen = Math.round((BLOCK_SECONDS * sampleRate) / 1);
   const hop = Math.round((HOP_SECONDS * sampleRate) / 1);
@@ -260,8 +193,6 @@ function absoluteGateEnergy() {
   return Math.pow(10, (ABSOLUTE_GATE_LUFS + INTEGRATED_OFFSET) / 10);
 }
 
-// Integrated loudness: absolute gate at -70 LUFS, then relative gate -10 LU
-// below the absolute-gated mean, then L = -0.691 + 10*log10(gated mean).
 function integratedLoudness(blockEnergies) {
   const absGate = absoluteGateEnergy();
   const passed = blockEnergies.filter((e) => e >= absGate);
@@ -274,10 +205,6 @@ function integratedLoudness(blockEnergies) {
   return { lufs: energyToLoudness(mean), gatedBlocks: gated.length };
 }
 
-// Loudness Range per EBU Tech 3342: 3 s windows every 1 s, absolute gate at
-// -70 LUFS, then a -20 LU relative gate (NOT the -10 LU gate used for
-// integrated loudness), then LRA = P95 - P10 loudness of the survivors.
-// Percentiles use nearest-rank on the sorted energies.
 function loudnessRange(filtered, sampleRate, weights) {
   const windowLen = Math.round(SHORT_TERM_SECONDS * sampleRate);
   const hop = Math.round(SHORT_TERM_HOP_SECONDS * sampleRate);
@@ -309,9 +236,6 @@ function loudnessRange(filtered, sampleRate, weights) {
   return { lra, shortTermBlocks: gated.length };
 }
 
-// True peak: 4x polyphase FIR oversampler (49 taps, sinc * Hanning), float
-// delay line shared-phase index, peak over every oversampled output sample.
-// Transcribed from interp_create / interp_process.
 function designOversampler(factor) {
   const taps = TRUE_PEAK_TAPS;
   const delay = Math.floor((taps + factor - 1) / factor);
@@ -344,8 +268,6 @@ function truePeak(planar, sampleRate) {
   }
   const over = designOversampler(factor);
   let peak = 0;
-  // One float delay line per channel; the phase index advances once per
-  // input frame (shared across channels), exactly like the primary source.
   const lines = planar.map(() => new Float32Array(over.delay));
   let zi = 0;
   for (let i = 0; i < planar[0].length; i++) {
@@ -374,7 +296,6 @@ function truePeak(planar, sampleRate) {
   return 20 * (Math.log(peak) / Math.LN10);
 }
 
-// Whole-file measurement.
 function measureFile(wavPath) {
   const wav = readWav(wavPath);
   const weights = channelWeights(wav.channels, wav.channelMask, wav.hasMask);
@@ -386,10 +307,6 @@ function measureFile(wavPath) {
   const peak = truePeak(wav.planar, wav.sampleRate);
   return {
     integratedLufs: integrated.lufs,
-    // Canonical spelling read by qa/loudness-verify.cjs
-    // (reference.values[<basename>].truePeakDbTp). The legacy `truePeakDbtp`
-    // alias below carries the same number for anything written against the
-    // first version of this file.
     truePeakDbTp: peak,
     truePeakDbtp: peak,
     lra: range.lra,
@@ -400,7 +317,6 @@ function measureFile(wavPath) {
   };
 }
 
-// CLI.
 function main() {
   const args = process.argv.slice(2);
   if (args[0] === '--wav' && args[1]) {
@@ -409,15 +325,6 @@ function main() {
     return;
   }
   if (args[0] === '--all') {
-    // Fixture sources: the harness-owned qa/fixtures/ plus this meter's own
-    // qa/reference-fixtures/ (extra coverage the harness does not generate:
-    // 44.1 kHz, multichannel). Keys are basenames WITHOUT extension, because
-    // that is the exact lookup the consumer performs:
-    //   qa/loudness-verify.cjs: key = path.basename(f.name, '.wav');
-    //                            refEntry = reference.values[key];
-    //                            refEntry.integratedLufs / .truePeakDbTp / .source
-    // where reference.values = parsed JSON's `.fixtures` object. Harness
-    // fixtures win on basename collision (processed first, never overwritten).
     const here = __dirname;
     const fixtureDirs = [
       path.join(here, 'fixtures'),
@@ -443,8 +350,6 @@ function main() {
     }
     const outPath = path.join(__dirname, 'reference-values.json');
     const payload = JSON.stringify({ fixtures }, null, 2) + '\n';
-    // Atomic write: temp file in the same directory, then rename, so a
-    // concurrent reader never observes a half-written file.
     const tmpPath = path.join(__dirname, `.reference-values.json.tmp.${process.pid}`);
     fs.writeFileSync(tmpPath, payload);
     fs.renameSync(tmpPath, outPath);

@@ -106,7 +106,6 @@ export function createCoalescingLimiter({
   let pending = null;
   let hasPending = false;
   let timer = null;
-  // The floor in force; a non-1x playback spaces its updates further apart.
   let floorMs = minGapMs;
 
   /** The instant a deferred payload may go: past the gap, and past the window if it is full. */
@@ -143,7 +142,6 @@ export function createCoalescingLimiter({
     try {
       send(payload);
     } catch {
-      /* a dead port is handled by the port's own disconnect path */
     }
   }
 
@@ -168,7 +166,6 @@ export function createCoalescingLimiter({
       sentAt = sentAt.filter((t) => at - t < windowMs);
       const gapOpen = at - lastSentAt >= floorMs;
       const room = sentAt.length < max;
-      // The window is the hard ceiling: only `force` spends past it.
       if (force || (room && (gapOpen || urgent))) {
         emit(payload, at);
         return;
@@ -267,9 +264,6 @@ export function rateBiasMs(state) {
   if (!isRateScaled(state)) return 0;
   const limit = RATE_INTERVAL_MS / 2;
   const bias = Math.max(-limit, Math.min(limit, (1 - state.playbackRate) * limit));
-  // A timestamp is only emitted with a real position (activity.js), and a
-  // positive bias may never give up more elapsed time than the sample has
-  // already played: that would stamp a `start` in the future.
   const position = Number(state.position);
   if (bias > 0 && Number.isFinite(position)) {
     return Math.min(bias, Math.floor(Math.max(0, position)) * 1000);
@@ -324,8 +318,6 @@ function stalePresenceOf(storedStatus) {
     storedStatus && typeof storedStatus === "object" ? storedStatus.activities : null;
   if (!activities || typeof activities !== "object" || Array.isArray(activities)) return false;
   const entry = activities[SOURCE_YOUTUBE_MUSIC];
-  // A stored snapshot may carry buckets for other sources; ignore them: the
-  // Music-only worker never republishes or clears them.
   return Boolean(entry) && typeof entry === "object" && !Array.isArray(entry);
 }
 
@@ -343,12 +335,8 @@ export function createWorker({
   const tabs = new Map();
   let desired = null;
   let hasDesired = false;
-  // Whether the winning tab plays at a rate Discord cannot represent: its
-  // updates take the 2.5 s cadence and its anchor is biased.
   let desiredRateScaled = false;
   let lastSent = undefined;
-  // The identity of the last payload that actually reached the port: only a
-  // send updates it, so a deferred payload is never mistaken for published.
   let publishedIdentity = null;
   let limiter = null;
 
@@ -373,9 +361,6 @@ export function createWorker({
   let lastPongAt = 0;
   let lastPersisted = "";
   let lastTabsJson = "";
-  // The tab map is restored once per worker instance; `restored` lets an alarm
-  // that lands before the restore has resolved wait for it instead of clearing
-  // presence from an empty map.
   let restorePromise = null;
   let restored = false;
   let tabsReadable = true;
@@ -387,14 +372,10 @@ export function createWorker({
       availability,
       reason,
       reasonKind,
-      // Raw diagnostic for logs and the options diagnostics; the UI never
-      // renders this string directly.
       detail,
-      // Always desktop IPC; the host's own choice is `transport`.
       transportPreference,
       transport: chosenTransport,
       activities: { [SOURCE_YOUTUBE_MUSIC]: desired },
-      // The host's own per-source view, carried opaquely for the popup.
       hostSources,
       updatedAt: now(),
     };
@@ -411,7 +392,6 @@ export function createWorker({
       if (api.storage?.session) writes.push(api.storage.session.set({ [STATUS_KEY]: payload }));
       if (api.storage?.local) writes.push(api.storage.local.set({ [STATUS_KEY]: payload }));
     } catch {
-      /* storage may be unavailable during shutdown */
     }
     for (const write of writes) {
       if (write && typeof write.catch === "function") write.catch(() => {});
@@ -455,8 +435,6 @@ export function createWorker({
    * the dedupe key.
    */
   function persistTabs() {
-    // Never write before the startup read has settled: an early report would
-    // otherwise replace the stored map with the one tab it has seen so far.
     if (!restored || !tabsReadable || !api.storage?.session) return;
     const snapshot = snapshotTabs();
     const json = JSON.stringify(snapshot);
@@ -466,7 +444,6 @@ export function createWorker({
       const write = api.storage.session.set({ [SESSION_TABS_KEY]: snapshot });
       if (write && typeof write.catch === "function") write.catch(() => {});
     } catch {
-      /* session storage may be unavailable during shutdown */
     }
   }
 
@@ -506,8 +483,6 @@ export function createWorker({
         const stored = await api.storage.session.get(SESSION_TABS_KEY);
         return hydrateTabs(stored ? stored[SESSION_TABS_KEY] : null);
       } catch {
-        // A read that failed must not let the next write clobber a good
-        // snapshot: keep persistence off for this instance.
         tabsReadable = false;
         return false;
       } finally {
@@ -524,22 +499,18 @@ export function createWorker({
     port = null;
     const disconnectHandler = portDisconnectHandler;
     portDisconnectHandler = null;
-    // A dead port has no chosen transport; the next status frame names one.
     chosenTransport = null;
     try {
       dying.onMessage.removeListener(onNativeMessage);
     } catch {
-      /* already torn down */
     }
     try {
       dying.onDisconnect.removeListener(disconnectHandler);
     } catch {
-      /* already torn down */
     }
     try {
       dying.disconnect();
     } catch {
-      /* already disconnected */
     }
   }
 
@@ -585,8 +556,6 @@ export function createWorker({
           reason: null,
           reasonKind: null,
         });
-        // Discord appeared (or returned): replay the latest payload with no
-        // user action, resetting the coalescing window first.
         if (limiter) limiter.reset();
         push(true);
       } else {
@@ -612,9 +581,6 @@ export function createWorker({
         }
         push(false);
       } else {
-        // Record the rejection without latching the bridge to "error": a slow
-        // connect acks "arrpc-unavailable" while the arRPC handshake is in
-        // flight, which must not look like a rejection.
         const text =
           typeof message.error === "string" && message.error ? message.error : "activity not delivered";
         const verdict = classifyBridgeFailure(text, { reason: message.reason });
@@ -638,8 +604,6 @@ export function createWorker({
     if (port !== owner) return;
     const message = api.runtime?.lastError?.message;
     dropPort();
-    // A payload queued for a dead port is stale by definition: `push(true)` on
-    // reconnect replays the current desired activity instead.
     if (limiter) limiter.cancelPending();
     applyFailure(message || "native host disconnected");
     scheduleReconnect();
@@ -648,7 +612,6 @@ export function createWorker({
   function ensurePort() {
     if (port) return;
     if (!enabled) {
-      // Presence is off: no native port at all, and no reconnect can sneak in.
       setBridge(BRIDGE.IDLE, null, {
         availability: AVAILABILITY.UNKNOWN,
         reason: null,
@@ -660,8 +623,6 @@ export function createWorker({
     try {
       fresh = api.runtime.connectNative(HOST_NAME);
     } catch (error) {
-      // A sync throw is the host-missing path on some Chrome builds:
-      // neutral waiting with installer guidance, never a red error.
       applyFailure(String((error && error.message) || error));
       scheduleReconnect();
       return;
@@ -745,8 +706,6 @@ export function createWorker({
     if (!hasDesired) return;
     const json = JSON.stringify(desired);
     if (!force && lastSent === json) {
-      // The desired state is the one already published, so a payload the
-      // limiter still holds would republish a state that is no longer true.
       if (limiter) limiter.cancelPending();
       return;
     }
@@ -765,17 +724,6 @@ export function createWorker({
     pruneStale(tabs, now());
     persistTabs();
     const best = pickBestTab([...tabs.values()]);
-    // Anchor to when the state was sampled, never to this rebuild: the same
-    // sample must produce the same payload, so `push` skips the resend and
-    // Discord's bar keeps counting instead of snapping forward every tick.
-    // The reference is the entry's stored receipt time, not `now()`: a clock
-    // read here would move the anchor on every tick for a rejected stamp.
-    // A non-1x sample is anchored half an interval ahead of the sample instant,
-    // so the elapsed bar's error is split either side of the truth instead of
-    // all of it landing behind. The un-biased sample is kept as well: Discord
-    // counts the countdown in wall time, so the builder scales the remaining
-    // media time by the rate from that sample. Rate 1 passes the sample through
-    // untouched, byte for byte.
     const sample = best ? sampleAt(best, best.at) : 0;
     const bias = best ? rateBiasMs(best.state) : 0;
     const anchor = sample + bias;
@@ -790,8 +738,6 @@ export function createWorker({
     hasDesired = true;
     desiredRateScaled = rateScaled;
     persist();
-    // A new song, artist line or album is a discrete change and goes out at
-    // once; a seek or a pause keeps the identity and takes the paced path.
     push(false, activityIdentity(desired) !== publishedIdentity);
   }
 
@@ -808,11 +754,8 @@ export function createWorker({
     if (!api) return;
     const tab = sender && sender.tab;
     if (!tab || tab.id === undefined) return;
-    // Only our own content scripts may report, and only from the top frame:
-    // a nested YouTube embed must not overwrite the page it sits in.
     if (sender.id !== api.runtime.id) return;
     if (sender.frameId !== undefined && sender.frameId !== 0) return;
-    // Music-only: a report for any other source is ignored, never published.
     if (message.source !== SOURCE_YOUTUBE_MUSIC) return;
     const state = message.state;
     if (!state || typeof state !== "object") return;
@@ -830,7 +773,6 @@ export function createWorker({
     if (!tab || tab.id === undefined) return;
     if (sender.id !== api.runtime.id) return;
     if (message.source !== undefined && message.source !== SOURCE_YOUTUBE_MUSIC) {
-      // A clear for any other source still drops the tab so it can never resurrect.
       tabs.delete(tab.id);
       return;
     }
@@ -844,17 +786,12 @@ export function createWorker({
   function handleAlarm(alarm) {
     if (!alarm || alarm.name !== ALARM_NAME) return;
     if (!restored) {
-      // A watchdog tick can land before the startup restore resolves; wait so
-      // an empty map never publishes a clear over restored state.
       void restore().then(() => handleAlarm(alarm));
       return;
     }
     if (!port) {
       ensurePort();
     } else if (bridgeState === BRIDGE.CONNECTED) {
-      // A hung host keeps the port open but never pongs: a ping with no pong
-      // inside the bounded window marks the bridge disconnected and runs the
-      // normal reconnect instead of staying "connected" forever.
       if (isPongOverdue(lastPingAt, lastPongAt, now())) {
         dropPort();
         applyFailure("native host pong timeout", { retries: hungCount + 1 });
@@ -872,8 +809,6 @@ export function createWorker({
       const next = resolveEnabled(changes[ENABLED_KEY].newValue);
       if (next !== enabled) setEnabled(next);
     }
-    // Stored transport, per-site and application-id settings are ignored: the
-    // Music-only worker always uses the built-in app over desktop IPC.
   }
 
   function handleMessage(message, sender, sendResponse) {
@@ -928,7 +863,6 @@ export function createWorker({
           delayInMinutes: ALARM_PERIOD_MINUTES,
         });
       } catch {
-        /* permission revoked mid-session */
       }
     };
     try {
@@ -944,13 +878,10 @@ export function createWorker({
         }, create);
         return;
       }
-      // Callback-style get: only create when no alarm exists yet, so a
-      // restart never resets the watchdog countdown.
       getter.call(api.alarms, ALARM_NAME, (existing) => {
         if (!existing) create();
       });
     } catch {
-      /* permission revoked mid-session */
     }
   }
 
@@ -959,9 +890,6 @@ export function createWorker({
     const restoredAny = await restore();
     armWatchdog();
     if (enabled) ensurePort();
-    // A restored tab republishes its activity; Music the last session
-    // published but nothing restored is explicitly cleared, so presence from a
-    // session that ended without a clean disconnect cannot linger on Discord.
     if (restoredAny || tabs.size) recompute();
     else if (staleMusic) clearSource();
     staleMusic = false;

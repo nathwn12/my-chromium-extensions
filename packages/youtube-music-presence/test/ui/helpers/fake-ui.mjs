@@ -55,7 +55,6 @@ function parseAttributes(text) {
   return attrs;
 }
 
-/* ------------------------------------------------------------- selectors -- */
 
 const SELECTOR_CACHE = new Map();
 
@@ -193,7 +192,6 @@ function selectorMatches(node, selector) {
   return parseSelector(selector).some((chain) => chainMatches(node, chain));
 }
 
-/* ------------------------------------------------------------------ node -- */
 
 function dataAttribute(key) {
   return `data-${String(key).replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`)}`;
@@ -367,7 +365,6 @@ export class UiNode {
   }
 }
 
-/* -------------------------------------------------------------- document -- */
 
 function parseHtml(html) {
   const root = new UiNode("#document");
@@ -442,7 +439,6 @@ export function createDocument(html) {
   return document;
 }
 
-/* ---------------------------------------------------------------- events -- */
 
 export function fireEvent(node, type, extra = {}) {
   const event = {
@@ -458,7 +454,6 @@ export function fireEvent(node, type, extra = {}) {
   return event;
 }
 
-/* ----------------------------------------------------------------- chrome -- */
 
 /**
  * A chrome-like API over plain objects. Storage areas resolve promises and
@@ -556,7 +551,6 @@ export function createChrome({ local = {}, session = {}, status = null } = {}) {
   };
 }
 
-/* ------------------------------------------------------------------ mount -- */
 
 let mounts = 0;
 

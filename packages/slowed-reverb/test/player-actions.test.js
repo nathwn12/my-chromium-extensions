@@ -2,14 +2,6 @@
 
 /* global require, __dirname, setImmediate */
 
-/*
- * test/player-actions.test.js - easy volume + section repeat, Node only.
- *
- * Ported from pear-slowed-reverb (precise-volume renderer + section-repeat
- * engine/saved at a418ecb8). Plain Node: no browser, no DOM library, no audio.
- * The wheel predicate and the controller take injected window/document/timers,
- * so the fake below is the whole browser surface they touch.
- */
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -22,7 +14,6 @@ const actions = require(path.join(ROOT, 'player-actions.js'));
 
 const HOST_ATTR = 'data-slra-player-actions';
 
-// Fake DOM
 
 function createDom() {
   class ClassList {
@@ -183,7 +174,6 @@ function createDom() {
   documentElement.clientHeight = 800;
   const body = new Element('body');
   documentElement.appendChild(body);
-  // The two real player surfaces, always present on music.youtube.com.
   const bar = new Element('ytmusic-player-bar');
   documentElement.appendChild(bar);
   const mainPanel = new Element('div');
@@ -282,7 +272,6 @@ function createDom() {
     media.paused = false;
     media.seeking = false;
     media.muted = true;
-    // Player 50 on the YTM element scale (element ~= player * 0.00741).
     media.volume = 50 * YTM_SLOPE;
     media.play = function play() {
       media.playCalls += 1;
@@ -332,7 +321,6 @@ function createDom() {
   };
 }
 
-// Fake timers, storage, page hook
 
 function createTimers() {
   let nextId = 1;
@@ -393,7 +381,6 @@ function createStorage(initial, options) {
     writes,
     saveSection: options && options.saveSection ? options.saveSection : undefined,
     async get(key) {
-      // Snapshot before the gate: a read in flight returns the value it saw.
       const snapshot = data[key];
       if (gate) await gate;
       return { [key]: snapshot };
@@ -548,7 +535,6 @@ function createHarness(options) {
   };
 }
 
-// parseTimeInput (pear table, verbatim)
 
 const EMPTY = { kind: 'empty' };
 const INVALID = { kind: 'invalid' };
@@ -590,7 +576,6 @@ for (const { input, expected } of formatCases) {
   });
 }
 
-// resolveSeekTarget / resolveEndSeekTarget / isLoopEngaged (pear tables)
 
 const loop = (overrides) => ({
   active: true,
@@ -687,7 +672,6 @@ for (const { name, state, expected } of engagedCases) {
   });
 }
 
-// guard: blank From = 0:00, including a To-only section
 
 test('guard: blank From resolves a To-only section to the song start', () => {
   const state = { active: true, startSeconds: null, endSeconds: 90 };
@@ -695,7 +679,6 @@ test('guard: blank From resolves a To-only section to the song start', () => {
   assert.equal(actions.resolveSeekTarget(state, { currentTime: 89.96, duration: 300, paused: false, seeking: false }), 0);
 });
 
-// guard: explicit end loops without a finite duration (livestream/late metadata)
 
 test('guard: an explicit end loops when duration is NaN or Infinity', () => {
   const state = { active: true, startSeconds: 30, endSeconds: 60 };
@@ -708,7 +691,6 @@ test('guard: an explicit end loops when duration is NaN or Infinity', () => {
   }
 });
 
-// guard: end clamped to the song end (no past-EOF seek)
 
 test('guard: a typed end past the song end clamps to the song end', () => {
   const state = { active: true, startSeconds: 10, endSeconds: 9999 };
@@ -723,7 +705,6 @@ test('guard: a typed end past the song end clamps to the song end', () => {
   );
 });
 
-// guard: a range collapsed to <= 50 ms never re-seeks every tick
 
 test('guard: a threshold at or below start + 50 ms disarms the loop', () => {
   const collapsed = { active: true, startSeconds: 30, endSeconds: 30 };
@@ -735,7 +716,6 @@ test('guard: a threshold at or below start + 50 ms disarms the loop', () => {
   assert.equal(actions.resolveEndSeekTarget(past, 300), 30);
 });
 
-// sanitizeSaved / lookupSaved / upsertSaved (pear table) + 100-entry cap
 
 const entry = (overrides) => ({
   videoId: 'video-a',
@@ -839,7 +819,6 @@ test('capSaved: keeps the newest entries and drops the oldest', () => {
   assert.equal(actions.capSaved(saved.slice(0, 3), 100).length, 3);
 });
 
-// section session helpers: song key, one-restore latch, retry budget, clear
 
 test('songKeyFrom prefers the URL v param over the media source', () => {
   assert.equal(actions.songKeyFrom('https://music.youtube.com/watch?v=abc&list=x', 'blob:src'), 'abc');
@@ -851,7 +830,6 @@ test('songKeyFrom uses the URL v param only: no media source, no URL key', () =>
   assert.equal(actions.songKeyFrom('https://music.youtube.com/watch?list=x'), null);
   assert.equal(actions.songKeyFrom('not a url'), null);
   assert.equal(actions.songKeyFrom(''), null);
-  // A source argument is ignored entirely: it can never become an id.
   assert.equal(
     actions.songKeyFrom('https://music.youtube.com/', 'https://rr1.googlevideo.com/videoplayback?sig=x'),
     null,
@@ -888,7 +866,6 @@ test('guard: one restore per song visit', () => {
   assert.equal(actions.songRestorePending(session, 'song-a'), true);
 });
 
-// Wheel: pixel conversion, accumulation, clamp reset
 
 test('wheelPixels converts deltaMode lines and pages to pixels', () => {
   assert.equal(actions.wheelPixels({ deltaY: -100, deltaMode: 0 }), -100);
@@ -1006,7 +983,6 @@ test('wheel: trackpad accumulation snaps when the grid is crossed', () => {
   });
 });
 
-// Wheel predicate ladder
 
 function fakeNode(tagName, options) {
   const settings = options || {};
@@ -1165,7 +1141,6 @@ test('wheel guard: an open dialog or a modal keeps the wheel', () => {
   assert.equal(actions.shouldHandleWheel(wheelEvent(), fakeNode('span', { parent: modal }), predicateDoc(), getStyle).handle, false);
 });
 
-// Controller: lifecycle, wheel path, panel, tick, restore
 
 test('controller: start installs one wheel listener and one panel host; stop removes them', async () => {
   const harness = createHarness();
@@ -1251,7 +1226,6 @@ test('controller: a page hook without a player API falls back to media.volume an
   harness.wheel(-100);
   await settle();
   assert.ok(Math.abs(harness.media().volume - 55 * YTM_SLOPE) < 1e-9);
-  // The hook could not paint the slider itself, so it is asked to.
   assert.deepEqual(harness.pageHook.uiSyncs, [55]);
 });
 
@@ -1277,11 +1251,9 @@ test('controller: guard - a stale volume reply cannot overwrite a newer write', 
   pendingReplies[0].resolve({ volume: 55, applied: true, source: 'player' });
   await settle();
 
-  // The next step starts from 60, not from the stale 55.
   harness.wheel(-100);
   assert.equal(pendingReplies[2].percent, 65);
 
-  // A late failure from the oldest request must not rewrite media volume.
   pendingReplies[0].resolve({ volume: null, applied: false, source: 'none' });
   await settle();
   assert.equal(harness.media().volume, 50 * YTM_SLOPE);
@@ -1474,7 +1446,6 @@ test('controller: guard - a song change restores with no tick running (listener 
   assert.equal(harness.timers.intervalCount(), 0);
 
   harness.setHref('https://music.youtube.com/watch?v=song-b');
-  // A new resource starts at the top; the URL alone is not a confirmation.
   harness.media().currentTime = 0;
   harness.dom.win.dispatch('yt-navigate-finish');
   await settle();
@@ -1556,7 +1527,6 @@ test('controller: guard - a restore seek the player swallows is retried inside t
   });
 
   await harness.start();
-  // The restore keeps retrying through the seek ladder instead of giving up.
   assert.equal(media.currentTime, 120);
   harness.timers.flushTimeouts();
   harness.timers.flushTimeouts();
@@ -1572,19 +1542,16 @@ test('controller: guard - a player reset after the restore seek is corrected onc
   await harness.start();
   assert.equal(harness.media().currentTime, 40);
 
-  // Our own seek landing is not a user seek: the settle stays armed.
   harness.media().dispatchEvent('seeked');
   assert.equal(harness.timers.timeoutCount(), 1);
   harness.media().dispatchEvent('seeked');
   assert.equal(harness.timers.timeoutCount(), 1);
 
-  // YTM applies its own startup position after the restore landed.
   harness.media().currentTime = 0;
   assert.equal(harness.timers.timeoutCount(), 1);
   harness.timers.flushTimeouts();
   assert.equal(harness.media().currentTime, 40);
 
-  // Exactly once: a later reset is not fought forever.
   harness.media().currentTime = 0;
   assert.equal(harness.timers.timeoutCount(), 0);
   assert.equal(harness.media().currentTime, 0);
@@ -1615,7 +1582,6 @@ test('controller: guard - a seeked event is not proof of a user seek', async () 
   const harness = createHarness({ storage });
   await harness.start();
 
-  // A player reset to zero emits seeked; the settle must still correct it once.
   harness.media().currentTime = 0;
   harness.media().dispatchEvent('seeked');
   harness.timers.flushTimeouts();
@@ -1704,15 +1670,12 @@ test('persistence: an identity drop must not let an Enter on empty fields delete
   assert.equal(harness.fromValue(), '0:30', 'the saved From is restored');
   assert.equal(harness.toValue(), '3:20', 'the saved To is restored');
 
-  // An unreadable or expired identity drops the in-memory points and repaints
-  // the fields empty. That identity event must not write storage.
   harness.controller.invalidateSongIdentity();
   await settle();
   assert.equal(harness.fromValue(), '', 'the points are dropped from the panel');
   assert.equal(harness.toValue(), '');
   assert.deepEqual(storage.sections(), saved, 'the identity event itself writes nothing');
 
-  // Enter (or blur) on the repainted-empty field is not a deliberate Clear.
   harness.commit('From', '');
   await settle();
   assert.deepEqual(
@@ -1765,17 +1728,14 @@ test('cache: a restore that cannot seek stays pending, retries on a source chang
   await harness.start();
   assert.equal(writes, 1);
 
-  // The bounded ladder exhausts (three retries); pending must survive.
   harness.timers.flushTimeouts();
   harness.timers.flushTimeouts();
   harness.timers.flushTimeouts();
   assert.equal(writes, 4);
 
-  // A source change gets exactly one more attempt.
   media.dispatchEvent('loadedmetadata');
   assert.equal(writes, 5);
 
-  // The deadline ends it: no further attempts, even from the tick.
   harness.advance(3001);
   harness.timers.tickIntervals();
   const settled = writes;
@@ -1808,14 +1768,11 @@ test('cache: a subscription update during the initial read wins', async () => {
   const started = harness.controller.start();
   await settle(2);
 
-  // Another tab writes while the initial read is still in flight.
   storage.setSections([{ videoId: 'song-a', startSeconds: 55, endSeconds: null }]);
   release();
   await started;
   await settle();
 
-  // A later visit proves which cache survived: the subscription's 55, not the
-  // stale read's 10.
   harness.setHref('https://music.youtube.com/watch?v=song-b');
   harness.media().currentTime = 0;
   harness.dom.win.dispatch('yt-navigate-finish');
@@ -1875,10 +1832,8 @@ test('cache: a cache restore does not clobber a field being typed', async () => 
   await started;
   await settle();
 
-  // The typed text survived the landing.
   assert.equal(harness.fromValue(), '2:00');
 
-  // And the commit wins.
   harness.commit('From', '2:00');
   assert.equal(harness.fromValue(), '2:00');
   assert.equal(harness.media().currentTime, 120);
@@ -1978,7 +1933,6 @@ test('controller: guard - a failed save leaves the cache untouched', async () =>
   await settle();
   assert.equal(harness.status(), 'Save failed');
 
-  // The cached section still restores: the failed write changed nothing.
   harness.setHref('https://music.youtube.com/watch?v=song-b');
   harness.media().currentTime = 0;
   harness.dom.win.dispatch('yt-navigate-finish');
@@ -1996,7 +1950,6 @@ test('controller: guard - a successful save updates the cache from the reply', a
   harness.click('Save section');
   await settle();
 
-  // A second visit restores from the cache alone (the fake never stored it).
   harness.setHref('https://music.youtube.com/watch?v=song-b');
   harness.media().currentTime = 0;
   harness.dom.win.dispatch('yt-navigate-finish');
@@ -2064,7 +2017,6 @@ test('controller: cross-tab - two tabs saving through one writer keep both songs
   await settle();
   tabB.commit('From', '0:20');
 
-  // Overlapping saves: neither tab may lose the other's song.
   tabA.click('Save section');
   tabB.click('Save section');
   tabA.timers.flushTimeouts();
@@ -2110,7 +2062,6 @@ test('controller: status copy mirrors the section state', async () => {
   assert.equal(harness.timers.intervalCount(), 0);
 });
 
-// Round 3: identity, save correctness, cross-tab reads, seek provenance
 
 test('controller: guard - no song id means no loop seek; the same id resumes, a new one clears', async () => {
   const harness = createHarness();
@@ -2123,21 +2074,17 @@ test('controller: guard - no song id means no loop seek; the same id resumes, a 
   harness.dom.win.dispatch('yt-navigate-finish');
   await settle();
 
-  // No id: the backstop stays installed (a blip must not latch the loop off)
-  // but nothing seeks, even when it ticks.
   assert.equal(harness.timers.intervalDelays().includes(100), true);
   harness.timers.tickIntervals();
   await settle();
   assert.equal(harness.media().currentTime, 299.75);
 
-  // The same song comes back: the points were kept and the loop resumes.
   harness.setHref('https://music.youtube.com/watch?v=song-a');
   harness.dom.win.dispatch('yt-navigate-finish');
   await settle();
   assert.equal(harness.fromValue(), '0:30');
   assert.equal(harness.timers.intervalDelays().includes(100), true);
 
-  // A different song clears them.
   harness.setHref('https://music.youtube.com/watch?v=song-b');
   harness.dom.win.dispatch('yt-navigate-finish');
   await settle();
@@ -2173,7 +2120,6 @@ test('controller: guard - the auto-save snapshots the song and points at commit'
   harness.commit('To', '0:20');
   await settle(2);
 
-  // Navigate while the write is in flight: the composed entry must not change.
   harness.setHref('https://music.youtube.com/watch?v=song-b');
   harness.dom.win.dispatch('yt-navigate-finish');
   release();
@@ -2205,7 +2151,6 @@ test('controller: guard - an onChanged save from another tab restores on the nex
   const harness = createHarness({ storage });
   await harness.start();
 
-  // Another tab writes; the cache learns it through storage.subscribe.
   storage.setSections([{ videoId: 'song-b', startSeconds: 25, endSeconds: null }]);
   await settle();
 
@@ -2242,7 +2187,6 @@ test('controller: guard - a restore that lands on the retry marks restored and a
   assert.equal(media.currentTime, 0);
   harness.timers.flushTimeouts();
   assert.equal(media.currentTime, 40);
-  // Restored (no restore retry left) and settled (one settle timer armed).
   assert.equal(harness.timers.intervalDelays().includes(150), false);
   assert.equal(harness.timers.timeoutCount(), 1);
 
@@ -2275,12 +2219,10 @@ test('controller: guard - a reply from before a restart cannot overwrite the new
   pending[0].resolve({ volume: 10, applied: true, source: 'player' });
   await settle();
 
-  // The new session's next step is based on 55, not on the old session's 10.
   harness.wheel(-100);
   assert.equal(pending[2].percent, 60);
 });
 
-// Round 4: restore token and seek cancellation
 
 test('controller: guard - Clear cancels an outstanding From retry and never seeks', async () => {
   const harness = createHarness();
@@ -2307,7 +2249,6 @@ test('controller: guard - Clear cancels an outstanding From retry and never seek
   assert.equal(harness.fromValue(), '');
 });
 
-// Round 6: player identity, playback modes, surfaces, loop timing, zero HUD
 
 test('identity: a pushed id arms the loop from Home with no ?v=', async () => {
   const storage = createStorage({
@@ -2352,8 +2293,6 @@ test('identity: a null id keeps the points and the backstop but never seeks', as
 
   harness.pushSong(null);
   await settle();
-  // The tick stays so the section is still latched, but the no-identity
-  // invariant still forbids a seek with points that may belong to another song.
   assert.equal(harness.timers.intervalDelays().includes(100), true);
   assert.equal(harness.fromValue(), '0:30');
   harness.media().currentTime = 299.75;
@@ -2389,7 +2328,6 @@ test('identity: the URL ?v= is the fallback until the player pushes an id', asyn
   await harness.start();
   assert.equal(harness.fromValue(), '0:10');
 
-  // Once the player speaks, the URL no longer decides.
   harness.pushSong('player-id');
   await settle();
   assert.equal(harness.fromValue(), '');
@@ -2426,7 +2364,6 @@ test('identity: the same id on Home and on a watch URL is one section', async ()
   home.click('Save section');
   await settle();
 
-  // A watch URL whose `v` names something else: the player id still wins.
   const watch = createHarness({ storage });
   watch.setHref('https://music.youtube.com/watch?v=other-url-id');
   await watch.start();
@@ -2510,7 +2447,6 @@ test('ui: without an id the status is medium-neutral', async () => {
   assert.equal(harness.status(), 'Play a track to repeat');
 });
 
-// Storage schema
 
 test('storage keeps sections under one playerActions key with no volume field', async () => {
   const storage = createStorage();
@@ -2532,7 +2468,6 @@ test('storage keeps sections under one playerActions key with no volume field', 
   assert.equal(saved.endSeconds, null);
 });
 
-// Static product guards
 
 const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'manifest.json'), 'utf8'));
 const manifestSource = fs.readFileSync(path.join(ROOT, 'manifest.json'), 'utf8');
@@ -2579,7 +2514,6 @@ test('static: the content script wires the player-actions module in one place', 
   assert.equal(contentScriptSource.includes('createPlayerActions'), true);
 });
 
-// page-hook.js: token-verified volume protocol
 
 const pageHookSource = fs.readFileSync(path.join(ROOT, 'page-hook.js'), 'utf8');
 
@@ -2592,7 +2526,6 @@ function createPageHookSandbox(options) {
     setVolumeCalls: [],
     setVolume(value) {
       this.setVolumeCalls.push(value);
-      // `appliedVolume` models the page landing on its own value.
       this.volume = settings.appliedVolume === undefined ? value : settings.appliedVolume;
     },
     getVolume() {
@@ -2682,7 +2615,6 @@ function createPageHookSandbox(options) {
       for (const timer of pending) timer.fn();
     },
     replies() {
-      // Replies carry the request id; id-less native pushes are separate.
       return posted.filter(
         (message) => message && message.type === 'SLRA_VOLUME_STATE' && message.id !== undefined,
       );
@@ -2727,7 +2659,6 @@ test('page-hook: keepMuted restores the element mute in the same request', () =>
   assert.equal(video.muted, true);
   assert.deepEqual(hook.player.setVolumeCalls, [65]);
 
-  // Without the request flag the hook leaves mute policy alone.
   video.muted = false;
   hook.fire({ __slra: true, type: 'SLRA_SET_VOLUME', id: 13, token: 'tok-1', percent: 70 });
   assert.equal(video.muted, false);
@@ -2798,7 +2729,6 @@ test('page-hook: a successful SET syncs the slider, tooltips and hover state', (
   assert.equal(sliders['#expand-volume'].title, '40%');
   assert.equal(sliders['#volume-slider'].classList.contains('on-hover'), true);
 
-  // The hover state is transient: one 2500 ms timer, then it is gone.
   assert.equal(hook.timers.length, 1);
   assert.equal(hook.timers[0].ms, 2500);
   hook.flushTimers();
@@ -2878,7 +2808,6 @@ test('page-hook: no GET_VOLUME surface; keepMuted restores only the mute', () =>
 });
 
 test('static: page-hook.js restores a requested mute, never unmutes or attaches', () => {
-  // The only element mute write in the hook is the guarded restore.
   const muteWrites = pageHookSource.match(/\.muted\s*=\s*[^;]+;/g) || [];
   assert.deepEqual(muteWrites, ['.muted = true;']);
   assert.equal(pageHookSource.includes('keepMuted === true'), true);
@@ -2889,17 +2818,10 @@ test('static: page-hook.js restores a requested mute, never unmutes or attaches'
 test('static: content-script owns mute policy; the hook only restores it', () => {
   assert.equal(contentScriptSource.includes('keepMuted: true'), true);
   assert.equal(/ATTACH_STATE|SLRA_GET_VOLUME/.test(contentScriptSource), false);
-  // The element mute policy lives in the content script and is requested from
-  // the hook; player-actions never writes `muted`.
   assert.equal(/\.muted\s*=/.test(playerActionsSource), false);
   assert.equal(/\.muted\s*=/.test(contentScriptSource), true);
 });
 
-// YTM volume scale: the element is NOT player scale. Measured in-repo
-// (mute-enforce.test.js, SYSTEM.md YTM table): element ~= player * 0.00741
-// (20 -> 0.148, 80 -> 0.593, 100 -> 0.741). The wheel cache is player scale;
-// these tests pin real units so an identity-mapped fake cannot hide a
-// unit mismatch again.
 
 const YTM_SLOPE = 0.00741;
 const ytmElement = (player) => player * YTM_SLOPE;
@@ -2922,10 +2844,8 @@ test('controller: YTM scale - repeated up-notches with sync reseeds strictly rai
     const requested = harness.pageHook.calls.at(-1).percent;
     assert.ok(requested > site,
       'notch ' + (notch + 1) + ': an up-notch must raise the site volume (site=' + site + ' req=' + requested + ')');
-    // YTM applies the player volume and the element follows on its own scale.
     site = requested;
     harness.media().volume = ytmElement(site);
-    // The 5 s safety poll re-syncs between notches; it must not corrupt the cache.
     harness.controller.sync();
   }
   assert.equal(site, 100);
@@ -2983,26 +2903,17 @@ test('controller: YTM scale - the fallback writes the element at YTM scale', asy
   assert.deepEqual(harness.pageHook.uiSyncs, [55]);
 });
 
-// Native volume truth: a YTM slider drag (or keyboard step) changes the
-// player volume without any wheel. The page pushes the player-scale value
-// over the existing SLRA_VOLUME_STATE type (no id, applied false); the
-// controller adopts it as truth so the next wheel starts from the site
-// value instead of jumping from a stale cache. Media swaps never touch
-// player-scale truth: the site volume survives element replacement.
 
 test('controller: a native volume push becomes truth - the next wheel starts from it', async () => {
   const harness = createHarness({ mediaOptions: { volume: ytmElement(60) } });
   await harness.start();
-  // Native slider drag to 35: the page pushes player-scale truth.
   harness.controller.setPlayerVolume(35);
-  // The safety poll re-syncs between the drag and the wheel: no clobber.
   harness.controller.sync();
   harness.controller.sync();
   harness.controller.sync();
   const callsBefore = harness.pageHook.calls.length;
   harness.wheel(-100);
   await settle();
-  // A push is truth, not a request: nothing was written before the wheel.
   assert.equal(harness.pageHook.calls.length, callsBefore + 1);
   assert.deepEqual(harness.pageHook.calls.at(-1), { percent: 40 });
 });
@@ -3011,8 +2922,6 @@ test('controller: a media swap keeps player truth - the element must not re-seed
   const harness = createHarness({ mediaOptions: { volume: ytmElement(60) } });
   await harness.start();
   harness.controller.setPlayerVolume(80);
-  // YTM replaces the element on track change; the fresh element may even
-  // carry a stale element-scale value. Player truth (80) must win.
   harness.setMedia(harness.dom.makeMedia('song-b', { volume: ytmElement(20) }));
   harness.controller.sync();
   harness.wheel(-100);
@@ -3029,7 +2938,6 @@ test('page-hook: install posts the current player volume as an id-less push', ()
   assert.equal(pushes[0].source, 'player');
   assert.equal(pushes[0].id, undefined);
   assert.equal(pushes[0].token, 'tok-1');
-  // A push is not a reply: the reply lane stays empty.
   assert.equal(hook.replies().length, 0);
 });
 
@@ -3039,24 +2947,16 @@ test('page-hook: slider input and the poll post player truth, deduped', () => {
   slider.closest = (selector) => (String(selector).includes('#volume-slider') ? slider : null);
   const hook = createPageHookSandbox({ sliders, volume: 40 });
   assert.deepEqual(hook.pushes().map((push) => push.volume), [40]);
-  // A native drag moves the player; the slider input posts it at once.
   hook.player.volume = 55;
   hook.fireDoc('input', { target: slider });
   assert.deepEqual(hook.pushes().map((push) => push.volume), [40, 55]);
-  // The poll backstop re-reads but emits nothing when nothing changed.
   hook.runIntervals();
   assert.deepEqual(hook.pushes().map((push) => push.volume), [40, 55]);
-  // ...and posts exactly once when the player moved again.
   hook.player.volume = 57;
   hook.runIntervals();
   assert.deepEqual(hook.pushes().map((push) => push.volume), [40, 55, 57]);
 });
 
-// F4: a deliberate commit (From/Now/To/Clear) is a vouch. It may adopt an
-// identity an invalidation dropped or a read suspended, and save the typed range
-// under that id. Two bounds stay: the seek never drags a mid-stream element that
-// provenance has not confirmed belongs to the URL's song, and a read that was
-// already in flight when the press landed cannot silently undo the press.
 
 test('F4: a post-invalidation From commit vouches the URL song and a stale read cannot undo it', async () => {
   const section = { videoId: 'song-a', startSeconds: 30, endSeconds: 60 };
@@ -3067,24 +2967,16 @@ test('F4: a post-invalidation From commit vouches the URL song and a stale read 
   await settle();
   assert.equal(media.currentTime, 30, 'precondition: A restored and armed at its own start');
 
-  // The player read failed: the visit is dropped and the fields repaint empty,
-  // while the URL still names A. A source signal left a read in flight.
   harness.controller.invalidateSongIdentity();
   harness.controller.suspendSongIdentity();
   await settle();
   assert.equal(harness.fromValue(), '', 'precondition: identity drop emptied the fields');
 
-  // The person deliberately types From 0:15 while the id is unconfirmed.
   harness.commit('From', '0:15');
   await settle();
-  // A-semantics: the press vouches for the URL's song, adopts it and saves the
-  // typed range under it (audit actual: media 30->15, {song-a,15,null} written).
   assert.equal(media.currentTime, 15, 'the press vouches and seeks to the URL song');
   assert.deepEqual(harness.storage.sections(), [{ videoId: 'song-a', startSeconds: 15, endSeconds: null }]);
 
-  // The read that was already in flight when the press landed answers nothing.
-  // It was stale at press time, so its invalidation must not silently undo the
-  // deliberate commit.
   harness.controller.invalidateSongIdentity();
   await settle();
   assert.equal(harness.fromValue(), '0:15', 'the press survives the stale invalidation');
@@ -3105,8 +2997,6 @@ test('F4: a commit never drags a mid-stream element that provenance names as ano
   await settle();
   assert.equal(media.currentTime, 30, 'precondition: A is armed on the element');
 
-  // The SPA URL moves to B while the player still holds A mid-stream. B is only
-  // a URL candidate: nothing has confirmed the element swapped to B.
   harness.setHref('https://music.youtube.com/watch?v=song-b');
   harness.controller.suspendSongIdentity();
   media.currentTime = 45;
@@ -3114,9 +3004,6 @@ test('F4: a commit never drags a mid-stream element that provenance names as ano
   await settle();
   assert.equal(media.currentTime, 45, 'precondition: unconfirmed B does not seek A');
 
-  // The person deliberately sets From 0:15 on the B watch page. The press vouches
-  // for B, but the element still holds A and provenance has not confirmed B, so
-  // the seek must be refused rather than drag A into B's range.
   harness.commit('From', '0:15');
   await settle();
   assert.equal(media.currentTime, 45, 'never seek into another song: the unconfirmed mid-stream element stays put');

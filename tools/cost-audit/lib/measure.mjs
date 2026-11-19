@@ -1,4 +1,3 @@
-// Open a tab, install the instrument, navigate, read back what happened.
 
 import { PROBE_SOURCE } from "./probe.mjs";
 
@@ -31,12 +30,10 @@ export async function closeTab(client, targetId, off) {
   try {
     off?.();
   } catch {
-    /* listener already gone */
   }
   try {
     await client.send("Target.closeTarget", { targetId });
   } catch {
-    /* tab already closed */
   }
 }
 
@@ -55,7 +52,6 @@ export async function visit(client, sessionId, url, { settleMs = 1200, timeoutMs
       readyState = String(result.result?.value ?? "");
       if (readyState.startsWith("complete|") && !readyState.endsWith("|about:blank")) break;
     } catch {
-      /* the context is being replaced mid-navigation */
     }
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
@@ -113,7 +109,6 @@ export async function findWorker(client, extensionId) {
   );
   if (target) return target;
 
-  // Service workers are lazy: opening an extension page starts the worker.
   const { targetId } = await client.send("Target.createTarget", {
     url: `chrome-extension://${extensionId}/popup.html`,
   });
@@ -142,8 +137,6 @@ export function aggregate({ probe, contexts }, extensions) {
     const own = (list) => (list ?? []).filter((entry) => entry.frame === frame).length;
     byPackage[ext.package] = {
       scripts: (contexts ?? []).filter((context) => context.origin === origin && context.type === "isolated").length,
-      // Registrations, not live listeners: this number is what the page world
-      // saw added, and it is what the column is named after.
       listenerRegistrations: own(probe?.listeners),
       listenerRemovalCalls: Number(probe?.listenerRemovalCalls) || 0,
       timers: own(probe?.timers) + own(probe?.rafs),

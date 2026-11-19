@@ -96,8 +96,6 @@ test("manifest key decodes to the stable extension ID the native host allows", (
 
 test("permissions stay minimal and host access is Crunchyroll only", () => {
   const permissions = [...manifest.permissions].sort();
-  // nativeMessaging + storage are required by the contract; alarms is the only
-  // way an MV3 service worker can run the 30s watchdog. Anything broader fails.
   assert.deepEqual(permissions, ["alarms", "nativeMessaging", "storage"]);
   assert.deepEqual(manifest.host_permissions, ["https://*.crunchyroll.com/*"]);
   assert.ok(!("optional_permissions" in manifest), "no optional permissions to widen scope later");
@@ -162,8 +160,6 @@ test("icons are declared at 16/32/48/128 and are real PNGs of that size", () => 
 });
 
 test("icon generator is deterministic", () => {
-  // The shipped icons are authored artwork, not generator output, so run the
-  // generator from a scratch copy: it writes next to itself, never into icons/.
   const scratch = mkdtempSync(join(tmpdir(), "crunchy-icons-"));
   try {
     const toolsDir = join(scratch, "tools");

@@ -1,8 +1,4 @@
 'use strict';
-// F1 proof: handleSetDocumentState({enabled:true}) must not clobber gain/blastGuard.
-// Usage: node qa/proof-f1-toggle.cjs [path-to-content-script.js]
-// Seeds stored gain 6 dB + blast guard on, delivers a gain-less SET_DOCUMENT_STATE
-// (the shape of the old TOGGLE_CHANGED broadcast), then reads GET_DOCUMENT_STATUS.
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
@@ -64,7 +60,6 @@ async function main() {
   }
 
   const before = await getStatus();
-  // Gain-less message, shaped like the pre-fix TOGGLE_CHANGED broadcast.
   runtimeListener({ type: 'SET_DOCUMENT_STATE', enabled: true }, {}, () => {});
   await flush();
   const after = await getStatus();

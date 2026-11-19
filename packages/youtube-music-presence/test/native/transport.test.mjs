@@ -301,8 +301,6 @@ test("Music stays on its first transport: a second activity reuses the same IPC 
   await host.handle({ t: "activity", source: "youtube-music", id: "b1", activity: ACTIVITY });
   assert.equal(statusOf(frames, "connected").transport, "discord-ipc");
 
-  // Music is the only source, so a second activity reuses the IPC client
-  // instead of opening a second transport.
   await host.handle({ t: "activity", source: "youtube-music", id: "b2", activity: ACTIVITY });
 
   assert.equal(fakes.ipcClients.length, 1, "one Music source keeps one IPC client");

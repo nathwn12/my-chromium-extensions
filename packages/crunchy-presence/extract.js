@@ -23,7 +23,6 @@
     },
 
     mediaSession: {
-      // which metadata fields feed which output field
       title: "title",
       series: ["artist", "album"]
     },
@@ -57,9 +56,7 @@
     synopsis: {
       minChars: 40,
       maxChars: 1000,
-      // the real synopsis node is expandable-section__text--…
       dom: ['*[class*="expandable-section" i]'],
-      // meta[name="description"] is prefixed with this clause, not boilerplate
       watchPrefix: /^Watch\b.*?\bon Crunchyroll\b[.,!?]?\s*/i,
       terms: /\b(we'?ve updated our terms|updated our terms|terms of (use|service)|privacy (policy|notice)|cookie (policy|consent))\b/i,
       languages: [
@@ -90,7 +87,6 @@
     },
 
     title: {
-      // first pattern that matches wins; earlier patterns are more specific
       patterns: [
         { name: "sxxexx", re: /\bS(\d{1,3})\s?E(\d{1,4})\b/i, season: 1, episode: 2, deriveSeries: true },
         { name: "seasonEpisode", re: /\bSeason\s+(\d{1,3})\s+Episode\s+(\d{1,4})\b/i, season: 1, episode: 2, deriveSeries: true },
@@ -99,10 +95,8 @@
     },
 
     dom: {
-      // first match wins; the player lives inside these two containers
       video: ["#player-container video", "video"],
       headings: ["h1", "h2"],
-      // PreMiD-verified Crunchyroll player selectors
       episode: "h1.title",
       series: "a > h4",
       button: "a.show-title-link",
@@ -118,7 +112,6 @@
         "home",
         "sign in",
         "premium",
-        // site chrome that the SPA renders before the watch page settles
         "explore",
         "browse",
         "search",
@@ -133,8 +126,6 @@
 
   function clean(value) {
     if (typeof value !== "string") return null;
-    // Strip bidi controls and zero-width characters before capping: U+202E
-    // can reverse-render and U+200B-D/U+2066-69 invisibly pad the card.
     var text = value
       .replace(/[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF\u061C\u180E]/g, "")
       .replace(/\s+/g, " ")
@@ -510,8 +501,6 @@
             duration: null
           };
         }
-        // The TVEpisode name repeats the series ("Darling in the FRANXX | E1 - …"),
-        // so keep the two names apart: the VideoObject name is the clean title.
         if (names.indexOf("videoobject") !== -1) {
           if (name && !found.videoName) found.videoName = name;
         } else if (name && !found.episodeName) {
@@ -699,7 +688,6 @@
     if (doc.location && typeof doc.location.href === "string") href = doc.location.href;
     else if (root.location && typeof root.location.href === "string") href = root.location.href;
 
-    // (e) the video element is the only playback truth
     var video = firstMatch(doc, RULES.dom.video);
     if (video) {
       out.hasVideo = true;
@@ -710,8 +698,6 @@
       out.playbackRate = finite(video.playbackRate);
     }
 
-    // (a) media session: series/artwork feed the result now; its title is a
-    // fallback after the page h1 and JSON-LD names.
     var session = readMediaSession(nav);
     if (session) {
       signals.push("mediaSession");
@@ -719,7 +705,6 @@
       if (session.artwork) out.artworkUrl = session.artwork;
     }
 
-    // (b) JSON-LD
     var ld = readJsonLd(doc);
     if (ld) {
       signals.push("jsonLd");
@@ -727,16 +712,11 @@
       if (out.seasonNumber === null && ld.season !== null) out.seasonNumber = ld.season;
       if (out.episodeNumber === null && ld.episode !== null) out.episodeNumber = ld.episode;
       if (!out.artworkUrl && ld.artwork) out.artworkUrl = ld.artwork;
-      // A paywalled page has no <video> duration; the VideoObject still knows it.
       if (ld.duration !== null && (out.duration === null || out.duration <= 0)) {
         out.duration = ld.duration;
       }
     }
 
-    // Episode title: on a watch page the h1 is already the episode
-    // ("E1 - Alone and Lonesome"), the VideoObject name is clean ("Alone and
-    // Lonesome"), and the TVEpisode name repeats the series, so it is only a
-    // stripped last resort. Series pages keep their own heading out of this.
     var heading = null;
     if (RULES.dom.watchPath.test(href)) {
       heading = documentHeading(doc);
@@ -745,14 +725,12 @@
     var ldTitle = ld ? ld.videoName || stripSeriesPrefix(ld.episodeName, out.series) : null;
     out.episodeTitle = heading || ldTitle || (session && session.title) || null;
 
-    // (c) open graph
     var meta = readMeta(doc);
     if (meta) {
       signals.push("og");
       if (!out.artworkUrl && meta.image) out.artworkUrl = meta.image;
     }
 
-    // (d) title regexes, og:title first then document.title
     var titleSource = (meta && meta.title) || clean(doc.title);
     var parsed = parseTitleText(titleSource);
     if (!parsed && meta && meta.title) parsed = parseTitleText(clean(doc.title));
@@ -765,7 +743,6 @@
       out.episodeTitle = meta.title;
     }
 
-    // (e) DOM text fallbacks
     var dom = readDomText(doc, video);
     if (dom && (dom.series || dom.episode)) {
       signals.push("dom");
@@ -774,16 +751,13 @@
       if (!out.episodeTitle && dom.series && out.series !== dom.series) out.episodeTitle = dom.series;
     }
 
-    // (e) watch URL / player button
     if (RULES.dom.watchPath.test(href)) signals.push("watchUrl");
     if (queryOne(doc, RULES.dom.button)) signals.push("button");
 
-    // (f) direct links and synopsis: layered, lowest priority last, always nullable
     out.seriesUrl = readSeriesUrl(ld, doc, href);
     out.episodeUrl = readEpisodeUrl(ld, doc, href);
     out.synopsis = readSynopsis(ld, doc);
 
-    // normalise: strings capped and noise-stripped, numbers finite or null
     out.series = clean(out.series);
     out.episodeTitle = clean(out.episodeTitle);
     out.artworkUrl = cleanUrl(out.artworkUrl);

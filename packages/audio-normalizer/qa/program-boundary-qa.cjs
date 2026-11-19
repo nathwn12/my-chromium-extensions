@@ -1,12 +1,4 @@
 'use strict';
-/*
- * program-boundary-qa.cjs
- * Local-only QA harness (qa/ is gitignored). Pure Node, node:vm. No browser, no audio.
- *
- * Verifies the page-hook half of the feed fix: exactly one
- * {type:'reset-program', generation} per new program to each active
- * session.workletNode.port, best-effort on missing/closed ports.
- */
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
@@ -51,15 +43,9 @@ class FakeMediaElement extends FakeElement {
     this.deferredPlays = [];
   }
   play() {
-    // A real element fires `play` (and `playing` once it has data) before
-    // play()'s promise settles — including for an attempt that is then
-    // interrupted and rejected. Modelling those events is what covers the
-    // listener path; the promise alone would not.
     this.dispatchEvent({ type: 'play' });
     this.dispatchEvent({ type: 'playing' });
     if (this.deferPlay) {
-      // Overlapping-attempt model: the caller settles each attempt
-      // individually, in any order, while the others stay pending.
       const attempt = {};
       const promise = new Promise((resolve, reject) => {
         attempt.resolve = resolve;
@@ -178,14 +164,11 @@ async function main() {
   vm.createContext(sandbox);
   vm.runInContext(hookSrc, sandbox, { filename: 'page-hook.js' });
 
-  // Control arrives only from the worker, through executeScript: drive the same
-  // entrypoint the background calls. There is no page message path any more.
   sandbox.__tnHookV6('start', {
     gainDb: 0,
     workletUrl: 'chrome-extension://test-id/audio/normalizer-worklet.js',
   });
 
-  // Await pre-warm: media session + worklet node ready.
   const deadline = Date.now() + 3000;
   while (FakeWorkletNode.instances.length === 0 && Date.now() < deadline) {
     await sleep(25);
@@ -246,9 +229,6 @@ async function main() {
     C.rejectPlay = false;
     await C.play();
   }, 1);
-  // F1 overlap: two attempts on one element, settled out of order. While ANY
-  // attempt is unresolved its play/playing events must not reset; the first
-  // attempt rejecting must not open the gate for the second.
   await check('11 overlap D: reject first, second still pending -> +0', async () => {
     D.deferPlay = true;
     void D.play().catch(() => {});
@@ -260,8 +240,6 @@ async function main() {
   await check('12 overlap D: second resolves -> +1 (confirmed start)', async () => {
     D.deferredPlays[1].resolve();
   }, 1);
-  // Positive control: the last settle must clear the gate, or 11/12 would
-  // pass with the gate stuck closed forever.
   await check('13 D dirty after last settle -> +1', async () => {
     D.deferPlay = false;
     D.dispatchEvent({ type: 'loadstart' });

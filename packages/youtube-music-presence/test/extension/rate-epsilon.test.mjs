@@ -19,7 +19,6 @@ const LITERAL = /\b(?:var|let|const)\s+RATE_EPSILON\s*=\s*(-?[0-9]*\.?[0-9]+)\s*
 const EXPORT = /^export\s+const\s+RATE_EPSILON\s*=/;
 
 function literals(file) {
-  // Explicit UTF-8: a Windows console read can otherwise decode wrongly.
   const text = readFileSync(join(extensionDir, file), "utf8");
   const found = [];
   for (const [index, line] of text.split(/\r?\n/).entries()) {
@@ -61,9 +60,6 @@ test("rate tolerance has one exported definition and every literal matches it", 
     );
   }
 
-  // A duplicate literal reintroduced in an ES module is caught here even when
-  // its value still matches: the only literals allowed are the owner's export
-  // and the classic content script's pinned copy.
   const duplicates = all.filter((entry) => entry.file !== "content.js" && !entry.exported);
   assert.deepEqual(duplicates, [], "no duplicate RATE_EPSILON literal in an ES module");
 });

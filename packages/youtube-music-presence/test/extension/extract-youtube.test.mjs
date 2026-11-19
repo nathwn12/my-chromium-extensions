@@ -441,11 +441,7 @@ test("a byline without anchors yields no links and no crash", () => {
   assert.equal(state.trackUrl, null);
   assert.equal(state.artistUrl, null);
   assert.equal(state.albumUrl, null);
-  // A byline segment is never an artist: only an anchor, MediaSession or
-  // JSON-LD can name one.
   assert.equal(state.channel, null);
-  // A byline segment is never promoted to album: without an album anchor or
-  // MediaSession album there is no album at all.
   assert.equal(state.album, null);
   assert.equal(state.views, null);
 });
@@ -522,8 +518,6 @@ test("a view count is never promoted to an artist", () => {
 });
 
 test("an anchorless byline never becomes the artist, localized counts included", () => {
-  // No localized-count pattern is recognized on purpose: `1,5 M vues` is not
-  // matched as a view count, and it must still never be the artist.
   const localized = musicPage({
     href: MUSIC_WATCH,
     title: "Song",
@@ -534,8 +528,6 @@ test("an anchorless byline never becomes the artist, localized counts included",
   assert.equal(localizedState.views, null);
   assert.equal(localizedState.artistUrl, null);
 
-  // A real name is not rescued by pattern matching either: the rule is
-  // structural, so `50 Cent` survives only through an anchor or MediaSession.
   const named = musicPage({
     href: MUSIC_WATCH,
     title: "Song",

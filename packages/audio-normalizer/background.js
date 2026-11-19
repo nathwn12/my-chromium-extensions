@@ -9,23 +9,6 @@ const RESTRICTED_URL_PATTERN = /^(chrome|chrome-extension|devtools|edge|about):/
 const WEBSTORE_URL_PATTERN = /^https?:\/\/(chrome\.google\.com\/webstore|microsoftedge\.microsoft\.com\/addons)\b/i;
 const pendingSessionStates = new Map();
 
-// Per-site single-key storage: each site lives under ONE top-level key
-// `site:<siteKey>` holding { enabled, gainDb, seq, mirror }.
-// Platform fact (RESEARCH §2.1): `chrome.storage.local.set` guarantees only
-// that "Any other key/value pairs in storage will not be affected" —
-// top-level-key granularity. A write to `site:a.com` therefore cannot touch
-// `site:b.com` by construction, unlike the old whole-map `siteSettings`
-// read-modify-write where two contexts could clobber each other's sites.
-// A single `set` carries the whole per-site record, so settings / mirror /
-// sequence can never diverge across separate writes (defect 4) — there is no
-// second write to crash between. This beats serialising (an in-memory queue):
-// the queue is lost on service-worker restart (RESEARCH §1: "Any global
-// variables you set will be lost"), spans no context but its own, and cannot
-// help a popup direct-write racing the worker; per-site keys survive restart
-// (disk) and work across contexts via the documented granularity.
-// The queue below is kept only as best-effort same-worker serialisation for
-// same-site concurrent handlers; cross-site safety and single-write
-// divergence-freedom hold without it.
 /** @type {Promise<unknown>} */
 let storageWriteChain = Promise.resolve();
 /**
@@ -39,28 +22,6 @@ function withStorageWrite(task) {
   return run;
 }
 
-// Background is the ONLY owner of persisted state and the ONLY writer.
-// The popup sends field-level intents (`{ siteKey, set: { gainDb } }` —
-// only the field the user just changed). The background applies the
-// intent's fields to the live record and writes the whole record back in
-// one `set` (a partial `set` is a delete — see RESEARCH §10). Top-level
-// `enabled`/`gainDb` on the message are legacy and are IGNORED
-// when `set` is present; when `set` is absent they are treated as the intent
-// for backward compatibility only.
-// Ordering is last-accepted-write-wins: every accepted write bumps the
-// per-site `seq` INSIDE the same single-key value (`seq = stored.seq + 1`)
-// and returns it to the popup. `seq` is audit and observability only —
-// never an acceptance gate. Nothing is ever rejected on ordering grounds.
-// Accepted trade (deliberate): if two popups race the same field and one
-// message is delayed past a newer one, the later *arrival* wins rather than
-// the later *action*; there is no clock-free way to distinguish those, the
-// window is milliseconds between two simultaneously-open popups, and the
-// alternative (wall-clock per-field maxima) locked a field out until the
-// wall clock caught up — potentially for years after a mistakenly
-// future-dated write — with no restart helping because the maxima persisted.
-// Do not reintroduce wall-clock comparison against stored maxima.
-// Legacy `siteSeq` is read once to keep the audit counter monotonic across
-// migration and never written; the per-site key's existence replaces any marker.
 const SITE_SEQ_KEY = 'siteSeq';
 
 /**
@@ -76,11 +37,6 @@ const SITE_SEQ_KEY = 'siteSeq';
  */
 async function readSiteRecord(siteKey) {
   const perKey = backgroundShared.siteStorageKey(siteKey);
-  // Platform fact (measured Step 1 repro): an object-form key whose default
-  // is `undefined` is dropped by the extension API's JSON marshal, so
-  // `get({ [perKey]: undefined })` returns `{}` even when the key exists.
-  // The array form is proven to return the value; missing keys are simply
-  // absent and the `|| {}` fallbacks below preserve the old defaults.
   const stored = await chrome.storage.local.get([
     perKey,
     'activeSites',
@@ -92,9 +48,6 @@ async function readSiteRecord(siteKey) {
   if (existing && typeof existing === 'object') {
     return { record: backgroundShared.normalizeSiteRecord(existing), fromLegacy: false };
   }
-  // Pre-full-key data lives under the collapsed per-site key
-  // (`site:github.io`). Read it as a legacy fallback; callers persist the
-  // migrated record under the FULL key on their next write (`fromLegacy`).
   const legacyPerKey = backgroundShared.legacySiteStorageKey(siteKey);
   if (legacyPerKey && legacyPerKey !== perKey) {
     const legacyStored = await chrome.storage.local.get([legacyPerKey]);
@@ -110,9 +63,6 @@ async function readSiteRecord(siteKey) {
     siteKey,
   );
   if (migrated) {
-    // Keep the audit counter monotonic across migration: adopt a persisted
-    // legacy sequence maximum when present. `seq` is audit-only, never a
-    // gate — this changes nothing about acceptance.
     const legacySeq = /** @type {Record<string, unknown>} */ (stored[SITE_SEQ_KEY] || {});
     const seqNum = Number(legacySeq[siteKey]);
     if (Number.isFinite(seqNum) && seqNum > migrated.seq) {
@@ -139,11 +89,6 @@ async function writeSiteRecord(siteKey, record) {
   });
 }
 
-// Automatic reload on the one enable that has no hook to start (the first-ever
-// enable of a host on an already-loaded document). The delay lets the popup
-// paint its "Reloading to activate…" state before the document goes away; the
-// reload itself is the ONLY navigation this extension ever performs, and it
-// happens once per host, ever.
 const FIRST_ENABLE_RELOAD_DELAY_MS = 500;
 const RELOAD_NOTICE_MESSAGE = 'Enabled. Reload applies this.';
 const RELOADING_MESSAGE = 'Reloading to activate…';
@@ -342,7 +287,6 @@ function installFrameGate(excludedHosts) {
   );
   const report = { host, excluded };
   try {
-    // Anything the page may have planted is removed before we write ours.
     try { delete globalThis.__tnHookV6; } catch {}
     globalThis.__tabNormalizerExclusionCache = { hosts };
     globalThis.__tabNormalizerFrameGate = report;
@@ -433,10 +377,6 @@ async function migrateActiveSitesOnce() {
         siteKey,
       );
       if (existing[perKey] && typeof existing[perKey] === 'object') {
-        // Per-site already exists: only clear when it already reflects this
-        // legacy entry (same enabled/gain) — i.e. the legacy was
-        // consumed by an earlier migration (e.g. GET_SITE_STATE). Otherwise
-        // leave it: clearing un-consumed data is data loss.
         if (!migrated) continue;
         const cur = backgroundShared.normalizeSiteRecord(existing[perKey]);
         if (cur.enabled !== migrated.enabled
@@ -445,9 +385,6 @@ async function migrateActiveSitesOnce() {
         continue;
       }
       if (migrated) {
-        // Same legacy-sequence preservation as the ordinary read path
-        // (readSiteRecord): adopt a persisted legacy sequence maximum so the
-        // audit counter stays monotonic across migration. `seq` is audit-only.
         const legacySeq = /** @type {Record<string, unknown>} */ (stored.siteSeq || {});
         const seqNum = Number(legacySeq[siteKey]);
         if (Number.isFinite(seqNum) && seqNum > migrated.seq) {
@@ -458,7 +395,6 @@ async function migrateActiveSitesOnce() {
       }
     }
     if (consumed.length === 0) return { changed: false };
-    // Remove ONLY consumed raw keys; any un-consumed entry survives.
     const nextActives = { ...activeSites };
     for (const k of consumed) delete nextActives[k];
     await chrome.storage.local.set({ activeSites: nextActives });
@@ -478,19 +414,6 @@ function canAccessTabUrl(url) {
   }
 }
 
-// Registration-time enforcement (layer 1).
-//
-// The content script is no longer a static `<all_urls>` manifest entry: it is
-// registered dynamically and ONLY for hosts whose stored record can be active.
-// A host with no record, or a disabled one, gets no injection at all — the
-// twenty-four-hours-a-day `document_start` script on every page of every site
-// is gone. Excluded hosts are additionally listed in `excludeMatches`, so a
-// subdomain of an excluded host is refused by the browser itself.
-//
-// Re-registration is triggered by install, startup, and every storage change
-// that moves `enabled` or `excluded` (see the `site:<key>` change loop at the
-// bottom of this file). Gain changes never re-register: matches do not depend
-// on gain.
 
 /**
  * Every per-site record in storage, keyed by site key (full hostname).
@@ -557,7 +480,6 @@ function collectLegacyEnabledSiteKeys(all, records) {
  * @returns {Promise<{ matches: string[], excludeMatches: string[], seq: number }>}
  */
 async function deriveContentScriptRegistration() {
-  // The stamp is carried with the derivation: an older read must never win.
   const all = /** @type {Record<string, unknown>} */ (await chrome.storage.local.get(null));
   const records = collectPerSiteRecords(all);
   /** @type {string[]} */
@@ -570,9 +492,6 @@ async function deriveContentScriptRegistration() {
   /** @type {string[]} */
   const exactActive = [];
   for (const [siteKey, record] of records) {
-    // `seen || enabled`: a host the user has enabled at least once keeps the
-    // document_start pair so a later enable is live on the already-loaded page.
-    // A never-seen host keeps the zero-cost path (no registration at all).
     if (record.excluded || !(record.enabled || record.seen)) continue;
     if (isCoveredByExclusion(siteKey)) continue;
     exactActive.push(siteKey);
@@ -670,7 +589,6 @@ async function applyRegistrationOnce() {
     persistAcrossSessions: true,
   };
   if (registrationMatchesDerivation(current, descriptor)) {
-    // Already reconciled: this wake has nothing to write.
     lastAppliedRegistrationSeq = derived.seq;
     registrationRetryCount = 0;
     return;
@@ -682,11 +600,6 @@ async function applyRegistrationOnce() {
       await chrome.scripting.registerContentScripts([descriptor]);
     }
   } catch (error) {
-    // FAIL CLOSED, and say so when the platform will not let us be closed: with
-    // BOTH the correcting write and the removal rejected, no API is left to
-    // remove a descriptor that may still match an excluded host. That is an
-    // OS-level failure — reported loudly ONCE (not once per retry) and left to
-    // the bounded retry and the next wake, which is where it heals.
     let removalError = null;
     try {
       if (typeof chrome.scripting.unregisterContentScripts === 'function') {
@@ -715,9 +628,6 @@ async function runRegistrationPass() {
   try {
     await applyRegistrationOnce();
   } catch (e) {
-    // A failed first registration would leave enabled sites with no
-    // document-start script at all, so it is retried with bounded backoff and
-    // re-armed by the next storage change, startup or alarm.
     console.warn('[bg] content-script registration failed, will retry:', String(e));
     scheduleRegistrationRetry();
   }
@@ -745,16 +655,12 @@ function scheduleRegistrationRetry() {
   }, delay);
 }
 
-// Coalesced re-registration: a burst of writes (toggle + gain + exclusion)
-// costs one registration pass, not one per write.
 /** @type {ReturnType<typeof setTimeout> | null} */
 let registrationSyncTimer = null;
 /** @type {Promise<unknown>} */
 let registrationChain = Promise.resolve();
 let lastAppliedRegistrationSeq = -1;
 let registrationRetryCount = 0;
-// Rule 7's documented limit: both the correcting write AND the removal rejected,
-// so nothing API-level is left. Reported once per stuck incident, never per retry.
 let registrationRemovalFailureReported = false;
 /** @type {ReturnType<typeof setTimeout> | null} */
 let registrationRetryTimer = null;
@@ -776,8 +682,6 @@ function getTabSiteKey(tab) {
   return backgroundShared.getSiteKey(backgroundShared.extractHostname(tab.url));
 }
 
-// A tab matches a broadcast site key on the FULL key or the legacy
-// collapsed key (pre-full-key tabs and records compare collapsed).
 function tabMatchesSiteKey(tabUrl, siteKey) {
   if (typeof tabUrl !== 'string' || !siteKey) return false;
   const hostname = backgroundShared.extractHostname(tabUrl);
@@ -785,9 +689,6 @@ function tabMatchesSiteKey(tabUrl, siteKey) {
     || backgroundShared.getLegacySiteKey(hostname) === siteKey;
 }
 
-// Coalesced broadcast: one storage write (or a same-tick burst of them)
-// produces exactly ONE broadcast per site with the re-read truth. Rapid
-// slider persists collapse here instead of fanning out per write.
 const pendingBroadcastSites = new Set();
 /** @type {ReturnType<typeof setTimeout> | null} */
 let broadcastFlushTimer = null;
@@ -810,32 +711,20 @@ function flushSiteBroadcast(siteKey) {
       let current;
       try {
         const { record } = await readSiteRecord(siteKey);
-        // Stale broadcast: stored truth moved on (e.g. re-enabled after
-        // this disable change). Send the current truth. Fail closed: when
-        // the re-read itself fails the truth is unknown, so send nothing
-        // rather than a possibly stale captured change.
         current = record;
       } catch {
-        // Fail closed on a read failure: no broadcast without truth.
         return;
       }
       tabs.forEach(tab => {
         if (!tab.url || !tab.id) return;
         const tabKey = getTabSiteKey(tab);
-        // Ancestry: the record's key AND its descendants. Top-URL equality
-        // alone missed `a.example.com` when `example.com` was excluded.
         if (!tabKey) return;
         if (tabKey !== siteKey && !backgroundShared.hostMatchesSiteKey(tabKey, siteKey)) return;
-        // Every frame, no frameId filter: a cross-origin iframe of the
-        // affected host does not share the tab's top-level URL, and exclusion
-        // must reach it immediately instead of through its own storage read.
         chrome.tabs.sendMessage(tab.id, {
           type: 'TOGGLE_CHANGED',
           siteKey,
           enabled: current.enabled,
           gainDb: current.gainDb,
-          // Live teardown: the content script stops on this flag without a
-          // storage read. Exclusion outranks `enabled` at the tab.
           excluded: current.excluded,
         }).catch(() => {});
       });
@@ -845,17 +734,9 @@ function flushSiteBroadcast(siteKey) {
 
 
 async function injectMainWorldScript(tabId, file, frameId) {
-  // Frame-targeted MAIN-world injection: a video inside a cross-origin
-  // iframe runs in its own frame, so the top-frame default never reaches it.
-  // Content scripts run in every frame (all_frames) and their sender carries
-  // the originating frameId — target exactly that frame. A missing frameId
-  // means a tab-level call (no sender frame): default to frame 0 only then.
   const target = (typeof frameId === 'number' && Number.isFinite(frameId))
     ? { tabId, frameIds: [frameId] }
     : { tabId };
-  // Frame gate first, in the MAIN world of the target frame: its own hostname
-  // decides, not the embedder's. It also stages the per-tab token the hook file
-  // consumes, and clears any page-seeded surface.
   const gate = await injectFrameGate(target, 'MAIN');
   if (!gate.ok) {
     return { ok: false, error: gate.error || 'Frame gate failed.' };
@@ -871,9 +752,6 @@ async function injectMainWorldScript(tabId, file, frameId) {
     });
     return { ok: true };
   } catch (e) {
-    // A frame that disappears mid-call (navigation, removal) is a routine
-    // race: return an error object, never throw, so the caller reports
-    // status instead of faulting the message channel.
     return { ok: false, error: String(e && e.message || e) };
   }
 }
@@ -948,7 +826,6 @@ async function tryApplyPendingSessionState(tabId, tab) {
     return false;
   }
 
-  // Exclusion outranks a transient session override.
   if (await isSiteBlocked(entry.siteKey)) {
     return false;
   }
@@ -961,9 +838,6 @@ async function tryApplyPendingSessionState(tabId, tab) {
       siteKey: entry.siteKey,
       enabled: Boolean(entry.enabled),
       gainDb: entry.gainDb,
-      // Genuine transient: the tab installs a session override for this and
-      // only this flagged shape. Ordinary persisted saves arrive unflagged and
-      // read storage instead.
       transient: true,
     }, { frameId: 0 });
     return true;
@@ -994,16 +868,10 @@ async function softRecheckDocument(tabId, siteKey) {
     return { ok: true, activation: { state: 'idle' } };
   }
 
-  // Exclusion beats a soft wake: nothing is injected, nothing runs.
   if (await isSiteBlocked(siteKey || getTabSiteKey(tab))) {
     return { ok: true, activation: { state: 'idle' } };
   }
 
-  // This never injects. It asks a document that already has the content script
-  // to re-read its truth (stop or adjust); a document without one is reported
-  // as "enabled, applies on reload" instead of being armed. No reload is
-  // triggered from here: a slider soft-wake is not an enable, so the notice is
-  // the honest answer (the automatic reload belongs to a first-ever enable).
   try {
     return await chrome.tabs.sendMessage(tabId, { type: 'SOFT_RECHECK_DOCUMENT' }, { frameId: 0 });
   } catch {
@@ -1023,8 +891,6 @@ async function syncExistingTabsForSite(siteKey, options = {}) {
     return;
   }
 
-  // Layer 3, batch path (enable, startup re-inject, un-exclude): an excluded
-  // host is never injected, not even with the ISOLATED pair.
   if (await isSiteBlocked(siteKey)) {
     return;
   }
@@ -1075,10 +941,6 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         if (!hostname) throw new Error('Missing hostname.');
 
         const siteKey = backgroundShared.getSiteKey(hostname);
-        // Single owner: flip the live record, bump the audit counter inside
-        // the same write. Last-accepted-write-wins: nothing is rejected on
-        // ordering grounds; a delayed toggle that arrives later flips whatever
-        // is live at arrival time (documented trade).
         /** @type {{ seq: number, nextEnabled: boolean, gainDb: number, excluded: boolean }} */
         const outcome = await withStorageWrite(async () => {
           const { record: storedRec } = await readSiteRecord(siteKey);
@@ -1089,20 +951,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             gainDb: storedRec.gainDb,
             seq: nextSeq,
             mirror: nextEnabled,
-            // A toggle never clears an exclusion: exclusion is only changed by
-            // an explicit `excluded` intent.
             excluded: storedRec.excluded,
-            // "Enabled once" is durable: a disable keeps it, which is what lets
-            // the next enable land live on an already-loaded page.
             seen: storedRec.seen || nextEnabled,
           });
-          // Single top-level key, single set: settings + mirror + sequence
-          // can never diverge.
           await writeSiteRecord(siteKey, next);
           return { seq: nextSeq, nextEnabled, gainDb: next.gainDb, excluded: next.excluded };
         });
-        // This legacy toggle only records state. Live application is the
-        // per-site broadcast, which the storage change below emits.
         console.log('[bg] stored toggle:', siteKey, outcome.nextEnabled);
         return {
           ok: true,
@@ -1119,19 +973,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
         const siteKey = backgroundShared.getSiteKey(hostname);
         const persist = message.persist !== false;
-        // Field-level intent only: `set` carries ONLY the changed fields.
-        // Top-level snapshot fields are ignored when `set` is present, so a
-        // sibling popup can never overwrite an unrelated newer field.
         const intent = extractIntentSet(/** @type {Record<string, unknown>} */ (message));
 
         /** @type {{ seq: number, enabled: boolean, gainDb: number, enabledApplied: boolean, excluded: boolean, exclusionChanged: boolean, previousExcluded: boolean, wasSeen: boolean, seen: boolean }} */
         const applied = await withStorageWrite(async () => {
           const { record: storedRec } = await readSiteRecord(siteKey);
-          // Last-accepted-write-wins: every intent field applies to the live
-          // record together or not at all — there is no per-field staleness
-          // and no partial apply. Fields absent from the intent keep stored
-          // values. Any legacy `at`/`actionAt` stamp on the message is
-          // ignored (never compared, never persisted).
           let enabled = storedRec.enabled;
           let gainDb = storedRec.gainDb;
           let excluded = storedRec.excluded;
@@ -1141,8 +987,6 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             enabledApplied = true;
           }
           if (Object.prototype.hasOwnProperty.call(intent, 'gainDb')) gainDb = backgroundShared.clampGainDb(intent.gainDb);
-          // Exclusion is a plain field of the same record: flipping it never
-          // rewrites `enabled` or `gainDb`, so undo restores them untouched.
           const exclusionChanged = Object.prototype.hasOwnProperty.call(intent, 'excluded')
             && Boolean(intent.excluded) !== storedRec.excluded;
           if (Object.prototype.hasOwnProperty.call(intent, 'excluded')) {
@@ -1154,22 +998,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             enabled,
             gainDb,
             seq: nextSeq,
-            // The mirror follows `enabled` in the SAME per-site write; a
-            // gain-only patch leaves it untouched.
             mirror: requestedEnabledChange ? enabled : storedRec.mirror,
             excluded,
-            // First enable of this host is always remembered: from then on the
-            // host loads with the passive hook and every later enable is live.
             seen: storedRec.seen || enabled,
           });
 
           if (persist) {
-            // ONE top-level key, ONE set: the whole logical update lands
-            // together or not at all. No crash window between settings,
-            // mirror and sequence. Legacy maps are left untouched here;
-            // reads prefer the per-site key, so stale legacy can never
-            // resurrect (migrated lazily, `activeSites` cleared on startup
-            // only for consumed entries).
             await writeSiteRecord(siteKey, next);
             await setPendingSessionState(message.tabId, null);
           }
@@ -1181,19 +1015,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             excluded: next.excluded,
             exclusionChanged,
             previousExcluded: storedRec.excluded,
-            // Was this host already seen BEFORE this write? That is the one fact
-            // that decides live vs reload for the enable.
             wasSeen: storedRec.seen,
             seen: next.seen,
           };
         });
 
-        // Enabling a SEEN host is live: the document already holds the passive
-        // page hook, and the broadcast below flips it on in place with no
-        // navigation. The one residual reload case is the FIRST-ever enable of a
-        // host, where no hook exists to start — that case reloads the tab once,
-        // automatically, because a reload the user has to perform is not
-        // acceptable. Disabling is live on both paths (STOP keeps the graph).
         if (!persist && message.tabId) {
           await setPendingSessionState(
             message.tabId,
@@ -1204,25 +1030,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             },
           );
         }
-        // Exclusion is immediate and worker-driven: the hook in every affected
-        // frame of every affected tab is destroyed before the popup hears back,
-        // so a mid-read or hung content script cannot delay it. Un-excluding is
-        // the one-way door: the captures are gone, so it applies on the next
-        // navigation only.
         if (persist && applied.exclusionChanged && applied.excluded) {
           await teardownHooksForSite(siteKey, { includeDescendants: true, mode: 'destroy' });
         }
-        // A persisted disable stops the worklet and keeps its dispatcher,
-        // sessions and captured sources, so a re-enable revives it with one
-        // control call instead of a reload.
         if (persist && applied.enabledApplied && !applied.enabled) {
           await teardownHooksForSite(siteKey, { mode: 'stop' });
         }
         console.log('[bg]', persist ? 'stored:' : 'transient:', siteKey, JSON.stringify(applied));
-        // Exclusion beats enablement: nothing runs on this host, now or after a
-        // reload. A seen host enables live (its document holds the passive
-        // hook). The FIRST-ever enable of a host is the one case with no hook to
-        // start, and it reloads this tab once, automatically.
         const firstEnable = persist
           && applied.enabledApplied
           && applied.enabled
@@ -1258,9 +1072,6 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         const reconciled = await withStorageWrite(async () => {
           const { record, fromLegacy } = await readSiteRecord(siteKey);
           if (fromLegacy) {
-            // Persist the migrated per-site record once so later reads hit
-            // it directly; legacy is left for the startup clear and can never
-            // override the per-site key afterwards.
             await writeSiteRecord(siteKey, record);
           }
           return record;
@@ -1283,14 +1094,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         const senderUrl = String(_sender?.url || _sender?.tab?.url || '');
         const siteKey = backgroundShared.getSiteKey(backgroundShared.extractHostname(senderUrl));
         const action = String(message.action || 'status');
-        // The WORKER is the authority for exclusion. An excluded (or
-        // unreadable) frame is torn down, never asked to start, and the page
-        // has no way to reach this decision.
         if (await isSiteBlocked(siteKey)) {
-          // Only the SENDER frame is destroyed. A frame on a blocked host inside
-          // an allowed tab (an embedded frame the tab-level selection never
-          // matches) must be able to end its own hook without tearing down the
-          // allowed frames that share its tab.
           await controlHookFrame(tabId, frameId, 'destroy', {});
           return { ok: false, alive: false, active: false, error: 'Site is excluded.' };
         }
@@ -1305,18 +1109,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       case 'INJECT_PAGE_HOOK': {
         const tabId = _sender?.tab?.id;
         if (!tabId) throw new Error('No tab ID for page hook injection.');
-        // Layer 3: the MAIN-world patch is never written into an excluded
-        // frame. The SENDER FRAME's URL decides — not the tab's top-level URL,
-        // which belongs to the embedder and would let an excluded cross-origin
-        // iframe inherit the top host's permission. `injectMainWorldScript`
-        // then runs the MAIN-world frame gate for the frame's own verdict.
         const senderUrl = String(_sender?.url || _sender?.tab?.url || '');
         const hookSiteKey = backgroundShared.getSiteKey(backgroundShared.extractHostname(senderUrl));
         if (await isSiteBlocked(hookSiteKey)) {
           return { ok: false, error: 'Site is excluded; page hook not injected.' };
         }
-        // Sender-frame targeting: content scripts in iframes carry their
-        // frameId; tab-level calls have none and default to frame 0.
         const senderFrameId = (typeof _sender?.frameId === 'number' && Number.isFinite(_sender.frameId))
           ? _sender.frameId
           : 0;
@@ -1341,25 +1138,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 });
 
 chrome.runtime.onStartup.addListener(async () => {
-  // Registration first: layer 1 must be correct before anything is injected.
   await syncContentScriptRegistration();
-  // Finding 3: a rejected migration write must not abort re-injection. The
-  // migration is isolated in its own try/catch that reports and continues;
-  // the injection union below always runs, and its own failures are reported
-  // per-site rather than aborting siblings.
   try {
     await migrateActiveSitesOnce();
   } catch (e) {
     console.warn('[bg] startup migration failed, continuing to re-inject:', String(e));
   }
   try {
-    // Re-inject enabled sites: UNION of per-site truth and every legacy
-    // shape. A legacy-enabled site is covered even when unrelated per-site
-    // keys already exist (the old `if (enabledKeys.size === 0)` gate dropped
-    // legacy sites as soon as any per-site key existed). Per-site outranks
-    // legacy for the SAME site (readSiteRecord prefers it), so a disabled
-    // per-site is never re-enabled by stale legacy — but a legacy-only site
-    // is still injected.
     /** @type {Record<string, unknown>} */
     let all = {};
     try {
@@ -1374,9 +1159,6 @@ chrome.runtime.onStartup.addListener(async () => {
         if (rec.enabled) enabledKeys.add(backgroundShared.siteKeyFromStorageKey(key));
       }
     }
-    // Legacy union: normalise every legacy raw key, evaluate its effective
-    // config (toggles win for enabled), add when enabled — regardless of
-    // whether per-site keys exist for other sites.
     {
       const siteSettings = /** @type {Record<string, unknown>} */ (all.siteSettings || {});
       const activeSites = /** @type {Record<string, unknown>} */ (all.activeSites || {});
@@ -1399,8 +1181,6 @@ chrome.runtime.onStartup.addListener(async () => {
       }
       for (const candidate of candidates) {
         if (enabledKeys.has(candidate)) continue;
-        // Per-site outranks legacy for the same site: skip legacy when a
-        // per-site record already decides this site.
         const perKey = backgroundShared.siteStorageKey(candidate);
         if (perKey && all[perKey] && typeof all[perKey] === 'object') continue;
         const rec = backgroundShared.migrateLegacyToRecord(siteSettings, activeSites, siteToggles, candidate);
@@ -1419,21 +1199,12 @@ chrome.runtime.onStartup.addListener(async () => {
   }
 });
 
-// Install/update: the static `<all_urls>` entry is gone, so the dynamic
-// registration is the only thing that injects at `document_start`. Populate it
-// before the first navigation.
 chrome.runtime.onInstalled?.addListener?.(() => {
   void syncContentScriptRegistration();
 });
 
-// Single storage listener: preserves the legacy `siteToggles` broadcast
-// contract AND carries the per-site broadcast. Reads prefer the per-site key,
-// so a delayed legacy mirror write that disagrees with the per-site record
-// is stale and never broadcast as truth.
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== 'local') return;
-  // Legacy path (preserved): a `siteToggles` change nudges matching tabs,
-  // but only when it agrees with the per-site/legacy stored truth.
   if (changes.siteToggles) {
     const newToggles = changes.siteToggles.newValue || {};
     const oldToggles = changes.siteToggles.oldValue || {};
@@ -1459,13 +1230,6 @@ chrome.storage.onChanged.addListener((changes, area) => {
       }
     }
   }
-  // Per-site path: a `site:<key>` change broadcasts to the top frame only,
-  // coalesced to one broadcast per site per tick (see scheduleSiteBroadcast).
-  // A delayed `enabled:false` change must not overwrite a newer activation.
-  // The `newRec` captured from the change record may already be stale by the
-  // time the async `tabs.query` returns, so the flush re-reads the stored
-  // truth and broadcasts that; fail closed (no broadcast) when the re-read
-  // fails.
   for (const [key, change] of Object.entries(changes)) {
     if (!backgroundShared.isSiteStorageKey(key)) continue;
     const siteKey = backgroundShared.siteKeyFromStorageKey(key);
@@ -1477,16 +1241,12 @@ chrome.storage.onChanged.addListener((changes, area) => {
       ? backgroundShared.normalizeSiteRecord(change.newValue)
       : null;
     if (!newRec) continue;
-    // `enabled`, `excluded` and `seen` all move the injection surface, so all
-    // three re-register; a gain-only change never does.
     if (!oldRec
       || oldRec.enabled !== newRec.enabled
       || oldRec.excluded !== newRec.excluded
       || oldRec.seen !== newRec.seen) {
       scheduleRegistrationSync();
     }
-    // Worker-driven exclusion teardown: the storage change is authoritative and
-    // does not depend on any content script being awake or listening.
     if (newRec.excluded && (!oldRec || oldRec.excluded !== true)) {
       void teardownHooksForSite(backgroundShared.siteKeyFromStorageKey(key), {
         includeDescendants: true,
@@ -1499,11 +1259,4 @@ chrome.storage.onChanged.addListener((changes, area) => {
     scheduleSiteBroadcast(siteKey);
   }
 });
-// Rule 7: registration is SELF-HEALING, not merely serialized.
-//
-// A service-worker wake evaluates this file, so reconciling here means a
-// descriptor left behind by a worker that died mid-pass (or by an update that
-// rejected) cannot outlive the next wake, let alone a restart. Install and
-// startup keep their own passes for re-injection; this one only makes the
-// stored registration match the stored records.
 void syncContentScriptRegistration();

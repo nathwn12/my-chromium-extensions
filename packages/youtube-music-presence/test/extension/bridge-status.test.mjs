@@ -187,8 +187,6 @@ test("a Discord pipe nothing answers is not running, not silent", () => {
   const hinted = classifyBridgeFailure("whatever the pipe said", { reason: "discord-closed" });
   assert.equal(hinted.kind, REASON.DISCORD_CLOSED, "the host's own reason hint is honoured");
 
-  // The ack for a failed IPC connect carries no reason field, only this code;
-  // without it the frame before the status would read as a silent Discord.
   assert.equal(classifyBridgeFailure("transport-unavailable").kind, REASON.DISCORD_CLOSED);
 
   const frame = bridgeStatusOf(
@@ -206,7 +204,6 @@ test("a Discord pipe nothing answers is not running, not silent", () => {
   assert.equal(frame.reason, REASON_COPY[REASON.ARRPC_CLOSED]);
   assert.equal(frame.bridgeState, BRIDGE.WAITING);
 
-  // Discord running but silent is a hang, and keeps the hang's copy.
   assert.equal(classifyBridgeFailure("discord ipc handshake timed out").kind, REASON.HUNG);
   assert.equal(classifyBridgeFailure("discord ipc reply timed out").kind, REASON.HUNG);
 });
