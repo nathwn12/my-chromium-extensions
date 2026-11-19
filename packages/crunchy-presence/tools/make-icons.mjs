@@ -32,7 +32,6 @@ const TRIANGLE = [
   [0.74, 0.5]
 ];
 
-/* ------------------------------------------------------------- geometry -- */
 
 function insideRoundedSquare(x, y, size) {
   const r = size * CORNER_RADIUS;
@@ -58,7 +57,6 @@ function insideTriangle(x, y, size) {
   return !(hasNeg && hasPos);
 }
 
-/* ---------------------------------------------------------------- raster -- */
 
 function raster(size) {
   const pixels = Buffer.alloc(size * size * 4, 0);
@@ -103,7 +101,6 @@ function raster(size) {
   return pixels;
 }
 
-/* ------------------------------------------------------------------ png -- */
 
 const CRC_TABLE = (() => {
   const table = new Uint32Array(256);
@@ -158,7 +155,6 @@ function encodePng(size, pixels) {
   ]);
 }
 
-/* ---------------------------------------------------------------- check -- */
 
 const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
@@ -175,7 +171,6 @@ function verify(path, size) {
   return bytes.length;
 }
 
-/* ----------------------------------------------------------------- main -- */
 
 const here = dirname(fileURLToPath(import.meta.url));
 const outDir = join(here, "..", "icons");

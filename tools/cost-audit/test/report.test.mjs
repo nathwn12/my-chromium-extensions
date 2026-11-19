@@ -280,7 +280,6 @@ test("a presence-only extension in the coexistence run is asserted to cost nothi
   assert.equal(ok.verdict, "pass");
 });
 
-// ---- registration phases -------------------------------------------------
 
 const SOURCE = {
   token: "registerContentScripts",

@@ -141,9 +141,7 @@ const PREV_MARGIN_HARNESS_TP = -1.60;
 // Annex 2 Attachment 1, n = 4, fnorm = 0.5; see TP_DETECTOR_MARGIN_DB).
 const MARGIN_STANDARD_UNDERREAD_DB = 0.688;
 
-/* ------------------------------------------------------------------ */
 /* CLI                                                                 */
-/* ------------------------------------------------------------------ */
 
 const SELF_TEST_ONLY = process.argv.includes('--self-test');
 for (const a of process.argv.slice(2)) {
@@ -153,9 +151,7 @@ for (const a of process.argv.slice(2)) {
   }
 }
 
-/* ------------------------------------------------------------------ */
 /* Deterministic RNG (seeded LCG — never Math.random)                   */
-/* ------------------------------------------------------------------ */
 
 function makeLcg(seed) {
   let s = seed >>> 0;
@@ -165,9 +161,7 @@ function makeLcg(seed) {
   };
 }
 
-/* ------------------------------------------------------------------ */
 /* Fixture synthesis (pure Node, Float32Array, deterministic)           */
-/* ------------------------------------------------------------------ */
 
 function sineIntoAt(x, sr, t0, t1, amp, freq, phase = 0) {
   const i0 = Math.max(0, Math.round(t0 * sr));
@@ -579,10 +573,8 @@ const FIXTURES_441 = [
   },
 ];
 
-/* ------------------------------------------------------------------ */
 /* Adversarial true-peak sweep spec (module level: main renders it,          */
 /* --self-test inspects its shape without rendering)                         */
-/* ------------------------------------------------------------------ */
 
 // SHORT (8192-frame, limiter-only regime) adversarial signals. Added
 // 2026-10-18 after a demonstrated ceiling breach: the 30 s program fixtures
@@ -641,9 +633,7 @@ const ADVERSARIAL_SWEEP = (() => {
   ];
 })();
 
-/* ------------------------------------------------------------------ */
 /* WAV IO: 48 kHz mono 32-bit float (deterministic, no dither)          */
-/* ------------------------------------------------------------------ */
 
 function writeWavFloat32Rate(filePath, samples, rate) {
   const n = samples.length;
@@ -774,9 +764,7 @@ function writeWavFloat32Planar(filePath, planar, channelMaskOrRate, maybeMask) {
 
 function sha256Hex(buf) { return crypto.createHash('sha256').update(buf).digest('hex'); }
 
-/* ------------------------------------------------------------------ */
 /* Fixture generator                                                   */
-/* ------------------------------------------------------------------ */
 
 function toPlanar(built) {
   return Array.isArray(built) ? built : [built];
@@ -853,9 +841,7 @@ function generateFixtures() {
   return files;
 }
 
-/* ------------------------------------------------------------------ */
 /* ffmpeg oracle                                                       */
-/* ------------------------------------------------------------------ */
 
 function checkFfmpeg() {
   const r = spawnSync('ffmpeg', ['-version'], { encoding: 'utf8' });
@@ -902,9 +888,7 @@ function parseEbur128(stderr) {
   };
 }
 
-/* ------------------------------------------------------------------ */
 /* Worklet driver (node:vm pattern, cf. qa/worklet-silent-analysis.cjs)*/
-/* ------------------------------------------------------------------ */
 
 function loadProcessor(source, rate = SR) {
   let Captured = null;
@@ -1038,9 +1022,7 @@ function renderThroughWorklet(Proc, signal, gainDbOrOpts = HARNESS_GAIN_DB) {
   return { outL, outR, internals, gainTrace, normTrace };
 }
 
-/* ------------------------------------------------------------------ */
 /* N-channel render + hard-clip backstop counter (Parts 3-4)             */
-/* ------------------------------------------------------------------ */
 
 // N-channel variant: feed the worklet N input channels and capture N output
 // channels (inputs[0] = all channels, the Web Audio node-input shape). The
@@ -1123,9 +1105,7 @@ function countHardClips(outs, ceilingDb) {
   return { count, rail };
 }
 
-/* ------------------------------------------------------------------ */
 /* Independent true-peak estimator (4x cubic Lagrange, own code)        */
-/* ------------------------------------------------------------------ */
 
 function truePeakOf(samples) {
   let peak = 0;
@@ -1151,9 +1131,7 @@ function truePeakOf(samples) {
 
 const toDb = (v) => 20 * Math.log10(Math.max(v, 1e-12));
 
-/* ------------------------------------------------------------------ */
 /* LIVE production verdicts (single source of truth for pass/fail)      */
-/* ------------------------------------------------------------------ */
 
 // These are the LIVE expressions the verdicts use — the main loop, the
 // 44.1 kHz loop, the user-gain gate, and the adversarial sweep
@@ -1173,9 +1151,7 @@ function peakVerdictDbTp(tpDb, ceilingDb) {
 // asserted by peakVerdictDbTp on every render; no second clamp verdict
 // remains.
 
-/* ------------------------------------------------------------------ */
 /* Comparator                                                          */
-/* ------------------------------------------------------------------ */
 
 function compareLufs(measured, expected) {
   if (!Number.isFinite(measured) || !Number.isFinite(expected)) return { verdict: 'UNTESTED', delta: NaN };
@@ -1183,9 +1159,7 @@ function compareLufs(measured, expected) {
   return { verdict: Math.abs(delta) <= DELTA_TOL_LU ? 'PASS' : 'FAIL', delta };
 }
 
-/* ------------------------------------------------------------------ */
 /* Closed loop: worklet constants, settle analysis, convergence check   */
-/* ------------------------------------------------------------------ */
 
 // Single source of truth stays in audio/normalizer-worklet.js: parse the
 // default target and clamp bounds out of the source instead of copying them.
@@ -1280,9 +1254,7 @@ function recordClosedLoopOutputs(entries) {
   fs.writeFileSync(MANIFEST_PATH, JSON.stringify(manifest, null, 2));
 }
 
-/* ------------------------------------------------------------------ */
 /* Reference values (another worker fills these in)                     */
-/* ------------------------------------------------------------------ */
 
 function loadReference() {
   if (!fs.existsSync(REFERENCE_PATH)) {
@@ -1313,9 +1285,7 @@ function referenceEntryFor(values, key) {
   return undefined;
 }
 
-/* ------------------------------------------------------------------ */
 /* Self-check: prove the harness itself works before trusting it        */
-/* ------------------------------------------------------------------ */
 
 function selfCheckHarness(oracle /* oracle of sine-1khz-fs-20 */) {
   const problems = [];
@@ -1341,9 +1311,7 @@ function selfCheckHarness(oracle /* oracle of sine-1khz-fs-20 */) {
   return problems;
 }
 
-/* ------------------------------------------------------------------ */
 /* Main                                                                */
-/* ------------------------------------------------------------------ */
 
 function fmt(n, digits = 2) {
   if (!Number.isFinite(n)) return 'n/a';
@@ -1459,7 +1427,6 @@ function main() {
     // Part 3: hard-clip backstop count over EVERY output channel.
     const hardClip = countHardClips(outs, CEILING_DBTP);
 
-    // --- Closed loop: capture the OUTPUT signal and measure it. ---
     // Full output WAV (item 1): every render quantum concatenated, generated,
     // gitignored under qa/, listed in the manifest's `outputs` array.
     const settle = analyzeSettle(normTrace);
@@ -1702,10 +1669,8 @@ function main() {
   const advUntested = advRows.filter((r) => r.verdict === 'UNTESTED').length;
   const advSummary = advFails > 0 ? 'FAIL' : (advUntested > 0 ? `${advUntested} UNTESTED` : 'PASS');
 
-  // ------------------------------------------------------------------
   // 2. 44.1 kHz worklet coverage. Same meter + closed-loop assertions at
   // 44100 Hz with the rate-correct processor (sampleRate stub = 44100).
-  // ------------------------------------------------------------------
   const rate441Rows = [];
   for (const f of files441) {
     const wavPath = path.join(FIXTURE_DIR, f.name);
@@ -1832,7 +1797,6 @@ function main() {
   }
   recordClosedLoopOutputs(outputEntries);
 
-  // ------------------------------------------------------------------
   // 3. COMFORT LEVELLING (acceptance clause 2: within-program levelling).
   // Fixture comfort-dialogue carries the long-form profile (quiet dialogue
   // against loud music/effects): INPUT spread (unprocessed program) vs OUTPUT
@@ -1949,11 +1913,9 @@ function main() {
   }
   recordClosedLoopOutputs(outputEntries);
 
-  // ------------------------------------------------------------------
   // 4a. set-target-lufs: retarget to TARGET_PROBE_LUFS (-24) on sine-1khz-fs-20.
   // The probe sits 4 LU off the -20 default, so a retarget that did nothing
   // still sits at the default and FAILS.
-  // ------------------------------------------------------------------
   let targetRow = null;
   {
     const tKey = 'sine-1khz-fs-20';
@@ -2014,10 +1976,8 @@ function main() {
   }
   recordClosedLoopOutputs(outputEntries);
 
-  // ------------------------------------------------------------------
   // 4b. reset-meter: after a normal render, reset must clear warm +
   // integrated and re-acquire from scratch on the SAME processor.
-  // ------------------------------------------------------------------
   let resetRow = null;
   {
     const rKey = 'sine-1khz-fs-20';
@@ -2190,7 +2150,6 @@ function main() {
     };
   }
 
-  // ------------------------------------------------------------------
   // 5. USER-TRIM (set-gain-db slider, -12..+12 dB): the slider is an IMMEDIATE
   // output trim, separate from the program target. It never moves targetLufs
   // and never perturbs the integrated measurement; it ramps per sample within
@@ -2206,7 +2165,6 @@ function main() {
   // measurement and targetLufs are unchanged vs trim 0 (the trim is not a
   // retarget). Fixture per row chosen so the slow-loop requirement sits
   // inside the worklet clamp.
-  // ------------------------------------------------------------------
   const GAIN_ROWS_SPEC = [
     { gainDb: 0, fixture: 'sine-1khz-fs-20' }, // trim 0, expected tail -20
     { gainDb: 6, fixture: 'sine-1khz-fs-20' }, // trim +6, expected tail -14
@@ -2406,7 +2364,6 @@ function main() {
   const gainUntested = gainRows.filter((g) => g.verdict === 'UNTESTED').length;
   const gainSummary = gainFails > 0 ? 'FAIL' : (gainUntested > 0 ? `${gainUntested} UNTESTED` : 'PASS');
 
-  // ------------------------------------------------------------------
   // 6. COMFORT ACCEPTANCE (the five pre-committed clauses, at 48 and 44.1 kHz).
   // Uses renders already on disk (rows/rate441Rows/levelRow) plus small
   // dedicated renders (trim immediacy at both rates — sample comparisons,
@@ -2415,7 +2372,6 @@ function main() {
   // oracle LRA plus the loud:quiet section spread; fidelity caveat recorded in
   // the report (a dialogue-free extension cannot reproduce dialogue LDR —
   // see docs/RESEARCH_COMFORT_NORMALIZER.md §2.5 note).
-  // ------------------------------------------------------------------
   function comfortSectionRmsDb(outs, sr, t0, t1) {
     const i0 = Math.round(t0 * sr), i1 = Math.round(t1 * sr);
     let sum = 0, n = 0;
@@ -2780,7 +2736,6 @@ function main() {
   const comfortUntested = comfortRows.filter((r) => r.verdict === 'UNTESTED').length;
   const comfortSummary = comfortFails > 0 ? 'FAIL' : (comfortUntested > 0 ? `${comfortUntested} UNTESTED` : 'PASS');
 
-  // ------------------------------------------------------------------
   // 6c. STEP RECOVERY (SPEC A5 + H2 + S4: 60 s quiet program followed by
   // 30 s ~10 LU louder). Licensed addition: docs/SPEC_COMFORT.md A5 requires
   // it, and no fixture or row in this harness has ever exercised it.
@@ -2882,7 +2837,6 @@ function main() {
   const stepUntested = stepRows.filter((r) => r.verdict === 'UNTESTED').length;
   const stepSummary = stepFails > 0 ? 'FAIL' : (stepUntested > 0 ? `${stepUntested} UNTESTED` : 'PASS');
 
-  // ------------------------------------------------------------------
   // 6d. ONSET (release 5.4.2, house H5/A6: cold-start onset convergence).
   // Before the first gated levelled block the slow loop has no measurement;
   // the onset guard drives a cut-only pre-cut from a ~50 ms levelled-power
@@ -2922,7 +2876,6 @@ function main() {
   // SEE ALSO: qa/feed-transition-qa.cjs (reset-program F1-F6 + A6-INFO cold
   // onset probes) and qa/program-boundary-qa.cjs (page-hook generation
   // handoff, 8/8 rows).
-  // ------------------------------------------------------------------
   const ONSET_BOUND_05_DB = -6.0;
   const ONSET_BOUND_10_DB = -8.0;
   const ONSET_QUIET_TOL_DB = 0.1;
@@ -3289,8 +3242,6 @@ function main() {
   const msgUntested = [targetRow, resetRow].filter((r) => !r || r.verdict === 'UNTESTED').length;
   const msgSummary = msgFails > 0 ? 'FAIL' : (msgUntested > 0 ? 'UNTESTED' : 'PASS');
   console.log(`MESSAGES: ${msgSummary}`);
-  // ------------------------------------------------------------------
-  // ------------------------------------------------------------------
   // TRANSITION: switching normalize->level clears ONLY the
   // loudness measurement; applied gain, delay line and detector histories
   // carry through continuously. Same 60 s mono 1 kHz 0.04-amp tone at 48 and
@@ -3306,7 +3257,6 @@ function main() {
   // frozen at 0 on this signal). A full-reset snap is ~9 dB and fails the
   // immediate gate below. The switch fires between the two 30 s drives, so
   // both rates switch exactly once at the 30 s boundary.
-  // ------------------------------------------------------------------
   let transitionRow = null;
   {
     const TRANSITION_TOL_DB = 0.5;
@@ -3392,7 +3342,6 @@ function main() {
     transitionRow.divergenceDb = perRate[0].divergenceDb;
   }
 
-  // ------------------------------------------------------------------
   // TELEMETRY: truePeakDb is a DECAYING PEAK-HOLD on the delayed post-limiter
   // output (1.5 s TC), not a per-quantum peak. Fresh zero-output quantum
   // reports -Inf (track exactly 0); after prior audio a zero-output quantum
@@ -3410,7 +3359,6 @@ function main() {
   // (a broken hold fails the tone row). The hot clip row is agreement-free
   // (reported, never gated): cubic and polyphase legitimately disagree on
   // flat-topped clipped waves.
-  // ------------------------------------------------------------------
   let telemetryRow = null;
   {
     const TP_TOL_DB = 0.01;
@@ -3700,9 +3648,7 @@ function main() {
   if (!rows.every((r) => r.verdict === 'PASS') || clSummary !== 'PASS' || tpSummary !== 'PASS' || worstSummary !== 'PASS' || advSummary !== 'PASS' || hardClipSummary !== 'PASS' || multiSummary !== 'PASS' || r441Summary !== 'PASS' || levelSummary !== 'PASS' || msgSummary !== 'PASS' || gainSummary !== 'PASS' || comfortSummary !== 'PASS' || stepSummary !== 'PASS' || onsetSummary !== 'PASS' || transitionSummary !== 'PASS' || telemetrySummary !== 'PASS') process.exitCode = 2;
 }
 
-/* ------------------------------------------------------------------ */
 /* --self-test: prove the harness can both pass and fail                */
-/* ------------------------------------------------------------------ */
 
 function runSelfTestOnly(ff) {
   console.log('SELF-TEST mode: validating the harness itself (no worklet conformance verdicts).');

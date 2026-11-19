@@ -17,7 +17,6 @@
   // it before any gate, so a re-injection could bypass exclusion).
   const existing = globalThis.__tabNormalizerContentScriptV5;
 
-  // ---------------------------------------------------------------------------
   // Backstop gate (layer 2).
   //
   // Registration-time exclusion (layer 1) keeps this file out of excluded
@@ -32,7 +31,6 @@
   // excluded — it falls through to the ordinary async read, which decides.
   // The cache is refreshed only by the storage broadcast that already exists;
   // there is no polling.
-  // ---------------------------------------------------------------------------
   const exclusionCache = globalThis.__tabNormalizerExclusionCache
     || (globalThis.__tabNormalizerExclusionCache = { hosts: [] });
 
@@ -132,7 +130,6 @@
   // `chrome.storage.onChanged` listener per frame.
   let storageSignalArmed = false;
 
-  // ---------------------------------------------------------------------------
   // Arm gate (gate G3, narrowed for live toggling).
   //
   // Two facts decide it, both fixed at load:
@@ -148,7 +145,6 @@
   //    'pending' only exists while the load-time read has not answered (a hung
   //    store); its bounded retry may still decide, because that is still the
   //    load-time question, not a state change.
-  // ---------------------------------------------------------------------------
   const arrivedAtDocumentStart = (() => {
     try {
       return document.readyState === 'loading';
@@ -1160,14 +1156,12 @@
       });
   }
 
-  // -------------------------------------------------------------------------
   // Control flow: extension -> page ONLY.
   //
   // This frame never posts to the page and never listens on `window`. It asks
   // the worker, and the worker calls the MAIN-world dispatcher through
   // chrome.scripting.executeScript with a per-tab token the page cannot read.
   // A page posting START/SET_GAIN/STATUS_REQUEST reaches nothing.
-  // -------------------------------------------------------------------------
   const CONTROL_ACTIONS = { START: 'start', STOP: 'stop', SET_GAIN: 'setGain' };
 
   function postToPage(type, payload) {

@@ -170,7 +170,6 @@ export async function installHost(options = {}) {
   return { ok: all.every((check) => check.ok), checks: all, paths, extensionId };
 }
 
-/* --------------------------------------------------------------------- cli */
 
 const USAGE = `usage: node scripts/install-host.mjs [--check] [--json]
 

@@ -10,7 +10,6 @@ import { createDecoder, encodeMessage } from "../../native/native-framing.mjs";
 const HOST_PATH = fileURLToPath(new URL("../../native/host.mjs", import.meta.url));
 const ACTIVITY = { type: 3, details: "Big Buck Bunny" };
 
-/* ---------------------------------------------------------------- helpers */
 
 function makeFakes() {
   const log = [];
@@ -192,7 +191,6 @@ async function spawnHost({ env = {}, messages = [] } = {}) {
   return { frames, stderr, code, stdoutError };
 }
 
-/* ------------------------------------------------------------------ tests */
 
 test("auto (the default) uses Discord IPC and never builds arRPC", async () => {
   const fakes = makeFakes();

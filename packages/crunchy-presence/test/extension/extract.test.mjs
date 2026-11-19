@@ -348,7 +348,6 @@ test("extract() survives an empty document", () => {
   assert.equal(result.series, null);
 });
 
-/* ------------------------------------------------- phase 2: links + synopsis */
 
 const WATCH = "https://www.crunchyroll.com/watch/G6VU774M5/x";
 
@@ -547,7 +546,6 @@ test("synopsis rejects stream/upsell, consent, language lists and short text", (
   }
 });
 
-/* ------------------------------------- real JSON-LD: titles, links, duration */
 
 const DARLING_SERIES_URL = "https://www.crunchyroll.com/series/GY8VEQ95Y/darling-in-the-franxx";
 const DARLING_WATCH_URL = "https://www.crunchyroll.com/watch/GRDKJZ81Y/alone-and-lonesome";

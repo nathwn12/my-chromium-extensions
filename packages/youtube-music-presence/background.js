@@ -79,7 +79,6 @@ const SENDABLE_BRIDGE_STATES = new Set([
   BRIDGE.WAITING,
 ]);
 
-/* ================================================================ pure ==== */
 
 /**
  * Paced limiter: at most one ordinary send per `minGapMs`, at most `max` per
@@ -330,7 +329,6 @@ function stalePresenceOf(storedStatus) {
   return Boolean(entry) && typeof entry === "object" && !Array.isArray(entry);
 }
 
-/* ============================================================== worker ==== */
 
 /**
  * Build the worker around one chrome-like API object. Returns the handlers the
@@ -382,7 +380,6 @@ export function createWorker({
   let restored = false;
   let tabsReadable = true;
 
-  /* -------------------------------------------------------------- status -- */
 
   function status() {
     return {
@@ -443,7 +440,6 @@ export function createWorker({
     return verdict;
   }
 
-  /* ------------------------------------------------------ tab persistence -- */
 
   function snapshotTabs() {
     const out = {};
@@ -521,7 +517,6 @@ export function createWorker({
     return restorePromise;
   }
 
-  /* ---------------------------------------------------------------- port -- */
 
   function dropPort() {
     if (!port) return;
@@ -683,7 +678,6 @@ export function createWorker({
     post({ t: "hello", clientId, version: 1, transport: transportPreference });
   }
 
-  /* ---------------------------------------------------------- presence off -- */
 
   /**
    * Publish an explicit clear straight down the port and past the send
@@ -716,7 +710,6 @@ export function createWorker({
     });
   }
 
-  /* ------------------------------------------------------------ activity -- */
 
   function deliver(activity) {
     const id = `${SOURCE_YOUTUBE_MUSIC}:${++sequence}`;
@@ -810,7 +803,6 @@ export function createWorker({
     push(true);
   }
 
-  /* ---------------------------------------------------------------- tabs -- */
 
   function handleState(message, sender) {
     if (!api) return;
@@ -901,7 +893,6 @@ export function createWorker({
     }
   }
 
-  /* ---------------------------------------------------------------- boot -- */
 
   function reconnect() {
     if (!enabled) return;

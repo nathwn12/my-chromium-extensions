@@ -28,9 +28,7 @@ const actions = require(path.join(__dirname, '..', 'player-actions.js'));
 const HOST_ATTR = 'data-slra-player-actions';
 const SECTION = { videoId: 'song-a', startSeconds: 30, endSeconds: 60 };
 
-// ---------------------------------------------------------------------------
 // Fake DOM
-// ---------------------------------------------------------------------------
 
 function createElement(tagName) {
   const listeners = new Map();
@@ -260,9 +258,7 @@ function createDom() {
   };
 }
 
-// ---------------------------------------------------------------------------
 // Fake timers, storage, harness
-// ---------------------------------------------------------------------------
 
 function createTimers() {
   let nextId = 1;
@@ -408,9 +404,7 @@ function timeupdatePass(harness, at) {
   return media.currentTime;
 }
 
-// ---------------------------------------------------------------------------
 // The latch
-// ---------------------------------------------------------------------------
 
 test('latch: a saved section returns to its start on the first, second and third pass', async () => {
   const harness = await armed();
@@ -491,9 +485,7 @@ test('latch: a replaced media element re-binds the saved section on the same son
   assert.equal(replacement.currentTime, SECTION.startSeconds);
 });
 
-// ---------------------------------------------------------------------------
 // Guards: the latch never overrides the existing invariants
-// ---------------------------------------------------------------------------
 
 test('guard: Repeat off ends the loop', async () => {
   const harness = await armed();
@@ -538,14 +530,12 @@ test('guard: no identity, no seek, even on a timeupdate', async () => {
 });
 
 
-// ---------------------------------------------------------------------------
 // Cross-song isolation: the owner report "repeat section set on one song leaks
 // into another song, then relatches when original returns". The identity used
 // to be the page hook's last push, forever: once the hook had pushed song A, a
 // missed push left the controller believing B was still A, so A's armed range
 // kept driving B. These tests drive a real queue transition (one reused
 // <video>, which is what YouTube Music does) and never touch internals.
-// ---------------------------------------------------------------------------
 
 const SONG_B = { videoId: 'song-b', startSeconds: 10, endSeconds: 20 };
 
@@ -625,17 +615,13 @@ test('isolation: a pushed id still wins when the URL names no song', async () =>
   assert.equal(harness.fromValue(), '0:30');
 });
 
-// ---------------------------------------------------------------------------
 // Sped-up playback: the section must latch on the media clock, not on a rate.
 // The owner listens above 1x, and one timeupdate sample can cross most of a
 // short section, so an exact-end equality check would never fire.
-// ---------------------------------------------------------------------------
 
-// ---------------------------------------------------------------------------
 // Identity provenance: the push carries the href it was taken in, so a replayed
 // or late push is anchored to the navigation it describes, never to whatever
 // URL happens to be current when it is delivered.
-// ---------------------------------------------------------------------------
 
 test('identity: a replayed stale push cannot re-anchor on the new URL', async () => {
   // Document 1: the hook pushed A while the URL named A.

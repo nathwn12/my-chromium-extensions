@@ -130,7 +130,6 @@
     }
   };
 
-  /* ---------------------------------------------------------------- utils */
 
   function clean(value) {
     if (typeof value !== "string") return null;
@@ -345,7 +344,6 @@
     return lower.length < 2;
   }
 
-  /* ------------------------------------------------------------ layer (a) */
 
   function pickArtwork(artwork) {
     if (!artwork) return null;
@@ -389,7 +387,6 @@
     return { title: title, series: series, artwork: artwork };
   }
 
-  /* ------------------------------------------------------------ layer (b) */
 
   function flattenJsonLd(data) {
     var out = [];
@@ -533,7 +530,6 @@
     return found;
   }
 
-  /* ------------------------------------------------------------ layer (c) */
 
   function readMeta(doc) {
     var title = clean(attrOf(queryOne(doc, RULES.meta.title), "content"));
@@ -544,7 +540,6 @@
     return { title: title, image: image };
   }
 
-  /* ------------------------------------------------------------ layer (d) */
 
   function parseTitleText(text) {
     if (!text) return null;
@@ -569,7 +564,6 @@
     return null;
   }
 
-  /* ------------------------------------------------------------ layer (e) */
 
   function ancestorHeading(video) {
     var node = video;
@@ -617,7 +611,6 @@
     return null;
   }
 
-  /* ----------------------------------------------------------- direct links */
 
   function domSynopsis(doc) {
     for (var s = 0; s < RULES.synopsis.dom.length; s += 1) {
@@ -679,7 +672,6 @@
     return domSynopsis(doc);
   }
 
-  /* ------------------------------------------------------------- assemble */
 
   function extract(doc, nav) {
     doc = doc || root.document || {};

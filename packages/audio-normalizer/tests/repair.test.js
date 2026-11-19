@@ -11,7 +11,6 @@ const shared = require('../shared.js');
 function clone(v) { return v === undefined ? undefined : JSON.parse(JSON.stringify(v)); }
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
-// ---------- fake storage with call counts ----------
 function createStore(initial = {}) {
   let store = clone(initial);
   const listeners = [];
@@ -50,7 +49,6 @@ function createStore(initial = {}) {
   };
 }
 
-// ---------- content-script harness ----------
 async function loadContent(href, storage) {
   const runtimeListeners = [];
   const windowListeners = {};
@@ -120,7 +118,6 @@ async function loadContent(href, storage) {
   return { sandbox, sendMessage, postedToPage, listenerCount };
 }
 
-// ---------- background harness ----------
 function loadBackground(storage, tabUrl = 'https://example.com/') {
   const runtimeListeners = [];
   const tabsSent = [];
@@ -172,7 +169,6 @@ function loadBackground(storage, tabUrl = 'https://example.com/') {
   return { sandbox, sendMessage, tabsSent, scriptingCalls, runStartup: async () => { if (onStartupFn) await onStartupFn(); } };
 }
 
-// ---------- page-hook harness ----------
 function loadHook({ attrs = null, preHook = null, preConnectPatch = false } = {}) {
   const hookSrc = read('page-hook.js');
   const posted = [];
@@ -311,7 +307,6 @@ function loadHook({ attrs = null, preHook = null, preConnectPatch = false } = {}
   };
 }
 
-// ============ item 6: full-host keys ============
 test('item6: github pages hosts get distinct toggles, legacy collapses read-only', async () => {
   assert.equal(shared.getSiteKey('alice.github.io'), 'alice.github.io');
   assert.equal(shared.getSiteKey('bob.github.io'), 'bob.github.io');
@@ -342,7 +337,6 @@ test('item6: legacy collapsed record migrates to the full key on first write', a
   assert.equal(storage._get('site:www.youtube.com').gainDb, 4);
 });
 
-// ============ item 2/8/9/10: manifest, policy, copy ============
 test('item2: content script covers opaque-origin iframes', () => {
   // The content script is no longer a static `<all_urls>` manifest entry: it
   // is registered dynamically (background.js `syncContentScriptRegistration`).
@@ -378,7 +372,6 @@ test('item10: reset zeroes gain, per-site opt-in copy', () => {
   assert.ok(/zero/i.test(read('README.md')), 'reset zeroes gain');
 });
 
-// ============ item 1: own capture never mislabeled ============
 test('item1: own createMediaElementSource capture is not marked __tnWebAudio', async () => {
   const src = read('page-hook.js');
   assert.ok(src.includes('!state.internalWiring'), 'capture marking gated on internalWiring');
@@ -391,7 +384,6 @@ test('item1: own createMediaElementSource capture is not marked __tnWebAudio', a
   assert.equal(A.__tnAttached, true, 'element attached');
 });
 
-// ============ item 3: worklet origin pinning ============
 test('item3: foreign-extension START never becomes the worklet URL', async () => {
   // Forged START as the FIRST start (no pinned origin, no pinned fallback):
   // the pinned validator refuses the foreign id and loads no module at all.
@@ -473,7 +465,6 @@ test('item3b: content corrects a drifted hook gain from stored truth', async () 
   );
 });
 
-// ============ item 4: error always visible ============
 test('item4: HOOK_ERROR carries lastError even while inactive', async () => {
   const src = read('page-hook.js');
   assert.ok(!src.includes('state.active ? state.lastError'), 'no active-gated error');
@@ -490,7 +481,6 @@ test('item4: HOOK_ERROR carries lastError even while inactive', async () => {
   assert.ok(String(status.error).length > 0, 'the error is reported while inactive');
 });
 
-// ============ item 5: page hook object cannot block install ============
 test('item5: page-defined hook object is overwritten; guard is __tnConnect', () => {
   const src = read('page-hook.js');
   assert.ok(src.includes('__tnConnect'), 'early-return keyed on the connect patch');
@@ -507,7 +497,6 @@ test('item5: second load early-returns once the real hook is present', () => {
   assert.ok(h.posted.length === 0, 'patched hook present: no reinstall chatter');
 });
 
-// ============ item 7: no page-driven re-arm after stop ============
 test('item7: no DOM pending marker can re-arm a stopped hook', async () => {
   const src = read('page-hook.js');
   assert.ok(src.includes('state.stopped'), 'stopped flag tracked');
@@ -600,7 +589,6 @@ test('item7: an off tab asks the worker for exactly one STOP across repeated res
   assert.equal(c.postedToPage.filter((m) => m.type === 'STOP').length, 1, 'and a later disable stops again');
 });
 
-// ============ item 11: prune on emptied/ended/removal ============
 test('item11: emptied and ended detach the element for collection', async () => {
   const src = read('page-hook.js');
   assert.ok(src.includes('detachMediaElement'), 'detach helper exists');
@@ -639,7 +627,6 @@ test('item11: closed contexts pruned, idle media contexts closed', async () => {
   assert.ok(src.includes('maybeCloseIdleMediaSession'), 'idle hook-created contexts close');
 });
 
-// ============ item 12: in-memory document status ============
 test('item12: GET_DOCUMENT_STATUS answers from memory without storage reads', async () => {
   const src = read('content-script.js');
   const fnStart = src.indexOf('async function getDocumentStatus');
@@ -659,7 +646,6 @@ test('item12: GET_DOCUMENT_STATUS answers from memory without storage reads', as
   assert.equal(storage.getCalls(), baseline, 'three polls add zero storage reads');
 });
 
-// ============ item 13: persist once per drag, broadcast once ============
 function makeFakeEl(id) {
   return {
     id, disabled: false, checked: false, value: '0', textContent: '', className: '',

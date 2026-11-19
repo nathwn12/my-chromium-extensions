@@ -452,7 +452,6 @@ export function createHost({
   return { handle, close };
 }
 
-/* ------------------------------------------------------------------ selftest */
 
 async function runSelftest() {
   const results = [];
@@ -705,7 +704,6 @@ async function runSelftest() {
     host.close();
   });
 
-  /* -------------------------------------------------- discord ipc transport */
 
   /**
    * An in-memory Discord: every connect() gets its own socket pair, answers
@@ -979,7 +977,6 @@ async function runSelftest() {
   return failed === 0 ? 0 : 1;
 }
 
-/* ----------------------------------------------------------------------- cli */
 
 /**
  * Chrome starts the host with the caller's origin and, on Windows, its parent

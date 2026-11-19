@@ -72,9 +72,7 @@ const THRESHOLDS = {
   amRippleDb: 0.25,
 };
 
-/* ------------------------------------------------------------------ */
 /* Variants                                                            */
-/* ------------------------------------------------------------------ */
 
 function gitShowBaseline() {
   return execFileSync('git', ['show', 'HEAD:audio/normalizer-worklet.js'], {
@@ -153,9 +151,7 @@ function buildVariants() {
   };
 }
 
-/* ------------------------------------------------------------------ */
 /* Silent loader (node:vm) and driver                                  */
-/* ------------------------------------------------------------------ */
 
 function loadProcessor(source) {
   let Captured = null;
@@ -213,9 +209,7 @@ function renderVariant(source, signal, opts = {}) {
   return { outL, outR, gains, shorts, blockDt: BLOCK / SR };
 }
 
-/* ------------------------------------------------------------------ */
 /* Stimuli                                                             */
-/* ------------------------------------------------------------------ */
 
 function fillSineSeg(x, t0, t1, amp, freq) {
   const i0 = Math.max(0, Math.round(t0 * SR));
@@ -329,9 +323,7 @@ function computeAm(V, sigAm) {
   return am;
 }
 
-/* ------------------------------------------------------------------ */
 /* f32 ULP comparison                                                  */
-/* ------------------------------------------------------------------ */
 
 const _f32 = new Float32Array(1);
 const _u32 = new Uint32Array(_f32.buffer);
@@ -380,9 +372,7 @@ function comparePair(A, B) {
   };
 }
 
-/* ------------------------------------------------------------------ */
 /* Metrics                                                             */
-/* ------------------------------------------------------------------ */
 
 function median(arr) {
   const a = Array.from(arr).sort((x, y) => x - y);
@@ -453,9 +443,7 @@ function cpuMedianMs(source, totalSamples, repeats = 5) {
   return { samplesMs: samples.map((v) => Number(v.toFixed(4))), medianMs: median(samples) };
 }
 
-/* ------------------------------------------------------------------ */
 /* Test subprocesses                                                   */
-/* ------------------------------------------------------------------ */
 
 function runNode(args) {
   try {
@@ -475,9 +463,7 @@ function runNpm(script) {
   }
 }
 
-/* ------------------------------------------------------------------ */
 /* Main                                                                */
-/* ------------------------------------------------------------------ */
 
 function fmt(n, d = 4) {
   if (!Number.isFinite(n)) return String(n);
@@ -490,12 +476,10 @@ function main() {
 
   const maxAbs = (arr) => { let m = 0; for (let i = 0; i < arr.length; i++) { const a = Math.abs(arr[i]); if (a > m) m = a; } return m; };
 
-  /* ---- stimuli ---- */
   const sigEq = buildEquivalence();
   const sigTrans = buildTransition();
   const sigAm = buildAm();
 
-  /* ---- (a) equivalence baseline vs opt, guard false/true ---- */
   const equivalence = {};
   for (const guard of [false, true]) {
     const key = guard ? 'guardTrue' : 'guardFalse';
@@ -518,7 +502,6 @@ function main() {
   delete equivalence._patchedFalse;
   delete equivalence._patchedTrue;
 
-  /* ---- (b) transition: baseline vs patched ---- */
   const probe = {
     loud: { baseline: probeGain(V.baseline, TRANSITION_LOUD_AMP), patched: probeGain(V.patched, TRANSITION_LOUD_AMP) },
     quiet: { baseline: probeGain(V.baseline, TRANSITION_QUIET_AMP), patched: probeGain(V.patched, TRANSITION_QUIET_AMP) },
@@ -574,10 +557,8 @@ function main() {
     },
   };
 
-  /* ---- (c) AM ripple ---- */
   const am = computeAm(V, sigAm);
 
-  /* ---- CPU proxy ---- */
   const cpuBase = cpuMedianMs(V.baseline, 1000000, 5);
   const cpuPatch = cpuMedianMs(V.patched, 1000000, 5);
   const cpu = {
@@ -589,13 +570,11 @@ function main() {
     ratio: Number((cpuPatch.medianMs / cpuBase.medianMs).toFixed(4)),
   };
 
-  /* ---- tests ---- */
   const unit = runNode(['tests/shared.test.js']);
   fs.writeFileSync(unitPath, unit.output);
   const typecheck = runNpm('typecheck');
   fs.writeFileSync(typecheckPath, typecheck.output);
 
-  /* ---- pass conditions ---- */
   const pass = {};
   for (const key of ['guardFalse', 'guardTrue']) {
     const c = equivalence[key].baselineVsOpt;

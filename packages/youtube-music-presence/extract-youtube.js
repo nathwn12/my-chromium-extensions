@@ -89,7 +89,6 @@
     }
   };
 
-  /* ---------------------------------------------------------------- utils */
 
   function stripInvisible(value) {
     return String(value).replace(/[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF\u061C\u180E]/g, "");
@@ -209,7 +208,6 @@
     return out;
   }
 
-  /* ---------------------------------------------------------------- urls */
 
   function hrefOf(loc) {
     try {
@@ -298,7 +296,6 @@
     return url.length > RULES.maxUrlChars ? url.slice(0, RULES.maxUrlChars) : url;
   }
 
-  /* ------------------------------------------------------------ playback */
 
   function readVideo(doc) {
     var el = firstMatch(doc, RULES.dom.video);
@@ -317,7 +314,6 @@
     };
   }
 
-  /* --------------------------------------------------------- mediaSession */
 
   function pickArtwork(artwork) {
     if (!artwork) return null;
@@ -360,7 +356,6 @@
     }
   }
 
-  /* -------------------------------------------------------------- JSON-LD */
 
   function flattenJsonLd(data) {
     var out = [];
@@ -493,7 +488,6 @@
     return found;
   }
 
-  /* ------------------------------------------------------------- dom text */
 
   function readYoutubeDom(doc) {
     return {
@@ -581,7 +575,6 @@
     };
   }
 
-  /* ------------------------------------------------------------- assemble */
 
   function safeDocumentTitle(doc) {
     try {

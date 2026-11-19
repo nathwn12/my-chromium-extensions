@@ -91,7 +91,6 @@ function fakeRegistry() {
   return { exec, calls, state };
 }
 
-/* ------------------------------------------------------------------- ids */
 
 test('derives the fixture extension id from its SPKI key', () => {
   assert.equal(extensionIdFromKey(FIXTURE_KEY), FIXTURE_ID);
@@ -158,7 +157,6 @@ test('--print emits the id on its own line', async (t) => {
   assert.match(stdout, /key: /);
 });
 
-/* --------------------------------------------------------------- installer */
 
 test('host manifest and launcher are built from absolute paths', () => {
   const paths = installPaths({ root: 'Q:\\repo', localAppData: 'C:\\example\\AppData\\Local' });

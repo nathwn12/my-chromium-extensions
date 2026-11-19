@@ -55,7 +55,6 @@ console.log('=== shared.js unit tests (pure Node; real shared.js: ' + sharedPath
 console.log('INFO  clampSlow/clampIntensity are not exported; their bounds are asserted via normalizeSettings and formatRate/formatPercent.');
 console.log('');
 
-// ---------- normalizeSettings: defaults ----------
 check('normalizeSettings() fills defaults', shared.normalizeSettings(), DEFAULTS);
 check('normalizeSettings(undefined) fills defaults', shared.normalizeSettings(undefined), DEFAULTS);
 check('normalizeSettings(null) fills defaults', shared.normalizeSettings(null), DEFAULTS);
@@ -69,7 +68,6 @@ check(
   ['reverbIntensity', 'slow']
 );
 
-// ---------- normalizeSettings: clamping + rounding (clampSlow / clampIntensity bounds) ----------
 check('slow clamps to lower bound 0.7', shared.normalizeSettings({ slow: 0.1 }).slow, 0.7);
 check('slow clamps to lower bound 0.7 (zero)', shared.normalizeSettings({ slow: 0 }).slow, 0.7);
 check('slow clamps to lower bound 0.7 (negative)', shared.normalizeSettings({ slow: -5 }).slow, 0.7);
@@ -94,7 +92,6 @@ check('intensity accepts numeric strings', shared.normalizeSettings({ reverbInte
 check('intensity: non-finite value falls back to lower bound', shared.normalizeSettings({ reverbIntensity: NaN }).reverbIntensity, 0);
 check('defaults are exactly slow=1 / reverbIntensity=0', shared.getDefaultSettings(), DEFAULTS);
 
-// ---------- isNeutral ----------
 check('isNeutral is true for slow=1 & reverbIntensity=0', shared.isNeutral({ slow: 1, reverbIntensity: 0 }), true);
 check('isNeutral is true when both are omitted (defaults)', shared.isNeutral({}), true);
 check('isNeutral is true for no argument', shared.isNeutral(), true);
@@ -108,7 +105,6 @@ check('isNeutral is false when only reverbIntensity is non-neutral', shared.isNe
 check('isNeutral is false when only slow is non-neutral', shared.isNeutral({ slow: 1.3, reverbIntensity: 0 }), false);
 check('isNeutral is false at reverbIntensity=1', shared.isNeutral({ slow: 1, reverbIntensity: 1 }), false);
 
-// ---------- formatRate ----------
 check('formatRate(1) = "1.00x"', shared.formatRate(1), '1.00x');
 check('formatRate(0.7) = "0.70x"', shared.formatRate(0.7), '0.70x');
 check('formatRate(1.3) = "1.30x"', shared.formatRate(1.3), '1.30x');
@@ -117,7 +113,6 @@ check('formatRate(0) clamps to "0.70x"', shared.formatRate(0), '0.70x');
 check('formatRate(5) clamps to "1.30x"', shared.formatRate(5), '1.30x');
 check('formatRate(NaN) clamps to "0.70x"', shared.formatRate(NaN), '0.70x');
 
-// ---------- formatPercent ----------
 check('formatPercent(0) = "0%"', shared.formatPercent(0), '0%');
 check('formatPercent(0.5) = "50%"', shared.formatPercent(0.5), '50%');
 check('formatPercent(0.567) rounds to "57%"', shared.formatPercent(0.567), '57%');
@@ -127,7 +122,6 @@ check('formatPercent(2) clamps to "100%"', shared.formatPercent(2), '100%');
 check('formatPercent(-1) clamps to "0%"', shared.formatPercent(-1), '0%');
 check('formatPercent(NaN) clamps to "0%"', shared.formatPercent(NaN), '0%');
 
-// ---------- isSupportedHost: exactly youtube.com / www.youtube.com / music.youtube.com ----------
 check('isSupportedHost accepts youtube.com', shared.isSupportedHost('youtube.com'), true);
 check('isSupportedHost accepts www.youtube.com', shared.isSupportedHost('www.youtube.com'), true);
 check('isSupportedHost accepts music.youtube.com', shared.isSupportedHost('music.youtube.com'), true);
@@ -145,7 +139,6 @@ check('isSupportedHost rejects empty/null/undefined', [
   shared.isSupportedHost(undefined),
 ], [false, false, false]);
 
-// ---------- isSupportedUrl: https + the supported host set ----------
 check('isSupportedUrl accepts https://youtube.com/watch?v=1', shared.isSupportedUrl('https://youtube.com/watch?v=1'), true);
 check('isSupportedUrl accepts https://www.youtube.com/', shared.isSupportedUrl('https://www.youtube.com/'), true);
 check('isSupportedUrl accepts https://music.youtube.com/watch?v=x', shared.isSupportedUrl('https://music.youtube.com/watch?v=x'), true);
@@ -167,7 +160,6 @@ check('isSupportedUrl rejects unparseable input', [
   shared.isSupportedUrl(undefined),
 ], [false, false, false, false]);
 
-// ---------- export surface (documents the seam used above) ----------
 check('clampSlow is not part of the exported API', typeof shared.clampSlow, 'undefined');
 check('clampIntensity is not part of the exported API', typeof shared.clampIntensity, 'undefined');
 

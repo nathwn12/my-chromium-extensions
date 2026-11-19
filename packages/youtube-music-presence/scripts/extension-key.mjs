@@ -101,7 +101,6 @@ export function ensureKey(manifestPath = MANIFEST_PATH) {
   return { ok: true, id: extensionIdFromKey(key), key, created: true, path: manifestPath };
 }
 
-/* --------------------------------------------------------------------- cli */
 
 function parseArgs(argv) {
   const options = { print: false, json: false, manifest: MANIFEST_PATH };

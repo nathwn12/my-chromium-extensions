@@ -40,7 +40,6 @@ export const hasChrome = Boolean(
   chromeApi && chromeApi.runtime && typeof chromeApi.runtime.connectNative === "function"
 );
 
-/* ================================================================ pure ==== */
 
 /** Collapse whitespace, drop empties and single chars, hard-cap at 128 characters. */
 export function clampText(value, max = MAX_TEXT) {
@@ -656,10 +655,8 @@ export function isBlindReloadSignal(changeInfo) {
   return changeInfo.status === "loading" || changeInfo.discarded === true;
 }
 
-/* =========================================================== runtime ====== */
 
 if (hasChrome) {
-  /* ------------------------------------------------------------- state -- */
 
   const tabStates = new Map();
   let port = null;
@@ -778,7 +775,6 @@ if (hasChrome) {
     return verdict;
   }
 
-  /* -------------------------------------------------------------- port -- */
 
   function dropPort() {
     if (!port) return;
@@ -931,7 +927,6 @@ if (hasChrome) {
     post({ t: "hello", clientId });
   }
 
-  /* ---------------------------------------------------------- activity -- */
 
   function sendActivity(activity) {
     // A null clear must still go through while disabled so turning presence
@@ -1031,7 +1026,6 @@ if (hasChrome) {
     limiter.push(desiredActivity);
   }
 
-  /* ------------------------------------------------------------- tabs --- */
 
   function entryFor(tab) {
     let entry = tabStates.get(tab.id);
@@ -1141,7 +1135,6 @@ if (hasChrome) {
     recompute();
   }
 
-  /* ------------------------------------------------------------ boot ---- */
 
   function armWatchdog() {
     if (!chromeApi.alarms) return;

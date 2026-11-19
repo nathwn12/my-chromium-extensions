@@ -491,9 +491,7 @@ test('background: a failed write reports storage_failed and the chain keeps work
   assert.deepEqual(storage.sections().map((item) => item.videoId), ['vid-after']);
 });
 
-// ---------------------------------------------------------------------------
 // The local startup gate
-// ---------------------------------------------------------------------------
 
 test('gate: a packaged file merges onto the destination and reports a receipt', async () => {
   const destination = [

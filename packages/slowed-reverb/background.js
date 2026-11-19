@@ -178,9 +178,7 @@ async function importPlayerSections(entries) {
   return playerSectionSaveChain;
 }
 
-// ---------------------------------------------------------------------------
 // Local section import gate
-// ---------------------------------------------------------------------------
 
 async function sha256Hex(text) {
   if (!globalThis.crypto || !globalThis.crypto.subtle) throw new Error('No SHA-256.');

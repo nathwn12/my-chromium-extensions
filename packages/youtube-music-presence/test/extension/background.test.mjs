@@ -23,7 +23,6 @@ import { STATUS_KEY } from "../../bridge-status.js";
 
 const BASE = 1_700_000_000_000;
 
-/* --------------------------------------------------------------- fakes -- */
 
 function signal() {
   const handlers = new Set();
@@ -213,7 +212,6 @@ function makeLimiter(clock, options = {}) {
   return { limiter, sent };
 }
 
-/* --------------------------------------------------------------- tests -- */
 
 test("the limiter sends the first payload at once and holds the next for the gap", () => {
   const clock = fakeClock();

@@ -182,7 +182,6 @@ test("pagehide clears the poll", () => {
   assert.deepEqual(handle.intervalDelays(), []);
 });
 
-/* ------------------------------------------- the storage answer comes first */
 
 test("a disabled boot sends nothing and holds no timer before storage answers", () => {
   const handle = boot({ enabled: false, asyncStorage: true });

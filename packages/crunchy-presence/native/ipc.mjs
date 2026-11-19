@@ -28,7 +28,6 @@ export class ProtocolError extends Error {
   }
 }
 
-/* ------------------------------------------------------------------ frames */
 
 export function encodeDiscordFrame(op, payload) {
   const json = Buffer.from(JSON.stringify(payload), 'utf8');
@@ -132,7 +131,6 @@ export class NativeMessageDecoder {
   }
 }
 
-/* ------------------------------------------------------------------ timing */
 
 const defaultTimers = {
   now: () => Date.now(),
@@ -144,7 +142,6 @@ const noop = () => {};
 
 const defaultLogger = { info: noop, warn: noop, error: noop, status: noop };
 
-/* ------------------------------------------------------------------ client */
 
 export class DiscordPipeClient {
   constructor(options = {}) {
@@ -188,7 +185,6 @@ export class DiscordPipeClient {
     this._readyWaiter = null;
   }
 
-  /* --------------------------------------------------------------- connect */
 
   connect() {
     if (this._connecting) return this._connecting;
@@ -369,7 +365,6 @@ export class DiscordPipeClient {
     this.logger.status(this.statusPayload({ reconnected: true }));
   }
 
-  /* ------------------------------------------------------------- handshake */
 
   _handshake() {
     return new Promise((resolve, reject) => {
@@ -400,7 +395,6 @@ export class DiscordPipeClient {
     });
   }
 
-  /* ------------------------------------------------------------- transport */
 
   _write(op, payload) {
     const socket = this.socket;
@@ -514,7 +508,6 @@ export class DiscordPipeClient {
     this.logger.info(`discord ipc frame ignored (evt=${String(payload?.evt)})`);
   }
 
-  /* -------------------------------------------------------------- activity */
 
   /** Remember an activity without requiring a live pipe (republished on reconnect). */
   remember(activity) {
@@ -640,7 +633,6 @@ export class DiscordPipeClient {
     };
   }
 
-  /* ----------------------------------------------------------------- close */
 
   close() {
     if (this.closed) return;

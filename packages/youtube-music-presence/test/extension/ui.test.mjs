@@ -62,7 +62,6 @@ const REJECTED = {
   activities: { "youtube-music": null },
 };
 
-/* ------------------------------------------------------------- static ---- */
 
 test("the manifest points at popup and options, and both ship as local files", () => {
   assert.equal(manifest.action.default_popup, "popup.html");
@@ -181,7 +180,6 @@ test("every id the controllers ask for exists in the shipped markup", () => {
   }
 });
 
-/* -------------------------------------------------------------- popup ---- */
 
 test("popup renders the bridge and the Music activity", async () => {
   const chrome = createChrome({ local: { enabled: true }, status: CONNECTED });
@@ -311,7 +309,6 @@ test("popup Settings opens the options page instead of leaving the popup", async
   }
 });
 
-/* ------------------------------------------------------------ options ---- */
 
 test("options renders the bridge, desktop IPC transport and the Music activity", async () => {
   const chrome = createChrome({ local: { enabled: true }, status: CONNECTED });

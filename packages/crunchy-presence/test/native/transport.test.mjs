@@ -11,7 +11,6 @@ import { Host } from '../../native/host.mjs';
 const CLIENT_ID = '123456789012345678';
 const ACTIVITY = { type: 3, details: 'Episode 1' };
 
-/* ---------------------------------------------------------------- helpers */
 
 class Capture extends Writable {
   constructor() {
@@ -107,7 +106,6 @@ function makeHost({ log = [], arrpc = null, ipc = null, ipcOnly = false } = {}) 
 const statuses = (capture) => capture.decode().filter((message) => message.t === 'status');
 const lastStatus = (capture) => statuses(capture).at(-1);
 
-/* ------------------------------------------------------------------ tests */
 
 test('auto uses Discord IPC when it is available and never builds arRPC', async (t) => {
   const log = [];

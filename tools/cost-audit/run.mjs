@@ -357,7 +357,6 @@ async function main() {
       }),
     );
 
-    // ---- scenario runner ---------------------------------------------------
     const runScenario = async ({
       id,
       label,
@@ -446,7 +445,6 @@ async function main() {
     if (audio) {
       const phases = [];
 
-      // ---- 1. both hosts opted in ------------------------------------------
       await seed(client, audio, "audio-normalizer", {
         ...seedItems("audio-normalizer", { host: A }),
         ...seedItems("audio-normalizer", { host: S }),
@@ -472,7 +470,6 @@ async function main() {
       });
       phases.push(await snapshotRegistration("A-enabled", A, "covers-host", "enabled", scriptsOn("enabled")));
 
-      // ---- 2. the key is excluded, the subdomain stays opted in ------------
       await seed(client, audio, "audio-normalizer", seedItems("audio-normalizer", { host: A, excluded: true }));
       await runScenario({
         id: "A-excluded",
@@ -488,7 +485,6 @@ async function main() {
       });
       phases.push(await snapshotRegistration("A-excluded", A, "host-excluded", "A-excluded", scriptsOn("A-excluded")));
 
-      // ---- 3. undo restores it --------------------------------------------
       await seed(client, audio, "audio-normalizer", {
         [`site:${A}`]: { enabled: true, gainDb: 0, seq: 2, mirror: true, excluded: false },
       });
@@ -502,7 +498,6 @@ async function main() {
       });
       phases.push(await snapshotRegistration("A-restored", A, "covers-host", "A-restored", scriptsOn("A-restored")));
 
-      // ---- 4. a host that was never configured ----------------------------
       await runScenario({
         id: "B-never-configured",
         label: `${B} never configured`,
@@ -513,7 +508,6 @@ async function main() {
         await snapshotRegistration("B-never-configured", B, "host-unknown", "B-never-configured", scriptsOn("B-never-configured")),
       );
 
-      // ---- 4b. seen once, switched off: live-capable, zero page cost -------
       await seed(client, audio, "audio-normalizer", seedItems("audio-normalizer", { host: SEEN_OFF_HOST, seen: true }));
       await runScenario({
         id: "seen-off",
@@ -528,7 +522,6 @@ async function main() {
         await snapshotRegistration("seen-off", SEEN_OFF_HOST, "covers-host", "seen-off", scriptsOn("seen-off")),
       );
 
-      // ---- 5. nothing enabled and nothing seen: no registration survives --
       // `seen` is cleared here too (a record written without the field derives
       // `seen: false`), because a seen host is registered on purpose now; what
       // this phase still proves is that no ENABLED site is left behind.
@@ -550,7 +543,6 @@ async function main() {
       };
     }
 
-    // ---- scenario: coexistence on one host --------------------------------
     const coexistencePackages = ["audio-normalizer", "slowed-reverb", "youtube-music-presence"].filter((pkg) => byName.has(pkg));
     if (servers.httpsPort) {
       for (const pkg of coexistencePackages) {

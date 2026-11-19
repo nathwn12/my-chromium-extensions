@@ -22,9 +22,7 @@ const actions = require(path.join(ROOT, 'player-actions.js'));
 
 const HOST_ATTR = 'data-slra-player-actions';
 
-// ---------------------------------------------------------------------------
 // Fake DOM
-// ---------------------------------------------------------------------------
 
 function createDom() {
   class ClassList {
@@ -334,9 +332,7 @@ function createDom() {
   };
 }
 
-// ---------------------------------------------------------------------------
 // Fake timers, storage, page hook
-// ---------------------------------------------------------------------------
 
 function createTimers() {
   let nextId = 1;
@@ -552,9 +548,7 @@ function createHarness(options) {
   };
 }
 
-// ---------------------------------------------------------------------------
 // parseTimeInput (pear table, verbatim)
-// ---------------------------------------------------------------------------
 
 const EMPTY = { kind: 'empty' };
 const INVALID = { kind: 'invalid' };
@@ -596,9 +590,7 @@ for (const { input, expected } of formatCases) {
   });
 }
 
-// ---------------------------------------------------------------------------
 // resolveSeekTarget / resolveEndSeekTarget / isLoopEngaged (pear tables)
-// ---------------------------------------------------------------------------
 
 const loop = (overrides) => ({
   active: true,
@@ -695,9 +687,7 @@ for (const { name, state, expected } of engagedCases) {
   });
 }
 
-// ---------------------------------------------------------------------------
 // guard: blank From = 0:00, including a To-only section
-// ---------------------------------------------------------------------------
 
 test('guard: blank From resolves a To-only section to the song start', () => {
   const state = { active: true, startSeconds: null, endSeconds: 90 };
@@ -705,9 +695,7 @@ test('guard: blank From resolves a To-only section to the song start', () => {
   assert.equal(actions.resolveSeekTarget(state, { currentTime: 89.96, duration: 300, paused: false, seeking: false }), 0);
 });
 
-// ---------------------------------------------------------------------------
 // guard: explicit end loops without a finite duration (livestream/late metadata)
-// ---------------------------------------------------------------------------
 
 test('guard: an explicit end loops when duration is NaN or Infinity', () => {
   const state = { active: true, startSeconds: 30, endSeconds: 60 };
@@ -720,9 +708,7 @@ test('guard: an explicit end loops when duration is NaN or Infinity', () => {
   }
 });
 
-// ---------------------------------------------------------------------------
 // guard: end clamped to the song end (no past-EOF seek)
-// ---------------------------------------------------------------------------
 
 test('guard: a typed end past the song end clamps to the song end', () => {
   const state = { active: true, startSeconds: 10, endSeconds: 9999 };
@@ -737,9 +723,7 @@ test('guard: a typed end past the song end clamps to the song end', () => {
   );
 });
 
-// ---------------------------------------------------------------------------
 // guard: a range collapsed to <= 50 ms never re-seeks every tick
-// ---------------------------------------------------------------------------
 
 test('guard: a threshold at or below start + 50 ms disarms the loop', () => {
   const collapsed = { active: true, startSeconds: 30, endSeconds: 30 };
@@ -751,9 +735,7 @@ test('guard: a threshold at or below start + 50 ms disarms the loop', () => {
   assert.equal(actions.resolveEndSeekTarget(past, 300), 30);
 });
 
-// ---------------------------------------------------------------------------
 // sanitizeSaved / lookupSaved / upsertSaved (pear table) + 100-entry cap
-// ---------------------------------------------------------------------------
 
 const entry = (overrides) => ({
   videoId: 'video-a',
@@ -857,9 +839,7 @@ test('capSaved: keeps the newest entries and drops the oldest', () => {
   assert.equal(actions.capSaved(saved.slice(0, 3), 100).length, 3);
 });
 
-// ---------------------------------------------------------------------------
 // section session helpers: song key, one-restore latch, retry budget, clear
-// ---------------------------------------------------------------------------
 
 test('songKeyFrom prefers the URL v param over the media source', () => {
   assert.equal(actions.songKeyFrom('https://music.youtube.com/watch?v=abc&list=x', 'blob:src'), 'abc');
@@ -908,9 +888,7 @@ test('guard: one restore per song visit', () => {
   assert.equal(actions.songRestorePending(session, 'song-a'), true);
 });
 
-// ---------------------------------------------------------------------------
 // Wheel: pixel conversion, accumulation, clamp reset
-// ---------------------------------------------------------------------------
 
 test('wheelPixels converts deltaMode lines and pages to pixels', () => {
   assert.equal(actions.wheelPixels({ deltaY: -100, deltaMode: 0 }), -100);
@@ -1028,9 +1006,7 @@ test('wheel: trackpad accumulation snaps when the grid is crossed', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
 // Wheel predicate ladder
-// ---------------------------------------------------------------------------
 
 function fakeNode(tagName, options) {
   const settings = options || {};
@@ -1189,9 +1165,7 @@ test('wheel guard: an open dialog or a modal keeps the wheel', () => {
   assert.equal(actions.shouldHandleWheel(wheelEvent(), fakeNode('span', { parent: modal }), predicateDoc(), getStyle).handle, false);
 });
 
-// ---------------------------------------------------------------------------
 // Controller: lifecycle, wheel path, panel, tick, restore
-// ---------------------------------------------------------------------------
 
 test('controller: start installs one wheel listener and one panel host; stop removes them', async () => {
   const harness = createHarness();
@@ -2136,9 +2110,7 @@ test('controller: status copy mirrors the section state', async () => {
   assert.equal(harness.timers.intervalCount(), 0);
 });
 
-// ---------------------------------------------------------------------------
 // Round 3: identity, save correctness, cross-tab reads, seek provenance
-// ---------------------------------------------------------------------------
 
 test('controller: guard - no song id means no loop seek; the same id resumes, a new one clears', async () => {
   const harness = createHarness();
@@ -2308,9 +2280,7 @@ test('controller: guard - a reply from before a restart cannot overwrite the new
   assert.equal(pending[2].percent, 60);
 });
 
-// ---------------------------------------------------------------------------
 // Round 4: restore token and seek cancellation
-// ---------------------------------------------------------------------------
 
 test('controller: guard - Clear cancels an outstanding From retry and never seeks', async () => {
   const harness = createHarness();
@@ -2337,9 +2307,7 @@ test('controller: guard - Clear cancels an outstanding From retry and never seek
   assert.equal(harness.fromValue(), '');
 });
 
-// ---------------------------------------------------------------------------
 // Round 6: player identity, playback modes, surfaces, loop timing, zero HUD
-// ---------------------------------------------------------------------------
 
 test('identity: a pushed id arms the loop from Home with no ?v=', async () => {
   const storage = createStorage({
@@ -2542,9 +2510,7 @@ test('ui: without an id the status is medium-neutral', async () => {
   assert.equal(harness.status(), 'Play a track to repeat');
 });
 
-// ---------------------------------------------------------------------------
 // Storage schema
-// ---------------------------------------------------------------------------
 
 test('storage keeps sections under one playerActions key with no volume field', async () => {
   const storage = createStorage();
@@ -2566,9 +2532,7 @@ test('storage keeps sections under one playerActions key with no volume field', 
   assert.equal(saved.endSeconds, null);
 });
 
-// ---------------------------------------------------------------------------
 // Static product guards
-// ---------------------------------------------------------------------------
 
 const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'manifest.json'), 'utf8'));
 const manifestSource = fs.readFileSync(path.join(ROOT, 'manifest.json'), 'utf8');
@@ -2615,9 +2579,7 @@ test('static: the content script wires the player-actions module in one place', 
   assert.equal(contentScriptSource.includes('createPlayerActions'), true);
 });
 
-// ---------------------------------------------------------------------------
 // page-hook.js: token-verified volume protocol
-// ---------------------------------------------------------------------------
 
 const pageHookSource = fs.readFileSync(path.join(ROOT, 'page-hook.js'), 'utf8');
 
@@ -2933,13 +2895,11 @@ test('static: content-script owns mute policy; the hook only restores it', () =>
   assert.equal(/\.muted\s*=/.test(contentScriptSource), true);
 });
 
-// ---------------------------------------------------------------------------
 // YTM volume scale: the element is NOT player scale. Measured in-repo
 // (mute-enforce.test.js, SYSTEM.md YTM table): element ~= player * 0.00741
 // (20 -> 0.148, 80 -> 0.593, 100 -> 0.741). The wheel cache is player scale;
 // these tests pin real units so an identity-mapped fake cannot hide a
 // unit mismatch again.
-// ---------------------------------------------------------------------------
 
 const YTM_SLOPE = 0.00741;
 const ytmElement = (player) => player * YTM_SLOPE;
@@ -3023,14 +2983,12 @@ test('controller: YTM scale - the fallback writes the element at YTM scale', asy
   assert.deepEqual(harness.pageHook.uiSyncs, [55]);
 });
 
-// ---------------------------------------------------------------------------
 // Native volume truth: a YTM slider drag (or keyboard step) changes the
 // player volume without any wheel. The page pushes the player-scale value
 // over the existing SLRA_VOLUME_STATE type (no id, applied false); the
 // controller adopts it as truth so the next wheel starts from the site
 // value instead of jumping from a stale cache. Media swaps never touch
 // player-scale truth: the site volume survives element replacement.
-// ---------------------------------------------------------------------------
 
 test('controller: a native volume push becomes truth - the next wheel starts from it', async () => {
   const harness = createHarness({ mediaOptions: { volume: ytmElement(60) } });
@@ -3094,13 +3052,11 @@ test('page-hook: slider input and the poll post player truth, deduped', () => {
   assert.deepEqual(hook.pushes().map((push) => push.volume), [40, 55, 57]);
 });
 
-// ---------------------------------------------------------------------------
 // F4: a deliberate commit (From/Now/To/Clear) is a vouch. It may adopt an
 // identity an invalidation dropped or a read suspended, and save the typed range
 // under that id. Two bounds stay: the seek never drags a mid-stream element that
 // provenance has not confirmed belongs to the URL's song, and a read that was
 // already in flight when the press landed cannot silently undo the press.
-// ---------------------------------------------------------------------------
 
 test('F4: a post-invalidation From commit vouches the URL song and a stale read cannot undo it', async () => {
   const section = { videoId: 'song-a', startSeconds: 30, endSeconds: 60 };

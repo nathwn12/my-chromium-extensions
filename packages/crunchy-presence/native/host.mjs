@@ -71,7 +71,6 @@ export class Host {
     return this.makeClient === this.defaultIpc || this.makeArrpc !== this.defaultArrpc;
   }
 
-  /* ------------------------------------------------------------------ io */
 
   write(message) {
     this.out.write(encodeNativeMessage(message));
@@ -156,7 +155,6 @@ export class Host {
     return run;
   }
 
-  /* ------------------------------------------------------------- dispatch */
 
   handle(raw) {
     const valid = validateMessage(raw);
@@ -369,7 +367,6 @@ export class Host {
     }, delay);
   }
 
-  /* ----------------------------------------------------------------- life */
 
   start(input) {
     const decoder = new NativeMessageDecoder();
@@ -407,7 +404,6 @@ export class Host {
   }
 }
 
-/* ---------------------------------------------------------------- selftest */
 
 class LoopSocket extends EventEmitter {
   constructor() {
@@ -719,7 +715,6 @@ export async function selftest() {
   return { ok, checks };
 }
 
-/* -------------------------------------------------------------------- main */
 
 async function main() {
   if (process.argv.includes('--selftest')) {

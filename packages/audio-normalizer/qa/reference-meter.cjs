@@ -58,10 +58,8 @@ const SHORT_TERM_HOP_SECONDS = 1.0;    // LRA hop: 1 s (matches primary source,
 const TRUE_PEAK_TAPS = 49;             // true-peak oversampler taps
 const TRUE_PEAK_FACTOR_BELOW_96K = 4;  // 4x oversampling below 96 kHz
 
-// ---------------------------------------------------------------------------
 // WAV input. Supports PCM 16/24/32-bit int and 32-bit float, plus
 // WAVE_FORMAT_EXTENSIBLE. Whole file is decoded up front into float64.
-// ---------------------------------------------------------------------------
 function readWav(filePath) {
   const buf = fs.readFileSync(filePath);
   if (buf.length < 44 || buf.toString('ascii', 0, 4) !== 'RIFF') {
@@ -158,11 +156,9 @@ function channelWeights(channels, channelMask, hasMask) {
   return weights;
 }
 
-// ---------------------------------------------------------------------------
 // K-weighting. Both stages are derived from the file's actual sample rate
 // (transcribed from ebur128_init_filter), cascaded into one 4th-order
 // section, applied as plain direct-form difference equations in float64.
-// ---------------------------------------------------------------------------
 function designKWeighting(sampleRate) {
   // Stage 1: high shelf, f0 = 1681.974450955533 Hz.
   const f0Stage1 = 1681.974450955533;
@@ -231,11 +227,9 @@ function applyKWeighting(planar, filter) {
   return filtered;
 }
 
-// ---------------------------------------------------------------------------
 // Gating blocks: 400 ms long, 100 ms hop. Block energy = mean square of the
 // K-weighted signal over the block, summed across channels with weights.
 // Trailing partial blocks (< 400 ms) are dropped, as in the primary source.
-// ---------------------------------------------------------------------------
 function gatingBlockEnergies(filtered, sampleRate, weights) {
   const blockLen = Math.round((BLOCK_SECONDS * sampleRate) / 1);
   const hop = Math.round((HOP_SECONDS * sampleRate) / 1);
@@ -280,12 +274,10 @@ function integratedLoudness(blockEnergies) {
   return { lufs: energyToLoudness(mean), gatedBlocks: gated.length };
 }
 
-// ---------------------------------------------------------------------------
 // Loudness Range per EBU Tech 3342: 3 s windows every 1 s, absolute gate at
 // -70 LUFS, then a -20 LU relative gate (NOT the -10 LU gate used for
 // integrated loudness), then LRA = P95 - P10 loudness of the survivors.
 // Percentiles use nearest-rank on the sorted energies.
-// ---------------------------------------------------------------------------
 function loudnessRange(filtered, sampleRate, weights) {
   const windowLen = Math.round(SHORT_TERM_SECONDS * sampleRate);
   const hop = Math.round(SHORT_TERM_HOP_SECONDS * sampleRate);
@@ -317,11 +309,9 @@ function loudnessRange(filtered, sampleRate, weights) {
   return { lra, shortTermBlocks: gated.length };
 }
 
-// ---------------------------------------------------------------------------
 // True peak: 4x polyphase FIR oversampler (49 taps, sinc * Hanning), float
 // delay line shared-phase index, peak over every oversampled output sample.
 // Transcribed from interp_create / interp_process.
-// ---------------------------------------------------------------------------
 function designOversampler(factor) {
   const taps = TRUE_PEAK_TAPS;
   const delay = Math.floor((taps + factor - 1) / factor);
@@ -384,9 +374,7 @@ function truePeak(planar, sampleRate) {
   return 20 * (Math.log(peak) / Math.LN10);
 }
 
-// ---------------------------------------------------------------------------
 // Whole-file measurement.
-// ---------------------------------------------------------------------------
 function measureFile(wavPath) {
   const wav = readWav(wavPath);
   const weights = channelWeights(wav.channels, wav.channelMask, wav.hasMask);
@@ -412,9 +400,7 @@ function measureFile(wavPath) {
   };
 }
 
-// ---------------------------------------------------------------------------
 // CLI.
-// ---------------------------------------------------------------------------
 function main() {
   const args = process.argv.slice(2);
   if (args[0] === '--wav' && args[1]) {

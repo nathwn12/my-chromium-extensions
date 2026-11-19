@@ -144,7 +144,6 @@
   }
 
 
-  // --- YTM's own slider, tooltip and hover state -------------------------
   // setVolume() changes playback but not the rendered control; without this the
   // slider sits where the user left it while the audio moves. Mirrors pear's
   // precise-volume (updateVolumeSlider / setTooltip / showVolumeSlider).

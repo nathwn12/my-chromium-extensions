@@ -13,7 +13,6 @@
   const RECOVERY_BURST_COUNT = 6;
   const HOOK_GUARD_TIMEOUT_MS = 1500;
   const RESUME_TIMEOUT_MS = 400;
-  // -------------------------------------------------------------------------
   // Tracked teardown collection.
   //
   // Every listener and timer this hook owns is registered through these four
@@ -21,7 +20,6 @@
   // subsystem remembering to clean up. The `message` listener is the single
   // deliberate survivor: it is the hook's only channel for a later START, and
   // removing it would make re-enabling a page impossible without a reload.
-  // -------------------------------------------------------------------------
   /** @type {Array<{ target: any, type: string, fn: any, options: any, keepOnStop?: boolean }>} */
   let trackedListeners = [];
   /** @type {Set<any>} */
@@ -271,7 +269,6 @@
   /** @type {{ AudioContext?: any, OfflineAudioContext?: any, webkitAudioContext?: any }} */
   const patchedConstructorOriginals = {};
 
-  // -------------------------------------------------------------------------
   // Per-instance session registry — deliberately NOT page-durable.
   //
   // Design cut: a captured element cannot be recaptured (Web Audio allows one
@@ -280,7 +277,6 @@
   // a later instance (which pins the graph and the removed elements for the life
   // of the document), STOP/DESTROY release everything for good, and the popup
   // tells the user that a reload restores the page.
-  // -------------------------------------------------------------------------
   const sessions = new Set();
   const contextSessions = new WeakMap();
   const mediaSessions = new WeakMap();

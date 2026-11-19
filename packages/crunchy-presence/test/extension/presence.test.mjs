@@ -283,7 +283,6 @@ test("limiter caps ordinary payloads at max and coalesces the newest value", () 
   assert.deepEqual(sent.at(-1), "h");
 });
 
-/* ------------------------------------------------- phase 2: links + synopsis */
 
 const EPISODE_URL = "https://www.crunchyroll.com/watch/G6VU774M5/the-beginning";
 const SERIES_URL = "https://www.crunchyroll.com/series/G6NQ5DWZ6/frieren";
@@ -409,7 +408,6 @@ test("a JSON-LD duration keeps the phase-1 state line when no video reports one"
   assert.equal(state, "S1 E1 · 0:00 / 24:00");
 });
 
-/* ------------------------------------------------- availability vs bridge */
 
 test("missing Discord is neutral waiting, never an error", () => {
   const verdict = classifyBridgeFailure("no discord ipc pipe found");
@@ -522,7 +520,6 @@ test("worker maps a non-fatal error frame to waiting, and a fatal one to error",
   assert.equal(fatal.reasonKind, REASON.REJECTED);
 });
 
-/* ---------------------------------------------------- payload correctness */
 
 test("an ad break is a playing video far shorter than the known episode", () => {
   assert.equal(isAdBreak({ paused: false, duration: 15 }, 1440), true);

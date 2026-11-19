@@ -391,7 +391,6 @@ async function main() {
   console.log('ok   attach mutes the element and slows playback');
   const rateAtAttach = media.playbackRate;
 
-  // --- owner bug (1.2.1): a page volume write unmutes and fires nothing -----
   // `#movie_player.setVolume(20)` sets video.volume on the player's own scale
   // (20 -> 0.148), sets muted=false, and fires NO volumechange. Both the graph
   // ramp and the mute enforcement hang off volumechange, so the reply itself
@@ -457,7 +456,6 @@ async function main() {
   // Let the settle's internal-write microtask clear before the next scenario.
   await env.settle(2);
 
-  // --- attached: the page unmutes itself, then fires volumechange ---
   media.muted = false;
   check('setup: page wrote muted=false on an attached element', media.muted === false);
   media.dispatchEvent(new Event('volumechange'));
@@ -472,7 +470,6 @@ async function main() {
     'expected ' + rateAtAttach + ', got ' + media.playbackRate
   );
 
-  // --- sourceStale: mute-first source swap keeps the element muted -------
   const mediaCaptureBefore = env.stats.captureCalls;
   media.dispatchEvent(new Event('emptied'));
   check('setup: emptied hard-zeroes the graph and keeps the element muted', media.muted === true);
@@ -490,7 +487,6 @@ async function main() {
     'captures +' + (env.stats.captureCalls - mediaCaptureBefore) + ' muted=' + media.muted
   );
 
-  // --- bypass: detached means the page owns muted again ---
   env.sendRuntime({
     type: 'APPLY_TAB_STATE',
     eligible: true,
@@ -507,7 +503,6 @@ async function main() {
     'expected false while bypassed, got ' + media.muted
   );
 
-  // --- regression: autoplay-muted track restores audible on bypass ---
   // YouTube starts muted; the extension's own `muted = true` must never be
   // recorded as the page's mute and written back on teardown (bypass must
   // leave `media.muted === false` with the graph detached).
@@ -556,7 +551,6 @@ async function main() {
   );
   autoMuted.isConnected = false;
 
-  // --- hostile page: restore `muted = false` on every volumechange ----------
   // A page that unmutes itself from its own volumechange listener turns mute
   // enforcement into a fight. The controller must bound its corrections so the
   // event loop starves instead of spinning, while a fresh play gets a new
@@ -658,7 +652,6 @@ async function main() {
     'expected a new muting write after play, got none'
   );
 
-  // --- hostile page that also restores rate and fires `ratechange` ----------
   // The page can reach the mute write through `setMediaPlaybackState` from its
   // own `ratechange`, so that path must draw from the same budget. Six
   // simulated seconds of this fight must stay bounded and terminate.
@@ -751,7 +744,6 @@ async function main() {
     'drained ' + drainedAfterRateDrive + ', timers still queued: ' + env.pendingTimers()
   );
 
-  // --- finite burst -> cool-down -> recovery --------------------------------
   // Nine unmute attempts inside one second exhaust the budget: the controller
   // fails OPEN to a dry bypass (audible, graph out of the way) and stays there
   // through the cool-down; a fresh play after the deadline re-attaches.
@@ -831,7 +823,6 @@ async function main() {
     'expected ' + (burstAfterReattach + 1) + ' after the 1000 ms cool-down + play, got ' + (burstCorrections - burstStart)
   );
 
-  // --- regression: track-change doubling + YouTube Music scope ---------------
   const src = fs.readFileSync(path.join(__dirname, '..', 'content-script.js'), 'utf8');
   const manifestText = fs.readFileSync(path.join(__dirname, '..', 'manifest.json'), 'utf8');
   const sharedText = fs.readFileSync(path.join(__dirname, '..', 'shared.js'), 'utf8');
@@ -1138,7 +1129,6 @@ async function main() {
   );
 
   // I. adversarial repair lane (each fails on the pre-fix bytes).
-  // --- I1 mute-budget doubling: refusal keeps the live graph at 0 ---------
   const dbl = env.addMedia();
   env.fireDoc('play', dbl);
   for (let i = 0; i < 40 && dbl.muted !== true; i++) {
@@ -1195,7 +1185,6 @@ async function main() {
     'muted=' + dbl.muted
   );
 
-  // --- I2 storage outage: {ok:false} must not become state ---
   const outageM = env.addMedia();
   env.fireDoc('play', outageM);
   for (let i = 0; i < 40 && outageM.muted !== true; i++) {
@@ -1222,7 +1211,6 @@ async function main() {
     'no ok:false guard in applyRuntimeState'
   );
 
-  // --- I3 neutral with zero attached is not Active ---
   env.sendRuntime({
     type: 'APPLY_TAB_STATE',
     eligible: true,
@@ -1252,7 +1240,6 @@ async function main() {
     'got neutral=' + (neutralLive && neutralLive.neutral)
   );
 
-  // --- I static guards ---
   check(
     'context race: watchdog resumes a non-running context (static)',
     src.indexOf("state.context && state.context.state !== 'running'") !== -1 &&
@@ -1413,7 +1400,6 @@ async function main() {
     'no 1 s rate limit on page-message recovery'
   );
 
-  // --- J. zero-overlap: hardZero before every unmute ---
   // The stub models the exponential ramp: setTargetAtTime never touches
   // .value immediately, while hardZero (cancel + setValueAtTime(0)) does.
   // Each site first simulates a settled audible graph (gain.value = 1),
@@ -1590,7 +1576,6 @@ async function main() {
     'pauseCalled=' + jSwap.pauseCalled + ' paused=' + jSwap.paused
   );
 
-  // --- K. track-switch doubling: mute-first rebuild, zeroed no-audio unmute,
   // generation-guarded async attach. Each fails on the pre-fix bytes.
   // Invariant under test: audible(controller) === (attached && !sourceStale).
 
@@ -1698,7 +1683,6 @@ async function main() {
     'ops=' + JSON.stringify(env.stats.audioOps.slice(kGenOpsMark))
   );
 
-  // --- S. swap fast path: media-filtered observer, no 50 ms debounce -------
   // Each fails on the pre-fix bytes (debounced 50 ms scan on every mutation).
   await env.drainTimers(2000);
   check(
@@ -1839,7 +1823,6 @@ async function main() {
     'scan still tracks before teardown'
   );
 
-  // --- Z. repair lane items 1-10 (each fails on the pre-fix bytes) ---
   const workletText = fs.readFileSync(path.join(__dirname, '..', 'dattorro-worklet.js'), 'utf8');
 
   // Z1: page postMessage requires origin + source.
@@ -2105,7 +2088,6 @@ async function main() {
     'no visibility/playing gate in watchdog'
   );
 
-  // --- M. remaster cluster proofs -----------------------------------------
   // M1 attach establishes the contract mute itself (mutation: drop the direct
   // write and rely on the later volumechange correction).
   const attachBlock = (src.match(/function ensureAttached\(controller\) \{[\s\S]*?\n  \}/) || [])[0] || '';
@@ -2147,7 +2129,6 @@ async function main() {
     'muted=' + mv.muted + ' captures +' + (env.stats.captureCalls - mvCaps)
   );
 
-  // --- native volume push: a YTM slider drag changes player volume without
   // any wheel. The page pushes player-scale truth (an id-less
   // SLRA_VOLUME_STATE); the content script settles the mute contract and the
   // gain from it, and never sends a page volume request of its own.

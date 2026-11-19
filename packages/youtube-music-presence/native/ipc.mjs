@@ -247,7 +247,6 @@ export class DiscordIpcClient {
     this.#teardown();
   }
 
-  /* ------------------------------------------------------------- connecting */
 
   async #connectLoop() {
     let primary = null;
@@ -426,7 +425,6 @@ export class DiscordIpcClient {
     });
   }
 
-  /* -------------------------------------------------------------- transport */
 
   #write(op, payload) {
     const socket = this.#socket;
@@ -529,7 +527,6 @@ export class DiscordIpcClient {
     }
   }
 
-  /* --------------------------------------------------------------- activity */
 
   #prune() {
     const cutoff = this.#timers.now() - this.#rateWindowMs;

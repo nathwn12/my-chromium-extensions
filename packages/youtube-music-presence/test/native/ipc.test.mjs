@@ -15,7 +15,6 @@ import {
 
 const CLIENT_ID = "123456789012345678";
 
-/* ---------------------------------------------------------------- helpers */
 
 let pipeSeq = 0;
 
@@ -192,7 +191,6 @@ function makeClient(pipePath, extra = {}) {
   });
 }
 
-/* ------------------------------------------------------------------ tests */
 
 test("handshake reaches READY and SET_ACTIVITY is echoed by nonce", async (t) => {
   const mock = await startMockDiscord();

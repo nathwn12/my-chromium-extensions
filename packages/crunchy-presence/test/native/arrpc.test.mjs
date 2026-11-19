@@ -5,7 +5,6 @@ import { ARRPC_MOCK_USER_ID, ARRPC_PORTS, ArRpcClient } from '../../native/arrpc
 
 const CLIENT_ID = '123456789012345678';
 
-/* ---------------------------------------------------------------- helpers */
 
 function waitFor(predicate, label = 'condition', timeoutMs = 2_000) {
   return new Promise((resolve, reject) => {
@@ -162,7 +161,6 @@ function answerActivity(socket) {
   };
 }
 
-/* ------------------------------------------------------------------ tests */
 
 test('arRPC listens on the documented 6463-6472 range', () => {
   assert.deepEqual(ARRPC_PORTS, [6463, 6464, 6465, 6466, 6467, 6468, 6469, 6470, 6471, 6472]);

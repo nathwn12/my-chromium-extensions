@@ -106,7 +106,6 @@ function createFakeScripting() {
   };
 }
 
-// ---------- background harness (real background.js through vm) ----------
 function loadBackground(storage, { tabUrl = 'https://example.com/', scripting = createFakeScripting(), log = console } = {}) {
   const runtimeListeners = [];
   const tabsSent = [];
@@ -166,7 +165,6 @@ function loadBackground(storage, { tabUrl = 'https://example.com/', scripting = 
   };
 }
 
-// ---------- content-script harness (one sandbox per frame) ----------
 function loadContentFrame(href, storage, { excludedCache = null, fastTimerMs = null } = {}) {
   const runtimeListeners = [];
   const removedRuntime = [];
@@ -290,7 +288,6 @@ function loadContentFrame(href, storage, { excludedCache = null, fastTimerMs = n
   };
 }
 
-// ---------- popup harness (real popup.js through vm with a fake DOM) ----------
 function makeFakeEl(id) {
   return {
     id, disabled: false, checked: false, value: '0', textContent: '', className: '',
@@ -359,7 +356,6 @@ function loadPopup({ tabUrl, runtimeSendMessage, tabsSendMessage }) {
   return { sandbox, els, presetButtons, intervals, tabsCalls, runtimeCalls };
 }
 
-// ============ contract: the stored record carries `excluded` ============
 test('record round-trip: excluded survives normalize and defaults to false', () => {
   const record = { enabled: true, gainDb: 3, seq: 4, mirror: true, excluded: true, seen: true };
   assert.deepEqual(sharedApi.normalizeSiteRecord(record), record, 'excluded round-trips');
@@ -426,7 +422,6 @@ test('excludeMatches pattern derivation', () => {
   assert.deepEqual(sharedApi.siteExcludeMatchPatterns([]), []);
 });
 
-// ============ background: storing exclusion, exclusion beats enablement ============
 test('exclude-then-undo keeps enabled and gainDb untouched', async () => {
   const storage = createFakeStorage({
     'site:tiktok.com': { enabled: true, gainDb: 4.5, seq: 2, mirror: true },
@@ -490,7 +485,6 @@ test('enabling an excluded site does not activate the current tab', async () => 
   assert.deepEqual(bg.scripting.calls.execute, [], 'no content-script injection on an excluded host');
 });
 
-// ============ registration-time enforcement ============
 test('manifest carries no static <all_urls> content script', () => {
   const manifest = JSON.parse(src('manifest.json'));
   assert.equal(manifest.content_scripts, undefined, 'static injection is gone');
@@ -763,7 +757,6 @@ test('registration failure is logged, not fatal, the gate layer still works, and
   );
 });
 
-// ============ backstop gate + live teardown ============
 test('gate: a cached exclusion stops the content script before any listener or timer', () => {
   const storage = createFakeStorage({});
   const frame = loadContentFrame('https://www.tiktok.com/foryou', storage, {
@@ -1110,7 +1103,6 @@ test('an ordinary (non-exclusion) broadcast also reaches every frame, and the si
   assert.equal(broadcast.options, undefined, 'no frameId filter: every frame is addressed');
 });
 
-// ============ popup control ============
 test('popup: a first-ever enable shows the automatic reload, not an instruction', async () => {
   const popup = loadPopup({
     tabUrl: 'https://fresh.example/watch',

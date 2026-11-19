@@ -51,7 +51,6 @@ const waitFor = (predicate, label, timeoutMs = TIMEOUT_MS) => new Promise((resol
   tick();
 });
 
-/* ------------------------------------------------------------ websocket wire */
 
 function acceptKey(key) {
   return createHash("sha1").update(key + WS_GUID).digest("base64");
@@ -128,7 +127,6 @@ class ClientFrameReader {
   }
 }
 
-/* -------------------------------------------------------------- fake arRPC */
 
 function readyFrame() {
   return {
@@ -237,7 +235,6 @@ async function startArRpcServer(port, state) {
   return server;
 }
 
-/* ------------------------------------------------------------------- driver */
 
 async function main() {
   const state = { connections: 0, upgrades: [], frames: [], sockets: [] };

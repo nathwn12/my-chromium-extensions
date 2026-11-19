@@ -57,7 +57,6 @@ function db(x) {
   return 20 * Math.log10(Math.max(1e-12, x));
 }
 
-// --- the shipped level code, read as text ------------------------------------
 
 // Brace-matched slice of a top-level `function name(...) { ... }` declaration.
 function extractFunction(src, name) {
@@ -102,7 +101,6 @@ function loadLevels() {
   };
 }
 
-// --- the worklet, with the stub globals it expects ---------------------------
 
 function loadWorkletClass(sr) {
   const factory = new Function(
@@ -142,7 +140,6 @@ function renderWet(params, input) {
   return out;
 }
 
-// --- the fixed test signal ---------------------------------------------------
 
 function mulberry32(seed) {
   let a = seed >>> 0;
@@ -236,7 +233,6 @@ function spreadOf(values) {
   return Math.max.apply(null, values) - Math.min.apply(null, values);
 }
 
-// --- the matrix --------------------------------------------------------------
 
 const windowFrom = Math.floor(SR * WIN_FROM);
 const windowTo = Math.floor(SR * WIN_TO);
@@ -300,7 +296,6 @@ function main() {
     return;
   }
 
-  // --- single owner, one writer per gain ------------------------------------
   const dryRamps = contentSrc.match(/rampGain\(controller\.dryGain\.gain,\s*[^;]+\);/g) || [];
   const compRamps = contentSrc.match(/rampGain\(controller\.reverbCompGain\.gain,\s*[^;]+\);/g) || [];
   const applyBlock = extractFunction(contentSrc, 'applyMixLevels');
@@ -367,7 +362,6 @@ function main() {
       '] comp=[' + INTENSITIES.map((i) => triple(i).comp.toFixed(3)).join(' ') + ']'
   );
 
-  // --- primary material: the tolerance the requirement states ---------------
   const primary = measure(triple, musicLike, 0.5, INTENSITIES, SPEEDS);
   reportTransfer(triple, musicLike);
   console.log('\nprimary material, output RMS in dBFS (input peak 0.5):');
@@ -397,7 +391,6 @@ function main() {
     );
   }
 
-  // --- anchors: the endpoints must still be the levels they promise ---------
   const atZero = primary.rows.filter((r) => r.intensity === 0 && r.speed === 1)[0];
   const atOne = primary.rows.filter((r) => r.intensity === 1 && r.speed === 1)[0];
   const inputLevel = (() => {
@@ -457,7 +450,6 @@ function main() {
     'spread ' + offGridSpread.toFixed(2) + ' dB'
   );
 
-  // --- negative control: without the compensation the harness must go red ---
   // A tolerance test that cannot fail proves nothing, so the same render runs
   // with comp forced to 1 (the pre-fix mix) and must breach the tolerance.
   const legacy = (intensity) => {
@@ -476,7 +468,6 @@ function main() {
     'control spread only ' + controlSpread.toFixed(2) + ' dB'
   );
 
-  // --- second material: the same curve, on the worst case -------------------
   // Not gated at the primary tolerance. The wet bus is a filtered copy of the
   // input, so a track whose energy sits almost entirely below the tank's DC
   // blocker loses a little level at full wet; that is the plate's tone, and a

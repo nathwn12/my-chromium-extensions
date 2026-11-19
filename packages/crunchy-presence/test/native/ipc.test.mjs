@@ -13,7 +13,6 @@ import {
 } from '../../native/ipc.mjs';
 import { Host, fakeDiscordPipe } from '../../native/host.mjs';
 
-/* ---------------------------------------------------------------- helpers */
 
 let pipeSeq = 0;
 function nextPipeName() {
@@ -200,7 +199,6 @@ function makeClient(pipePath, extra = {}) {
   return { client, statuses };
 }
 
-/* ------------------------------------------------------------------ tests */
 
 test('handshake reaches READY and SET_ACTIVITY is echoed back', async (t) => {
   const mock = await startMockPipe();

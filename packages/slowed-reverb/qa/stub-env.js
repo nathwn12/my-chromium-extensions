@@ -24,7 +24,6 @@ function createContentEnv(opts = {}) {
 
   const stats = { captureCalls: 0, executedScripts: 0, ramped: 0, contexts: [] };
 
-  // ---------- controllable timers (fake setTimeout, inert setInterval) ----------
   const realSetTimeout = globalThis.setTimeout;
   const realClearTimeout = globalThis.clearTimeout;
   let timerId = 1;
@@ -53,7 +52,6 @@ function createContentEnv(opts = {}) {
     return timers.size;
   }
 
-  // ---------- stub media element ----------
   const mediaElements = [];
   class StubMedia extends EventTarget {
     static HAVE_NOTHING = 0;
@@ -97,7 +95,6 @@ function createContentEnv(opts = {}) {
     }
   }
 
-  // ---------- stub audio graph ----------
   function makeGain() {
     return {
       gain: {
@@ -157,7 +154,6 @@ function createContentEnv(opts = {}) {
     },
   };
 
-  // ---------- stub document / window ----------
   const docListeners = {};
   const winListeners = {};
   const documentStub = {
@@ -188,14 +184,12 @@ function createContentEnv(opts = {}) {
   globalThis.AudioContext = StubAudioContext;
   globalThis.AudioWorkletNode = StubWorkletNode;
 
-  // ---------- load the REAL sources, unmodified ----------
   const root = path.join(__dirname, '..');
   const sharedPath = path.join(root, 'shared.js');
   const csPath = path.join(root, 'content-script.js');
   vm.runInThisContext(fs.readFileSync(sharedPath, 'utf8'), { filename: sharedPath });
   vm.runInThisContext(fs.readFileSync(csPath, 'utf8'), { filename: csPath });
 
-  // ---------- drivers ----------
   function sendRuntime(msg) {
     const responses = [];
     for (const fn of runtimeHandlers) fn(msg, {}, (r) => responses.push(r));

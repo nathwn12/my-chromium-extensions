@@ -213,7 +213,6 @@ function main() {
   const wsrc = fs.readFileSync(WORKLET_PATH, 'utf8');
   const csrc = fs.readFileSync(CONTENT_PATH, 'utf8');
 
-  // --- 1. WORST: hard clamp, linear below 1.0 ---
   check('1. soft-clip expression is gone', wsrc.indexOf('1 + Math.abs') === -1);
   check('1. hard clamp to [-1,1] present', wsrc.indexOf('Math.max(-1, Math.min(1,') !== -1);
   const outExpr = (wsrc.match(/outL\[i\]\s*=\s*([^;]*wetGain[^;]*);/) || [])[1] || '';
@@ -238,7 +237,6 @@ function main() {
     'out(1.9)=' + outFn(1, 1.9).toFixed(3)
   );
 
-  // --- 2. MIX: fully wet at i=1, equal-power, dip < 1 dB ---
   check('2. capped *0.42 wet mapping is gone', csrc.indexOf('* 0.42') === -1);
   const wetSrc = (csrc.match(/wetGain:\s*(Math\.pow\(i, 0\.75\)[^,\n]*),/) || [])[1] || '';
   const wetFn = new Function('I', 'return (' + wetSrc.replace(/\bi\b/g, 'I') + ');');
@@ -290,7 +288,6 @@ function main() {
   check('2. i=1 fully wet (wet 1, dry 0)', wetFn(1) === 1 && Math.abs(dry(1)) < 1e-12);
   check('2. level dip < 1 dB across 0..1', worstDip > -1, 'worst dip ' + worstDip.toFixed(2) + ' dB');
 
-  // --- 3. DENORMALS: 40 s of silence leaves nothing below 1e-20 ---
   check('3. sub-1e-20 flush present', wsrc.indexOf('1e-20') !== -1);
   const sr3 = 44100;
   const { cls: Cls3 } = loadWorkletClass(sr3);
@@ -350,7 +347,6 @@ function main() {
   console.log('     impulse tail RMS @0.4-0.5 s: ' + tailRms.toExponential(2) + ' (' + db(Math.max(1e-12, tailRms)).toFixed(1) + ' dBFS)');
   check('3. audible tail survives above -100 dBFS', tailRms > 1e-5, tailRms.toExponential(2));
 
-  // --- 4. SMOOTHING: no integer preDelay steps, continuous LFO ---
   check('4. 2048-sample LFO tick is gone', wsrc.indexOf('& 0x7ff') === -1);
   check('4. no Math.floor on the live predelay', wsrc.indexOf('Math.floor(this.predelay') === -1);
   check('4. fractional reads present', wsrc.indexOf('readFrac') !== -1);
@@ -393,7 +389,6 @@ function main() {
   console.log('     max sample delta baseline=' + dBase.toFixed(4) + ' lfo-on=' + dOn.toFixed(4) + ' ratio=' + ratio4.toFixed(2) + 'x');
   check('4. LFO max delta within 1.2x of baseline', ratio4 < 1.2, 'ratio ' + ratio4.toFixed(2) + 'x');
 
-  // --- 5. SAMPLE RATE: identical corners at 44.1/48/96 kHz ---
   check('5. fixed lpfCoeff 0.5 is gone', wsrc.indexOf('lpfCoeff = 0.5') === -1);
   check('5. fixed hpfCoeff 0.025 is gone', wsrc.indexOf('hpfCoeff = 0.025') === -1);
   const rates = [44100, 48000, 96000];
@@ -436,7 +431,6 @@ function main() {
   console.log('     lpf -3dB theory=' + fcTheory.toFixed(0) + 'Hz measured~' + measured.toFixed(0) + 'Hz');
   check('5. measured -3 dB matches theory within 30%', Math.abs(measured - fcTheory) / fcTheory < 0.3);
 
-  // --- 6. TAPS: 353/3627 live on the 4217 line ---
   const taps = (wsrc.match(/const PRE_DAMP_TAPS_MS = \[\s*\[([^\]]+)\][^\[]*\[([^\]]+)\]/) || []).slice(1, 3);
   const rows = taps.map((s) => s.split(',').map((x) => parseFloat(x)));
   console.log('     preDamp taps row0=[' + rows[0].join(', ') + '] row1=[' + rows[1].join(', ') + ']');
@@ -449,7 +443,6 @@ function main() {
     JSON.stringify(rows)
   );
 
-  // --- 7. no stale replay when the source goes away (tank keeps decaying) ---
   const srProbe = 48000;
   const { cls: ClsProbe } = loadWorkletClass(srProbe);
   const p7 = new ClsProbe();
@@ -463,7 +456,6 @@ function main() {
   console.log('     empty-input replay ratio: ' + ratio7.toFixed(3));
   check('7. tank decays while the input is empty (no stale replay)', ratio7 < 0.01, 'ratio ' + ratio7.toFixed(3));
 
-  // --- 8. one out-of-range/NaN param must never latch non-finite output -----
   const p8 = new ClsProbe();
   p8.handleMessage({ type: 'setParams', params: { wetGain: 1, preDelay: 5 } });
   const o8 = pumpBlocks(p8, srProbe, 0.5, makeDc(0.1), null);
@@ -488,7 +480,6 @@ function main() {
     'a setParams field is written without a finite gate'
   );
 
-  // --- 9. unbounded decay is clamped -------------------------------
   const p9 = new ClsProbe();
   p9.handleMessage({ type: 'setParams', params: { wetGain: 1, decay: 2 } });
   const impulse9 = (L, R, start) => {
@@ -507,7 +498,6 @@ function main() {
   );
   check('9. decay is clamped below unity (static)', /Math\.min\(0\.95/.test(wsrc), 'no decay clamp');
 
-  // --- 10. DelayLine has no zero-delay degenerate --------------------------
   const symFactory = new Function(
     'sampleRate',
     'AudioWorkletProcessor',
@@ -523,7 +513,6 @@ function main() {
     'read(0)=' + dl.read(0) + ' read(64)=' + dl.read(64)
   );
 
-  // --- 11. wet bus headroom on music-like material -------------------------
   const p11 = new ClsProbe();
   p11.handleMessage({ type: 'setParams', params: paramsFor(1) });
   const music11 = makeMusic(srProbe, 4, 0.7);
@@ -532,7 +521,6 @@ function main() {
   console.log('     clipped samples at input peak 0.7: ' + clipped11);
   check('11. no hard clipping at input peak 0.7', clipped11 === 0, clipped11 + ' clipped');
 
-  // --- 12. dry fast path does not pay the denormal sweep every block ------
   const p12 = new ClsProbe();
   p12.handleMessage({ type: 'setParams', params: paramsFor(0) });
   let flushes12 = 0;
@@ -550,7 +538,6 @@ function main() {
     flushes12 + ' flushes in ' + blocks12 + ' blocks'
   );
 
-  // --- 13. the content-side intensity map never emits non-finite values ---
   const mapSrc = (csrc.match(/function computeDattorroParams\(intensity\) \{[\s\S]*?\n  \}/) || [])[0] || '';
   const mapFn = new Function(mapSrc + '\nreturn computeDattorroParams;');
   const map = mapFn();

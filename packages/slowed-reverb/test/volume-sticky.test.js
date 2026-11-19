@@ -31,9 +31,7 @@ const HOST_ATTR = 'data-slra-player-actions';
 const SAVE_DEBOUNCE_MS = 300;
 const RESTORE_RETRY_MS = 600;
 
-// ---------------------------------------------------------------------------
 // Fake DOM
-// ---------------------------------------------------------------------------
 
 function createElement(tagName) {
   const listeners = new Map();
@@ -233,9 +231,7 @@ function createDom() {
   };
 }
 
-// ---------------------------------------------------------------------------
 // Fake timers, page hook, storage, harness
-// ---------------------------------------------------------------------------
 
 function createTimers() {
   let nextId = 1;
@@ -344,9 +340,7 @@ function createHarness(options) {
   };
 }
 
-// ---------------------------------------------------------------------------
 // Persist: one coalesced write per burst
-// ---------------------------------------------------------------------------
 
 test('volume: one wheel step saves the value once, only after the coalescing window', async () => {
   const harness = createHarness();
@@ -412,9 +406,7 @@ test('guard: no saveVolume writer is not a failed wheel', async () => {
   assert.deepEqual(harness.pageHookCalls, [{ percent: 45 }]);
 });
 
-// ---------------------------------------------------------------------------
 // Restore: once per page load, through the same page-hook path
-// ---------------------------------------------------------------------------
 
 test('volume: a stored volume is applied once on load, then the page owns it', async () => {
   const harness = createHarness();
@@ -495,11 +487,9 @@ test('guard: a wheel step before playback cancels the pending restore', async ()
   assert.deepEqual(harness.pageHookCalls, [{ percent: 45 }], 'the stale restore never fires');
 });
 
-// ---------------------------------------------------------------------------
 // Native volume: a YTM slider drag is not a wheel step, but it is still the
 // user's number. It must paint the permanent readout and it must outrank a
 // restore that has not applied yet. A reading (install/revive/poll) must not.
-// ---------------------------------------------------------------------------
 
 function shadowNodes(root) {
   const out = [];
@@ -603,9 +593,7 @@ test('guard: junk restore values are ignored', async () => {
   assert.deepEqual(harness.pageHookCalls, []);
 });
 
-// ---------------------------------------------------------------------------
 // Settings shape
-// ---------------------------------------------------------------------------
 
 test('settings: an object without volume stays valid and means never set', () => {
   const normalized = Shared.normalizeSettings({ slow: 0.9, reverbIntensity: 0.4 });
@@ -630,10 +618,8 @@ test('settings: the default shape carries an unset volume', () => {
   assert.equal(Shared.getDefaultSettings().volume, null);
 });
 
-// ---------------------------------------------------------------------------
 // Wiring, static: the facade and the background merge are what make it reach
 // storage. No browser is launched for these.
-// ---------------------------------------------------------------------------
 
 test('wiring: the content script saves the wheel volume through SET_SITE_SETTINGS', () => {
   const source = fs.readFileSync(path.join(ROOT, 'content-script.js'), 'utf8');

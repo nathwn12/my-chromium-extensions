@@ -80,7 +80,6 @@ export async function removeHost(options = {}) {
   return { ok: !after.present && removed.every((check) => check.ok), checks, paths };
 }
 
-/* --------------------------------------------------------------------- cli */
 
 const USAGE = `usage: node scripts/uninstall-host.mjs [--check] [--json]
 

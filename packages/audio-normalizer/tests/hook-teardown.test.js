@@ -8,7 +8,6 @@ const ROOT = path.resolve(__dirname, '..');
 function src(name) { return fs.readFileSync(path.join(ROOT, name), 'utf8'); }
 async function settle(ms = 30) { await new Promise((r) => setTimeout(r, ms)); }
 
-// ---------- a page-hook harness that COUNTS live listeners and timers ----------
 // Every addEventListener/removeEventListener and setTimeout/clearTimeout is
 // really wired, so "how much is still attached after STOP" is measured rather
 // than asserted from the product's own bookkeeping.

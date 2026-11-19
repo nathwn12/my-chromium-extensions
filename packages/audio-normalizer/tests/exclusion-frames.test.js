@@ -65,9 +65,7 @@ function createFakeStorage(initial = {}) {
   };
 }
 
-// ---------- a REAL frame graph: executeScript(func) runs the given function
 // inside the frame's own world, exactly as the browser does, and
-// executeScript(files) runs the product files there. ----------
 function createTabWorld(frames) {
   // frames: [{ frameId, url }] — frame 0 is the top frame.
   const world = frames.map((frame) => ({
@@ -522,7 +520,6 @@ function loadBackground(tabWorld, storage, tabUrl) {
   };
 }
 
-// ---------- content-script-only frame (for async-race tests) ----------
 function loadContentFrame(href, storage) {
   const runtimeListeners = [];
   const removedRuntime = [];
@@ -616,7 +613,6 @@ function loadContentFrame(href, storage) {
   };
 }
 
-// ============ finding 1: exclusion is decided per FRAME ============
 test('frame-level: an excluded cross-origin frame gets no listener and no patch, the top frame works', async () => {
   const storage = createFakeStorage({
     'site:example.com': { enabled: true, gainDb: 0, seq: 1, mirror: true, excluded: false },
@@ -694,7 +690,6 @@ test('frame-level: the MAIN hook is refused for an excluded frame and allowed fo
   assert.deepEqual(gate.target.frameIds, [0], 'for the requesting frame only');
 });
 
-// ============ finding 5: a host is never in both lists ============
 test('registration: an excluded parent removes its descendants from matches', async () => {
   const storage = createFakeStorage({
     'site:a.example.com': { enabled: true, gainDb: 0, seq: 1, mirror: true, excluded: false },
@@ -736,7 +731,6 @@ test('registration: an excluded parent removes its descendants from matches', as
   );
 });
 
-// ============ FINAL RULE: un-exclude applies on the next navigation ============
 test('undo: un-excluding a parent does NOT re-arm an open tab; the next navigation does', async () => {
   const storage = createFakeStorage({
     'site:a.example.com': { enabled: true, gainDb: 2, seq: 1, mirror: true, excluded: false },
@@ -792,7 +786,6 @@ test('undo: a stale self-cache cannot block a fresh navigation (gate runs before
   void bg;
 });
 
-// ============ finding 1 (storage half): a read error injects nothing ============
 test('background: a storage read error keeps the extension inactive (fail closed)', async () => {
   const storage = createFakeStorage({
     'site:example.com': { enabled: false, gainDb: 0, seq: 1, mirror: false, excluded: false },
@@ -819,7 +812,6 @@ test('background: a storage read error keeps the extension inactive (fail closed
   assert.equal(ok.ok, true, 'and it recovers once storage answers');
 });
 
-// ============ finding 7: an async read that resolves after teardown ============
 // A frame that is already armed starts a read (storage change), the exclusion
 // broadcast tears it down, and THEN the read lands. It must schedule nothing.
 test('race: a storage read resolving after teardown schedules nothing', async () => {
@@ -878,7 +870,6 @@ test('race: a storage read resolving after teardown schedules nothing', async ()
   assert.deepEqual(frame.posted, [], 'and the page still received nothing');
 });
 
-// ============ rule 6: the per-frame storage signal ============
 test('per-frame signal: an embedded frame on an excluded host tears itself down, top host untouched', async () => {
   const storage = createFakeStorage({
     'site:top.test': { enabled: true, gainDb: 0, seq: 1, mirror: true, excluded: false },
@@ -959,7 +950,6 @@ test('per-frame signal: an embedded frame on an excluded host tears itself down,
 });
 
 
-// ============ FINAL RULE: enabling never arms a live document ============
 // Work begins on the next navigation, via registration. A document that was open
 // when the state changed is only ever torn down.
 const LIVE_COST = (frame) => ({
@@ -1098,7 +1088,6 @@ test('first-ever enable falls back to the notice when the tab cannot be reloaded
   assert.deepEqual(bgC.tabsReloaded, [], 'and nothing was called');
 });
 
-// ============ live toggle on a seen host ============
 test('seen host loaded off: the page hook is present and passive, nothing is processing', async () => {
   const storage = createFakeStorage({
     'site:top.test': { enabled: false, seen: true, gainDb: 0, seq: 2, mirror: false, excluded: false },

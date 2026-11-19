@@ -478,7 +478,6 @@ function canAccessTabUrl(url) {
   }
 }
 
-// ---------------------------------------------------------------------------
 // Registration-time enforcement (layer 1).
 //
 // The content script is no longer a static `<all_urls>` manifest entry: it is
@@ -492,7 +491,6 @@ function canAccessTabUrl(url) {
 // that moves `enabled` or `excluded` (see the `site:<key>` change loop at the
 // bottom of this file). Gain changes never re-register: matches do not depend
 // on gain.
-// ---------------------------------------------------------------------------
 
 /**
  * Every per-site record in storage, keyed by site key (full hostname).
@@ -1501,7 +1499,6 @@ chrome.storage.onChanged.addListener((changes, area) => {
     scheduleSiteBroadcast(siteKey);
   }
 });
-// ---------------------------------------------------------------------------
 // Rule 7: registration is SELF-HEALING, not merely serialized.
 //
 // A service-worker wake evaluates this file, so reconciling here means a
@@ -1509,5 +1506,4 @@ chrome.storage.onChanged.addListener((changes, area) => {
 // rejected) cannot outlive the next wake, let alone a restart. Install and
 // startup keep their own passes for re-injection; this one only makes the
 // stored registration match the stored records.
-// ---------------------------------------------------------------------------
 void syncContentScriptRegistration();

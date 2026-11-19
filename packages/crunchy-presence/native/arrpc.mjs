@@ -80,7 +80,6 @@ export class ArRpcClient {
     this._connecting = null;
   }
 
-  /* --------------------------------------------------------------- connect */
 
   connect() {
     if (this._connecting) return this._connecting;
@@ -252,7 +251,6 @@ export class ArRpcClient {
     this.logger.status(this.statusPayload({ reconnected: true }));
   }
 
-  /* --------------------------------------------------------------- frames */
 
   _onData(event) {
     const raw = event?.data;
@@ -332,7 +330,6 @@ export class ArRpcClient {
       .slice(2, 8)}`;
   }
 
-  /* ------------------------------------------------------------- activity */
 
   /** Remember an activity without requiring a live socket (republished on reconnect). */
   remember(activity) {
@@ -386,7 +383,6 @@ export class ArRpcClient {
     };
   }
 
-  /* ---------------------------------------------------------------- close */
 
   close() {
     if (this.closed) return;

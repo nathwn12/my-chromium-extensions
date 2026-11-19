@@ -39,7 +39,6 @@ const CORNER_RADIUS = (112 / 480) * (1 - LEFT - RIGHT); // rx=112 over tile 480
 const here = dirname(fileURLToPath(import.meta.url));
 const iconDir = join(here, "..", "icons");
 
-/* ------------------------------------------------------------- geometry -- */
 
 function insideTile(x, y, size) {
   const x0 = LEFT * size;
@@ -68,7 +67,6 @@ function barAt(x, y, size) {
   return null;
 }
 
-/* ---------------------------------------------------------------- raster -- */
 
 function raster(size) {
   const pixels = Buffer.alloc(size * size * 4, 0);
@@ -104,7 +102,6 @@ function raster(size) {
   return pixels;
 }
 
-/* ------------------------------------------------------------------ png -- */
 
 const CRC_TABLE = (() => {
   const table = new Uint32Array(256);
@@ -152,7 +149,6 @@ function encodePNG(size, pixels) {
   ]);
 }
 
-/* ---------------------------------------------------------------- verify -- */
 
 function alphaBBox(pixels, size) {
   let minX = size;

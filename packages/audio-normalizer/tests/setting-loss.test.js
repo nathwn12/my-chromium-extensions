@@ -58,7 +58,6 @@ function createFakeStorage(initial = {}, opts = {}) {
   return api;
 }
 
-// ---------- background harness (real background.js via vm) ----------
 function loadBackground(storage, extra = {}) {
   const runtimeListeners = [];
   const tabsSent = [];
@@ -113,7 +112,6 @@ function loadBackground(storage, extra = {}) {
   return { sandbox, sendMessage, tabsSent, scriptingCalls, runStartup: async () => { if (onStartupFn) await onStartupFn(); } };
 }
 
-// ---------- content-script harness (one sandbox per frame) ----------
 async function loadContentFrame(href, storage) {
   const runtimeListeners = [];
   const storageListeners = [];
@@ -185,7 +183,6 @@ async function loadContentFrame(href, storage) {
   };
 }
 
-// ---------- popup harness (real popup.js via vm with fake DOM) ----------
 function makeFakeEl(id) {
   return {
     id, disabled: false, checked: false, value: '0', textContent: '', className: '',
@@ -264,7 +261,6 @@ function loadPopup({ tabUrl, runtimeSendMessage, tabsSendMessage }) {
 }
 async function settle(ms = 30) { await new Promise((r) => setTimeout(r, ms)); }
 
-// ============ DEFECT 1: frame targeting (top frame only + provenance) ============
 test('defect1a: popup targets the top frame with frameId 0', async () => {
   const runtimeSendMessage = async (msg) => {
     if (msg.type === 'GET_SITE_STATE') return { ok: true, enabled: true, gainDb: 3, siteKey: 'youtube.com', seq: 1 };
@@ -384,7 +380,6 @@ test('defect1d: background document messages are actually sent to the top frame 
   assert.ok(types.includes('TOGGLE_CHANGED'), `expected TOGGLE_CHANGED broadcast (got ${types})`);
 });
 
-// ============ DECIDED RULE: last-accepted-write-wins (no wall clocks) ============
 test('defect2a: two popups overlap saves, later arrival wins (documented trade)', async () => {
   // Decided rule: the background applies every intent on arrival and bumps
   // the `seq` audit counter; nothing is ever rejected. Trade (deliberate):
@@ -473,7 +468,6 @@ test('defect2c repurposed: a multi-field intent applies atomically or not at all
   assert.equal(rec.mirror, false, 'mirror follows enabled in the same write');
 });
 
-// ============ DEFECT 3: no pending work; immediate persist; reset is one write ============
 test('defect3a: drag previews transiently, persists once on change (no per-tick write)', async () => {
   const seen = [];
   const tabsCalls = [];
@@ -595,7 +589,6 @@ test('defect3c: reset is a single storage write carrying gain alone', async () =
   assert.ok(Object.keys(writes[0]).length === 1 && writes[0]['site:youtube.com'], 'single top-level per-site key');
 });
 
-// ============ DEFECT 4: one logical update is one single-key storage write ============
 test('defect4: an enabled change persists settings+mirror+sequence in one single-key write', async () => {
   const storage = createFakeStorage({
     'site:youtube.com': { enabled: false, gainDb: 0, seq: 0, mirror: false },
@@ -616,7 +609,6 @@ test('defect4: an enabled change persists settings+mirror+sequence in one single
   assert.equal(rec.seq, 1, 'sequence rides in the same value (background-assigned increment)');
 });
 
-// ============ DEFECT 5: whole-map clobber is impossible by construction ============
 test('defect5: concurrent writes to different sites from separate contexts never clobber', async () => {
   const storage = createFakeStorage({
     'site:a.com': { enabled: true, gainDb: 1, seq: 0, mirror: true },
@@ -637,7 +629,6 @@ test('defect5: concurrent writes to different sites from separate contexts never
   assert.equal(snap['site:b.com'].gainDb, 0, 'site B gain untouched');
 });
 
-// ============ NEW: same-site stale-field overwrite (two popups, different fields) ============
 test('same-site stale-field: two popups changing different fields overlap and both land', async () => {
   // Platform fact under test: storage.local.set REPLACES the whole value
   // under a top-level key (no deep merge). A bare partial set would drop the
@@ -732,7 +723,6 @@ test('queued-actions end to end: sibling gain 6 survives a stale-slider disable 
   assert.equal(stored['site:youtube.com'].gainDb, 6, 'sibling gain 6 survives the stale-slider disable');
 });
 
-// ============ NEW: queued actions are never lost (gain 2, gain 6 in flight, toggle off) ============
 test('queued-actions: gain 6 survives when toggle off follows while saves are in flight', async () => {
   const storage = createFakeStorage({
     'site:youtube.com': { enabled: true, gainDb: 0, seq: 0, mirror: true },
@@ -832,7 +822,6 @@ test('mixed-schema startup injection covers legacy sites when per-site keys exis
   assert.equal(gotB.gainDb, 2);
 });
 
-// ============ PRESERVED GUARANTEES ============
 test('preserved: legacy activeSites migrates into per-site keys then clears consumed, never dropped', async () => {
   const storage = createFakeStorage({
     siteSettings: { 'youtube.com': { enabled: true, gainDb: 4 } },

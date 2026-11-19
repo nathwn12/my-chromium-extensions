@@ -397,7 +397,6 @@ async function main() {
     'master=' + (master ? master.value : 'none')
   );
 
-  // --- track change: emptied -> page rate write -> loadedmetadata -----------
   // The player parks the element for the new track and writes its own rate;
   // Chromium queues the `ratechange` event, so a sync can run while the element
   // is still at 1.0. That ordering is the reported bug.
@@ -466,7 +465,6 @@ async function main() {
     'captures=' + env.stats.captures + ' attached=' + env.queryLive().attachedCount + ' contexts=' + env.stats.contexts
   );
 
-  // --- live page rate write while the graph is audible ----------------------
   const rateFrom = env.stats.ops.length;
   media.playbackRate = 1;
   media.dispatchEvent(new Event('ratechange'));
@@ -500,7 +498,6 @@ async function main() {
     'muted=' + media.muted
   );
 
-  // --- invariant over everything the extension did --------------------------
   const audibleWhileUnmuted = env.stats.ops.filter(
     (op) => op.label === 'master' && (op.value || 0) > 0 && op.muted === false
   );

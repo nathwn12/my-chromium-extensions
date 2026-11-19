@@ -58,9 +58,7 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
   const SONG_EVENTS = ['yt-navigate-finish', 'yt-page-data-updated', 'popstate', 'hashchange'];
   const USER_INPUT_EVENTS = ['pointerdown', 'keydown', 'touchstart'];
 
-  // -------------------------------------------------------------------------
   // Loop engine (verbatim behavior from pear engine.ts)
-  // -------------------------------------------------------------------------
 
   function parseTimeInput(raw) {
     const trimmed = String(raw === undefined || raw === null ? '' : raw).trim();
@@ -150,9 +148,7 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
     return armed === null ? null : armed.start;
   }
 
-  // -------------------------------------------------------------------------
   // Saved sections (verbatim behavior from pear saved.ts, plus the 100 cap)
-  // -------------------------------------------------------------------------
 
   function sanitizeTime(value) {
     if (value === null) return null;
@@ -255,9 +251,7 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
     return { ok: true, imported: imported, skipped: skipped, sections: list };
   }
 
-  // -------------------------------------------------------------------------
   // Song identity and the restore latches
-  // -------------------------------------------------------------------------
 
   /**
    * The URL's `v` param is the only song id. A media source is never used: blob
@@ -363,9 +357,7 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
     session.restoreDeadlineAt = 0;
   }
 
-  // -------------------------------------------------------------------------
   // Wheel: pixels, accumulation, predicate ladder
-  // -------------------------------------------------------------------------
 
   function wheelPixels(event) {
     const deltaY = Number(event && event.deltaY);
@@ -546,9 +538,7 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
     return { handle: true, reason: 'handle' };
   }
 
-  // -------------------------------------------------------------------------
   // DOM controller
-  // -------------------------------------------------------------------------
 
   const PANEL_CSS = [
     ':host{position:fixed;right:16px;bottom:96px;z-index:2147483000;display:block;pointer-events:none;font:12px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;color:#f1f1f1;}',
@@ -835,7 +825,6 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
       return volume;
     }
 
-    // -- lifecycle ---------------------------------------------------------
 
     async function start() {
       if (started) return;
@@ -919,7 +908,6 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
       syncPanel();
     }
 
-    // -- media -------------------------------------------------------------
 
     function bindMediaListener(type, handler) {
       media.addEventListener(type, handler);
@@ -1009,7 +997,6 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
       }
     }
 
-    // -- undo ---------------------------------------------------------------
 
     function sameSection(left, right) {
       if (!left || !right) return left === right;
@@ -1039,7 +1026,6 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
       ui.undo.disabled = !(undoAvailable && undoSongKey !== null && undoSongKey === session.songKey);
     }
 
-    // -- song identity and the cached restore ------------------------------
 
     /**
      * Adopts the URL's song id and restores its saved section from the cache.
@@ -1156,7 +1142,6 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
       });
     }
 
-    // -- loop tick ---------------------------------------------------------
 
     function stopTick() {
       if (tickTimer === null) return;
@@ -1282,7 +1267,6 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
       }
     }
 
-    // -- wheel -------------------------------------------------------------
 
     function installWheel() {
       if (wheelInstalled) return;
@@ -1360,7 +1344,6 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
       });
     }
 
-    // -- sticky volume -----------------------------------------------------
 
     function canSaveVolume() {
       return Boolean(storage) && typeof storage.saveVolume === 'function';
@@ -1529,7 +1512,6 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
       }
     }
 
-    // -- user input --------------------------------------------------------
 
     function installUserInput() {
       if (userInputInstalled) return;
@@ -1558,7 +1540,6 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
       clearPendingRestore(session);
     }
 
-    // -- seeking -----------------------------------------------------------
 
     function cancelSeekRetry() {
       seekToken += 1;
@@ -1638,7 +1619,6 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
       }, SETTLE_MS);
     }
 
-    // -- UI ---------------------------------------------------------------
 
     function buildRow(labelText, nowLabel) {
       const row = doc.createElement('div');
@@ -1972,7 +1952,6 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
       requestSave({ erase: source === 'clear' });
     }
 
-    // -- storage -----------------------------------------------------------
 
     async function readSections() {
       if (!storage || typeof storage.get !== 'function') return [];
@@ -2155,7 +2134,6 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
       }
     }
 
-    // -- page signals ------------------------------------------------------
 
     function onSongSignal() {
       if (!started) return;

@@ -56,13 +56,11 @@ function fatal(message) {
   process.exit(2);
 }
 
-// ---------- load and instantiate the REAL worklet ----------
 const workletPath = path.join(__dirname, '..', 'dattorro-worklet.js');
 vm.runInThisContext(fs.readFileSync(workletPath, 'utf8'), { filename: workletPath });
 if (registeredName !== 'dattorro-reverb') fatal('registerProcessor name was ' + JSON.stringify(registeredName));
 if (typeof RegisteredProcessor !== 'function') fatal('no processor class captured');
 
-// ---------- params (mirrors content-script.js computeDattorroParams, content-script.js:599) ----------
 function computeDattorroParams(intensity) {
   const i = Math.max(0, Math.min(1, intensity));
   if (i <= 0) return { wetGain: 0, decay: 0, damping: 1, preDelay: 0 };
@@ -97,7 +95,6 @@ for (const key of Object.keys(expected)) {
   }
 }
 
-// ---------- deterministic input: impulse followed by a steady 440 Hz tone ----------
 const totalSamples = Math.floor((RUN_SECONDS * SR) / BLOCK) * BLOCK;
 const stepSample = Math.ceil((STEP_SECONDS * SR) / BLOCK) * BLOCK; // 44160 = 345 * 128
 const toneStart = Math.round(0.01 * SR);
@@ -113,7 +110,6 @@ function buildInput() {
 
 const input = buildInput();
 
-// ---------- scenario driver (params delivered through the real port.onmessage path) ----------
 function runScenario(kind) {
   const processor = new RegisteredProcessor();
   const post = (message) => processor.port.onmessage({ data: message });
@@ -151,7 +147,6 @@ function runScenario(kind) {
   return { outL, outR };
 }
 
-// ---------- measurement ----------
 function windowRms(outL, outR, start, size) {
   let sum = 0;
   for (let i = start; i < start + size; i++) sum += outL[i] * outL[i] + outR[i] * outR[i];
@@ -223,7 +218,6 @@ function ms(seconds) {
   return seconds === null ? 'never' : (seconds * 1000).toFixed(2) + ' ms';
 }
 
-// ---------- run ----------
 const scenarios = [
   { name: 'PRIMED', run: runScenario('primed') },
   { name: 'COLD', run: runScenario('cold') },
@@ -266,7 +260,6 @@ console.log('"firstWin" = window RMS of the first 128 samples after the step (0-
 console.log('Steady-state snapshots wobble a few percent because the worklet modulation LFO slowly modulates the tail level; t90 uses the mean steady level as its threshold.');
 console.log('');
 
-// ---------- assertions ----------
 let failures = 0;
 function check(name, ok, detail) {
   console.log((ok ? '[PASS] ' : '[FAIL] ') + name + (detail ? ' - ' + detail : ''));
