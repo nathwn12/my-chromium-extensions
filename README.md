@@ -2,14 +2,14 @@
 <p align="center"><strong>Four Chromium extensions for loudness levelling, slowed reverb, and Discord presence in Crunchyroll and YouTube Music.</strong></p>
 
 <p align="center">
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/nathwn12/my-chromium-extensions" alt="License" /></a>
-  <img src="https://img.shields.io/github/languages/top/nathwn12/my-chromium-extensions" alt="Language" />
-  <img src="https://img.shields.io/badge/platform-chrome--brave-2b3137?logo=googlechrome&logoColor=white" alt="Platform" />
+  <img src="https://img.shields.io/badge/platform-chrome%20brave-blue" alt="platform">
+  <img src="https://img.shields.io/badge/extensions-4-brightgreen" alt="4 extensions">
+  <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT">
 </p>
 
 ## Why
 
-Four focused extensions, loaded unpacked from this repository. Nothing is published to a store. The two audio extensions work through a local audio graph on the pages you choose. The two presence extensions reach Discord through a local native messaging host, so no browser-to-cloud bridge is involved. There is no build step for the extensions themselves.
+Four Chromium extensions, loaded unpacked from this repository. Nothing is published to a store. The two audio extensions work through a local audio graph on the pages you choose. The two presence extensions reach Discord through a local native messaging host, so no browser-to-cloud bridge is involved. There is no build step for the extensions themselves.
 
 ## Install
 
@@ -35,7 +35,7 @@ Add `--check` to either command to verify a registration without writing.
 | [Audio Normalizer](packages/audio-normalizer) | Brings every site you switch on to one target loudness through a local audio graph. | 5.6.4 |
 | [Slowed Reverb](packages/slowed-reverb) | Slows YouTube Music playback and adds plate reverb in a local audio graph. | 1.2.8 |
 | [Crunchy Presence](packages/crunchy-presence) | Reports the Crunchyroll episode you are watching as Discord rich presence. | 1.2.3 |
-| [YouTube Music Presence](packages/youtube-music-presence) | Reports YouTube Music to Discord desktop rich presence. | 1.1.12 |
+| [YouTube Music Presence](packages/youtube-music-presence) | Reports YouTube Music only to Discord desktop rich presence. | 1.1.12 |
 
 Then, per extension:
 
