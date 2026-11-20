@@ -86,8 +86,7 @@ my-chromium-extensions/
 ## Links
 
 - [Issues](https://github.com/nathwn12/my-chromium-extensions/issues)
-- [Releases](https://github.com/nathwn12/my-chromium-extensions/releases) — one packaged zip per extension.
+- [Releases](https://github.com/nathwn12/my-chromium-extensions/releases)
+- [MIT](LICENSE)
 
 <p align="center"><sub>Built by nathwn12</sub></p>
-
-- [MIT](LICENSE)
