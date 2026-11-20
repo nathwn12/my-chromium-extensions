@@ -28,7 +28,7 @@ node packages/youtube-music-presence/scripts/install-host.mjs
 
 Add `--check` to either command to verify a registration without writing.
 
-## Use
+## Use it
 
 | Extension | What it does | Version |
 | --- | --- | --- |
@@ -44,7 +44,7 @@ Then, per extension:
 - **Crunchy Presence** — with Discord desktop running, open an episode; the popup shows bridge status.
 - **YouTube Music Presence** — with Discord desktop running, open YouTube Music and turn presence on with the popup switch. The choice persists across refreshes and Discord reconnects.
 
-## Configure
+## Configure it
 
 - **Audio Normalizer** — the gain slider runs -12 to +12 dB; Speech, Music and Boost are presets. The setting is per site.
 - **Slowed Reverb** — speed runs 0.7x to 1.3x and reverb runs 0 to 100 percent.
@@ -59,10 +59,35 @@ Then, per extension:
 - Discord desktop, signed in and running, for the two presence extensions only.
 - Chrome 120 or newer for the two presence extensions; both pin `minimum_chrome_version`. The two audio extensions declare no minimum.
 
+## Development
+
+```sh
+bun install
+bun run test
+node scripts/verify-integration.mjs
+bun run lint
+bun run typecheck
+```
+
+Tests run in Node on `node --test`, never in a browser. `verify-integration.mjs` reads the tree and installs nothing.
+
+```
+my-chromium-extensions/
+├── packages/    four extensions, each with tests and docs
+├── scripts/     wiring check and host installers
+├── tools/       cost audit
+└── .github/     ci, release, supply-chain
+```
+
+## Status
+
+**Experimental** - pre-release; interfaces may change.
+
 ## Links
 
 - [Issues](https://github.com/nathwn12/my-chromium-extensions/issues)
 - [Releases](https://github.com/nathwn12/my-chromium-extensions/releases) — one packaged zip per extension.
-- [MIT](LICENSE)
 
-<p align="center">Built by nathwn12</p>
+<p align="center"><sub>Built by nathwn12</sub></p>
+
+- [MIT](LICENSE)
