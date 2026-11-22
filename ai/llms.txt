@@ -1,0 +1,13 @@
+---
+project: my-chromium-extensions
+one_line: Normalize per-site loudness, slow playback with reverb, and report Crunchyroll and YouTube Music presence.
+stack: [JavaScript]
+status: draft
+since: 2026-11
+capabilities: []
+limits: []
+updated: 2026-11-22
+draft: true
+---
+
+Four Chromium extensions, loaded unpacked from this repository. Nothing is published to a store. The two audio extensions work through a local audio graph on the pages you choose. The two presence extensions reach Discord through a local native messaging host, so no browser-to-cloud bridge is involved. There is no build step for the extensions themselves.
