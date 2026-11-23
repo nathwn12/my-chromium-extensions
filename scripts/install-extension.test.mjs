@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import {
   cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -21,11 +23,16 @@ import {
 } from "./install-extension.mjs";
 
 // ISOLATION: every case passes localAppData as a fresh mkdtemp root under the
-// OS temp dir through the installer's --local-app-data equivalent option.
+// OS temp dir, through the module option or the CLI's --local-app-data flag.
 // Nothing here writes the live %LOCALAPPDATA%, touches the registry, or spawns
 // reg.exe. The temp roots are removed in after().
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const CLI = path.join(ROOT, "scripts", "install-extension.mjs");
 const tempRoots = [];
+
+function runCli(args) {
+  return spawnSync(process.execPath, [CLI, ...args], { encoding: "utf8", windowsHide: true });
+}
 
 function freshLocalAppData() {
   const dir = mkdtempSync(path.join(tmpdir(), "wdr-ext-install-"));
@@ -96,6 +103,51 @@ test("--check goes red when one payload file is deleted", async () => {
   assert.ok(checked.checks.some((c) => !c.ok && c.name === "payload popup.js"));
 });
 
+test("--check goes red when one installed byte changes", async () => {
+  const localAppData = freshLocalAppData();
+  await installExtension({ root: ROOT, pkg: "audio-normalizer", localAppData });
+  const victim = path.join(localAppData, "audio-normalizer", "extension", "popup.js");
+  writeFileSync(victim, `${readFileSync(victim, "utf8")}\n`);
+
+  const checked = checkExtension({ root: ROOT, pkg: "audio-normalizer", localAppData });
+  assert.equal(checked.ok, false);
+  const failure = checked.checks.find((c) => !c.ok && c.name === "payload popup.js");
+  assert.ok(failure, "the modified payload file is named");
+  assert.match(failure.detail, /hash mismatch/);
+});
+
+test("--check goes red and names an added file, including in a nested folder", async () => {
+  const localAppData = freshLocalAppData();
+  const result = await installExtension({ root: ROOT, pkg: "crunchy-presence", localAppData });
+  const rogue = path.join(result.dir, "rogue.js");
+  writeFileSync(rogue, "not part of the payload");
+  const nested = path.join(result.dir, "old", "nested.js");
+  mkdirSync(path.dirname(nested), { recursive: true });
+  writeFileSync(nested, "stale nested file");
+
+  const checked = checkExtension({ root: ROOT, pkg: "crunchy-presence", localAppData });
+  assert.equal(checked.ok, false);
+  const failures = checked.checks.filter((c) => !c.ok).map((c) => c.name);
+  assert.ok(failures.includes("extra file rogue.js"), failures.join(", "));
+  assert.ok(failures.includes("extra file old/nested.js"), failures.join(", "));
+  assert.equal(checked.checks.find((c) => c.name === "extra file rogue.js").detail, rogue);
+  assert.ok(existsSync(path.join(result.dir, ".install-state.json")), "the state file is not extra");
+});
+
+test("--check --json returns one parseable verdict", async () => {
+  const localAppData = freshLocalAppData();
+  await installExtension({ root: ROOT, pkg: "audio-normalizer", localAppData });
+  const run = runCli([
+    "audio-normalizer", "--check", "--json", "--local-app-data", localAppData,
+  ]);
+  assert.equal(run.status, 0, run.stderr);
+  const parsed = JSON.parse(run.stdout);
+  assert.equal(parsed.ok, true);
+  assert.equal(parsed.dir, path.join(localAppData, "audio-normalizer", "extension"));
+  assert.ok(Array.isArray(parsed.checks) && parsed.checks.length > 0);
+  assert.ok(parsed.checks.every((check) => check.ok === true));
+});
+
 test("--check still passes after the install dir moves to another root", async () => {
   const first = freshLocalAppData();
   const second = freshLocalAppData();
@@ -137,6 +189,24 @@ test("--uninstall removes only the extension subdir", async () => {
   assert.equal(existsSync(result.dir), false);
   assert.ok(existsSync(path.join(parent, "host.cmd")), "native host files are untouched");
   assert.ok(existsSync(path.join(parent, "host-manifest.json")));
+});
+
+test("--uninstall via the CLI flag removes the folder and its state file", async () => {
+  const localAppData = freshLocalAppData();
+  const result = await installExtension({ root: ROOT, pkg: "youtube-music-presence", localAppData });
+  const parent = path.dirname(result.dir);
+  const statePath = path.join(result.dir, ".install-state.json");
+  assert.ok(existsSync(statePath));
+  writeFileSync(path.join(parent, "host.cmd"), "sentinel for the native host");
+
+  const run = runCli([
+    "youtube-music-presence", "--uninstall", "--local-app-data", localAppData,
+  ]);
+  assert.equal(run.status, 0, run.stderr);
+  assert.match(run.stdout, /^removed: /);
+  assert.equal(existsSync(result.dir), false);
+  assert.equal(existsSync(statePath), false);
+  assert.ok(existsSync(path.join(parent, "host.cmd")), "native host files are untouched");
 });
 
 test("installs from an unzipped release root, not only from the repo", async () => {

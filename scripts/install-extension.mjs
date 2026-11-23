@@ -13,6 +13,7 @@
 import { createHash } from "node:crypto";
 import {
   existsSync,
+  readdirSync,
   readFileSync,
   statSync,
 } from "node:fs";
@@ -62,6 +63,16 @@ function isFile(target) {
   } catch {
     return false;
   }
+}
+
+/** Recursive file list bounded to one directory; paths are slash-separated. */
+function listFiles(dir, base = dir, out = []) {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) listFiles(full, base, out);
+    else out.push(path.relative(base, full).split(path.sep).join("/"));
+  }
+  return out;
 }
 
 function localAppDataDir(localAppData, name) {
@@ -275,7 +286,7 @@ export function checkExtension({
   const recorded = state.files && typeof state.files === "object" ? Object.keys(state.files).sort() : [];
   add("file list", sameSet(expected, recorded), `${expected.length} files`);
 
-  const recordedHashes = state.files ?? {};
+  const recordedHashes = state.files && typeof state.files === "object" && !Array.isArray(state.files) ? state.files : {};
   for (const rel of expected) {
     const segments = rel.split("/");
     const dest = path.join(dir, ...segments);
@@ -287,6 +298,17 @@ export function checkExtension({
     const destHash = hashFile(dest);
     const ok = destHash === sourceHash && recordedHashes[rel] === sourceHash;
     add(`payload ${rel}`, ok, ok ? sourceHash.slice(0, 12) : "hash mismatch with the recorded copy");
+  }
+
+  // Enumerate only the install folder. An extra file can change browser
+  // behavior even when every expected file still matches its recorded hash.
+  try {
+    for (const rel of listFiles(dir)) {
+      if (rel === STATE_FILE || Object.hasOwn(recordedHashes, rel)) continue;
+      add(`extra file ${rel}`, false, path.join(dir, ...rel.split("/")));
+    }
+  } catch (error) {
+    add("install folder", false, `cannot enumerate ${dir}: ${error.message}`);
   }
   return { ok: checks.every((check) => check.ok), name, dir, checks };
 }
