@@ -139,6 +139,22 @@ test("--uninstall removes only the extension subdir", async () => {
   assert.ok(existsSync(path.join(parent, "host-manifest.json")));
 });
 
+test("installs from an unzipped release root, not only from the repo", async () => {
+  const pkg = "crunchy-presence";
+  const unzipped = mkdtempSync(path.join(tmpdir(), "wdr-unzip-"));
+  const localAppData = freshLocalAppData();
+  cpSync(path.join(ROOT, "packages", pkg), unzipped, { recursive: true });
+  mkdirSync(path.join(unzipped, "scripts"), { recursive: true });
+  cpSync(
+    path.join(ROOT, "scripts", "install-extension.mjs"),
+    path.join(unzipped, "scripts", "install-extension.mjs"),
+  );
+
+  const result = await installExtension({ root: unzipped, pkg, localAppData });
+  assert.ok(existsSync(path.join(result.dir, "manifest.json")));
+  assert.equal(checkExtension({ root: unzipped, pkg, localAppData }).ok, true);
+});
+
 test("an unknown package is refused before any path is built", async () => {
   const localAppData = freshLocalAppData();
   await assert.rejects(
