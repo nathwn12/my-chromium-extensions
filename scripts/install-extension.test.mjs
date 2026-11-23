@@ -232,3 +232,77 @@ test("an unknown package is refused before any path is built", async () => {
     /unknown package/,
   );
 });
+
+// BULK SELECTOR: `all` refreshes every package in one call. Every case below
+// uses a fresh mkdtemp localAppData through --local-app-data. No live path,
+// registry, or registration is touched.
+
+test("all: one install call refreshes all four trees and prints each path", async () => {
+  const localAppData = freshLocalAppData();
+  const run = runCli(["all", "--local-app-data", localAppData]);
+  assert.equal(run.status, 0, run.stderr);
+  const paths = [];
+  for (const pkg of PACKAGES) {
+    const dir = path.join(localAppData, pkg, "extension");
+    paths.push(dir);
+    assert.ok(run.stdout.includes(`Load unpacked: ${dir}`), run.stdout);
+    assert.ok(existsSync(path.join(dir, "manifest.json")));
+    const checked = checkExtension({ root: ROOT, pkg, localAppData });
+    assert.equal(checked.ok, true, checked.checks.filter((c) => !c.ok).map((c) => c.name).join(", "));
+  }
+  assert.equal(new Set(paths).size, 4, "four distinct stable paths");
+});
+
+test("all --check: aggregate exit 0 when every tree is green", async () => {
+  const localAppData = freshLocalAppData();
+  for (const pkg of PACKAGES) await installExtension({ root: ROOT, pkg, localAppData });
+  const run = runCli(["all", "--check", "--local-app-data", localAppData]);
+  assert.equal(run.status, 0, run.stderr);
+  for (const pkg of PACKAGES) assert.ok(run.stdout.includes(pkg), run.stdout);
+});
+
+test("all --check: aggregate exit 1 and names the tree when one is tampered", async () => {
+  const localAppData = freshLocalAppData();
+  for (const pkg of PACKAGES) await installExtension({ root: ROOT, pkg, localAppData });
+  rmSync(path.join(localAppData, "audio-normalizer", "extension", "popup.js"));
+  const run = runCli(["all", "--check", "--local-app-data", localAppData]);
+  assert.equal(run.status, 1, run.stderr);
+  assert.ok(run.stdout.includes("audio-normalizer"), run.stdout);
+  assert.match(run.stdout, /payload popup\.js/);
+});
+
+test("all --check --json: one parseable aggregate verdict", async () => {
+  const localAppData = freshLocalAppData();
+  for (const pkg of PACKAGES) await installExtension({ root: ROOT, pkg, localAppData });
+  rmSync(path.join(localAppData, "slowed-reverb", "extension", "popup.js"));
+  const run = runCli(["all", "--check", "--json", "--local-app-data", localAppData]);
+  const parsed = JSON.parse(run.stdout);
+  assert.equal(parsed.ok, false);
+  assert.equal(run.status, 1);
+  assert.ok(Array.isArray(parsed.results));
+  assert.equal(parsed.results.length, 4);
+  assert.equal(parsed.results.find((r) => r.pkg === "slowed-reverb").ok, false);
+});
+
+test("all: refused in a standalone release root (one manifest, not four)", () => {
+  const unzipped = mkdtempSync(path.join(tmpdir(), "wdr-unzip-all-"));
+  tempRoots.push(unzipped);
+  cpSync(path.join(ROOT, "packages", "crunchy-presence"), unzipped, { recursive: true });
+  mkdirSync(path.join(unzipped, "scripts"), { recursive: true });
+  const cli = path.join(unzipped, "scripts", "install-extension.mjs");
+  cpSync(path.join(ROOT, "scripts", "install-extension.mjs"), cli);
+  const localAppData = freshLocalAppData();
+  const run = spawnSync(process.execPath, [cli, "all", "--local-app-data", localAppData], {
+    encoding: "utf8",
+    windowsHide: true,
+  });
+  assert.equal(run.status, 1, run.stderr);
+  assert.match(run.stderr, /repository layout/);
+});
+
+test("all --uninstall: bulk uninstall is refused", () => {
+  const localAppData = freshLocalAppData();
+  const run = runCli(["all", "--uninstall", "--local-app-data", localAppData]);
+  assert.equal(run.status, 2);
+  assert.match(run.stderr, /does not accept all/);
+});

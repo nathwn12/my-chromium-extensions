@@ -2,8 +2,11 @@
 /**
  * One job: copy one extension's runtime payload into a stable per-user folder.
  *
- *   node scripts/install-extension.mjs <pkg> [--check] [--uninstall]
+ *   node scripts/install-extension.mjs <pkg|all> [--check] [--uninstall]
  *                                      [--local-app-data <path>] [--json]
+ *
+ * `all` refreshes every package in one call. It needs the repo layout: a
+ * standalone release root holds one manifest, not four.
  *
  * Chrome stores an unpacked extension as a folder path. Loading it from the
  * checkout means a moved checkout breaks the extension. The stable target is
@@ -40,10 +43,11 @@ const STATE_FILE = ".install-state.json";
 const TEXT_EXT = new Set([".js", ".mjs", ".cjs", ".json", ".html", ".css"]);
 const FILE_REF = /\.(?:js|mjs|cjs|json|html|css|png|jpe?g|gif|webp|svg|ico|woff2?|ttf)$/i;
 
-const USAGE = `usage: node scripts/install-extension.mjs <pkg> [--check] [--uninstall]
+const USAGE = `usage: node scripts/install-extension.mjs <pkg|all> [--check] [--uninstall]
                                     [--local-app-data <path>] [--json] [--help]
 
 pkg: ${PACKAGES.join(", ")}
+all: refresh every package in one call (repo layout only; not with --uninstall)
 Copies the runtime into %LOCALAPPDATA%\\<name>\\extension and prints the
 folder to load with chrome://extensions -> Load unpacked. --check verifies
 without writing; --uninstall removes only that extension folder.`;
@@ -63,6 +67,16 @@ function isFile(target) {
   } catch {
     return false;
   }
+}
+
+/** Expand `all` to the four packages, but only where all four manifests live. */
+export function resolveTargets(root, pkg) {
+  if (pkg !== "all") return [pkg];
+  const missing = PACKAGES.filter((name) => !isFile(path.join(root, "packages", name, "manifest.json")));
+  if (missing.length > 0) {
+    throw new Error(`all requires the repository layout; missing package manifests: ${missing.join(", ")}`);
+  }
+  return [...PACKAGES];
 }
 
 /** Recursive file list bounded to one directory; paths are slash-separated. */
@@ -346,6 +360,7 @@ function parseArgs(argv) {
   }
   if (!options.help && !options.pkg) throw new Error("missing package name");
   if (options.check && options.uninstall) throw new Error("--check and --uninstall are exclusive");
+  if (options.pkg === "all" && options.uninstall) throw new Error("--uninstall does not accept all; uninstall one package at a time");
   return options;
 }
 
@@ -375,24 +390,40 @@ async function main(argv) {
   }
 
   try {
+    const targets = resolveTargets(REPO_ROOT, options.pkg);
+    const many = targets.length > 1;
+
     if (options.check) {
-      const result = checkExtension({ pkg: options.pkg, localAppData });
+      const results = targets.map((pkg) => checkExtension({ pkg, localAppData }));
+      const ok = results.every((result) => result.ok);
       if (options.json) {
-        process.stdout.write(`${JSON.stringify({ ok: result.ok, dir: result.dir, checks: result.checks })}\n`);
+        const body = many
+          ? { ok, results: results.map((r) => ({ pkg: r.name, ok: r.ok, dir: r.dir, checks: r.checks })) }
+          : { ok: results[0].ok, dir: results[0].dir, checks: results[0].checks };
+        process.stdout.write(`${JSON.stringify(body)}\n`);
       } else {
-        printChecks(result.checks);
-        process.stdout.write(`check: ${result.checks.filter((c) => c.ok).length}/${result.checks.length} hold\n`);
+        for (const result of results) {
+          if (many) process.stdout.write(`[${result.name}] ${result.dir}\n`);
+          printChecks(result.checks);
+          process.stdout.write(`check: ${result.checks.filter((c) => c.ok).length}/${result.checks.length} hold\n`);
+        }
       }
-      return result.ok ? 0 : 1;
+      return ok ? 0 : 1;
     }
+
     if (options.uninstall) {
       const result = await uninstallExtension({ pkg: options.pkg, localAppData });
       process.stdout.write(`removed: ${result.dir}\n`);
       return 0;
     }
-    const result = await installExtension({ pkg: options.pkg, localAppData });
-    printChecks(result.checks);
-    process.stdout.write(`Load unpacked: ${result.dir}\n`);
+
+    const results = [];
+    for (const pkg of targets) results.push(await installExtension({ pkg, localAppData }));
+    for (const result of results) {
+      if (many) process.stdout.write(`[${result.pkg}] ${result.dir}\n`);
+      printChecks(result.checks);
+      process.stdout.write(`Load unpacked: ${result.dir}\n`);
+    }
     return 0;
   } catch (error) {
     process.stderr.write(`install-extension: ${error.message}\n`);
