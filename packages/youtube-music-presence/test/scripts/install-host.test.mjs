@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { copyFile, cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
@@ -27,6 +27,7 @@ const PAYLOAD = [
   'native/ipc.mjs',
   'native/native-framing.mjs',
   'config.js',
+  'package.json',
 ];
 
 const FIXTURE_KEY =
@@ -102,6 +103,7 @@ test('installer targets the youtube-music-presence host under its own install di
     'native/ipc.mjs',
     'native/native-framing.mjs',
     'config.js',
+    'package.json',
   ]);
 });
 
@@ -339,9 +341,71 @@ test('installed host runs after the source checkout is removed and the install d
   const movedDir = path.join(relocatedParent, INSTALL_DIR_NAME);
   await cp(paths.dir, movedDir, { recursive: true });
 
-  const output = execFileSync('cmd.exe', ['/d', '/c', path.join(movedDir, 'host.cmd'), '--selftest'], {
+  const run = spawnSync('cmd.exe', ['/d', '/c', path.join(movedDir, 'host.cmd'), '--selftest'], {
     encoding: 'utf8',
     env: { ...process.env, NODE_OPTIONS: '--require C:\\missing\\preload.cjs' },
   });
-  assert.match(output, /selftest: PASS \(10\/10\)/, output);
+  assert.equal(run.status, 0, `${run.stderr}\n${run.stdout}`);
+  assert.match(run.stdout, /selftest: PASS \(10\/10\)/, run.stdout);
+  assert.equal(run.stderr.includes('MODULE_TYPELESS'), false, run.stderr);
+  assert.deepEqual(JSON.parse(await readFile(path.join(movedDir, 'package.json'), 'utf8')), { type: 'module' });
+});
+
+test('--check verifies the module marker in the installed payload', async (t) => {
+  const root = await tempDir(t);
+  await writeFile(
+    path.join(root, 'manifest.json'),
+    JSON.stringify({ manifest_version: 3, key: FIXTURE_KEY }),
+    'utf8',
+  );
+  await seedPayload(root);
+  const localAppData = await tempDir(t);
+  const registry = fakeRegistry();
+
+  assert.equal((await installHost({ root, localAppData, exec: registry.exec })).ok, true);
+  const paths = installPaths({ root, localAppData });
+  assert.deepEqual(JSON.parse(await readFile(path.join(paths.dir, 'package.json'), 'utf8')), { type: 'module' });
+
+  await writeFile(path.join(paths.dir, 'package.json'), '{"type":"commonjs"}\n', 'utf8');
+  const checked = await installHost({ root, localAppData, exec: registry.exec, check: true });
+  assert.equal(checked.ok, false);
+  assert.ok(checked.checks.some((check) => check.name === 'payload package.json' && !check.ok));
+});
+
+test('import guard names an imported payload file removed from the install dir', async (t) => {
+  const sourceRoot = await tempDir(t);
+  await seedRealPayload(sourceRoot);
+  const localAppData = await tempDir(t);
+  const registry = fakeRegistry();
+
+  assert.equal((await installHost({ root: sourceRoot, localAppData, exec: registry.exec })).ok, true);
+  const paths = installPaths({ root: sourceRoot, localAppData });
+  await rm(payloadPath(paths.dir, 'native/arrpc.mjs'));
+
+  const checked = await installHost({ root: sourceRoot, localAppData, exec: registry.exec, check: true });
+  assert.equal(checked.ok, false);
+  assert.ok(
+    checked.checks.some((check) => check.name === 'import native/host.mjs -> ./arrpc.mjs' && !check.ok),
+    JSON.stringify(checked.checks.filter((check) => !check.ok)),
+  );
+});
+
+test('import guard rejects a new local import missing from the payload', async (t) => {
+  const sourceRoot = await tempDir(t);
+  await seedRealPayload(sourceRoot);
+  const localAppData = await tempDir(t);
+  const registry = fakeRegistry();
+
+  assert.equal((await installHost({ root: sourceRoot, localAppData, exec: registry.exec })).ok, true);
+
+  await writeFile(payloadPath(sourceRoot, 'native/extra.mjs'), 'export const extra = 1;\n', 'utf8');
+  const hostPath = payloadPath(sourceRoot, 'native/host.mjs');
+  await writeFile(hostPath, `${await readFile(hostPath, 'utf8')}\nimport './extra.mjs';\n`, 'utf8');
+
+  const checked = await installHost({ root: sourceRoot, localAppData, exec: registry.exec, check: true });
+  assert.equal(checked.ok, false);
+  assert.ok(
+    checked.checks.some((check) => check.name === 'import native/host.mjs -> ./extra.mjs' && !check.ok),
+    JSON.stringify(checked.checks.filter((check) => !check.ok)),
+  );
 });

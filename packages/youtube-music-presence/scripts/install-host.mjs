@@ -9,7 +9,7 @@
  */
 
 import { execFile } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -29,9 +29,15 @@ export const PAYLOAD = Object.freeze([
   'native/ipc.mjs',
   'native/native-framing.mjs',
   'config.js',
+  'package.json',
 ]);
+/** Minimal module marker so the app-local payload loads without a type warning. */
+export const HOST_PACKAGE_JSON = '{"type":"module"}\n';
 /** Launcher target, resolved from the launcher's own directory by cmd.exe. */
 export const HOST_SCRIPT_REL = 'native\\host.mjs';
+
+const IMPORT_FROM_RE = /\bfrom\s*['"](\.[^'"]+)['"]/g;
+const IMPORT_BARE_RE = /\bimport\s*['"](\.[^'"]+)['"]/g;
 
 export const REGISTRY_ROOTS = Object.freeze([
   { label: 'Chrome', key: 'HKCU\\Software\\Google\\Chrome\\NativeMessagingHosts' },
@@ -111,7 +117,11 @@ async function copyPayload({ root, dir }) {
   const copied = [];
   for (const { rel, source, dest } of payloadFiles({ root, dir })) {
     await mkdir(path.dirname(dest), { recursive: true });
-    await copyFile(source, dest);
+    if (rel === 'package.json') {
+      await writeFile(dest, HOST_PACKAGE_JSON, 'utf8');
+    } else {
+      await copyFile(source, dest);
+    }
     copied.push({ name: `copy ${rel}`, ok: true, detail: dest });
   }
   return copied;
@@ -120,7 +130,58 @@ async function copyPayload({ root, dir }) {
 async function checkPayload({ root, dir }) {
   const checks = [];
   for (const { rel, dest } of payloadFiles({ root, dir })) {
-    checks.push(await checkFile(`payload ${rel}`, dest));
+    const check = await checkFile(`payload ${rel}`, dest);
+    if (check.ok && rel === 'package.json') {
+      let parsed = null;
+      try {
+        parsed = JSON.parse(await readFile(dest, 'utf8'));
+      } catch {
+        parsed = null;
+      }
+      if (parsed?.type !== 'module') {
+        check.ok = false;
+        check.detail = 'type is not "module"';
+      }
+    }
+    checks.push(check);
+  }
+  return checks;
+}
+
+/**
+ * Static import-graph guard: every relative specifier in a payload's native
+ * entry modules must already exist in the installed payload. No module is
+ * evaluated; this reads specifiers only, so a new local import cannot pass
+ * --check while its target is left behind in the checkout.
+ */
+export function localImportTargets({ root, dir }) {
+  const checks = [];
+  for (const rel of PAYLOAD) {
+    if (!rel.startsWith('native/') || !rel.endsWith('.mjs')) continue;
+    const sourcePath = path.join(root, ...rel.split('/'));
+    let source;
+    try {
+      source = readFileSync(sourcePath, 'utf8');
+    } catch (error) {
+      checks.push({ name: `imports ${rel}`, ok: false, detail: `unreadable: ${error.message}` });
+      continue;
+    }
+    const specifiers = new Set();
+    for (const pattern of [IMPORT_FROM_RE, IMPORT_BARE_RE]) {
+      for (const match of source.matchAll(pattern)) specifiers.add(match[1]);
+    }
+    for (const specifier of specifiers) {
+      const resolved = path.resolve(path.dirname(sourcePath), specifier);
+      const relative = path.relative(root, resolved);
+      if (relative.startsWith('..') || path.isAbsolute(relative)) continue;
+      const target = relative.split(path.sep).join('/');
+      const ok = existsSync(path.join(dir, relative));
+      checks.push({
+        name: `import ${rel} -> ${specifier}`,
+        ok,
+        detail: ok ? target : `missing ${target} in installed payload`,
+      });
+    }
   }
   return checks;
 }
@@ -168,6 +229,7 @@ export async function verifyHost({ paths, extensionId, exec = defaultExec, root 
   checks.push(await checkManifest(paths, extensionId));
   checks.push(await checkLauncher({ cmd: paths.cmd, root }));
   checks.push(...await checkPayload({ root, dir: paths.dir }));
+  checks.push(...localImportTargets({ root, dir: paths.dir }));
   for (const slot of REGISTRY_ROOTS) {
     const key = `${slot.key}\\${HOST_NAME}`;
     try {
