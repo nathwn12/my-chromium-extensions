@@ -10,7 +10,7 @@
 
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
@@ -21,6 +21,17 @@ const execFileAsync = promisify(execFile);
 
 export const HOST_NAME = 'com.nathwn12.crunchy_presence';
 export const INSTALL_DIR_NAME = 'crunchy-presence';
+
+/** Fixed runnable payload, copied into the install dir with its layout intact. */
+export const PAYLOAD = Object.freeze([
+  'native/host.mjs',
+  'native/arrpc.mjs',
+  'native/ipc.mjs',
+  'native/protocol.mjs',
+  'bridge-status.js',
+]);
+/** Launcher target, resolved from the launcher's own directory by cmd.exe. */
+export const HOST_SCRIPT_REL = 'native\\host.mjs';
 
 export const REGISTRY_ROOTS = Object.freeze([
   { label: 'Chrome', key: 'HKCU\\Software\\Google\\Chrome\\NativeMessagingHosts' },
@@ -54,13 +65,19 @@ export function installPaths({ root = REPO_ROOT, localAppData = process.env.LOCA
     dir,
     cmd: path.join(dir, 'host.cmd'),
     manifest: path.join(dir, 'host-manifest.json'),
-    hostScript: path.join(root, 'native', 'host.mjs'),
     node: process.execPath,
   };
 }
 
-export function buildHostCmd({ nodePath, hostScript }) {
-  return `@echo off\r\nrem Chrome native messaging host for crunchy-presence\r\nset "NODE_OPTIONS="\r\n"${nodePath}" "${hostScript}" %*\r\n`;
+export function payloadFiles({ root, dir }) {
+  return PAYLOAD.map((rel) => {
+    const segments = rel.split('/');
+    return { rel, source: path.join(root, ...segments), dest: path.join(dir, ...segments) };
+  });
+}
+
+export function buildHostCmd({ nodePath }) {
+  return `@echo off\r\nrem Chrome native messaging host for crunchy-presence\r\nset "NODE_OPTIONS="\r\n"${nodePath}" "%~dp0${HOST_SCRIPT_REL}" %*\r\n`;
 }
 
 export function buildHostManifest({ hostPath, extensionId }) {
@@ -90,6 +107,41 @@ async function checkFile(label, filePath) {
   return { name: label, ok: true, detail: filePath };
 }
 
+async function copyPayload({ root, dir }) {
+  const copied = [];
+  for (const { rel, source, dest } of payloadFiles({ root, dir })) {
+    await mkdir(path.dirname(dest), { recursive: true });
+    await copyFile(source, dest);
+    copied.push({ name: `copy ${rel}`, ok: true, detail: dest });
+  }
+  return copied;
+}
+
+async function checkPayload({ root, dir }) {
+  const checks = [];
+  for (const { rel, dest } of payloadFiles({ root, dir })) {
+    checks.push(await checkFile(`payload ${rel}`, dest));
+  }
+  return checks;
+}
+
+async function checkLauncher({ cmd, root }) {
+  let content;
+  try {
+    content = await readFile(cmd, 'utf8');
+  } catch (error) {
+    return { name: 'host.cmd self-contained', ok: false, detail: error.message };
+  }
+  const problems = [];
+  if (!content.includes(`%~dp0${HOST_SCRIPT_REL}`)) {
+    problems.push('script target does not resolve from host.cmd');
+  }
+  if (content.includes(root)) problems.push('launcher names the source checkout');
+  return problems.length === 0
+    ? { name: 'host.cmd self-contained', ok: true, detail: `%~dp0${HOST_SCRIPT_REL}` }
+    : { name: 'host.cmd self-contained', ok: false, detail: problems.join(', ') };
+}
+
 async function checkManifest(paths, extensionId) {
   let manifest;
   try {
@@ -110,18 +162,20 @@ async function checkManifest(paths, extensionId) {
     : { name: 'host-manifest.json', ok: false, detail: problems.join(', ') };
 }
 
-export async function verifyHost({ paths, extensionId, exec = defaultExec }) {
+export async function verifyHost({ paths, extensionId, exec = defaultExec, root = REPO_ROOT }) {
   const checks = [];
   checks.push(await checkFile('host.cmd', paths.cmd));
   checks.push(await checkManifest(paths, extensionId));
-  for (const root of REGISTRY_ROOTS) {
-    const key = `${root.key}\\${HOST_NAME}`;
+  checks.push(await checkLauncher({ cmd: paths.cmd, root }));
+  checks.push(...await checkPayload({ root, dir: paths.dir }));
+  for (const slot of REGISTRY_ROOTS) {
+    const key = `${slot.key}\\${HOST_NAME}`;
     try {
       const { stdout } = await exec(registryQueryArgs(key));
       const ok = stdout.toLowerCase().includes(paths.manifest.toLowerCase());
-      checks.push({ name: `${root.label} registry`, ok, detail: ok ? key : `default value is not ${paths.manifest}` });
+      checks.push({ name: `${slot.label} registry`, ok, detail: ok ? key : `default value is not ${paths.manifest}` });
     } catch (error) {
-      checks.push({ name: `${root.label} registry`, ok: false, detail: error.message });
+      checks.push({ name: `${slot.label} registry`, ok: false, detail: error.message });
     }
   }
   return checks;
@@ -141,9 +195,10 @@ export async function installHost(options = {}) {
   const checks = [];
   if (!checkOnly) {
     await mkdir(paths.dir, { recursive: true });
+    checks.push(...await copyPayload({ root, dir: paths.dir }));
     await writeFile(
       paths.cmd,
-      buildHostCmd({ nodePath: paths.node, hostScript: paths.hostScript }),
+      buildHostCmd({ nodePath: paths.node }),
       'utf8',
     );
     await writeFile(
@@ -165,7 +220,7 @@ export async function installHost(options = {}) {
     }
   }
 
-  const verified = await verifyHost({ paths, extensionId, exec });
+  const verified = await verifyHost({ paths, extensionId, exec, root });
   const all = [...checks, ...verified];
   return { ok: all.every((check) => check.ok), checks: all, paths, extensionId };
 }
