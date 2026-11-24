@@ -89,28 +89,7 @@ async function writeSiteRecord(siteKey, record) {
   });
 }
 
-const FIRST_ENABLE_RELOAD_DELAY_MS = 500;
 const RELOAD_NOTICE_MESSAGE = 'Enabled. Reload applies this.';
-const RELOADING_MESSAGE = 'Reloading to activate…';
-
-/**
- * Reload one tab, once. Answers false — never throws — when there is no tab to
- * reload or the platform refuses, so the caller can fall back to the notice.
- * @param {unknown} tabId
- * @returns {Promise<boolean>}
- */
-async function reloadTabOnce(tabId) {
-  if (typeof tabId !== 'number' || !Number.isFinite(tabId)) return false;
-  if (!chrome.tabs || typeof chrome.tabs.reload !== 'function') return false;
-  await new Promise((resolve) => setTimeout(resolve, FIRST_ENABLE_RELOAD_DELAY_MS));
-  try {
-    await Promise.resolve(chrome.tabs.reload(tabId));
-    return true;
-  } catch (e) {
-    console.warn('[bg] first-enable reload failed, falling back to the notice:', String(e));
-    return false;
-  }
-}
 
 /**
  * The MAIN-world call the worker makes on the hook. Self-contained: Chrome
@@ -796,6 +775,27 @@ async function injectTabScripts(tabId) {
   await injectMissingFrames(tabId);
 }
 
+/**
+ * Arm the CURRENT document after the first explicit enable of a site. Reuses
+ * the same gated injection path a navigation uses; no reload, no new document.
+ * An excluded site, a missing tab id, or a failed injection all answer false so
+ * the caller keeps the notice instead of claiming a live effect it cannot prove.
+ * @param {unknown} tabId
+ * @param {string} siteKey
+ * @returns {Promise<boolean>}
+ */
+async function armFirstEnableInPlace(tabId, siteKey) {
+  if (typeof tabId !== 'number' || !Number.isFinite(tabId) || !chrome.scripting) return false;
+  if (await isSiteBlocked(siteKey)) return false;
+  try {
+    await injectTabScripts(tabId);
+    return true;
+  } catch (error) {
+    console.warn('[bg] first-enable in-place arm failed:', String(error));
+    return false;
+  }
+}
+
 async function getPendingSessionStates() {
   return Object.fromEntries(pendingSessionStates);
 }
@@ -1049,9 +1049,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             : (applied.wasSeen
               ? { state: 'live' }
               : { state: 'reload', message: RELOAD_NOTICE_MESSAGE }));
-        if (firstEnable) {
-          const reloading = await reloadTabOnce(message.tabId);
-          if (reloading) activation = { state: 'reloading', message: RELOADING_MESSAGE };
+        if (firstEnable && await armFirstEnableInPlace(message.tabId, siteKey)) {
+          activation = { state: 'live' };
         }
         return {
           ok: true,

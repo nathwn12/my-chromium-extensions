@@ -146,6 +146,11 @@
     const config = outcome.config;
     if (armDecision === 'pending') {
       armDecision = (config.enabled || config.seen) && !config.excluded ? 'allowed' : 'denied';
+    } else if (armDecision === 'denied' && !arrivedAtDocumentStart) {
+      // Explicit late injection into an already-playing document. Only a
+      // currently enabled, non-excluded host may arm; a disabled host stays
+      // passive so other tabs and frames are never armed unintentionally.
+      armDecision = config.enabled && !config.excluded ? 'allowed' : 'denied';
     }
     if (config.excluded) {
       state.excluded = true;
@@ -523,11 +528,9 @@
   }
 
   /**
-   * May this document start work at all? Only a document that LOADED with a
-   * hook decision — enabled, or seen and therefore loading the hook passively —
-   * may. The first-ever enable of a host lands on a document with neither, and
-   * that one case still needs a navigation. Everything else in this file stays
-   * available for teardown and status.
+   * May this document start work at all? A document that loaded with a hook
+   * decision may, and an explicit late injection into an enabled document may
+   * too (bootstrap grants it). Teardown and status work in every case.
    */
   function mayStartWork() {
     return armDecision === 'allowed' && !state.detached && !state.excluded;
