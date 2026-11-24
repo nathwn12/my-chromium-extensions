@@ -256,19 +256,17 @@ export function isRateScaled(state) {
  * +312.5 ms at 0.75x, exactly 0 at 1x. Discord counts elapsed as `now - start`,
  * so an earlier `start` gives back the drift the interval accumulates: the
  * error straddles the truth instead of always lagging. Clamped to half the
- * interval, and a positive bias (a slower rate) never gives up more elapsed
- * time than the sample has already played: that would stamp a `start` in the
- * future.
+ * interval, and never to more than the sample has already played in either
+ * direction: at 0:00 the bar reads 0:00, not one biased second ahead or behind.
  */
 export function rateBiasMs(state) {
   if (!isRateScaled(state)) return 0;
   const limit = RATE_INTERVAL_MS / 2;
   const bias = Math.max(-limit, Math.min(limit, (1 - state.playbackRate) * limit));
   const position = Number(state.position);
-  if (bias > 0 && Number.isFinite(position)) {
-    return Math.min(bias, Math.floor(Math.max(0, position)) * 1000);
-  }
-  return bias;
+  if (!Number.isFinite(position)) return bias;
+  const played = Math.floor(Math.max(0, position)) * 1000;
+  return Math.max(-played, Math.min(played, bias));
 }
 
 /**
@@ -746,11 +744,7 @@ export function createWorker({
     const anchor = sample + bias;
     const rateScaled = Boolean(best) && isRateScaled(best.state);
     desired = best
-      ? buildActivity(
-          bias ? { ...best.state, at: anchor } : best.state,
-          anchor,
-          rateScaled ? sample : undefined
-        )
+      ? buildActivity(bias ? { ...best.state, at: anchor } : best.state, anchor)
       : null;
     hasDesired = true;
     desiredRateScaled = rateScaled;
