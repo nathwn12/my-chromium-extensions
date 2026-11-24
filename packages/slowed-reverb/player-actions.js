@@ -21,6 +21,7 @@
   const SETTLE_MS = 1200;
   const SETTLE_NEAR_ZERO_SECONDS = 1;
 const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
+  const BOUNDARY_HOLD_MARGIN_SECONDS = 0.5;
   const STORAGE_KEY = 'playerActions';
   const HOST_ATTR = 'data-slra-player-actions';
 
@@ -528,6 +529,8 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
     let pageSongId = null;
     let songIdPushed = false;
     let pageSongHref = null;
+    let boundaryHoldId = null;
+    let boundaryHoldHref = null;
     let unsubscribeStorage = null;
     let session = createSectionSession();
     let active = true;
@@ -592,6 +595,11 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
      * points) or 'lost' (the navigation left the pushed song: drop them).
      */
     function currentSongIdentity() {
+      if (boundaryHoldId !== null) {
+        // A queued next id was pushed before this media ended. Keep identity
+        // on the armed song until a genuine end or source change releases it.
+        return { key: session.songKey, source: 'blip' };
+      }
       const fromUrl = songKeyFrom(currentHref());
       if (!songIdPushed) {
         return { key: fromUrl, source: fromUrl === null ? null : 'url' };
@@ -630,11 +638,41 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
     }
 
     /**
+     * The page hook force-pushes the queued next id on metadata and data
+     * events. YTM can do that before the current media ends, so adopting it
+     * now would clear the armed section and lose the loop's seek. Hold it
+     * while an armed loop sits at its end boundary.
+     */
+    function shouldHoldAtBoundary(id) {
+      if (!started || id === null || id === '') return false;
+      if (session.songKey === null || id === session.songKey) return false;
+      if (!isLoopEngaged(currentState())) return false;
+      const armed = resolveArmedLoop(currentState(), media ? media.duration : undefined);
+      if (armed === null || !media) return false;
+      const at = Number(media.currentTime);
+      return Number.isFinite(at) && at >= armed.threshold - BOUNDARY_HOLD_MARGIN_SECONDS;
+    }
+
+    function clearBoundaryHold() {
+      boundaryHoldId = null;
+      boundaryHoldHref = null;
+    }
+
+    function releaseBoundaryHold() {
+      if (boundaryHoldId === null) return;
+      const id = boundaryHoldId;
+      const href = boundaryHoldHref;
+      clearBoundaryHold();
+      applySongId(id, href);
+    }
+
+    /**
      * A source signal may already be another song, and the read that decides it
      * is in flight. Suspend the latch until the answer lands: nothing seeks in
      * the meantime, and an unreadable answer invalidates.
      */
     function suspendSongIdentity() {
+      clearBoundaryHold();
       session.identityPending = true;
       session.confirmedKey = null;
       session.pressVouched = false;
@@ -647,6 +685,7 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
      * left it; nothing can seek until something vouches for the media.
      */
     function invalidateSongIdentity() {
+      clearBoundaryHold();
       if (session.pressVouched) {
         session.pressVouched = false;
         session.identityPending = false;
@@ -666,6 +705,16 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
     /** Adopts the id pushed by the page hook (null when no track is loaded). */
     function setSongId(next, href) {
       const normalized = typeof next === 'string' && next !== '' ? next : null;
+      if (shouldHoldAtBoundary(normalized)) {
+        boundaryHoldId = normalized;
+        boundaryHoldHref = href;
+        return;
+      }
+      applySongId(normalized, href);
+    }
+
+    function applySongId(normalized, href) {
+      clearBoundaryHold();
       session.identityPending = false;
       songIdPushed = true;
       if (session.songKey === normalized && normalized !== null) {
@@ -750,6 +799,7 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
     function stop() {
       generation += 1;
       started = false;
+      clearBoundaryHold();
       stopTick();
       cancelSeekRetry();
       resetVolumePersistence();
@@ -811,6 +861,7 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
       everBound = true;
 
       if (replaced) {
+        clearBoundaryHold();
         cancelSeekRetry();
         clearSettleCheck();
         session.songKey = null;
@@ -857,6 +908,7 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
      */
     function handleSourceChange() {
       if (!started) return;
+      clearBoundaryHold();
       syncSong();
       syncTick();
       syncPanel();
@@ -866,7 +918,11 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
       if (!media) return;
       if (!session.identityKnown) return;
       const target = resolveEndSeekTarget(currentState(), media.duration);
-      if (target === null) return;
+      if (target === null) {
+        releaseBoundaryHold();
+        return;
+      }
+      clearBoundaryHold();
       try {
         media.currentTime = target;
         const played = media.play();
@@ -1066,6 +1122,7 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
         seeking: media.seeking,
       });
       if (target === null) return;
+      clearBoundaryHold();
       try {
         media.currentTime = target;
       } catch {
@@ -1097,6 +1154,7 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
         seeking: media.seeking,
       });
       if (target === null) return;
+      clearBoundaryHold();
       try {
         media.currentTime = target;
       } catch {
