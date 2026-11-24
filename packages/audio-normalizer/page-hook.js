@@ -370,6 +370,7 @@
       ok: true,
       alive: true,
       active: isHookActive(),
+      processing: isHookProcessing(),
       gainDb: state.gainDb,
       error: state.lastError,
       unprocessed: unmanagedMediaElements.size,
@@ -1606,6 +1607,26 @@
       if (session.workletNode && session.context.state !== 'closed') {
         return true;
       }
+    }
+    return false;
+  }
+
+  /**
+   * Verified processing receipt, distinct from "armed". A worklet can be
+   * routed on an empty page or when the page owns the source; neither is
+   * processing audio. A media session counts only once an element is attached
+   * and its source is routed. A context session comes from the page's own Web
+   * Audio graph, so its routed worklet is itself the receipt.
+   */
+  function isHookProcessing() {
+    if (!state.active) return false;
+    for (const session of sessions) {
+      if (!session.workletNode || session.context.state === 'closed') continue;
+      if (session.kind === 'media') {
+        if (session.mediaElements.size > 0 && session.sources.size > 0) return true;
+        continue;
+      }
+      return true;
     }
     return false;
   }
