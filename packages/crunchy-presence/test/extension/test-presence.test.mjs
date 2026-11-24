@@ -236,6 +236,47 @@ test("pause clears presence and resume republishes the live card", async () => {
   assert.ok(resumed.activity.timestamps, "the resumed card carries a timer");
 });
 
+test("a deferred playing payload never flushes after a pause clear", async () => {
+  // Date is mocked as well as the timer so the rolling window ages out when
+  // the clock steps; otherwise the deferred payload would just reschedule.
+  mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  try {
+    const harness = await boot();
+    for (const position of [700, 710, 720, 730]) {
+      harness.report({ position, paused: false });
+      await settle();
+    }
+    assert.equal(harness.activityPosts().length, 4, "the window is full");
+
+    harness.report({ position: 740, paused: false });
+    await settle();
+    assert.equal(harness.activityPosts().length, 4, "the fifth playing report is deferred");
+
+    harness.report({ position: 750, paused: true });
+    await settle();
+    const afterPause = harness.activityPosts();
+    assert.equal(afterPause.length, 5, "the pause posts one immediate clear");
+    assert.equal(afterPause.at(-1).activity, null, "the clear is the last post");
+
+    mock.timers.tick(20001);
+    await settle();
+    assert.equal(
+      harness.activityPosts().length,
+      5,
+      "the deferred playing payload never follows the clear"
+    );
+
+    harness.report({ position: 760, paused: false });
+    await settle();
+    const resumed = harness.activityPosts();
+    assert.equal(resumed.at(-1).activity.type, 3, "a fresh resume publishes again");
+    assert.ok(resumed.at(-1).activity.timestamps, "the resumed card is live");
+  } finally {
+    mock.timers.reset();
+    delete globalThis.chrome;
+  }
+});
+
 test("a playing tab wins over a paused tab and stays published", async () => {
   const harness = await boot();
   harness.report({ series: "Paused Show", paused: true, visible: true }, 1);
