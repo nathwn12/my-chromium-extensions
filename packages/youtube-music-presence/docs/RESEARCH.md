@@ -14,6 +14,8 @@ The extension's desktop IPC path is the only supported product transport.
 | 2026-11-18 | The package version is 1.1.11. | `manifest.json`, `package.json`, root lockfile and this package changelog. |
 | 2026-11-19 | The package version is 1.1.12. | `manifest.json`, `package.json`, root lockfile and this package changelog. |
 | 2026-11-24 | The package version is 1.1.13. | `manifest.json`, `package.json`, root lockfile and this package changelog. |
+| 2026-11-24 | The total timestamp span is the real duration at 0.70×, 1× and 1.30×; the elapsed reference follows the sampled media position with a bounded rate bias, and a track at 0:00 reads 0:00. | `activity.js`, `background.js`, activity/background tests. |
+| 2026-11-24 | The package version is 1.1.14. | `manifest.json`, `package.json`, root lockfile, root README and this package changelog. |
 
 The package check validates the emitted activity payload, not Discord's UI. No live observation in this seam establishes that Discord's member list actually renders `state` when `status_display_type: 1` is present.
 
@@ -27,8 +29,8 @@ The extractor reads `navigator.mediaSession`, the YouTube Music player bar, JSON
 
 Two claims remain UNVERIFIED because they can only be settled by watching a real session, not by the local payload tests:
 
-1. The 60 s countdown error bounds — 552 ms at 0.70×, 123 ms at 1×, 277 ms at 1.30× — are modelled from the extractor and builder, not observed on live YouTube Music.
-2. Discord's rendered card is never inspected here. The ±375 ms elapsed bias and the stated 1123 ms (1.30×) / 377 ms (0.70×) ahead-bounds are outgoing-payload arithmetic, not pixels on the member list/voice panel.
+1. Discord interpolates the elapsed bar in wall time between re-anchors, and no RPC field carries the playback rate, so a non-1× track cannot literally run at its speed on screen. The 3.3 s re-anchor cadence and the ±375 ms bias are outgoing-payload arithmetic, not observed on live YouTube Music.
+2. Discord's rendered card is never inspected here. The stated 1123 ms (1.30×) / 377 ms (0.70×) offsets from the real media position are outgoing-payload arithmetic, not pixels on the member list/voice panel.
 
 Closure route, one line the owner may authorise later (nothing here has been run; Discord was not touched and nothing was captured):
 

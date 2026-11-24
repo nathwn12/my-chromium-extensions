@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.9] - 2026-11-24
+
+- Fix: a queued next id pushed before the current media ends is now held while an armed loop sits at its end boundary. The accelerated loop keeps its seek instead of losing the armed section and playing the next track early. A genuine end, source change, invalidation or stop releases the hold; Repeat-off and explicit Next/Previous still advance.
+
 ## [1.2.8]
 
 - Fix: a deliberate From, Now, To or Clear commit is now a vouch for the song the

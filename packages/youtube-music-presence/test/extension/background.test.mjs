@@ -471,7 +471,7 @@ test("at 1.5x the anchor is biased half an interval earlier", async () => {
   const biased = Math.floor((sample - 625) / 1000) - 10;
   assert.equal(frame.activity.timestamps.start, biased, "the builder sees sample - 625 ms");
   assert.equal(biased - unbiased, -1, "625 ms earlier crosses one whole second here");
-  assert.equal(frame.activity.timestamps.end, Math.floor(sample / 1000 + (200 - 10) / 1.5));
+  assert.equal(frame.activity.timestamps.end, biased + 200, "the span stays the real duration");
 });
 
 test("at 1x the anchor carries no bias", async () => {
@@ -528,15 +528,120 @@ test("at 1x the worker's whole outgoing frame is byte-identical", async () => {
   });
 });
 
-test("at a non-1x rate the worker's end uses the un-biased sample", async () => {
+test("at a non-1x rate the end keeps the real duration and the start stays biased", async () => {
   const { chrome, clock, port } = await boot();
   connect(port);
   clock.advance(123);
   sendState(chrome, 1, musicState({ position: 10, duration: 200, playbackRate: 0.7 }));
-  const sample = BASE + 123;
+  const start = Math.floor((BASE + 123 + 375) / 1000) - 10;
   const frame = activities(port).at(-1).activity;
-  assert.equal(frame.timestamps.end, Math.floor(sample / 1000 + (200 - 10) / 0.7));
-  assert.equal(frame.timestamps.start, Math.floor((sample + 375) / 1000) - 10, "elapsed stays biased");
+  assert.equal(frame.timestamps.start, start, "elapsed stays biased toward the truth");
+  assert.equal(frame.timestamps.end, start + 200, "3:20 stays 3:20 at 0.70x");
+});
+
+test("the total span stays 3:27 at 0.70x, 1x and 1.30x", async () => {
+  for (const rate of [0.7, 1, 1.3]) {
+    const { chrome, clock, port } = await boot();
+    connect(port);
+    clock.advance(123);
+    sendState(chrome, 1, musicState({ duration: 207, position: 10, playbackRate: rate }));
+    const { start, end } = activities(port).at(-1).activity.timestamps;
+    assert.equal(end - start, 207, `duration must read 3:27 at ${rate}x, not a rate-scaled remainder`);
+  }
+});
+
+test("elapsed follows the media position while playback advances at 0.70x, 1x and 1.30x", async () => {
+  for (const [rate, bias] of [[0.7, 375], [1, 0], [1.3, -375]]) {
+    const { chrome, clock, port } = await boot();
+    connect(port);
+    clock.advance(123);
+    sendState(chrome, 1, musicState({ duration: 207, position: 10, playbackRate: rate }));
+    const wallGap = 4000;
+    const position = 10 + (wallGap / 1000) * rate;
+    clock.advance(wallGap);
+    sendState(chrome, 1, musicState({ duration: 207, position, playbackRate: rate }));
+
+    const sample = BASE + 123 + wallGap;
+    const { start, end } = activities(port).at(-1).activity.timestamps;
+    assert.equal(end - start, 207, `span stays 3:27 while ${rate}x playback advances`);
+    assert.equal(
+      Math.floor((sample + bias) / 1000) - start,
+      Math.floor(position),
+      `elapsed tracks the real position at ${rate}x`
+    );
+  }
+});
+
+test("a seek re-anchors elapsed at non-1x without stretching the span", async () => {
+  const { chrome, clock, port } = await boot();
+  connect(port);
+  clock.advance(123);
+  sendState(chrome, 1, musicState({ duration: 207, position: 10, playbackRate: 1.3 }));
+  const before = activities(port).at(-1).activity.timestamps;
+  assert.equal(before.end - before.start, 207);
+
+  clock.advance(2600);
+  sendState(chrome, 1, musicState({ duration: 207, position: 150, playbackRate: 1.3 }));
+  const after = activities(port).at(-1).activity.timestamps;
+  assert.equal(after.end - after.start, 207, "a seek does not change the total");
+  const sample = BASE + 123 + 2600;
+  assert.equal(Math.floor((sample - 375) / 1000) - after.start, 150, "elapsed jumps to the seeked position");
+  assert.ok(after.start < before.start, "a forward seek moves start earlier");
+  assert.ok(after.start <= Math.floor((sample - 375) / 1000), "elapsed is never negative");
+});
+
+test("pause drops the timer and play restores the 3:27 span", async () => {
+  const { chrome, clock, port } = await boot();
+  connect(port);
+  clock.advance(123);
+  sendState(chrome, 1, musicState({ duration: 207, position: 10, playbackRate: 0.7 }));
+  assert.equal("timestamps" in activities(port).at(-1).activity, true);
+
+  clock.advance(2600);
+  sendState(chrome, 1, musicState({ duration: 207, position: 12, playbackRate: 0.7, paused: true }));
+  assert.equal(activities(port).at(-1).activity, null, "no card is published while paused");
+
+  clock.advance(2600);
+  sendState(chrome, 1, musicState({ duration: 207, position: 12, playbackRate: 0.7 }));
+  const resumed = activities(port).at(-1).activity.timestamps;
+  assert.equal(resumed.end - resumed.start, 207, "resuming keeps 3:27");
+  const sample = BASE + 123 + 5200;
+  assert.equal(Math.floor((sample + 375) / 1000) - resumed.start, 12, "resuming re-anchors to the live position");
+});
+
+test("a rate change mid-track keeps 3:27 and flips the bias with the rate", async () => {
+  const { chrome, clock, port } = await boot();
+  connect(port);
+  clock.advance(123);
+  sendState(chrome, 1, musicState({ duration: 207, position: 50, playbackRate: 1 }));
+  const normal = activities(port).at(-1).activity.timestamps;
+  assert.equal(normal.end - normal.start, 207);
+  assert.equal(normal.start, Math.floor((BASE + 123) / 1000) - 50);
+
+  clock.advance(3000);
+  sendState(chrome, 1, musicState({ duration: 207, position: 53.9, playbackRate: 1.3 }));
+  const fast = activities(port).at(-1).activity.timestamps;
+  assert.equal(fast.end - fast.start, 207, "1.30x does not change the total");
+  assert.ok(fast.start < Math.floor((BASE + 3123) / 1000) - 53, "a faster rate biases elapsed ahead");
+
+  clock.advance(2800);
+  sendState(chrome, 1, musicState({ duration: 207, position: 56, playbackRate: 0.7 }));
+  const slow = activities(port).at(-1).activity.timestamps;
+  assert.equal(slow.end - slow.start, 207, "0.70x does not change the total");
+  assert.ok(slow.start > Math.floor((BASE + 5923) / 1000) - 56, "a slower rate biases elapsed behind");
+});
+
+test("a track at position zero reads 0:00 at every rate", async () => {
+  for (const rate of [0.7, 1, 1.3]) {
+    const { chrome, clock, port } = await boot();
+    connect(port);
+    clock.advance(123);
+    sendState(chrome, 1, musicState({ duration: 207, position: 0, playbackRate: rate }));
+    const sample = BASE + 123;
+    const { start, end } = activities(port).at(-1).activity.timestamps;
+    assert.equal(end - start, 207);
+    assert.equal(Math.floor(sample / 1000) - start, 0, `elapsed starts at zero at ${rate}x`);
+  }
 });
 
 test("at 1.5x a second update one second later waits for the 2500 ms interval", async () => {

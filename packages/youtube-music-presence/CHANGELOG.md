@@ -2,6 +2,10 @@
 
 Notable changes to this package. Dates are ISO 8601. This package is local-only and is not published to a registry.
 
+## [1.1.14] - 2026-11-24
+
+- The timestamp span is the real duration at every playback rate. The worker biases the elapsed reference by bounded rate drift so the displayed time follows the sampled media position, and a track still at 0:00 reads 0:00. A 3:27 track no longer reads 4:51 at 0.70x or 2:42 at 1.30x. Discord's timer counts wall time and carries no rate field, so no payload can make a non-1x track literally run at that speed.
+
 ## [1.1.13] - 2026-11-24
 
 - Presence is published only from a live report that says playback is running. A paused report no longer puts a card on screen with no timer, and a pause or worker restart clears this extension's own presence through the null path so a native `lastActivity` snapshot cannot replay stale listening.

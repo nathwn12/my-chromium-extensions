@@ -706,36 +706,40 @@ test("a sample stamp up to 5 s ahead is trusted, further ahead is ignored for no
   );
 });
 
-test("a non-1x countdown is rate-scaled from the un-biased sample second", () => {
-  const sample = SAMPLE_AT + 123;
-  const biased = sample + 375; // 0.70x: (1 - 0.70) * 1250 ms
-  const state = musicState({ position: 10, duration: 200, playbackRate: 0.7, at: biased });
-  const activity = buildActivity(state, biased, sample);
-
-  assert.equal(activity.timestamps.start, Math.floor(biased / 1000) - 10);
-  assert.equal(activity.timestamps.end, Math.floor(sample / 1000 + (200 - 10) / 0.7));
-  const trueRemaining = (200 - 10) / 0.7;
-  assert.ok(Math.abs(activity.timestamps.end - sample / 1000 - trueRemaining) < 1);
+test("the total span is the real duration at 0.70x, 1x and 1.30x", () => {
+  for (const [rate, bias] of [[0.7, 375], [1, 0], [1.3, -375]]) {
+    const anchor = SAMPLE_AT + 123 + bias; // the worker's biased sample instant
+    const state = musicState({ position: 10, duration: 207, playbackRate: rate, at: anchor });
+    const activity = buildActivity(state, anchor);
+    assert.equal(
+      activity.timestamps.end - activity.timestamps.start,
+      207,
+      `3:27 must not stretch to a rate remainder at ${rate}x`
+    );
+  }
 });
 
-test("the rate-scaled end also holds for a faster track", () => {
-  const sample = SAMPLE_AT + 123;
-  const biased = sample - 375; // 1.30x: (1 - 1.30) * 1250 ms
-  const state = musicState({ position: 10, duration: 200, playbackRate: 1.3, at: biased });
-  const activity = buildActivity(state, biased, sample);
-  assert.equal(activity.timestamps.end, Math.floor(sample / 1000 + (200 - 10) / 1.3));
-  assert.ok(Math.abs(activity.timestamps.end - sample / 1000 - (200 - 10) / 1.3) < 1);
+test("the elapsed reference follows the media position at every rate", () => {
+  for (const [rate, bias] of [[0.7, 375], [1, 0], [1.3, -375]]) {
+    const anchor = SAMPLE_AT + 123 + bias;
+    const state = musicState({ position: 10, duration: 207, playbackRate: rate, at: anchor });
+    const activity = buildActivity(state, anchor);
+    const elapsed = Math.floor(anchor / 1000) - activity.timestamps.start;
+    assert.equal(elapsed, 10, `elapsed tracks the sampled position at ${rate}x, not wall time`);
+  }
 });
 
-test("supplying the sample at 1x leaves the whole frame byte-identical", () => {
-  const state = musicState({ position: 10, duration: 200, playbackRate: 1, at: SAMPLE_AT });
-  const plain = buildActivity(state, SAMPLE_AT);
-  const withSample = buildActivity(state, SAMPLE_AT, SAMPLE_AT);
-  assert.deepEqual(withSample, plain);
-  assert.equal(JSON.stringify(withSample), JSON.stringify(plain));
+test("a 1x frame is byte-identical with or without a sample stamp", () => {
+  const stamped = buildActivity(
+    musicState({ position: 10, duration: 207, at: SAMPLE_AT }),
+    SAMPLE_AT
+  );
+  const plain = buildActivity(musicState({ position: 10, duration: 207 }), SAMPLE_AT);
+  assert.deepEqual(stamped, plain);
+  assert.equal(JSON.stringify(stamped), JSON.stringify(plain));
 });
 
-test("a rate-scaled sample never invents timestamps", () => {
+test("a non-1x state never invents timestamps", () => {
   for (const overrides of [
     { paused: true },
     { paused: undefined },
@@ -744,7 +748,7 @@ test("a rate-scaled sample never invents timestamps", () => {
     { duration: null },
   ]) {
     const state = musicState({ playbackRate: 0.7, at: SAMPLE_AT, ...overrides });
-    assert.equal("timestamps" in buildActivity(state, SAMPLE_AT, SAMPLE_AT), false);
+    assert.equal("timestamps" in buildActivity(state, SAMPLE_AT), false);
   }
 });
 
