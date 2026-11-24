@@ -98,8 +98,8 @@ function makeChrome(stored = {}) {
     }
   };
 
-  /** One content-script report from tab 1, paused so the card has no timer. */
-  const report = (fields) => {
+  /** One content-script report; the caller decides pause state and tab id. */
+  const report = (fields, tabId = 1) => {
     onMessage(
       {
         kind: "crp-state",
@@ -113,7 +113,7 @@ function makeChrome(stored = {}) {
         visible: true,
         ...fields
       },
-      { id: "test-extension-id", url: TAB_URL, frameId: 0, tab: { id: 1, url: TAB_URL } }
+      { id: "test-extension-id", url: TAB_URL, frameId: 0, tab: { id: tabId, url: TAB_URL } }
     );
   };
 
@@ -181,12 +181,12 @@ test("a deferred test presence never reaches the host", async () => {
   try {
     const harness = await boot({ synopsis: true });
     for (const position of [700, 710, 720, 730]) {
-      harness.report({ position });
+      harness.report({ position, paused: false });
       await settle();
     }
     assert.equal(harness.activityPosts().length, 4, "the 4-per-20 s window is full");
 
-    harness.report({ position: 740 });
+    harness.report({ position: 740, paused: false });
     await settle();
     const beforeTest = harness.activityPosts().length;
     assert.equal(beforeTest, 4, "a fifth ordinary report is deferred, not sent");
@@ -210,4 +210,85 @@ test("a deferred limiter push does not record the activity as sent", () => {
     /if \(!limiter\.hasPending\) lastSentJson = JSON\.stringify\(activity\);/,
     "lastSentJson moves only after the push actually landed"
   );
+});
+
+test("pause clears presence and resume republishes the live card", async () => {
+  const harness = await boot();
+  harness.report({ paused: false, position: 754 });
+  await settle();
+
+  const playing = harness.activityPosts().at(-1);
+  assert.equal(playing.activity.type, 3, "active playback publishes a watching card");
+  assert.ok(playing.activity.timestamps, "the playing card carries a timer");
+
+  harness.report({ paused: true, position: 760 });
+  await settle();
+  assert.equal(
+    harness.activityPosts().at(-1).activity,
+    null,
+    "pausing clears this extension's own presence"
+  );
+
+  harness.report({ paused: false, position: 770 });
+  await settle();
+  const resumed = harness.activityPosts().at(-1);
+  assert.equal(resumed.activity.type, 3, "resuming republishes a watching card");
+  assert.ok(resumed.activity.timestamps, "the resumed card carries a timer");
+});
+
+test("a deferred playing payload never flushes after a pause clear", async () => {
+  // Date is mocked as well as the timer so the rolling window ages out when
+  // the clock steps; otherwise the deferred payload would just reschedule.
+  mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  try {
+    const harness = await boot();
+    for (const position of [700, 710, 720, 730]) {
+      harness.report({ position, paused: false });
+      await settle();
+    }
+    assert.equal(harness.activityPosts().length, 4, "the window is full");
+
+    harness.report({ position: 740, paused: false });
+    await settle();
+    assert.equal(harness.activityPosts().length, 4, "the fifth playing report is deferred");
+
+    harness.report({ position: 750, paused: true });
+    await settle();
+    const afterPause = harness.activityPosts();
+    assert.equal(afterPause.length, 5, "the pause posts one immediate clear");
+    assert.equal(afterPause.at(-1).activity, null, "the clear is the last post");
+
+    mock.timers.tick(20001);
+    await settle();
+    assert.equal(
+      harness.activityPosts().length,
+      5,
+      "the deferred playing payload never follows the clear"
+    );
+
+    harness.report({ position: 760, paused: false });
+    await settle();
+    const resumed = harness.activityPosts();
+    assert.equal(resumed.at(-1).activity.type, 3, "a fresh resume publishes again");
+    assert.ok(resumed.at(-1).activity.timestamps, "the resumed card is live");
+  } finally {
+    mock.timers.reset();
+    delete globalThis.chrome;
+  }
+});
+
+test("a playing tab wins over a paused tab and stays published", async () => {
+  const harness = await boot();
+  harness.report({ series: "Paused Show", paused: true, visible: true }, 1);
+  await settle();
+  assert.equal(harness.activityPosts().at(-1).activity, null, "a paused tab alone clears");
+
+  harness.report(
+    { series: "Playing Show", paused: false, position: 30, duration: 1440, visible: false },
+    2
+  );
+  await settle();
+  const published = harness.activityPosts().at(-1).activity;
+  assert.equal(published.details, "Playing Show", "the playing candidate wins over the paused one");
+  assert.ok(published.timestamps, "the winning card is the live one");
 });

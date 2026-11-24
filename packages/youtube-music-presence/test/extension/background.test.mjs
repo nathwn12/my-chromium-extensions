@@ -180,6 +180,8 @@ function connect(port) {
 }
 
 const activities = (port) => port.sent.filter((message) => message.t === "activity");
+/** A clear is not a publish: only non-null activities put a card on screen. */
+const presence = (port) => activities(port).filter((frame) => frame.activity !== null);
 
 function musicState(overrides = {}) {
   return {
@@ -421,13 +423,17 @@ test("a report for another source is ignored and never published", async () => {
   assert.equal(activities(port).length, 0);
 });
 
-test("a playing tab wins over a paused tab", async () => {
+test("a playing candidate wins over any paused tab", async () => {
   const { chrome, port } = await boot();
   connect(port);
-  sendState(chrome, 1, musicState({ title: "Paused Song", paused: true }));
-  sendState(chrome, 2, musicState({ title: "Playing Song", paused: false }));
+  sendState(chrome, 1, musicState({ title: "Paused One", paused: true }));
+  sendState(chrome, 2, musicState({ title: "Paused Two", paused: true }));
+  sendState(chrome, 3, musicState({ title: "Playing Song", paused: false }));
+  sendState(chrome, 4, musicState({ title: "Paused Three", paused: true }));
 
-  assert.equal(activities(port).at(-1).activity.details, "Playing Song");
+  assert.equal(presence(port).length, 1, "only the playing tab publishes a card");
+  assert.equal(presence(port)[0].activity.details, "Playing Song");
+  assert.ok(presence(port)[0].activity.timestamps, "the winner is a playing card");
 });
 
 test("rapid skips publish at most eight times per 20 s, newest wins", async () => {
@@ -919,19 +925,19 @@ test("a corrupt persisted status is ignored, never thrown", async () => {
   }
 });
 
-test("a restored tab wins over a stale published activity", async () => {
+test("a restored tab cannot republish over a stale published activity", async () => {
   const session = {
     [SESSION_TABS_KEY]: {
-      "youtube-music": { 42: { state: musicState({ title: "Live Now" }), at: BASE, rankAt: BASE } },
+      "youtube-music": { 42: { state: musicState({ title: "Stored Song" }), at: BASE, rankAt: BASE } },
     },
   };
   const status = { activities: { "youtube-music": { details: "Old Song" } } };
-  const { port } = await boot({ session, status });
+  const { port, worker } = await boot({ session, status });
   connect(port);
 
-  const frames = activities(port);
-  const music = frames.find((frame) => frame.activity);
-  assert.equal(music.activity.details, "Live Now", "the live tab is republished, not cleared");
+  assert.deepEqual(presence(port), [], "a stored snapshot is not live playback");
+  assert.ok(activities(port).some((frame) => frame.activity === null), "own prior presence is cleared");
+  assert.equal(worker.status().activities["youtube-music"], null);
 });
 
 test("enabled:false opens no port, and a watchdog tick does not open one either", async () => {
@@ -961,24 +967,17 @@ test("turning presence off clears Music, closes the port and stays closed", asyn
   assert.equal(chrome.ports.length, 1, "no reconnect while presence is off");
 });
 
-test("turning presence back on reconnects and replays the desired state", async () => {
-  const session = {
-    [SESSION_TABS_KEY]: {
-      "youtube-music": {
-        51: { state: musicState({ title: "Paused For Now", paused: true }), at: BASE, rankAt: BASE },
-      },
-    },
-  };
-  const { chrome } = await boot({ enabled: false, session });
+test("turning presence back on reconnects and replays a live playing state", async () => {
+  const { chrome } = await boot({ enabled: false });
   assert.equal(chrome.ports.length, 0);
+  sendState(chrome, 51, musicState({ title: "Playing Now" }));
 
   chrome.storage.onChanged.fire({ enabled: { newValue: true } }, "local");
   assert.equal(chrome.ports.length, 1);
   assert.equal(chrome.ports[0].sent[0].t, "hello");
   connect(chrome.ports[0]);
 
-  const frames = activities(chrome.ports[0]);
-  assert.equal(frames.find((frame) => frame.activity).activity.details, "Paused For Now");
+  assert.equal(presence(chrome.ports[0]).at(-1).activity.details, "Playing Now");
 
   chrome.storage.onChanged.fire({ enabled: { newValue: undefined } }, "local");
   assert.equal(chrome.ports.length, 1, "a removed flag means enabled and is already connected");
@@ -1120,7 +1119,7 @@ test("tab state is mirrored to storage.session on every change", async () => {
   assert.equal(chrome.sessionStore[SESSION_TABS_KEY]["youtube-music"]["5"], undefined);
 });
 
-test("a fresh worker restores Music state and replays it after the port connects", async () => {
+test("a fresh worker needs a live report before it replays restored Music state", async () => {
   const first = await boot();
   connect(first.port);
   first.chrome.runtime.onMessage.fire(
@@ -1133,15 +1132,18 @@ test("a fresh worker restores Music state and replays it after the port connects
   assert.ok(snapshot && snapshot["youtube-music"]["11"]);
 
   const second = await boot({ session: { [SESSION_TABS_KEY]: snapshot } });
-  const handedOver = activities(second.port);
-  assert.equal(handedOver.length, 1, "the restored source reaches the host while connecting");
+  assert.deepEqual(presence(second.port), [], "a restored snapshot is not live playback");
+
+  sendState(second.chrome, 11, musicState({ title: "Persisted Song", position: 7 }));
+  const handedOver = presence(second.port);
+  assert.equal(handedOver.length, 1, "a live report reaches the host while connecting");
   assert.equal(handedOver[0].activity.details, "Persisted Song");
   assert.equal(handedOver[0].activity.timestamps.start, Math.floor(BASE / 1000) - 7);
   assert.equal(handedOver[0].activity.type, 2);
 
   connect(second.port);
-  const replay = activities(second.port);
-  assert.equal(replay.length, 2, "the source is replayed once the host is connected");
+  const replay = presence(second.port);
+  assert.equal(replay.length, 2, "the live source is replayed once the host is connected");
   assert.equal(second.worker.status().activities["youtube-music"].details, "Persisted Song");
 });
 
@@ -1204,16 +1206,68 @@ test("a report that lands before the restore resolves does not clobber the store
   assert.ok(after["youtube-music"]["22"], "the early tab is persisted once the restore has settled");
 });
 
-test("a restored snapshot reconciles a tab-less source to a clear", async () => {
+test("a restored snapshot with no live report publishes nothing", async () => {
   const stored = {
     "youtube-music": { 31: { state: musicState({ title: "Still Listening" }), at: BASE, rankAt: BASE } },
   };
   const { chrome, port } = await boot({ session: { [SESSION_TABS_KEY]: stored } });
   connect(port);
 
-  const frames = activities(port);
-  assert.equal(frames.length, 2, "the source is handed over while connecting, then replayed");
-  assert.equal(frames.find((frame) => frame.activity).activity.details, "Still Listening");
+  assert.deepEqual(activities(port), [], "a stored snapshot alone is not presence");
+});
+
+test("a restored playing snapshot with no live report does not publish", async () => {
+  const session = {
+    [SESSION_TABS_KEY]: {
+      "youtube-music": {
+        41: { state: musicState({ title: "Stale Song" }), at: BASE - 60_000, rankAt: BASE - 60_000 },
+      },
+    },
+  };
+  const status = { activities: { "youtube-music": { details: "Old Song" } } };
+  const { chrome, port, worker } = await boot({ session, status });
+  connect(port);
+
+  assert.deepEqual(presence(port), [], "a persisted snapshot is not live presence");
+  assert.equal(worker.status().activities["youtube-music"], null);
+  assert.ok(activities(port).some((frame) => frame.activity === null), "own prior presence is cleared");
+});
+
+test("a live report publishes while a stale snapshot stays silent", async () => {
+  const session = {
+    [SESSION_TABS_KEY]: {
+      "youtube-music": {
+        41: { state: musicState({ title: "Stale Song" }), at: BASE - 60_000, rankAt: BASE - 60_000 },
+      },
+    },
+  };
+  const { chrome, port } = await boot({ session });
+  connect(port);
+
+  assert.deepEqual(presence(port), [], "the stale snapshot alone publishes nothing");
+  sendState(chrome, 42, musicState({ title: "Live Song" }));
+  assert.equal(presence(port).at(-1).activity.details, "Live Song", "a live report still publishes");
+  assert.equal(presence(port).filter((frame) => frame.activity.details === "Stale Song").length, 0);
+});
+
+test("a paused report clears own presence instead of publishing a card", async () => {
+  const { chrome, port, worker } = await boot();
+  connect(port);
+  sendState(chrome, 1, musicState());
+  assert.equal(presence(port).at(-1).activity.details, "A Song");
+
+  sendState(chrome, 1, musicState({ paused: true }));
+  assert.deepEqual(
+    presence(port).map((frame) => frame.activity.details),
+    ["A Song"],
+    "no card is published while paused"
+  );
+  assert.equal(activities(port).at(-1).activity, null, "own presence is cleared once");
+  assert.equal(worker.status().activities["youtube-music"], null);
+
+  sendState(chrome, 1, musicState({ title: "Back On", paused: false, position: 3 }));
+  assert.equal(presence(port).at(-1).activity.details, "Back On", "resume republishes");
+  assert.ok(presence(port).at(-1).activity.timestamps, "resumed card carries a timer again");
 });
 
 test("a desired activity is handed over while the bridge is still connecting", async () => {

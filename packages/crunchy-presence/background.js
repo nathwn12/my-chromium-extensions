@@ -364,6 +364,19 @@ export function createCoalescingLimiter({
     markSent(payload);
   }
 
+  /** Drop any deferred payload and its timer before an immediate send. */
+  function cancelPending() {
+    pending = null;
+    hasPending = false;
+    if (timer) {
+      try {
+        clearTimeout(timer);
+      } catch {
+      }
+      timer = null;
+    }
+  }
+
   function flush() {
     timer = null;
     if (!hasPending) return;
@@ -387,20 +400,15 @@ export function createCoalescingLimiter({
   return {
     push(payload) {
       if (payload === null) {
+        // A timestamped payload can only be pending after a live card. A clear
+        // that follows one is a pause: drop it before sending the null.
+        if (lastHadTimestamps === true) cancelPending();
         sendBypass(payload);
         return;
       }
       const had = Boolean(payload && payload.timestamps);
       if (lastHadTimestamps !== null && had !== lastHadTimestamps) {
-        pending = null;
-        hasPending = false;
-        if (timer) {
-          try {
-            clearTimeout(timer);
-          } catch {
-          }
-          timer = null;
-        }
+        cancelPending();
         sendBypass(payload);
         return;
       }
@@ -409,12 +417,7 @@ export function createCoalescingLimiter({
       if (!timer) flush();
     },
     clear() {
-      pending = null;
-      hasPending = false;
-      if (timer) {
-        clearTimeout(timer);
-        timer = null;
-      }
+      cancelPending();
     },
     /** Drop the rolling-window history so a reconnect republishes immediately. */
     resetWindow() {
@@ -916,7 +919,9 @@ if (hasChrome) {
         );
       }
     } else {
-      desiredActivity = best
+      // Only live playback publishes. A paused or unknown tab clears our own
+      // presence through the same null-activity path as idle and tab close.
+      desiredActivity = best && best.paused === false
         ? buildActivity(best, Date.now(), { synopsis: synopsisEnabled })
         : null;
     }

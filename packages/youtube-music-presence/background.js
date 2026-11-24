@@ -336,7 +336,8 @@ export function createWorker({
   let desired = null;
   let hasDesired = false;
   let desiredRateScaled = false;
-  let lastSent = undefined;
+  /** A fresh worker has not published anything: "null" is already its clear. */
+  let lastSent = "null";
   let publishedIdentity = null;
   let limiter = null;
 
@@ -452,6 +453,10 @@ export function createWorker({
    * win on the same tab. Every field is validated because session storage is
    * writable by any code in the extension: a corrupt value is ignored, never
    * thrown. Buckets for any other source are ignored.
+   *
+   * A snapshot is history, not liveness: the tab may be closed or paused since
+   * it was written. Restored entries are marked unconfirmed and are never
+   * published until the content script reports the tab again.
    */
   function hydrateTabs(raw) {
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) return false;
@@ -469,7 +474,7 @@ export function createWorker({
       const rankAt = Number.isFinite(rankAtRaw) ? rankAtRaw : at;
       const existing = tabs.get(tabId);
       if (existing && existing.at >= at) continue;
-      tabs.set(tabId, { state: entry.state, at, rankAt });
+      tabs.set(tabId, { state: entry.state, at, rankAt, restored: true });
       restoredAny = true;
     }
     return restoredAny;
@@ -720,10 +725,22 @@ export function createWorker({
     }
   }
 
+  /**
+   * Live presence needs a live report that says playback is running. A restored
+   * entry is unconfirmed, and a paused report is not playing: neither may put a
+   * card on screen. Both still stay in the map so a later live report can take
+   * over the same tab and the watchdog can prune them.
+   */
+  function playingEntries() {
+    return [...tabs.values()].filter(
+      (entry) => !entry.restored && entry.state && entry.state.paused === false
+    );
+  }
+
   function recompute() {
     pruneStale(tabs, now());
     persistTabs();
-    const best = pickBestTab([...tabs.values()]);
+    const best = pickBestTab(playingEntries());
     const sample = best ? sampleAt(best, best.at) : 0;
     const bias = best ? rateBiasMs(best.state) : 0;
     const anchor = sample + bias;
@@ -887,10 +904,10 @@ export function createWorker({
 
   async function start() {
     await loadConfig();
-    const restoredAny = await restore();
+    await restore();
     armWatchdog();
     if (enabled) ensurePort();
-    if (restoredAny || tabs.size) recompute();
+    if (playingEntries().length) recompute();
     else if (staleMusic) clearSource();
     staleMusic = false;
   }
