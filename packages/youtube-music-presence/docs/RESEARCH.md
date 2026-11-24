@@ -15,6 +15,7 @@ The extension's desktop IPC path is the only supported product transport.
 | 2026-11-19 | The package version is 1.1.12. | `manifest.json`, `package.json`, root lockfile and this package changelog. |
 | 2026-11-24 | The package version is 1.1.13. | `manifest.json`, `package.json`, root lockfile and this package changelog. |
 | 2026-11-24 | The total timestamp span is the real duration at 0.70×, 1× and 1.30×; the elapsed reference follows the sampled media position with a bounded rate bias, and a track at 0:00 reads 0:00. | `activity.js`, `background.js`, activity/background tests. |
+| 2026-11-24 | The package version is 1.1.14. | `manifest.json`, `package.json`, root lockfile, root README and this package changelog. |
 
 The package check validates the emitted activity payload, not Discord's UI. No live observation in this seam establishes that Discord's member list actually renders `state` when `status_display_type: 1` is present.
 
