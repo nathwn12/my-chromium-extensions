@@ -547,6 +547,9 @@ async function refreshDocumentStatus() {
     const enabled = Boolean(doc?.enabled);
     const hookAlive = Boolean(doc?.hookAlive);
     const hookActive = Boolean(doc?.hookActive);
+    // Armed is not processing. Only a verified receipt paints the pill Active;
+    // older documents without the field fall back to their hookActive report.
+    const processing = doc?.processing === undefined ? hookActive : Boolean(doc.processing);
     const hookPresent = doc?.hookPresent === false ? false : true;
     const unprocessed = Number(doc?.unprocessed) || 0;
     const activating = Boolean(doc?.activating);
@@ -569,7 +572,7 @@ async function refreshDocumentStatus() {
     const nextIndicator = popupShared.getPopupIndicator({
       enabled,
       hookAlive,
-      hookActive: recentlyActive,
+      hookActive: processing,
       lastError,
     });
 
@@ -593,7 +596,7 @@ async function refreshDocumentStatus() {
       indicator: nextIndicator,
       text: getStatusText({
         enabled,
-        hookActive: recentlyActive,
+        processing,
         activating,
         lastError,
         hookPresent,
@@ -625,11 +628,11 @@ async function refreshDocumentStatus() {
 }
 
 /**
- * @param {{ enabled: boolean, hookActive: boolean, activating: boolean, lastError: string, hookPresent?: boolean, unprocessed?: number }} state
+ * @param {{ enabled: boolean, processing: boolean, activating: boolean, lastError: string, hookPresent?: boolean, unprocessed?: number }} state
  */
-function getStatusText({ enabled, hookActive, activating, lastError, hookPresent, unprocessed }) {
+function getStatusText({ enabled, processing, activating, lastError, hookPresent, unprocessed }) {
   if (enabled && lastError) return lastError;
-  if (enabled && hookActive) return 'Normalizer active.';
+  if (enabled && processing) return 'Normalizer active.';
   if (enabled && runtimeActivationState === 'restricted') {
     return runtimeActivationMessage || 'Enabled. Reload on a supported page.';
   }

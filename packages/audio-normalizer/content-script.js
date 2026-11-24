@@ -50,7 +50,7 @@
    *   hostname: string, siteKey: string, enabled: boolean, gainDb: number,
    *   excluded: boolean, seen: boolean,
    *   injected: boolean, hookAlive: boolean, hookPresent: boolean,
-   *   hookActive: boolean, unprocessed: number, injecting: boolean, injectStartedAt: number,
+   *   hookActive: boolean, hookProcessing: boolean, unprocessed: number, injecting: boolean, injectStartedAt: number,
    *   lastError: string, lastStatusAt: number,
    *   transient: ({ enabled: boolean, gainDb: number } | null),
    *   syncInFlight: boolean, queuedSyncReason: string,
@@ -72,6 +72,7 @@
     hookPresent: false,
     unprocessed: 0,
     hookActive: false,
+    hookProcessing: false,
     injecting: false,
     injectStartedAt: 0,
     lastError: '',
@@ -146,6 +147,11 @@
     const config = outcome.config;
     if (armDecision === 'pending') {
       armDecision = (config.enabled || config.seen) && !config.excluded ? 'allowed' : 'denied';
+    } else if (armDecision === 'denied' && !arrivedAtDocumentStart) {
+      // Explicit late injection into an already-playing document. Only a
+      // currently enabled, non-excluded host may arm; a disabled host stays
+      // passive so other tabs and frames are never armed unintentionally.
+      armDecision = config.enabled && !config.excluded ? 'allowed' : 'denied';
     }
     if (config.excluded) {
       state.excluded = true;
@@ -523,11 +529,9 @@
   }
 
   /**
-   * May this document start work at all? Only a document that LOADED with a
-   * hook decision — enabled, or seen and therefore loading the hook passively —
-   * may. The first-ever enable of a host lands on a document with neither, and
-   * that one case still needs a navigation. Everything else in this file stays
-   * available for teardown and status.
+   * May this document start work at all? A document that loaded with a hook
+   * decision may, and an explicit late injection into an enabled document may
+   * too (bootstrap grants it). Teardown and status work in every case.
    */
   function mayStartWork() {
     return armDecision === 'allowed' && !state.detached && !state.excluded;
@@ -984,6 +988,7 @@
       state.injected = true;
       state.hookAlive = true;
       state.hookActive = Boolean(response.active);
+      state.hookProcessing = Boolean(response.processing);
       state.unprocessed = Number(response.unprocessed) || 0;
       state.lastError = state.enabled ? String(response.error || '') : '';
       state.lastStatusAt = Date.now();
@@ -997,6 +1002,7 @@
       const wasAlive = state.hookAlive;
       state.hookAlive = false;
       state.hookActive = false;
+      state.hookProcessing = false;
       state.lastError = state.enabled ? String(response.error || '') : '';
       if (wasAlive) scheduleLivenessResync('hook-not-alive');
     }
@@ -1058,10 +1064,13 @@
       }
     }
 
+    // `hookActive` means armed (worklet routed). Only a processing receipt may
+    // paint the popup Active; an empty page or a page-owned source has none.
+    const processing = state.hookActive && state.hookProcessing === true;
     const indicator = contentShared.getPopupIndicator({
       enabled,
       hookAlive: state.hookAlive,
-      hookActive: state.hookActive,
+      hookActive: processing,
       lastError: state.lastError,
     });
 
@@ -1075,6 +1084,7 @@
       gainDb: state.gainDb,
       hookAlive: state.hookAlive,
       hookActive: state.hookActive,
+      processing,
       hookPresent: state.hookPresent,
       unprocessed: state.unprocessed,
       activating: isActivationPending(),

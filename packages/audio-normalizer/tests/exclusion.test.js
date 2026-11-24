@@ -1141,6 +1141,47 @@ test('popup: a page-owned graph gets a visible verdict, not a false Active', asy
   assert.equal(popup.els['status-pill'].textContent, 'Limited', 'the pill does not claim Active');
 });
 
+test('popup: an armed enable with no processing receipt never paints Active', async () => {
+  const cases = [
+    { name: 'empty page', unprocessed: 0, expected: /waiting for audio/i, pill: 'Waiting' },
+    { name: 'page-owned source', unprocessed: 1, expected: /own graph/i, pill: 'Limited' },
+  ];
+  for (const entry of cases) {
+    const popup = loadPopup({
+      tabUrl: 'https://empty.example/watch',
+      runtimeSendMessage: async (msg) => {
+        if (msg.type === 'GET_SITE_STATE') {
+          return { ok: true, enabled: false, gainDb: 0, excluded: false, siteKey: 'empty.example', seq: 1 };
+        }
+        if (msg.type === 'SET_SITE_STATE') {
+          return {
+            ok: true, enabled: true, gainDb: 0, excluded: false, seen: true,
+            siteKey: 'empty.example', seq: 2, activation: { state: 'live' },
+          };
+        }
+        return { ok: true };
+      },
+      tabsSendMessage: async (_tabId, msg) => {
+        if (msg.type === 'GET_DOCUMENT_STATUS') {
+          return {
+            ok: true, siteKey: 'empty.example', enabled: true, gainDb: 0,
+            hookAlive: true, hookActive: true, processing: false,
+            unprocessed: entry.unprocessed, indicator: 'gray',
+          };
+        }
+        return { ok: true };
+      },
+    });
+    await settle(60);
+    popup.els.toggle.checked = true;
+    await popup.els.toggle.fire('change');
+    await settle(120);
+    const text = String(popup.els['status-text'].textContent);
+    assert.match(text, entry.expected, `${entry.name}: no false Active claim`);
+    assert.equal(popup.els['status-pill'].textContent, entry.pill, `${entry.name}: the honest pill`);
+  }
+});
+
 test('popup: exclusion and the re-enable both say a reload restores the page, once and quietly', async () => {
   const popup = loadPopup({
     tabUrl: 'https://www.tiktok.com/foryou',
