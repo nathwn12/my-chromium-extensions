@@ -21,6 +21,14 @@ async function waitFor(predicate, { timeout = 4000, interval = 25, label = 'cond
 }
 function clone(v) { return v === undefined ? undefined : JSON.parse(JSON.stringify(v)); }
 function hostOf(url) { return sharedApi.getSiteKey(sharedApi.extractHostname(url)); }
+async function documentStatus(frame) {
+  return new Promise((resolve) => {
+    const listener = frame.listeners[0];
+    if (typeof listener !== 'function') { resolve(undefined); return; }
+    const ret = listener({ type: 'GET_DOCUMENT_STATUS' }, {}, resolve);
+    if (ret !== true) resolve(undefined);
+  });
+}
 
 function createFakeStorage(initial = {}) {
   let store = clone(initial);
@@ -952,12 +960,78 @@ test('first-ever enable on an already-playing document arms in place: no reload,
   assert.equal(frame.mediaSourceCalls, 1, 'exactly one real media source');
   assert.equal(frame.worklets, 1, 'routed through one real worklet');
   assert.ok(frame.liveObservers >= 1, 'the DOM observer runs');
-  assert.equal(frame.sandbox.__tnHookV6('status', {}).active, true, 'the hook reports Active');
+  assert.equal(frame.sandbox.__tnHookV6('status', {}).active, true, 'the hook is armed');
+  assert.equal(frame.sandbox.__tnHookV6('status', {}).processing, true, 'and reports a processing receipt');
+  const doc = await documentStatus(frame);
+  assert.equal(doc.processing, true, 'the document reports processing to the popup');
+  assert.equal(doc.indicator, 'green', 'and the popup indicator is Active');
   assert.equal(
     frame.workletMessages.filter((m) => m && m.type === 'reset-program').length,
     0,
     'no program reset on a cold first start',
   );
+});
+
+test('first enable on an empty page is accepted and armed, but never claims Active without an attached source', async () => {
+  const storage = createFakeStorage({
+    'site:empty.test': { enabled: false, gainDb: 0, seq: 1, mirror: false, excluded: false },
+  });
+  const tab = createTabWorld([{ frameId: 0, url: 'https://empty.test/' }]);
+  const bg = loadBackground(tab, storage, 'https://empty.test/');
+  const frame = tab.world[0];
+
+  await tab.navigate(0);
+  await settle(150);
+  const sandbox = tab.ensureSandbox(frame);
+  sandbox.document.readyState = 'complete';
+
+  const res = await bg.sendMessage({ type: 'SET_SITE_STATE', siteKey: 'empty.test', tabId: 7, set: { enabled: true } });
+  await settle(500);
+
+  assert.equal(res.activation.state, 'live', 'accepted and armed in place');
+  assert.deepEqual(bg.tabsReloaded, [], 'no reload');
+  assert.equal(frame.hookInstalled, true, 'the hook is armed');
+  assert.equal(frame.mediaElements.length, 0, 'there is no media to process');
+  const hookStatus = frame.sandbox.__tnHookV6('status', {});
+  assert.equal(hookStatus.processing, false, 'no attached/processing receipt');
+  const doc = await documentStatus(frame);
+  assert.equal(doc.processing, false, 'the document reports no processing');
+  assert.notEqual(doc.indicator, 'green', 'the popup never shows Active');
+});
+
+test('first enable on a page-owned source stays limited: armed but not Active', async () => {
+  const storage = createFakeStorage({
+    'site:owned.test': { enabled: false, gainDb: 0, seq: 1, mirror: false, excluded: false },
+  });
+  const tab = createTabWorld([{ frameId: 0, url: 'https://owned.test/' }]);
+  const bg = loadBackground(tab, storage, 'https://owned.test/');
+  const frame = tab.world[0];
+
+  await tab.navigate(0);
+  await settle(150);
+  const sandbox = tab.ensureSandbox(frame);
+  sandbox.document.readyState = 'complete';
+  const Media = vm.runInContext('HTMLMediaElement', sandbox);
+  const media = new Media();
+  media.paused = false;
+  frame.mediaSourceByElement.set(media, 1); // the page already owns the source
+  frame.mediaElements.push(media);
+
+  const res = await bg.sendMessage({ type: 'SET_SITE_STATE', siteKey: 'owned.test', tabId: 7, set: { enabled: true } });
+  await settle(500);
+
+  assert.equal(res.activation.state, 'live', 'the enable is accepted');
+  assert.deepEqual(bg.tabsReloaded, [], 'no reload');
+  assert.equal(frame.hookInstalled, true, 'the hook is armed');
+  assert.equal(frame.mediaSourceCalls, 1, 'one capture attempt, never retried');
+  assert.equal(media.__tnAttached !== true, true, 'the page keeps its element');
+  const hookStatus = frame.sandbox.__tnHookV6('status', {});
+  assert.equal(hookStatus.unprocessed, 1, 'the owned source is counted');
+  assert.equal(hookStatus.processing, false, 'no processing receipt');
+  const doc = await documentStatus(frame);
+  assert.equal(doc.unprocessed, 1, 'the verdict reaches the document');
+  assert.equal(doc.processing, false, 'the document reports no processing');
+  assert.notEqual(doc.indicator, 'green', 'the popup never shows Active');
 });
 
 test('a first-ever enable touches only the enabled tab and host, never a disabled frame or another tab', async () => {

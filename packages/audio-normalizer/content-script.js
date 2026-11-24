@@ -50,7 +50,7 @@
    *   hostname: string, siteKey: string, enabled: boolean, gainDb: number,
    *   excluded: boolean, seen: boolean,
    *   injected: boolean, hookAlive: boolean, hookPresent: boolean,
-   *   hookActive: boolean, unprocessed: number, injecting: boolean, injectStartedAt: number,
+   *   hookActive: boolean, hookProcessing: boolean, unprocessed: number, injecting: boolean, injectStartedAt: number,
    *   lastError: string, lastStatusAt: number,
    *   transient: ({ enabled: boolean, gainDb: number } | null),
    *   syncInFlight: boolean, queuedSyncReason: string,
@@ -72,6 +72,7 @@
     hookPresent: false,
     unprocessed: 0,
     hookActive: false,
+    hookProcessing: false,
     injecting: false,
     injectStartedAt: 0,
     lastError: '',
@@ -987,6 +988,7 @@
       state.injected = true;
       state.hookAlive = true;
       state.hookActive = Boolean(response.active);
+      state.hookProcessing = Boolean(response.processing);
       state.unprocessed = Number(response.unprocessed) || 0;
       state.lastError = state.enabled ? String(response.error || '') : '';
       state.lastStatusAt = Date.now();
@@ -1000,6 +1002,7 @@
       const wasAlive = state.hookAlive;
       state.hookAlive = false;
       state.hookActive = false;
+      state.hookProcessing = false;
       state.lastError = state.enabled ? String(response.error || '') : '';
       if (wasAlive) scheduleLivenessResync('hook-not-alive');
     }
@@ -1061,10 +1064,13 @@
       }
     }
 
+    // `hookActive` means armed (worklet routed). Only a processing receipt may
+    // paint the popup Active; an empty page or a page-owned source has none.
+    const processing = state.hookActive && state.hookProcessing === true;
     const indicator = contentShared.getPopupIndicator({
       enabled,
       hookAlive: state.hookAlive,
-      hookActive: state.hookActive,
+      hookActive: processing,
       lastError: state.lastError,
     });
 
@@ -1078,6 +1084,7 @@
       gainDb: state.gainDb,
       hookAlive: state.hookAlive,
       hookActive: state.hookActive,
+      processing,
       hookPresent: state.hookPresent,
       unprocessed: state.unprocessed,
       activating: isActivationPending(),
