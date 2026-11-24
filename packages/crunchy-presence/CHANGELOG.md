@@ -4,6 +4,11 @@ Notable changes to this project. Dates are ISO 8601. This package is local-only 
 
 ## [Unreleased]
 
+## [1.2.4] - 2026-11-24
+
+- A paused watch tab no longer publishes a card with no timestamps. Pause, idle and tab close share the same null-activity clear, and only a playing candidate publishes; resuming publishes it again.
+- A null clear now drops a deferred playing payload and its timer before the immediate send, so a pause cannot leave a queued card that republishes after the clear. A deferred test presence never reaches the host.
+
 ## [1.2.3] - 2026-11-18
 
 - The content script stays silent until storage answers, so a switched-off extension sends no message and holds no timer on a cold start, and `pageshow` restarts the poll `pagehide` stopped.
