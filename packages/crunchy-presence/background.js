@@ -916,7 +916,9 @@ if (hasChrome) {
         );
       }
     } else {
-      desiredActivity = best
+      // Only live playback publishes. A paused or unknown tab clears our own
+      // presence through the same null-activity path as idle and tab close.
+      desiredActivity = best && best.paused === false
         ? buildActivity(best, Date.now(), { synopsis: synopsisEnabled })
         : null;
     }
