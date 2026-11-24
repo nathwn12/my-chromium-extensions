@@ -225,6 +225,10 @@ function createHarness(sections) {
   };
 }
 
+// The fake element records playbackRate but never advances currentTime on a
+// clock. A "modeled accelerated boundary" below is a media-time position
+// near the end (DURATION - 0.25 s), not simulated 1.3x wall-clock playback.
+// The numeric proof at the end models rate 1.3 arithmetically only.
 async function armedAtBoundary(rate, sections) {
   const harness = createHarness(sections);
   await harness.start();
@@ -247,7 +251,7 @@ function pushEarlyNext(harness) {
   harness.pushSong('song-b');
 }
 
-test('boundary: early next-song push at 1.3x cannot clear an armed to-track-end section', async () => {
+test('boundary: early next-song push at modeled accelerated boundary holds an armed section', async () => {
   const harness = await armedAtBoundary();
 
   pushEarlyNext(harness);
@@ -272,7 +276,7 @@ test('boundary: ended restarts the current track after an early next-song push',
   assert.ok(media.playCalls >= 1, 'playback resumes on the current track');
 });
 
-test('boundary: a coarse 1.3x progress sample inside the lead still loops', async () => {
+test('boundary: a media-time sample inside the 0.3s lead still loops', async () => {
   const harness = await armedAtBoundary();
   const media = harness.media();
 
@@ -331,7 +335,7 @@ test('scope: native repeat-one is external; the custom section owns the loop', a
 });
 
 
-test('boundary: an explicit-end section also holds at 1.3x', async () => {
+test('boundary: an explicit-end section holds at the modeled accelerated boundary', async () => {
   const section = { videoId: 'song-a', startSeconds: 30, endSeconds: 60 };
   const harness = await armedAtBoundary(1.3, [section]);
   const media = harness.media();
@@ -414,7 +418,80 @@ test('ordering: page-hook force-pushes the queued id on videodatachange before m
   );
 });
 
-test('proof: duration-0.3 lead can be skipped by 250ms progress at 1.3x; ended covers it', () => {
+
+test('handoff: suspendSongIdentity releases a held push on a new-media source signal', async () => {
+  const harness = await armedAtBoundary();
+
+  pushEarlyNext(harness);
+  await settle();
+  assert.equal(harness.fromValue(), '0:30', 'precondition: the early push is held');
+
+  // This is the exact call content-script.js makes on loadedmetadata/emptied
+  // before it asks the page for the new id.
+  harness.controller.suspendSongIdentity();
+  harness.controller.sync();
+  assert.equal(harness.fromValue(), '', 'the suspend handoff alone releases the held id');
+
+  const replacement = harness.dom.makeMedia('song-b');
+  harness.setMedia(replacement);
+  harness.controller.sync();
+  replacement.currentTime = 0;
+  replacement.dispatchEvent('emptied');
+  replacement.dispatchEvent('loadedmetadata');
+  harness.pushSong('song-b');
+  await settle();
+
+  assert.equal(harness.status(), 'Set From or To', 'the confirmed next id is adopted');
+  assert.equal(harness.backstop(), false, 'no loop runs on the new track');
+});
+
+test('transport: user Next at the held boundary works on a same-node source signal', async () => {
+  const harness = await armedAtBoundary();
+  const media = harness.media();
+
+  pushEarlyNext(harness);
+  await settle();
+  assert.equal(harness.fromValue(), '0:30', 'precondition: the early push is held');
+
+  // YTM reuses the same element for the next track. No media replacement.
+  media.currentSrc = songUrl('song-b');
+  media.currentTime = 0;
+  harness.controller.suspendSongIdentity();
+  harness.controller.sync();
+  assert.equal(harness.fromValue(), '', 'the suspend handoff alone releases the held id');
+  media.dispatchEvent('emptied');
+  media.dispatchEvent('loadedmetadata');
+  harness.pushSong('song-b');
+  await settle();
+
+  assert.equal(harness.status(), 'Set From or To', 'the next track is adopted');
+  assert.equal(harness.backstop(), false, 'A\'s loop is dropped');
+  assert.equal(harness.fromValue(), '', 'A\'s points are dropped');
+});
+
+test('transport: user Previous at the held boundary restores its own section', async () => {
+  const prev = { videoId: 'song-prev', startSeconds: 120, endSeconds: null };
+  const harness = await armedAtBoundary(undefined, [TO_END, prev]);
+  const media = harness.media();
+
+  pushEarlyNext(harness);
+  await settle();
+  assert.equal(harness.fromValue(), '0:30', 'precondition: the early push is held');
+
+  media.currentSrc = songUrl('song-prev');
+  media.currentTime = 0;
+  harness.controller.suspendSongIdentity();
+  media.dispatchEvent('emptied');
+  media.dispatchEvent('loadedmetadata');
+  harness.setHref(songUrl('song-prev'));
+  harness.pushSong('song-prev');
+  await settle();
+
+  assert.equal(media.currentTime, 120, 'the previous track restores its own start');
+  assert.equal(harness.fromValue(), '2:00', 'its own points are shown');
+});
+
+test('numeric: arithmetic 250ms progress at 1.3x can skip the 0.3s lead; ended covers it', () => {
   const state = { active: true, startSeconds: 30, endSeconds: null };
   const rate = 1.3;
   const step = 0.25 * rate;
