@@ -2,6 +2,11 @@
 
 Notable changes to this package. Dates are ISO 8601. This package is local-only and is not published to a registry.
 
+## [1.1.13] - 2026-11-24
+
+- Presence is published only from a live report that says playback is running. A paused report no longer puts a card on screen with no timer, and a pause or worker restart clears this extension's own presence through the null path so a native `lastActivity` snapshot cannot replay stale listening.
+- Restored tab snapshots are marked unconfirmed and are never published on their own. A fresh worker records a null clear as its starting state, and only a live content-script report may promote a tab to a card; unconfirmed entries stay in the map so a later live report can take the same tab over.
+
 ## [1.1.12] - 2026-11-19
 
 - A media event that fires before YouTube Music swaps the player-bar title now arms one 250 ms re-read, so a stale-event switch lands in about 250 ms instead of waiting for the 1 s poll (≤500 ms ordinary, 0 ms when the DOM already flipped). The re-read never republishes an unchanged title; the 1 s poll, the 1.5 s pacing and the eight-per-20 s ceiling are unchanged, and a burst past eight changes in 20 s still defers to the window edge.
