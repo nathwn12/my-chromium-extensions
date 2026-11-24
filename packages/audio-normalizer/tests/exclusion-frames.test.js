@@ -368,7 +368,7 @@ function createTabWorld(frames) {
     return frame;
   }
 
-  return { world, scripting, tabId, useStorage, useDeliver, scriptingCalls, navigate };
+  return { world, scripting, tabId, useStorage, useDeliver, scriptingCalls, navigate, ensureSandbox };
 }
 
 function loadBackground(tabWorld, storage, tabUrl) {
@@ -912,7 +912,7 @@ test('exclude -> enable on a live document leaves it torn down; a navigation arm
   assert.ok(frame.pageListeners > 0, 'and binds its listeners');
 });
 
-test('first-ever enable on a live document arms nothing; a navigation arms it', async () => {
+test('first-ever enable on an already-playing document arms in place: no reload, same document, adopted media', async () => {
   const storage = createFakeStorage({
     'site:top.test': { enabled: false, gainDb: 0, seq: 1, mirror: false, excluded: false },
   });
@@ -922,63 +922,100 @@ test('first-ever enable on a live document arms nothing; a navigation arms it', 
 
   await tab.navigate(0);
   await settle(200);
-  assert.equal(frame.sandbox, null, 'a never-seen off host gets no content script at all');
-  assert.deepEqual(LIVE_COST(frame), {
-    pageListeners: 0,
-    liveObservers: 0,
-    liveAudioContexts: 0,
-    timers: 0,
-    runtimeListeners: 0,
-    storageListeners: 0,
-  }, 'a host that loads off does no work at all');
+  assert.equal(frame.sandbox, null, 'a never-seen off host loads no content script and no hook');
+  assert.deepEqual(bg.tabsReloaded, [], 'navigation itself reloads nothing');
+
+  // A plain, already-loaded document that is playing its own media. The
+  // extension has no hook here yet: this is the first-ever enable case.
+  const sandbox = tab.ensureSandbox(frame);
+  sandbox.document.readyState = 'complete';
+  const Media = vm.runInContext('HTMLMediaElement', sandbox);
+  const media = new Media();
+  media.currentTime = 137.25;
+  media.paused = false;
+  frame.mediaElements.push(media);
+  const positionBefore = media.currentTime;
+  assert.equal(frame.hookInstalled, false, 'no page hook before the enable');
 
   const first = await bg.sendMessage({ type: 'SET_SITE_STATE', siteKey: 'top.test', tabId: 7, set: { enabled: true } });
-  await settle(250);
+  await settle(500);
+
   assert.equal(first.ok, true);
   assert.equal(first.seen, true, 'the first enable is remembered');
-  assert.deepEqual(clone(first.activation), { state: 'reloading', message: 'Reloading to activate…' },
-    'the popup is told the tab is reloading, not that the user must reload it');
-  assert.deepEqual(bg.tabsReloaded, [7], 'exactly one automatic reload, of this tab');
-  assert.equal(frame.sandbox, null, 'nothing is injected into the document being replaced');
-
-  await tab.navigate(0);
-  await settle(250);
-  assert.equal(frame.hookInstalled, true, 'the reloaded document arms it');
-  assert.equal(frame.contexts.length, 1);
-  assert.ok(frame.pageListeners > 0);
-
-  await bg.sendMessage({ type: 'SET_SITE_STATE', siteKey: 'top.test', tabId: 7, set: { enabled: false } });
-  await settle(250);
-  assert.equal(bg.tabsReloaded.length, 1, 'a disable never reloads');
-  const second = await bg.sendMessage({ type: 'SET_SITE_STATE', siteKey: 'top.test', tabId: 7, set: { enabled: true } });
-  await settle(300);
-  assert.deepEqual(clone(second.activation), { state: 'live' }, 'the second enable is live');
-  assert.equal(bg.tabsReloaded.length, 1, 'and does not reload');
+  assert.deepEqual(clone(first.activation), { state: 'live' }, 'the enable is live in this document');
+  assert.deepEqual(bg.tabsReloaded, [], 'zero chrome.tabs.reload calls');
+  assert.equal(frame.sandbox, sandbox, 'the same document object: no navigation, no re-injection');
+  assert.equal(frame.hookInstalled, true, 'the page hook was injected into this document');
+  assert.equal(media.currentTime, positionBefore, 'playback position untouched');
+  assert.equal(media.muted, false, 'never muted');
+  assert.equal(media.__tnAttached, true, 'the already-playing element was adopted');
+  assert.equal(frame.mediaSourceCalls, 1, 'exactly one real media source');
+  assert.equal(frame.worklets, 1, 'routed through one real worklet');
+  assert.ok(frame.liveObservers >= 1, 'the DOM observer runs');
+  assert.equal(frame.sandbox.__tnHookV6('status', {}).active, true, 'the hook reports Active');
+  assert.equal(
+    frame.workletMessages.filter((m) => m && m.type === 'reset-program').length,
+    0,
+    'no program reset on a cold first start',
+  );
 });
 
-test('first-ever enable falls back to the notice when the tab cannot be reloaded', async () => {
-  const storageA = createFakeStorage({ 'site:a.test': { enabled: false, gainDb: 0, seq: 1, mirror: false, excluded: false } });
-  const bgA = loadBackground(createTabWorld([{ frameId: 0, url: 'https://a.test/' }]), storageA, 'https://a.test/');
-  const noTab = await bgA.sendMessage({ type: 'SET_SITE_STATE', siteKey: 'a.test', set: { enabled: true } });
-  assert.equal(noTab.seen, true, 'the enable is still recorded');
-  assert.equal(noTab.activation.state, 'reload', 'and the notice is reported');
-  assert.match(String(noTab.activation.message), /reload applies this/i);
-  assert.deepEqual(bgA.tabsReloaded, [], 'no reload was attempted');
+test('a first-ever enable touches only the enabled tab and host, never a disabled frame or another tab', async () => {
+  const storage = createFakeStorage({
+    'site:top.test': { enabled: false, gainDb: 0, seq: 1, mirror: false, excluded: false },
+    'site:quiet.test': { enabled: false, gainDb: 0, seq: 1, mirror: false, excluded: false },
+  });
+  const tab = createTabWorld([
+    { frameId: 0, url: 'https://top.test/' },
+    { frameId: 3, url: 'https://quiet.test/' },
+  ]);
+  const bg = loadBackground(tab, storage, 'https://top.test/');
+  const [top, other] = tab.world;
 
-  const storageB = createFakeStorage({ 'site:b.test': { enabled: false, gainDb: 0, seq: 1, mirror: false, excluded: false } });
-  const bgB = loadBackground(createTabWorld([{ frameId: 0, url: 'https://b.test/' }]), storageB, 'https://b.test/');
-  bgB.useReload(() => { throw new Error('tab was closed'); });
-  const refused = await bgB.sendMessage({ type: 'SET_SITE_STATE', siteKey: 'b.test', tabId: 7, set: { enabled: true } });
-  assert.equal(refused.activation.state, 'reload', 'a failed reload falls back to the notice');
-  assert.match(String(refused.activation.message), /reload applies this/i);
-  assert.deepEqual(bgB.tabsReloaded, [7], 'the attempt was made once');
+  await tab.navigate(0);
+  await tab.navigate(3);
+  await settle(150);
+  const topSandbox = tab.ensureSandbox(top);
+  topSandbox.document.readyState = 'complete';
+  const Media = vm.runInContext('HTMLMediaElement', topSandbox);
+  const media = new Media();
+  media.paused = false;
+  top.mediaElements.push(media);
 
-  const storageC = createFakeStorage({ 'site:c.test': { enabled: false, gainDb: 0, seq: 1, mirror: false, excluded: false } });
-  const bgC = loadBackground(createTabWorld([{ frameId: 0, url: 'https://c.test/' }]), storageC, 'https://c.test/');
-  bgC.removeReloadApi();
-  const noApi = await bgC.sendMessage({ type: 'SET_SITE_STATE', siteKey: 'c.test', tabId: 7, set: { enabled: true } });
-  assert.equal(noApi.activation.state, 'reload', 'no API means the notice');
-  assert.deepEqual(bgC.tabsReloaded, [], 'and nothing was called');
+  // A second tab, same site, gets no enable message at all.
+  const secondTab = createTabWorld([{ frameId: 0, url: 'https://top.test/' }]);
+  loadBackground(secondTab, storage, 'https://top.test/');
+  await secondTab.navigate(0);
+  await settle(100);
+
+  const callsBefore = tab.scriptingCalls.length;
+  const res = await bg.sendMessage({ type: 'SET_SITE_STATE', siteKey: 'top.test', tabId: 7, set: { enabled: true } });
+  await settle(500);
+
+  assert.equal(res.activation.state, 'live');
+  assert.deepEqual(bg.tabsReloaded, [], 'no tab is reloaded');
+  assert.equal(top.hookInstalled, true, 'the enabled host is armed');
+  assert.equal(media.__tnAttached, true, 'and its media is adopted');
+  assert.equal(other.hookInstalled, false, 'a disabled host frame is not armed');
+  assert.equal(other.contexts.length, 0, 'and creates no audio session');
+  assert.equal(other.listeners.length, 0, 'and installs no listener');
+  assert.equal(secondTab.world[0].hookInstalled, false, 'the other tab is untouched');
+  assert.equal(secondTab.world[0].sandbox, null, 'and gets no document script');
+  assert.deepEqual(secondTab.scriptingCalls, [], 'no injection into the other tab');
+  assert.ok(
+    tab.scriptingCalls.slice(callsBefore).every((call) => call.target?.tabId === 7),
+    'every injection stays in the enabling tab',
+  );
+});
+
+test('first-ever enable keeps a truthful notice when no document can be armed', async () => {
+  const storage = createFakeStorage({ 'site:quiet.test': { enabled: false, gainDb: 0, seq: 1, mirror: false, excluded: false } });
+  const bg = loadBackground(createTabWorld([{ frameId: 0, url: 'https://quiet.test/' }]), storage, 'https://quiet.test/');
+  const res = await bg.sendMessage({ type: 'SET_SITE_STATE', siteKey: 'quiet.test', set: { enabled: true } });
+  assert.equal(res.seen, true, 'the enable is still recorded');
+  assert.equal(res.activation.state, 'reload', 'the notice is not replaced by a fake live');
+  assert.match(String(res.activation.message), /reload applies this/i);
+  assert.deepEqual(bg.tabsReloaded, [], 'and no reload is performed');
 });
 
 test('seen host loaded off: the page hook is present and passive, nothing is processing', async () => {
