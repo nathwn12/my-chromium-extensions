@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.6.5] - 2026-11-24
+
+### Fixed
+
+- The first-ever enable no longer reloads the tab. The worker arms the current document through the same gated in-place injection a navigation uses, and a late-injected content script adopts the playing media only while the host is enabled and not excluded; a disabled host stays passive, and the one-time notice remains the fallback when the in-place arm cannot be proven.
+- The popup paints Active only from a verified processing receipt. The hook reports `processing` separately from being armed: a media session counts once an element is attached and its source is routed, and a page-owned context counts through its routed worklet. An armed worklet on an empty page or a page-owned source stays Waiting or Limited instead of reading Active. Documents without the new field keep their previous armed report.
+
 ## [5.6.4] - 2026-11-18
 
 ### Fixed
