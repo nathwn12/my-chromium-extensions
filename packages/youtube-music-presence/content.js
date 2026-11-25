@@ -47,6 +47,9 @@
   var lastSample = null;
   var lastCredibleDuration = null;
   var pendingTiming = null;
+  /** Local-only baseline: the last published timed sample. */
+  var lastTimed = null;
+  var loopSeekEvent = false;
   var reported = false;
   var settleTimer = null;
   var staleTimer = null;
@@ -115,6 +118,26 @@
     var position = state.position;
     if (typeof position === "number" && isFinite(position) && position >= 0 && position <= FRESH_POSITION_SECONDS) return true;
     return Boolean(mediaSource) && (!lastSample || !lastSample.source || mediaSource !== lastSample.source);
+  }
+
+  /**
+   * A backward seek the player announced, on the same track, total and
+   * coherent source as the last published timed sample, is the loop itself —
+   * not a new track's stale timing. It reopens a hold only with that full
+   * match: an outgoing element or a different track fails identity, duration
+   * or source, and a forward seek fails the playhead comparison. The playhead
+   * baseline is the published sample, so a held read of the loop position
+   * cannot hide the seek from the next event.
+   */
+  function loopReopensHold(state, identity, unit, mediaSource) {
+    if (!loopSeekEvent || !pendingTiming || !lastTimed) return false;
+    if (state.paused !== false) return false;
+    if (identity !== pendingTiming.track || identity !== lastTimed.track) return false;
+    if (unit === null || lastTimed.unit === null || unit !== lastTimed.unit) return false;
+    if (!mediaSource || !lastTimed.source || mediaSource !== lastTimed.source) return false;
+    var position = state.position;
+    if (typeof position !== "number" || !isFinite(position) || position < 0 || position > unit) return false;
+    return position < lastTimed.position - 1;
   }
 
   /** True only when the current read is the sample already published. */
@@ -199,6 +222,9 @@
     } else if (pendingTiming && identity !== pendingTiming.track) {
       pendingTiming = null;
     }
+    if (pendingTiming && loopReopensHold(state, identity, rawUnit, mediaSource)) {
+      pendingTiming = null;
+    }
     if (pendingTiming) {
       var sampleUnit = durationUnit(state.duration);
       if (sampleUnit === null || sampleUnit === pendingTiming.duration || !ownsFreshTiming(state, sampleUnit, mediaSource)) {
@@ -208,7 +234,7 @@
         pendingTiming = null;
       }
     }
-    /** A withheld read never becomes the baseline for the next decision. */
+    /** A withheld read never becomes the credited duration baseline. */
     if (state.duration !== null && credible !== null) lastCredibleDuration = credible;
 
     state.at = Date.now();
@@ -225,6 +251,14 @@
       identity: sampleIdentity(state),
       at: state.at
     };
+    if (state.duration !== null && typeof state.position === "number" && isFinite(state.position)) {
+      lastTimed = {
+        track: identity,
+        unit: durationUnit(state.duration),
+        source: mediaSource,
+        position: state.position
+      };
+    }
     reported = true;
     send({ t: "ytmp-state", source: source, state: state });
   }
@@ -290,7 +324,9 @@
     if (tag !== "VIDEO" && tag !== "AUDIO") return;
     var state = readState();
     if (enabled && state && (!state.title || state.title === lastTitle)) armStaleReRead();
+    loopSeekEvent = event && (event.type === "seeking" || event.type === "seeked");
     report(state);
+    loopSeekEvent = false;
   }
 
   /**

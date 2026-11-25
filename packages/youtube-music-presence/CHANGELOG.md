@@ -2,8 +2,9 @@
 
 Notable changes to this package. Dates are ISO 8601. This package is local-only and is not published to a registry.
 
-## [1.1.16] - 2026-11-25
+## [1.1.17] - 2026-11-25
 
+- A player-announced backward seek now reopens a held timing gate only when the media is playing and the read matches the last published timed sample's identity, duration unit, non-null coherent source and playhead. A paused seek, a clock conflict, a changed total and a stale handoff all stay withheld, and the single comparison baseline stays local to the content script.
 - A changed total is published only with an owned reset: a playhead at or near zero, or a coherent source new to the last published sample. An owned first read publishes at once, so a genuinely fresh new duration is never held forever; a new source at the old total stays blocked.
 - A mid-song total under the same source cannot be told apart from ingested stale timing and fails closed at the incoming total until a different owned total arrives. Wall time alone never releases a hold, and a withheld read never becomes the baseline for the next decision.
 

@@ -269,6 +269,24 @@ test("an unannounced jump backward reports once with the live position", () => {
   assert.equal(states(handle).length, 2);
 });
 
+test("an A-B loop seek outside a hold re-anchors the real total and elapsed", () => {
+  const page = musicWatch("Loop Song", { duration: 251, currentTime: 148, paused: false });
+  const clock = fakeClock();
+  const handle = bootWithClock(page, clock);
+  const media = page.doc.querySelector("audio");
+  assert.equal(states(handle)[0].state.duration, 251);
+
+  media.currentTime = 98;
+  page.dispatchOnDoc("seeked", { target: media });
+  const looped = states(handle).at(-1).state;
+  assert.equal(looped.duration, 251, `the total survives the loop: elapsed=${looped.position} duration=${looped.duration}`);
+  assert.equal(looped.position, 98, "the playhead follows the loop back to A");
+
+  clock.advance(1000);
+  handle.poll();
+  assert.equal(states(handle).length, 2, "the re-anchored loop makes the next tick quiet");
+});
+
 test("a paused page whose position jumps never drift-reports", () => {
   const page = musicWatch("First Song", { duration: 300, currentTime: 10 });
   const clock = fakeClock();

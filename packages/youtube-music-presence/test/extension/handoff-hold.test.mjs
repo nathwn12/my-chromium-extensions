@@ -398,6 +398,142 @@ test("an artist-only change with a media event withholds the old total", () => {
   assert.equal(next.position, null, detail(next));
 });
 
+test("a same-track loop seek reconfirms the total held across a blank page", async () => {
+  const { chrome, clock, port, worker } = bootWorker();
+  await worker.start();
+  const env = bootPage({ clock, title: "Second Song" });
+  env.setSession("Second Song", "playing");
+  env.setClock("2:28 / 4:11");
+  const media = env.media();
+  media.duration = 251;
+  media.currentTime = 148;
+  media.currentSrc = "https://media.example/b";
+  env.advance();
+
+  const timed = env.states().at(-1);
+  assert.equal(timed.duration, 251, `the restored track owns its total: ${detail(timed)}`);
+  sendState(chrome, { ...timed, at: clock.now() });
+  assert.equal(frames(port)[0].activity.timestamps.end - frames(port)[0].activity.timestamps.start, 251);
+
+  /** A blank page carries one guard across; the first read binds it to B. */
+  env.page.dispatchOnWindow("pagehide", {});
+  env.setSession("Second Song", "playing");
+  media.duration = 251;
+  media.currentTime = 148;
+  env.advance();
+  const held = env.states().at(-1);
+  assert.equal(held.duration, null, `the guard binds to B's stale pair: ${detail(held)}`);
+
+  /** Slowed Reverb's loop: same title, URL, id, total and source; playhead back to 1:38. */
+  media.currentTime = 98;
+  env.setClock("1:38 / 4:11");
+  env.page.dispatchOnDoc("seeked", { target: media });
+
+  const after = env.states().at(-1);
+  assert.equal(after.title, "Second Song", detail(after));
+  assert.equal(after.duration, 251, `a same-track loop seek reconfirms the real total: ${detail(after)}`);
+  assert.equal(after.position, 98, `the real playhead follows the loop: ${detail(after)}`);
+
+  clock.advance(1600);
+  sendState(chrome, { ...after, at: clock.now() });
+  const stamped = frames(port).at(-1).activity.timestamps;
+  assert.equal(stamped.end - stamped.start, 251, "the card keeps the real total after the loop");
+  assert.equal(stamped.start, Math.floor(clock.now() / 1000) - 98, "elapsed follows the loop playhead");
+});
+
+for (const seekEvent of ["seeked", "seeking"]) {
+  test(`a loop playhead read before ${seekEvent} reopens the hold`, () => {
+    const env = bootPage({ clock: { now: () => BASE, advance() {} }, title: "Second Song" });
+    env.setSession("Second Song", "playing");
+    env.setClock("2:28 / 4:11");
+    const media = env.media();
+    media.duration = 251;
+    media.currentTime = 148;
+    media.currentSrc = "https://media.example/b";
+    env.advance();
+    assert.equal(env.states().at(-1).duration, 251, `the track owns its total: ${detail(env.states().at(-1))}`);
+
+    /** A blank page arms one guard; the first read binds it to this track. */
+    env.page.dispatchOnWindow("pagehide", {});
+    env.setSession("Second Song", "playing");
+    media.duration = 251;
+    media.currentTime = 148;
+    env.advance();
+    assert.equal(env.states().at(-1).duration, null, "the hold is armed");
+
+    /** A non-seek media event reads the loop playhead before the seek flag. */
+    media.currentTime = 98;
+    env.setClock("1:38 / 4:11");
+    env.page.dispatchOnDoc("play", { target: media });
+    assert.equal(env.states().at(-1).duration, null, "the early loop read stays held");
+
+    env.page.dispatchOnDoc(seekEvent, { target: media });
+    const after = env.states().at(-1);
+    assert.equal(after.duration, 251, `the ${seekEvent} loop reopens the hold: ${detail(after)}`);
+    assert.equal(after.position, 98, `the playhead follows the loop: ${detail(after)}`);
+  });
+}
+
+test("a conflicting player-bar clock at a loop seek stays timestamp-free", () => {
+  const env = bootPage({ clock: { now: () => BASE, advance() {} } });
+  const media = env.media();
+  media.duration = 251;
+  media.currentTime = 148;
+  env.setClock("2:28 / 4:11");
+  env.advance();
+  assert.equal(env.states().at(-1).duration, 251);
+
+  env.setClock("1:38 / 4:11");
+  env.page.doc.querySelector("ytmusic-player-bar").append(
+    node("span", { attrs: { class: "time-info" }, text: "1:59 / 4:11" })
+  );
+  media.currentTime = 98;
+  env.page.dispatchOnDoc("seeked", { target: media });
+
+  const after = env.states().at(-1);
+  assert.equal(after.duration, null, `a clock conflict is not resolved by a loop seek: ${detail(after)}`);
+  assert.equal(after.position, null, detail(after));
+});
+
+test("a loop seek cannot release a hold when paused, sourceless or at a changed total", () => {
+  const env = bootPage({ clock: { now: () => BASE, advance() {} }, title: "Second Song" });
+  env.setSession("Second Song", "playing");
+  const media = env.media();
+  media.duration = 251;
+  media.currentTime = 148;
+  env.advance();
+  assert.equal(env.states().at(-1).duration, 251);
+
+  env.page.dispatchOnWindow("pagehide", {});
+  media.currentTime = 148;
+  env.advance();
+  assert.equal(env.states().at(-1).duration, null, "the hold is armed");
+
+  media.paused = true;
+  media.currentTime = 98;
+  env.page.dispatchOnDoc("seeked", { target: media });
+  assert.equal(env.states().at(-1).duration, null, "a paused loop seek is not fresh evidence");
+
+  media.paused = false;
+  media.duration = 366;
+  media.currentTime = 148;
+  env.advance();
+  media.currentTime = 98;
+  env.page.dispatchOnDoc("seeked", { target: media });
+  assert.equal(env.states().at(-1).duration, null, "a changed total is not the held track's total");
+
+  media.duration = 251;
+  media.currentTime = 148;
+  env.advance();
+  env.page.doc.querySelector("ytmusic-player-bar").append(
+    node("span", { attrs: { class: "time-info" }, text: "1:59 / 4:11" })
+  );
+  env.setClock("1:38 / 4:11");
+  media.currentTime = 98;
+  env.page.dispatchOnDoc("seeked", { target: media });
+  assert.equal(env.states().at(-1).duration, null, "a sourceless clock conflict is not fresh evidence");
+});
+
 test("a rate change with a new duration releases and keeps the real total", () => {
   const env = bootPage({ clock: { now: () => BASE, advance() {} } });
   env.handoff();
