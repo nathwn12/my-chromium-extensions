@@ -553,3 +553,59 @@ test("a rate change with a new duration releases and keeps the real total", () =
   assert.equal(fresh.duration, 129, `rate does not stretch the total: ${detail(fresh)}`);
   assert.equal(fresh.playbackRate, 1.5, detail(fresh));
 });
+
+/**
+ * Same-track guard armed by pagehide. An incoherent read (366 media against the
+ * old 4:11 clock) leaves the last sample source-less, but the baseline for the
+ * next read must stay the last published timed source. A later seek showing a
+ * changed 366 total under that same source is outgoing timing and stays held.
+ */
+test("a blank-page guard keeps a same-source changed total held across an incoherent gap", () => {
+  const env = bootPage({ clock: { now: () => BASE, advance() {} } });
+  const media = env.media();
+  media.duration = 251;
+  media.currentTime = 148;
+  env.setSession("First Song", "playing");
+  env.setClock("2:28 / 4:11");
+  env.advance();
+  assert.equal(env.states().at(-1).duration, 251, detail(env.states().at(-1)));
+
+  env.page.dispatchOnWindow("pagehide", {});
+  media.duration = 366;
+  media.currentTime = 148;
+  env.advance();
+  assert.equal(env.states().at(-1).duration, null, "the incoherent gap stays held");
+
+  media.currentTime = 98;
+  env.setClock("1:38 / 6:06");
+  env.page.dispatchOnDoc("seeked", { target: media });
+  const stale = env.states().at(-1);
+  assert.equal(stale.duration, null, `same-source 366 cannot cross the gap: ${detail(stale)}`);
+  assert.equal(stale.position, null, detail(stale));
+});
+
+/** Paired control: the same sequence with a genuinely new source is trustworthy. */
+test("a blank-page guard releases a changed total only with a new coherent source", () => {
+  const env = bootPage({ clock: { now: () => BASE, advance() {} } });
+  const media = env.media();
+  media.duration = 251;
+  media.currentTime = 148;
+  env.setSession("First Song", "playing");
+  env.setClock("2:28 / 4:11");
+  env.advance();
+  assert.equal(env.states().at(-1).duration, 251, detail(env.states().at(-1)));
+
+  env.page.dispatchOnWindow("pagehide", {});
+  media.duration = 366;
+  media.currentTime = 148;
+  env.advance();
+  assert.equal(env.states().at(-1).duration, null, "the incoherent gap stays held");
+
+  media.currentTime = 98;
+  media.currentSrc = "https://media.example/b";
+  env.setClock("1:38 / 6:06");
+  env.page.dispatchOnDoc("seeked", { target: media });
+  const fresh = env.states().at(-1);
+  assert.equal(fresh.duration, 366, `a new source publishes the real total: ${detail(fresh)}`);
+  assert.equal(fresh.position, 98, detail(fresh));
+});
