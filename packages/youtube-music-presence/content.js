@@ -40,6 +40,8 @@
   var RATE_EPSILON = 0.01;
   var SPA_SETTLE_MS = 250;
   var FRESH_POSITION_SECONDS = 2;
+  /** A clock-only total under this many seconds cannot be a real new track. */
+  var MIN_HANDOVER_TOTAL_SECONDS = 10;
 
   var lastHref = href();
   var lastSource = null;
@@ -239,6 +241,29 @@
     }
     if (pendingTiming && loopReopensHold(state, identity, rawUnit, mediaSource)) {
       pendingTiming = null;
+    }
+    /**
+     * A natural end-of-track auto-advance can swap the identity while the
+     * player bar still shows its own collapsed elapsed pair ("0:00 / 0:02")
+     * and the media element has no duration, so the extractor falls back to
+     * the bar clock. That clock-only total is implausibly short for a track
+     * that follows a credited one and proves nothing about the new track:
+     * withhold its timing and keep `lastCredibleDuration`. It arms no new
+     * hold, so the real total publishes as soon as a coherent read arrives.
+     * The same-track guard below cannot see this: the new identity is already
+     * the published sample, and only `lastTimed` still names the old track.
+     */
+    var clockOnlyHandover =
+      Boolean(lastTimed) &&
+      identity !== lastTimed.track &&
+      !mediaSource &&
+      lastCredibleDuration !== null &&
+      rawUnit !== null &&
+      rawUnit < MIN_HANDOVER_TOTAL_SECONDS &&
+      rawUnit < lastCredibleDuration;
+    if (clockOnlyHandover) {
+      state.duration = null;
+      state.position = null;
     }
     /**
      * A same-track total never replaces the credited one by shrinking. The
