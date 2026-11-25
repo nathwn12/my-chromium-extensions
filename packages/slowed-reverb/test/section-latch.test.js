@@ -1015,3 +1015,364 @@ test('rate: a section that runs to the song end loops at 1.3x', async () => {
   assert.equal(media.currentTime, 30, 'ended restarts the armed section');
   assert.ok(media.playCalls >= 1, 'and resumes playback');
 });
+
+
+/** Records extension writes with the source and elapsed time at write time. */
+function recordSeeks(media) {
+  const writes = [];
+  let elapsed = media.currentTime;
+  Object.defineProperty(media, 'currentTime', {
+    configurable: true,
+    get() { return elapsed; },
+    set(next) { writes.push({ from: elapsed, to: next, src: media.currentSrc }); elapsed = next; },
+  });
+  media.__setTime = (next) => { elapsed = next; };
+  return writes;
+}
+
+test('identity: a v-less Home push never seeks an unconfirmed source', async () => {
+  const home = 'https://music.youtube.com/';
+  const incoming = { videoId: 'song-b', startSeconds: 30, endSeconds: 60 };
+  const harness = createHarness({ storage: createStorage([incoming]) });
+  harness.setHref(home);
+  const media = harness.media();
+  const writes = recordSeeks(media);
+  harness.pushSong('song-a', home);
+  await harness.start();
+
+  media.currentSrc = 'https://music.youtube.com/stream/song-a';
+  media.__setTime(0.2);
+  writes.length = 0;
+
+  harness.pushSong('song-b', home);       // metadata leads the source on Home
+  harness.timers.tickIntervals();
+
+  assert.equal(writes.some((w) => w.from === 0.2), false,
+    'the outgoing element at 0.2 s is never seeked');
+  assert.equal(media.currentTime, 0.2, 'the outgoing element keeps its own elapsed time');
+
+  media.currentSrc = 'https://music.youtube.com/stream/song-b';
+  media.__setTime(0);
+  media.dispatchEvent('loadedmetadata');  // the genuine source finally arrives
+  harness.pushSong('song-b', home);
+  harness.timers.tickIntervals();
+
+  assert.equal(writes.some((w) => w.to === 30), false,
+    'an ambiguous v-less push never auto-restores the incoming section');
+});
+
+
+test('identity: a v-less Home push skips restore until a watch URL confirms', async () => {
+  const home = 'https://music.youtube.com/';
+  const watchB = 'https://music.youtube.com/watch?v=song-b';
+  const incoming = { videoId: 'song-b', startSeconds: 30, endSeconds: 60 };
+  const srcA = 'https://music.youtube.com/stream/song-a';
+  const srcB = 'https://music.youtube.com/stream/song-b';
+  const seeks = (writes) => writes.filter((w) => w.to === 30);
+
+  // 1. The source arrives before the pushed id. The restore is still skipped.
+  const early = createHarness({ storage: createStorage([incoming]) });
+  early.setHref(home);
+  const first = early.media();
+  const firstWrites = recordSeeks(first);
+  early.pushSong('song-a', home);
+  await early.start();
+  first.currentSrc = srcB;
+  first.__setTime(0);
+  first.dispatchEvent('loadedmetadata');
+  firstWrites.length = 0;
+  early.pushSong('song-b', home);
+  early.timers.tickIntervals();
+  assert.deepEqual(seeks(firstWrites), [],
+    'an ambiguous v-less push skips the automatic restore');
+
+  // 2. Unrelated metadata on the outgoing source, including emptied, must not seek.
+  const held = createHarness({ storage: createStorage([incoming]) });
+  held.setHref(home);
+  const outgoing = held.media();
+  const heldWrites = recordSeeks(outgoing);
+  held.pushSong('song-a', home);
+  await held.start();
+  outgoing.currentSrc = srcA;
+  outgoing.__setTime(0.2);
+  heldWrites.length = 0;
+  held.pushSong('song-b', home);
+  held.timers.tickIntervals();
+  outgoing.dispatchEvent('emptied');
+  outgoing.dispatchEvent('loadedmetadata');
+  held.timers.tickIntervals();
+  assert.deepEqual(seeks(heldWrites), [],
+    'same-source emptied and metadata never approve a seek');
+
+  // 3. The same key corroborated by a watch URL releases without a metadata event.
+  const watched = createHarness({ storage: createStorage([incoming]) });
+  watched.setHref(home);
+  const watchedMedia = watched.media();
+  const watchedWrites = recordSeeks(watchedMedia);
+  watched.pushSong('song-a', home);
+  await watched.start();
+  watchedMedia.currentSrc = srcA;
+  watchedMedia.__setTime(0.2);
+  watchedWrites.length = 0;
+  watched.pushSong('song-b', home);
+  watched.timers.tickIntervals();
+  assert.deepEqual(seeks(watchedWrites), [], 'precondition: the wait holds');
+  watchedMedia.currentSrc = srcB;
+  watchedMedia.__setTime(0);
+  watched.setHref(watchB);
+  watched.pushSong('song-b', watchB);
+  watched.timers.tickIntervals();
+  assert.deepEqual(seeks(watchedWrites), [{ from: 0, to: 30, src: srcB }],
+    'corroboration with the observed source releases the wait');
+});
+
+
+test('identity: consecutive push-first handoffs never seek the outgoing source', async () => {
+  const home = 'https://music.youtube.com/';
+  const savedB = { videoId: 'song-b', startSeconds: 30, endSeconds: 60 };
+  const srcA = 'https://music.youtube.com/stream/song-a';
+  const srcB = 'https://music.youtube.com/stream/song-b';
+  const seeks = (writes, to) => writes.filter((w) => w.to === to);
+
+  async function handoff(sections) {
+    const harness = createHarness({ storage: createStorage(sections) });
+    harness.setHref(home);
+    const media = harness.media();
+    const writes = recordSeeks(media);
+    harness.pushSong('song-a', home);
+    await harness.start();
+    media.currentSrc = srcA;
+    media.__setTime(0.2);
+    writes.length = 0;
+
+    harness.pushSong('song-b', home);   // A to B, source still A
+    harness.timers.tickIntervals();
+    assert.deepEqual(seeks(writes, 30), [], 'precondition: B waits for its own source');
+
+    media.currentSrc = srcB;
+    media.__setTime(0);
+    media.dispatchEvent('loadedmetadata');
+    writes.length = 0;
+
+    harness.pushSong('song-c', home);   // B to C, source still B
+    harness.timers.tickIntervals();
+    return writes;
+  }
+
+  const bothSaved = await handoff([savedB, SONG_C]);
+  assert.deepEqual(seeks(bothSaved, 40), [],
+    'C must not seek into the outgoing B source');
+
+  const cOnly = await handoff([SONG_C]);
+  assert.deepEqual(seeks(cOnly, 40), [],
+    'a saved-section-free B still binds its source before C is pushed');
+});
+
+
+test('identity: an unknown outgoing source never approves a v-less transition', async () => {
+  const home = 'https://music.youtube.com/';
+  const srcA = 'https://music.youtube.com/stream/song-a';
+  const savedB = { videoId: 'song-b', startSeconds: 30, endSeconds: 60 };
+
+  const unknown = createHarness({ storage: createStorage([savedB, SONG_C]), startWithoutMedia: true });
+  unknown.setHref(home);
+  await unknown.start();
+  unknown.pushSong('song-a', home);           // adopted with no media at all
+  await settle();
+  const lateMedia = unknown.dom.makeMedia('song-a');
+  unknown.setMedia(lateMedia);
+  unknown.controller.sync();
+  const lateWrites = recordSeeks(lateMedia);
+  lateMedia.currentSrc = srcA;
+  lateMedia.__setTime(0.2);
+  lateWrites.length = 0;
+
+  unknown.pushSong('song-b', home);           // v-less push over a source learned too late
+  unknown.timers.tickIntervals();
+  assert.deepEqual(lateWrites.filter((w) => w.to === 30), [],
+    'a source learned after A adoption cannot approve B');
+
+  const first = createHarness({ storage: createStorage([savedB, SONG_C]) });
+  first.setHref(home);
+  await first.start();
+  const media = first.media();
+  const writes = recordSeeks(media);
+  first.pushSong('song-a', home);
+  await settle();
+  media.__setTime(0.2);
+  writes.length = 0;
+  first.pushSong('song-b', home);             // A to B, source-first on B
+  media.currentSrc = 'https://music.youtube.com/stream/song-b';
+  media.__setTime(0);
+  media.dispatchEvent('loadedmetadata');
+  writes.length = 0;
+  first.pushSong('song-c', home);             // B to C, no new source signal
+  first.timers.tickIntervals();
+  assert.deepEqual(writes.filter((w) => w.to === 40), [],
+    'back-to-back source-first pushes never seek C into B');
+});
+
+
+test('identity: a watch visit leaving for Home must not restore a pushed section into A', async () => {
+  const home = 'https://music.youtube.com/';
+  const watchA = 'https://music.youtube.com/watch?v=song-a';
+  const savedB = { videoId: 'song-b', startSeconds: 30, endSeconds: 60 };
+
+  const dropped = createHarness({ storage: createStorage([SECTION, savedB]) });
+  await dropped.start();
+  const outgoing = dropped.media();
+  const writes = recordSeeks(outgoing);
+  dropped.pushSong('song-a', watchA);
+  await settle();
+  outgoing.currentSrc = 'https://music.youtube.com/stream/song-a';
+  outgoing.__setTime(0.2);
+  writes.length = 0;
+
+  dropped.setHref(home);
+  dropped.timers.tickIntervals();
+  await settle();
+  assert.equal(dropped.status(), 'Play a track to repeat', 'Home drops the watch identity');
+  assert.equal(dropped.media(), outgoing,
+    'the observed element is the same outgoing A the recorder bound');
+
+  dropped.pushSong('song-b', home);
+  dropped.timers.tickIntervals();
+  assert.deepEqual(writes.filter((w) => w.to === 30), [],
+    'B must not seek the outgoing A after a watch-to-Home drop');
+
+  dropped.pushSong('song-b', home);
+  dropped.timers.tickIntervals();
+  assert.deepEqual(writes.filter((w) => w.to === 30), [],
+    'a second identical push must not seek either');
+
+  outgoing.currentTime = 15;
+  outgoing.dispatchEvent('seeked');
+  dropped.timers.tickIntervals();
+  assert.equal(outgoing.currentTime, 15, 'a tick after the user seek does not snap it back');
+  assert.deepEqual(writes.filter((w) => w.to === 30), [], 'no tick or seeked handler restores to 30');
+  assert.ok(writes.some((w) => w.to === 15), 'recorder reachability: the element setter is observed');
+
+  // Same controller: adopt song-a, drop identity, then re-adopt the same key.
+  const sameSong = createHarness({ storage: createStorage([SECTION]) });
+  sameSong.setHref(home);
+  await sameSong.start();
+  const media = sameSong.media();
+  const sameWrites = recordSeeks(media);
+  sameSong.pushSong('song-a', home);
+  await settle();
+  sameWrites.length = 0;
+  sameSong.controller.invalidateSongIdentity();
+  await settle();
+  media.__setTime(0);
+  sameSong.pushSong('song-a', home);
+  await settle();
+  assert.deepEqual(sameWrites.filter((w) => w.to === 30), [{ from: 0, to: 30, src: media.currentSrc }],
+    'a same-id re-adoption on the same controller still restores');
+
+  sameWrites.length = 0;
+  media.__setTime(0.2);
+  sameSong.pushSong('song-b', home);
+  sameSong.timers.tickIntervals();
+  assert.deepEqual(sameWrites.filter((w) => w.to === 30), [],
+    'the same controller still blocks a different key on Home');
+});
+
+
+test('panel: a dropped identity keeps the saved range visible without a refresh', async () => {
+  const home = 'https://music.youtube.com/';
+  const watchA = 'https://music.youtube.com/watch?v=song-a';
+  const savedB = { videoId: 'song-b', startSeconds: 30, endSeconds: 60 };
+  const toValue = (h) => { const node = h.panel('To'); return node ? node.value : ''; };
+
+  const dropped = createHarness({ storage: createStorage([SECTION, savedB]) });
+  await dropped.start();
+  const media = dropped.media();
+  const writes = recordSeeks(media);
+  dropped.pushSong('song-a', watchA);
+  await settle();
+  assert.equal(dropped.fromValue(), '0:30', 'precondition: the saved range was restored');
+  assert.equal(toValue(dropped), '1:00');
+  writes.length = 0;
+
+  dropped.setHref(home);
+  dropped.timers.tickIntervals();
+  await settle();
+  assert.equal(dropped.status(), 'Play a track to repeat', 'identity dropped');
+  assert.equal(dropped.panel('Repeat').checked, true, 'Repeat stays checked');
+  assert.equal(dropped.fromValue(), '0:30', 'the saved From stays visible without a refresh');
+  assert.equal(toValue(dropped), '1:00', 'the saved To stays visible without a refresh');
+  assert.deepEqual(writes, [], 'displaying the saved range never seeks');
+
+  const blocked = createHarness({ storage: createStorage([SECTION, savedB]) });
+  await blocked.start();
+  const blockedMedia = blocked.media();
+  const blockedWrites = recordSeeks(blockedMedia);
+  blocked.pushSong('song-a', watchA);
+  await settle();
+  blocked.setHref(home);
+  blocked.timers.tickIntervals();
+  await settle();
+  blocked.pushSong('song-b', home);
+  blocked.timers.tickIntervals();
+  assert.deepEqual(blockedWrites.filter((w) => w.to === 30), [], 'blocked B does not seek');
+  assert.equal(blocked.fromValue(), '', 'a blocked transition shows no saved range');
+  assert.equal(toValue(blocked), '');
+
+  const manual = createHarness({ storage: createStorage([SECTION]) });
+  await manual.start();
+  manual.pushSong('song-a', watchA);
+  await settle();
+  manual.setHref(home);
+  manual.timers.tickIntervals();
+  await settle();
+  const from = manual.panel('From');
+  from.value = '0:10';
+  from.dispatchEvent('change');
+  await settle();
+  assert.equal(manual.fromValue(), '0:10', 'an explicit edit wins over the saved display');
+
+  const replaced = createHarness({ storage: createStorage([SECTION]) });
+  await replaced.start();
+  replaced.pushSong('song-a', watchA);
+  await settle();
+  replaced.setMedia(replaced.dom.makeMedia('song-a'));
+  replaced.controller.sync();
+  await settle();
+  assert.equal(replaced.fromValue(), '0:30', 'element replacement needs no refresh');
+  assert.equal(toValue(replaced), '1:00');
+  assert.equal(replaced.backstop(), true, 'the loop re-arms once identity is confirmed');
+});
+
+
+test('status: an in-progress edit keeps reporting the committed armed range', async () => {
+  const toEmpty = createHarness({ storage: createStorage([SECTION]) });
+  await toEmpty.start();
+  toEmpty.pushSong('song-a', 'https://music.youtube.com/watch?v=song-a');
+  await settle();
+  assert.equal(toEmpty.status(), '0:30 → 1:00', 'precondition: the saved range is armed');
+
+  const to = toEmpty.panel('To');
+  to.value = '';
+  to.dispatchEvent('input');                 // dirty, no change or blur
+  assert.equal(to.value, '', 'the in-progress edit stays in the box');
+  assert.equal(to.getAttribute('data-editing'), 'true', 'the dirty field is marked as being edited');
+  assert.equal(toEmpty.status(), '0:30 → 1:00', 'status still reports the committed range');
+
+  const media = toEmpty.media();
+  media.currentTime = SECTION.endSeconds;
+  toEmpty.timers.tickIntervals();
+  assert.equal(media.currentTime, SECTION.startSeconds, 'the latch still targets the committed From');
+
+  const fromEmpty = createHarness({ storage: createStorage([SECTION]) });
+  await fromEmpty.start();
+  fromEmpty.pushSong('song-a', 'https://music.youtube.com/watch?v=song-a');
+  await settle();
+  assert.equal(fromEmpty.status(), '0:30 → 1:00', 'precondition: the saved range is armed');
+
+  const from = fromEmpty.panel('From');
+  from.value = '';
+  from.dispatchEvent('input');
+  assert.equal(from.value, '', 'the in-progress edit stays in the box');
+  assert.equal(from.getAttribute('data-editing'), 'true', 'the dirty field is marked as being edited');
+  assert.equal(fromEmpty.status(), '0:30 → 1:00', 'status still reports the committed range');
+});

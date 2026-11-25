@@ -9,15 +9,33 @@
 
 ## Why
 
-Four Chromium extensions, loaded unpacked from this repository. Nothing is published to a store. The two audio extensions work through a local audio graph on the pages you choose. The two presence extensions reach Discord through a local native messaging host, so no browser-to-cloud bridge is involved. There is no build step for the extensions themselves.
+Four Chromium extensions, loaded unpacked from stable folders the installer creates. Nothing is published to a store. The two audio extensions work through a local audio graph on the pages you choose. The two presence extensions reach Discord through a local native messaging host, so no browser-to-cloud bridge is involved. There is no build step for the extensions themselves.
 
 ## Install
 
 ```sh
 git clone https://github.com/nathwn12/my-chromium-extensions.git
+cd my-chromium-extensions
 ```
 
-Open `chrome://extensions`, turn on Developer mode, click Load unpacked, and select `packages/<name>` — the folder that holds that extension's `manifest.json`.
+Install the runtime for each extension you want:
+
+```sh
+node scripts/install-extension.mjs audio-normalizer
+node scripts/install-extension.mjs slowed-reverb
+node scripts/install-extension.mjs crunchy-presence
+node scripts/install-extension.mjs youtube-music-presence
+```
+
+Each command copies only the files that extension needs at runtime into `%LOCALAPPDATA%\<name>\extension` and prints the exact folder:
+
+```
+Load unpacked: C:\Users\<you>\AppData\Local\<name>\extension
+```
+
+Open `chrome://extensions`, turn on Developer mode, click **Load unpacked**, and select that printed path. Chrome keeps an unpacked extension as a folder path, not a copy. Loading it from `packages/<name>` would break as soon as you move or delete the checkout. The stable target exists so the browser never follows the checkout. Re-run the installer after pulling changes, then reload the extension in `chrome://extensions`.
+
+Add `--check` to verify the installed files against the installer's recorded hashes without writing. Add `--uninstall` to remove only that extension's stable folder.
 
 The two presence extensions need a native messaging host. Register each once from the repository root:
 
@@ -32,10 +50,10 @@ Add `--check` to either command to verify a registration without writing.
 
 | Extension | What it does | Version |
 | --- | --- | --- |
-| [Audio Normalizer](packages/audio-normalizer) | Brings every site you switch on to one target loudness through a local audio graph. | 5.6.5 |
-| [Slowed Reverb](packages/slowed-reverb) | Slows YouTube Music playback and adds plate reverb in a local audio graph. | 1.2.9 |
-| [Crunchy Presence](packages/crunchy-presence) | Reports the Crunchyroll episode you are watching as Discord rich presence. | 1.2.4 |
-| [YouTube Music Presence](packages/youtube-music-presence) | Reports YouTube Music only to Discord desktop rich presence. | 1.1.14 |
+| [Audio Normalizer](packages/audio-normalizer) | Brings every site you switch on to one target loudness through a local audio graph. | 5.6.6 |
+| [Slowed Reverb](packages/slowed-reverb) | Slows YouTube Music playback and adds plate reverb in a local audio graph. | 1.2.12 |
+| [Crunchy Presence](packages/crunchy-presence) | Reports the Crunchyroll episode you are watching as Discord rich presence. | 1.2.5 |
+| [YouTube Music Presence](packages/youtube-music-presence) | Reports YouTube Music only to Discord desktop rich presence. | 1.1.18 |
 
 Then, per extension:
 
@@ -48,6 +66,7 @@ Then, per extension:
 
 - **Audio Normalizer** — the gain slider runs -12 to +12 dB; Speech, Music and Boost are presets. The setting is per site.
 - **Slowed Reverb** — speed runs 0.7x to 1.3x and reverb runs 0 to 100 percent.
+- **Extension installs** — `scripts/install-extension.mjs` writes the stable runtime folder. `--check` verifies it without writing; `--uninstall` removes it.
 - **Native hosts** — `install-host.mjs` writes the registration for one presence extension. `--check` verifies it without writing. Re-run the installer after a host update.
 - **Wiring check** — `node scripts/verify-integration.mjs` reads the tree and installs nothing.
 
@@ -64,12 +83,13 @@ Then, per extension:
 ```sh
 bun install
 bun run test
+bun run test:installer
 node scripts/verify-integration.mjs
 bun run lint
 bun run typecheck
 ```
 
-Tests run in Node on `node --test`, never in a browser. `verify-integration.mjs` reads the tree and installs nothing.
+Tests run in Node on `node --test`, never in a browser. The installer test uses a temporary local-app-data root and never writes the live profile. `verify-integration.mjs` reads the tree and installs nothing.
 
 ```
 my-chromium-extensions/

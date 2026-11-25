@@ -716,6 +716,164 @@ test("the complex-string album fallback keeps the last album anchor", () => {
   assert.equal(state.album, "Last");
 });
 
+function clockHandoff(time, duration) {
+  const page = musicPage({
+    href: "https://music.youtube.com/watch?v=bbbbbbbbbbb",
+    title: "Second Song",
+    byline: [node("a", { attrs: { href: "channel/UCsecond" }, text: "Second Artist" })],
+    time,
+    mediaSession: { title: "Second Song", artist: "Second Artist" },
+    children: [audio({ currentTime: 47, duration, paused: false, playbackRate: 1 })]
+  });
+  page.navigator.mediaSession.playbackState = "playing";
+  return read(page.doc, page.navigator, page.location);
+}
+
+test("a bar clock ahead of stale media withholds timing", () => {
+  const state = clockHandoff("0:47 / 2:09", 366);
+  const detail = `title=${state.title} elapsed=${state.position} duration=${state.duration}`;
+  assert.equal(state.title, "Second Song", detail);
+  assert.equal(state.duration, null, `new clock, stale media: ${detail}`);
+  assert.equal(state.position, null, detail);
+});
+
+test("a stale bar clock with media already current withholds timing", () => {
+  const state = clockHandoff("0:47 / 6:06", 129);
+  const detail = `title=${state.title} elapsed=${state.position} duration=${state.duration}`;
+  assert.equal(state.title, "Second Song", detail);
+  assert.equal(state.duration, null, `stale clock, media already current: ${detail}`);
+  assert.equal(state.position, null, detail);
+});
+
+test("agreeing bar clock and media report the current duration", () => {
+  const state = clockHandoff("0:47 / 2:09", 129);
+  const detail = `title=${state.title} elapsed=${state.position} duration=${state.duration}`;
+  assert.equal(state.duration, 129, `both sources agree: ${detail}`);
+  assert.equal(state.position, 47, detail);
+});
+
+test("a renamed player-bar clock class still rejects stale media timing", () => {
+  const page = musicPage({
+    href: "https://music.youtube.com/watch?v=bbbbbbbbbbb",
+    title: "Second Song",
+    byline: [node("a", { attrs: { href: "channel/UCsecond" }, text: "Second Artist" })],
+    mediaSession: { title: "Second Song" },
+    children: [audio({ currentTime: 47, duration: 366, paused: false, playbackRate: 1 })]
+  });
+  page.navigator.mediaSession.playbackState = "playing";
+  page.doc.querySelector("ytmusic-player-bar").append(
+    node("span", { attrs: { class: "renamed-clock" }, text: "0:47 / 2:09" })
+  );
+
+  const state = read(page.doc, page.navigator, page.location);
+  assert.equal(
+    state.duration,
+    null,
+    `renamed clock still detected, so disagreement withholds: title=${state.title} elapsed=${state.position} duration=${state.duration}`
+  );
+});
+
+test("two disagreeing player-bar clocks withhold timing instead of trusting the element", () => {
+  const page = musicPage({
+    href: "https://music.youtube.com/watch?v=bbbbbbbbbbb",
+    title: "Second Song",
+    byline: [node("a", { attrs: { href: "channel/UCsecond" }, text: "Second Artist" })],
+    mediaSession: { title: "Second Song" },
+    children: [audio({ currentTime: 47, duration: 366, paused: false, playbackRate: 1 })]
+  });
+  page.navigator.mediaSession.playbackState = "playing";
+  const bar = page.doc.querySelector("ytmusic-player-bar");
+  bar.append(node("span", { attrs: { class: "time" }, text: "0:48 / 2:09" }));
+  bar.append(node("span", { attrs: { class: "time-info" }, text: "0:47 / 6:06" }));
+
+  const state = read(page.doc, page.navigator, page.location);
+  const detail = `title=${state.title} elapsed=${state.position} duration=${state.duration} paused=${state.paused}`;
+  assert.equal(state.duration, null, `a clock conflict is not a missing clock: ${detail}`);
+  assert.equal(state.position, null, detail);
+  assert.equal(state.paused, false, `playing metadata survives the withheld timing: ${detail}`);
+});
+
+test("a trusted paused media element outranks a stale MediaSession playing state", () => {
+  const page = musicPage({
+    title: "Current Song",
+    byline: [node("a", { attrs: { href: "channel/UCcurrent" }, text: "Current Artist" })],
+    mediaSession: { title: "Current Song" },
+    children: [audio({ currentTime: 47, duration: 200, paused: true, playbackRate: 1 })]
+  });
+  page.navigator.mediaSession.playbackState = "playing";
+
+  const state = read(page.doc, page.navigator, page.location);
+  assert.equal(
+    state.paused,
+    true,
+    `trusted element pause wins: title=${state.title} elapsed=${state.position} duration=${state.duration} paused=${state.paused}`
+  );
+});
+
+test("selected media source is exposed locally and never enters the RPC state", () => {
+  const page = musicPage({
+    title: "Current Song",
+    byline: [node("a", { attrs: { href: "channel/UCcurrent" }, text: "Current Artist" })],
+    children: [audio({ currentTime: 47, duration: 200, paused: false, currentSrc: "https://media.example/a" })]
+  });
+
+  const state = read(page.doc, page.navigator, page.location);
+  assert.equal(typeof api.mediaSourceOf, "function", "local evidence getter exists");
+  assert.equal(api.mediaSourceOf(), "https://media.example/a");
+  assert.equal(Object.keys(state).indexOf("mediaSource"), -1, "no extra field on the wire");
+});
+
+test("an ambiguous handoff publishes playing metadata without timestamps", () => {
+  const page = musicPage({
+    title: "Second Song",
+    byline: [node("a", { attrs: { href: "channel/UCsecond" }, text: "Second Artist" })],
+    mediaSession: { title: "Second Song", artist: "Second Artist" },
+    children: [audio({ currentTime: 0, duration: 0, paused: true })]
+  });
+  page.navigator.mediaSession.playbackState = "playing";
+
+  const state = read(page.doc, page.navigator, page.location);
+  const detail = `title=${state.title} track=${state.trackUrl} elapsed=${state.position} duration=${state.duration} paused=${state.paused}`;
+  assert.equal(state.title, "Second Song", detail);
+  assert.equal(state.paused, false, `playing metadata from MediaSession: ${detail}`);
+  assert.equal(state.duration, null, `no borrowed duration when timing is ambiguous: ${detail}`);
+  assert.equal(state.position, null, detail);
+});
+
+test("two media playing the same instant with no bar clock still stamp timing", () => {
+  const page = musicPage({
+    title: "Current Song",
+    byline: [node("a", { attrs: { href: "channel/UCcurrent" }, text: "Current Artist" })],
+    children: [
+      audio({ currentTime: 10, duration: 200, paused: false, playbackRate: 1 }),
+      audio({ currentTime: 10, duration: 200, paused: false, playbackRate: 1 })
+    ]
+  });
+
+  const state = read(page.doc, page.navigator, page.location);
+  assert.equal(state.duration, 200, `elapsed=${state.position} duration=${state.duration}`);
+  assert.equal(state.position, 10);
+});
+
+test("two equally long playing media with no bar clock withhold timing instead of picking DOM order", () => {
+  const page = musicPage({
+    title: "Current Song",
+    byline: [node("a", { attrs: { href: "channel/UCcurrent" }, text: "Current Artist" })],
+    children: [
+      audio({ currentTime: 10, duration: 200, paused: false, playbackRate: 1 }),
+      audio({ currentTime: 90, duration: 200, paused: false, playbackRate: 1 })
+    ]
+  });
+
+  const state = read(page.doc, page.navigator, page.location);
+  assert.equal(
+    state.duration,
+    null,
+    `title=${state.title} track=${state.trackUrl} elapsed=${state.position} duration=${state.duration}`
+  );
+  assert.equal(state.position, null);
+});
+
 test("read never throws, whatever the page hands it", () => {
   const hostile = {
     get title() {

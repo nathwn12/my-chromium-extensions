@@ -2,6 +2,24 @@
 
 Notable changes to this package. Dates are ISO 8601. This package is local-only and is not published to a registry.
 
+## [Unreleased]
+
+## [1.1.18] - 2026-11-25
+
+- Local patch version for the staged presence timing handoff fixes. A changed total now releases a held read only with ownership evidence, and a same-track source baseline keeps a later changed total classified as outgoing.
+
+## [1.1.17] - 2026-11-25
+
+- A player-announced backward seek now reopens a held timing gate only when the media is playing and the read matches the last published timed sample's identity, duration unit, non-null coherent source and playhead. A paused seek, a clock conflict, a changed total and a stale handoff all stay withheld, and the single comparison baseline stays local to the content script.
+- A changed total is published only with an owned reset: a playhead at or near zero, or a coherent source new to the last published sample. An owned first read publishes at once, so a genuinely fresh new duration is never held forever; a new source at the old total stays blocked.
+- A mid-song total under the same source cannot be told apart from ingested stale timing and fails closed at the incoming total until a different owned total arrives. Wall time alone never releases a hold, and a withheld read never becomes the baseline for the next decision.
+
+## [1.1.15] - 2026-11-25
+
+- Presence no longer carries one track's timestamps onto the next. During a handoff the card shows the new title with no timer until the timing provably belongs to it: a player-bar `M:SS / M:SS` clock and a media element must agree on the duration, and a lone source is used only when there is no second source to disagree with it. A stale clock and a stale playing element that agree on the previous song are not freshness, so the content script also holds timestamps until the reported duration moves or the selected media element's source changes.
+- Timing withheld this way is restored on the next poll or media event: a duration that appears, a position that appears at the same duration, a clock that catches up or a changed media source all publish the correct total and playhead. A same-length new track whose media source never changes stays timer-free; that is the fail-closed choice, not a delay.
+- Two disagreeing player-bar clocks are a conflict, not a missing clock, so the stale element is never stamped in that state.
+
 ## [1.1.14] - 2026-11-24
 
 - The timestamp span is the real duration at every playback rate. The worker biases the elapsed reference by bounded rate drift so the displayed time follows the sampled media position, and a track still at 0:00 reads 0:00. A 3:27 track no longer reads 4:51 at 0.70x or 2:42 at 1.30x. Discord's timer counts wall time and carries no rate field, so no payload can make a non-1x track literally run at that speed.

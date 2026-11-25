@@ -29,9 +29,16 @@ This writes `%LOCALAPPDATA%\crunchy-presence\host.cmd` and `host-manifest.json`,
 
 ### 2. Load the extension
 
-1. Open `chrome://extensions`.
-2. Turn on **Developer mode**.
-3. **Load unpacked**, then select this package folder (the one holding `manifest.json`).
+1. Install the stable runtime folder from the repository root:
+
+   ```text
+   node scripts/install-extension.mjs crunchy-presence
+   ```
+
+   It prints the folder it wrote, under `%LOCALAPPDATA%\crunchy-presence\extension`.
+2. Open `chrome://extensions`.
+3. Turn on **Developer mode**.
+4. **Load unpacked**, then select the printed path. Chrome keeps an unpacked extension as a folder path, so selecting this package folder would break if the checkout moves.
 
 The manifest carries a fixed `key`, so the extension keeps the same ID across reloads and machines. The host's `allowed_origins` names exactly that ID.
 

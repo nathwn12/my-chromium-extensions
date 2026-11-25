@@ -52,13 +52,14 @@ jobs:
               (cd packages/slowed-reverb && zip -r ../../dist/slowed-reverb.zip manifest.json background.js shared.js player-actions.js content-script.js page-hook.js dattorro-worklet.js popup.html popup.css popup.js icons/icon16.png icons/icon24.png icons/icon32.png icons/icon48.png icons/icon128.png)
               ;;
             crunchy-presence)
-              (cd packages/crunchy-presence && zip -r ../../dist/crunchy-presence.zip manifest.json background.js bridge-status.js config.js extract.js content.js popup.html popup.css popup.js options.html options.css options.js icons/icon16.png icons/icon24.png icons/icon32.png icons/icon48.png icons/icon128.png)
+              (cd packages/crunchy-presence && zip -r ../../dist/crunchy-presence.zip manifest.json background.js bridge-status.js config.js extract.js content.js popup.html popup.css popup.js options.html options.css options.js icons/icon16.png icons/icon24.png icons/icon32.png icons/icon48.png icons/icon128.png native/host.mjs native/arrpc.mjs native/ipc.mjs native/protocol.mjs scripts/extension-key.mjs scripts/install-host.mjs scripts/uninstall-host.mjs)
               ;;
             youtube-music-presence)
-              (cd packages/youtube-music-presence && zip -r ../../dist/youtube-music-presence.zip manifest.json background.js config.js activity.js bridge-status.js content.js extract-youtube.js popup.html popup.css popup.js options.html options.css options.js icons/icon16.png icons/icon24.png icons/icon32.png icons/icon48.png icons/icon128.png)
+              (cd packages/youtube-music-presence && zip -r ../../dist/youtube-music-presence.zip manifest.json background.js config.js activity.js bridge-status.js content.js extract-youtube.js popup.html popup.css popup.js options.html options.css options.js icons/icon16.png icons/icon24.png icons/icon32.png icons/icon48.png icons/icon128.png native/host.mjs native/arrpc.mjs native/ipc.mjs native/native-framing.mjs scripts/extension-key.mjs scripts/install-host.mjs scripts/uninstall-host.mjs)
               ;;
             *) echo "Unsupported product: $PRODUCT" >&2; exit 1 ;;
           esac
+          zip -r "dist/$PRODUCT.zip" scripts/install-extension.mjs
           unzip -l "dist/$PRODUCT.zip"
 
       - name: Overwrite selected release
@@ -82,7 +83,7 @@ jobs:
             body="$(desc "$pkg")
 
           **Version:** $(version "$pkg")
-          **Install:** download the zip, unzip it anywhere, then Load unpacked in \`chrome://extensions\` with Developer mode on.
+          **Install:** download the zip, unzip it anywhere, run \`node scripts/install-extension.mjs $pkg\` from that folder, then Load unpacked at the printed path in \`chrome://extensions\` with Developer mode on.
           **Source:** \`packages/$pkg\` in this repository.
 
           This release is replaced in place on every update — the link never changes."

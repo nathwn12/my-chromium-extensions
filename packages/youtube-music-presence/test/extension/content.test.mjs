@@ -269,6 +269,24 @@ test("an unannounced jump backward reports once with the live position", () => {
   assert.equal(states(handle).length, 2);
 });
 
+test("an A-B loop seek outside a hold re-anchors the real total and elapsed", () => {
+  const page = musicWatch("Loop Song", { duration: 251, currentTime: 148, paused: false });
+  const clock = fakeClock();
+  const handle = bootWithClock(page, clock);
+  const media = page.doc.querySelector("audio");
+  assert.equal(states(handle)[0].state.duration, 251);
+
+  media.currentTime = 98;
+  page.dispatchOnDoc("seeked", { target: media });
+  const looped = states(handle).at(-1).state;
+  assert.equal(looped.duration, 251, `the total survives the loop: elapsed=${looped.position} duration=${looped.duration}`);
+  assert.equal(looped.position, 98, "the playhead follows the loop back to A");
+
+  clock.advance(1000);
+  handle.poll();
+  assert.equal(states(handle).length, 2, "the re-anchored loop makes the next tick quiet");
+});
+
 test("a paused page whose position jumps never drift-reports", () => {
   const page = musicWatch("First Song", { duration: 300, currentTime: 10 });
   const clock = fakeClock();
@@ -429,4 +447,333 @@ test("non-Music pages report nothing", () => {
   assert.deepEqual(handle.messages, []);
   handle.poll();
   assert.deepEqual(handle.messages, []);
+});
+
+test("a duration change reports even when title and pause are unchanged", () => {
+  const page = musicWatch("Same Title", { duration: 366, currentTime: 47, paused: false });
+  const clock = fakeClock();
+  const handle = bootWithClock(page, clock);
+  assert.equal(states(handle).length, 1);
+  assert.equal(states(handle)[0].state.duration, 366);
+
+  const media = page.doc.querySelector("audio");
+  media.duration = 129;
+  media.currentTime = 48;
+  clock.advance(1000);
+  handle.poll();
+
+  const next = states(handle)[1] && states(handle)[1].state;
+  const detail = next && `title=${next.title} track=${next.trackUrl} elapsed=${next.position} duration=${next.duration} paused=${next.paused}`;
+  assert.equal(states(handle).length, 2, `a new duration is a new sample, not silence: ${detail}`);
+  assert.equal(states(handle)[1].state.duration, 129, detail);
+  assert.equal(states(handle)[1].state.position, 48, detail);
+  handle.poll();
+  assert.equal(states(handle).length, 2, "the re-anchored sample makes the next tick quiet");
+});
+
+test("a normal no-clock startup still stamps timestamps", () => {
+  const page = musicWatch("First Song", { duration: 200, currentTime: 12, paused: false });
+  const handle = bootWithClock(page, fakeClock());
+  const state = states(handle)[0].state;
+  assert.equal(state.duration, 200, `title=${state.title} elapsed=${state.position} duration=${state.duration}`);
+  assert.equal(state.position, 12);
+});
+
+test("a new identity with stale bar clock and stale playing media withholds timing", () => {
+  const page = musicWatch("First Song", { duration: 366, currentTime: 47, paused: false });
+  const clock = fakeClock();
+  const handle = bootWithClock(page, clock);
+  assert.equal(states(handle)[0].state.duration, 366);
+
+  page.doc.querySelector("ytmusic-player-bar").append(
+    node("span", { attrs: { class: "time" }, text: "0:47 / 6:06" })
+  );
+  page.navigator.mediaSession = { metadata: { title: "Second Song" }, playbackState: "playing" };
+  page.setHref("https://music.youtube.com/watch?v=bbbbbbbbbbb");
+  clock.advance(1000);
+  handle.poll();
+
+  const next = states(handle)[1].state;
+  const detail = `title=${next.title} track=${next.trackUrl} elapsed=${next.position} duration=${next.duration} paused=${next.paused}`;
+  assert.equal(next.title, "Second Song", detail);
+  assert.equal(next.duration, null, `stale clock and stale media agree on the old song: ${detail}`);
+  assert.equal(next.position, null, detail);
+});
+
+test("a new identity with stale playing media and no bar clock withholds timing", () => {
+  const page = musicWatch("First Song", { duration: 366, currentTime: 47, paused: false });
+  const clock = fakeClock();
+  const handle = bootWithClock(page, clock);
+  assert.equal(states(handle)[0].state.duration, 366);
+
+  page.navigator.mediaSession = { metadata: { title: "Second Song" }, playbackState: "playing" };
+  page.setHref("https://music.youtube.com/watch?v=bbbbbbbbbbb");
+  clock.advance(1000);
+  handle.poll();
+
+  const next = states(handle)[1].state;
+  const detail = `title=${next.title} track=${next.trackUrl} elapsed=${next.position} duration=${next.duration} paused=${next.paused}`;
+  assert.equal(next.title, "Second Song", detail);
+  assert.equal(next.duration, null, `lone playing fallback is stale at a new identity: ${detail}`);
+  assert.equal(next.position, null, detail);
+});
+
+test("an outgoing element's loadedmetadata cannot approve a stale clock pair", () => {
+  const page = musicWatch("First Song", { duration: 366, currentTime: 47, paused: false });
+  const clock = fakeClock();
+  const handle = bootWithClock(page, clock);
+  assert.equal(states(handle)[0].state.duration, 366);
+
+  page.navigator.mediaSession = { metadata: { title: "Second Song" }, playbackState: "playing" };
+  page.setHref("https://music.youtube.com/watch?v=bbbbbbbbbbb");
+  clock.advance(1000);
+  handle.poll();
+  assert.equal(states(handle)[1].state.duration, null, "both sources still say the old song");
+
+  page.dispatchOnDoc("loadedmetadata", { target: page.doc.querySelector("audio") });
+  clock.advance(1000);
+  handle.poll();
+  const next = states(handle)[states(handle).length - 1].state;
+  assert.equal(next.title, "Second Song");
+  assert.equal(
+    next.duration,
+    null,
+    `an unassociated load event must not approve the stale pair: title=${next.title} track=${next.trackUrl} elapsed=${next.position} duration=${next.duration}`
+  );
+});
+
+test("a same-duration handoff stays held when only the media source changes", () => {
+  const page = musicWatch("First Song", {
+    duration: 366,
+    currentTime: 47,
+    paused: false,
+    currentSrc: "https://media.example/a"
+  });
+  const clock = fakeClock();
+  const handle = bootWithClock(page, clock);
+  assert.equal(states(handle)[0].state.duration, 366);
+
+  page.navigator.mediaSession = { metadata: { title: "Second Song" }, playbackState: "playing" };
+  page.setHref("https://music.youtube.com/watch?v=bbbbbbbbbbb");
+  clock.advance(1000);
+  handle.poll();
+  assert.equal(states(handle)[1].state.duration, null, "same duration with the old source stays withheld");
+
+  page.doc.querySelector("audio").currentSrc = "https://media.example/b";
+  clock.advance(1000);
+  handle.poll();
+  const held = states(handle)[states(handle).length - 1].state;
+  assert.equal(held.duration, null, `a new source at the old total is not fresh: title=${held.title} elapsed=${held.position} duration=${held.duration}`);
+  assert.equal(held.position, null);
+});
+
+test("a source change plus a fresh coherent duration releases the hold", () => {
+  const page = musicWatch("First Song", {
+    duration: 366,
+    currentTime: 47,
+    paused: false,
+    currentSrc: "https://media.example/a"
+  });
+  const clock = fakeClock();
+  const handle = bootWithClock(page, clock);
+
+  page.navigator.mediaSession = { metadata: { title: "Second Song" }, playbackState: "playing" };
+  page.setHref("https://music.youtube.com/watch?v=bbbbbbbbbbb");
+  clock.advance(1000);
+  handle.poll();
+  assert.equal(states(handle)[1].state.duration, null);
+
+  const bar = page.doc.querySelector("ytmusic-player-bar");
+  bar.append(node("span", { attrs: { class: "time" }, text: "0:48 / 2:09" }));
+  const media = page.doc.querySelector("audio");
+  media.currentSrc = "https://media.example/b";
+  media.duration = 129;
+  media.currentTime = 48;
+  clock.advance(1000);
+  handle.poll();
+  const next = states(handle)[states(handle).length - 1].state;
+  assert.equal(next.duration, 129, `the real total is restored: title=${next.title} elapsed=${next.position} duration=${next.duration}`);
+  assert.equal(next.position, 48);
+});
+
+test("an unchanged media source cannot approve a stale same-duration pair", () => {
+  const page = musicWatch("First Song", {
+    duration: 366,
+    currentTime: 47,
+    paused: false,
+    currentSrc: "https://media.example/a"
+  });
+  const clock = fakeClock();
+  const handle = bootWithClock(page, clock);
+
+  page.navigator.mediaSession = { metadata: { title: "Second Song" }, playbackState: "playing" };
+  page.setHref("https://music.youtube.com/watch?v=bbbbbbbbbbb");
+  clock.advance(1000);
+  handle.poll();
+  clock.advance(1000);
+  handle.poll();
+  const next = states(handle)[states(handle).length - 1].state;
+  assert.equal(
+    next.duration,
+    null,
+    `same source and same duration are indistinguishable: title=${next.title} track=${next.trackUrl} elapsed=${next.position} duration=${next.duration}`
+  );
+});
+
+test("a fractional media duration and integer bar clock hold across an emptied handoff", () => {
+  const page = musicWatch("First Song", { duration: 366.4, currentTime: 47, paused: false });
+  const clock = fakeClock();
+  const handle = bootWithClock(page, clock);
+  assert.equal(states(handle)[0].state.duration, 366.4);
+
+  const media = page.doc.querySelector("audio");
+  const bar = page.doc.querySelector("ytmusic-player-bar");
+  bar.append(node("span", { attrs: { class: "time" }, text: "0:47 / 6:06" }));
+  media.duration = 0;
+  media.currentTime = 0;
+  page.navigator.mediaSession = { metadata: { title: "Second Song" }, playbackState: "playing" };
+  page.setHref("https://music.youtube.com/watch?v=bbbbbbbbbbb");
+  page.dispatchOnDoc("emptied", { target: media });
+
+  const stale = states(handle)[states(handle).length - 1].state;
+  assert.equal(
+    stale.duration,
+    null,
+    `integer clock and fractional media are the same rendered second: title=${stale.title} track=${stale.trackUrl} elapsed=${stale.position} duration=${stale.duration}`
+  );
+
+  bar.querySelector(".time").textContent = "0:48 / 2:09";
+  media.duration = 129;
+  media.currentTime = 48;
+  clock.advance(1000);
+  handle.poll();
+  const mid = states(handle)[states(handle).length - 1].state;
+  assert.equal(
+    mid.duration,
+    null,
+    `mid-song 129 under the same source fails closed: elapsed=${mid.position} duration=${mid.duration}`
+  );
+
+  bar.querySelector(".time").textContent = "0:02 / 2:09";
+  media.currentTime = 2;
+  clock.advance(1000);
+  handle.poll();
+  const fresh = states(handle)[states(handle).length - 1].state;
+  assert.equal(fresh.duration, 129, `a near-zero playhead restores: elapsed=${fresh.position} duration=${fresh.duration}`);
+  assert.equal(fresh.position, 2, `the real playhead follows: elapsed=${fresh.position}`);
+});
+
+test("a null timing gap does not make a returning stale duration fresh", () => {
+  const page = musicWatch("First Song", { duration: 366, currentTime: 47, paused: false });
+  const clock = fakeClock();
+  const handle = bootWithClock(page, clock);
+  assert.equal(states(handle)[0].state.duration, 366);
+
+  const media = page.doc.querySelector("audio");
+  media.duration = 0;
+  media.currentTime = 0;
+  page.navigator.mediaSession = { metadata: { title: "Second Song" }, playbackState: "playing" };
+  page.setHref("https://music.youtube.com/watch?v=bbbbbbbbbbb");
+  clock.advance(1000);
+  handle.poll();
+  assert.equal(states(handle)[1].state.title, "Second Song");
+  assert.equal(states(handle)[1].state.duration, null, "identity changed with no timing evidence");
+
+  media.duration = 366;
+  media.currentTime = 47;
+  clock.advance(1000);
+  handle.poll();
+  const stale = states(handle)[states(handle).length - 1].state;
+  assert.equal(
+    stale.duration,
+    null,
+    `a returning stale duration is not fresh: title=${stale.title} track=${stale.trackUrl} elapsed=${stale.position} duration=${stale.duration}`
+  );
+
+  media.duration = 129;
+  media.currentTime = 48;
+  clock.advance(1000);
+  handle.poll();
+  const mid = states(handle)[states(handle).length - 1].state;
+  assert.equal(
+    mid.duration,
+    null,
+    `mid-song 129 under the same source fails closed: elapsed=${mid.position} duration=${mid.duration}`
+  );
+
+  media.currentTime = 2;
+  clock.advance(1000);
+  handle.poll();
+  const fresh = states(handle)[states(handle).length - 1].state;
+  assert.equal(fresh.duration, 129, `a near-zero playhead restores: elapsed=${fresh.position} duration=${fresh.duration}`);
+  assert.equal(fresh.position, 2, `the real playhead follows: elapsed=${fresh.position}`);
+});
+
+test("a duration appearing after a metadata-only state reports on the next poll", () => {
+  const page = musicWatch("First Song", { duration: 0, currentTime: 0, paused: false });
+  const clock = fakeClock();
+  const handle = bootWithClock(page, clock);
+  assert.equal(states(handle)[0].state.duration, null);
+
+  page.doc.querySelector("audio").duration = 200;
+  clock.advance(1000);
+  handle.poll();
+  const next = states(handle)[1].state;
+  assert.equal(next.duration, 200, `title=${next.title} elapsed=${next.position} duration=${next.duration}`);
+});
+
+test("a position appearing at the same duration reports on the next poll", () => {
+  const page = musicWatch("First Song", { duration: 200, currentTime: null, paused: false });
+  const clock = fakeClock();
+  const handle = bootWithClock(page, clock);
+  assert.equal(states(handle)[0].state.duration, 200);
+  assert.equal(states(handle)[0].state.position, null);
+
+  page.doc.querySelector("audio").currentTime = 48;
+  clock.advance(1000);
+  handle.poll();
+  const next = states(handle)[1].state;
+  assert.equal(
+    next.position,
+    48,
+    `title=${next.title} track=${next.trackUrl} elapsed=${next.position} duration=${next.duration}`
+  );
+  assert.equal(next.duration, 200);
+});
+
+test("a handoff reports metadata first and refreshes timing once it is coherent", () => {
+  const page = musicWatch("Same Title", { duration: 366, currentTime: 47, paused: false });
+  const clock = fakeClock();
+  const handle = bootWithClock(page, clock);
+  assert.equal(states(handle).length, 1);
+  assert.equal(states(handle)[0].state.duration, 366);
+
+  const media = page.doc.querySelector("audio");
+  page.navigator.mediaSession = { metadata: { title: "Same Title" }, playbackState: "playing" };
+  media.duration = 0;
+  media.currentTime = 0;
+  media.paused = true;
+  page.dispatchOnDoc("durationchange", { target: media });
+
+  const handoff = states(handle)[1].state;
+  const handoffDetail = `title=${handoff.title} track=${handoff.trackUrl} elapsed=${handoff.position} duration=${handoff.duration} paused=${handoff.paused}`;
+  assert.equal(states(handle).length, 2, `the handoff reports promptly: ${handoffDetail}`);
+  assert.equal(handoff.paused, false, `playing metadata, not a paused media element: ${handoffDetail}`);
+  assert.equal(handoff.duration, null, `no borrowed 366 timing: ${handoffDetail}`);
+  assert.equal(handoff.position, null, handoffDetail);
+
+  page.doc.querySelector("ytmusic-player-bar").append(
+    node("span", { attrs: { class: "time" }, text: "0:48 / 2:09" })
+  );
+  media.duration = 129;
+  media.currentTime = 48;
+  media.paused = false;
+  page.dispatchOnDoc("durationchange", { target: media });
+
+  const refreshed = states(handle)[2].state;
+  const refreshedDetail = `title=${refreshed.title} track=${refreshed.trackUrl} elapsed=${refreshed.position} duration=${refreshed.duration} paused=${refreshed.paused}`;
+  assert.equal(states(handle).length, 3, refreshedDetail);
+  assert.equal(refreshed.duration, 129, `the correct total arrives as soon as it is coherent: ${refreshedDetail}`);
+  assert.equal(refreshed.position, 48, refreshedDetail);
+  assert.equal(refreshed.paused, false, refreshedDetail);
 });

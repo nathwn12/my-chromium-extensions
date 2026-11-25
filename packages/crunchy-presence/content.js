@@ -108,7 +108,9 @@
   }
 
   function report(isKeepalive = false) {
-    if (!enabled) return;
+    // A URL change opens a settle window. Media events from the old video may
+    // still fire in it; they must not publish stale state after the gone.
+    if (!enabled || settleTimer !== null) return;
     const state = extract();
     if (!informative(state)) {
       if (lastInformative) {

@@ -285,7 +285,7 @@ export function youtubePage({
 }
 
 /** YouTube Music player-bar furniture: title, byline, artwork. */
-export function musicPage({ title, byline, artwork, ...rest } = {}) {
+export function musicPage({ title, byline, artwork, time, ...rest } = {}) {
   const barChildren = [];
   if (title !== null && title !== undefined) {
     barChildren.push(
@@ -308,6 +308,9 @@ export function musicPage({ title, byline, artwork, ...rest } = {}) {
   }
   if (artwork) {
     barChildren.push(node("img", { attrs: { src: artwork, class: "image" } }));
+  }
+  if (time !== null && time !== undefined) {
+    barChildren.push(node("span", { attrs: { class: "time" }, text: time }));
   }
   const children = [node("ytmusic-player-bar", { children: barChildren })];
   for (const child of rest.children || []) children.push(child);

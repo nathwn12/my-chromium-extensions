@@ -27,6 +27,7 @@ const tabBypassById = new Map();
 const tabSessionById = new Map();
 
 let playerSectionSaveChain = Promise.resolve();
+let settingsWriteChain = Promise.resolve();
 
 function normalizeSectionTime(value) {
   if (value === null) return null;
@@ -349,26 +350,23 @@ async function getTabBypass(tabId, siteKey) {
 }
 
 async function setTabBypass(tabId, bypass) {
-  let siteKey = '';
-  try {
-    const tab = await getEligibleTab(tabId);
-    siteKey = tab ? extractHostname(tab.url) : '';
-  } catch {
-    siteKey = '';
-  }
-  if (bypass) {
-    tabBypassById.set(tabId, siteKey);
-  } else {
-    tabBypassById.delete(tabId);
-  }
-  if (!siteKey) return;
-  try {
-    const stored = await chrome.storage.local.get({ [SITE_TOGGLES_KEY]: {} });
-    const toggles = stored[SITE_TOGGLES_KEY] || {};
-    toggles[siteKey] = !bypass;
-    await chrome.storage.local.set({ [SITE_TOGGLES_KEY]: toggles });
-  } catch {
-  }
+  return serializeSettingsWrite(async () => {
+    let tab = null;
+    try {
+      tab = await getEligibleTab(tabId);
+    } catch {
+    }
+    if (!isEligibleTab(tab)) return { error: 'unsupported' };
+    const siteKey = extractHostname(tab.url);
+    const toggles = await readWritableContainer(SITE_TOGGLES_KEY);
+    await chrome.storage.local.set({ [SITE_TOGGLES_KEY]: { ...toggles, [siteKey]: !bypass } });
+    if (bypass) {
+      tabBypassById.set(tabId, siteKey);
+    } else {
+      tabBypassById.delete(tabId);
+    }
+    return {};
+  });
 }
 
 async function clearTabBypass(tabId) {
@@ -385,11 +383,36 @@ async function getStoredSiteSettings() {
   }
 }
 
-async function setStoredSiteSettings(siteKey, settings) {
-  const all = await getStoredSiteSettings();
-  all[siteKey] = normalizeSettings(settings);
-  await chrome.storage.local.set({ [SITE_SETTINGS_KEY]: all });
-  return all[siteKey];
+/**
+ * One queue for the persistent settings containers. Each task reads the
+ * freshest container, so a delayed read cannot overwrite a later accepted
+ * write or drop another host's key. A failed write settles the queue without
+ * rejecting the next one.
+ */
+function serializeSettingsWrite(task) {
+  const result = settingsWriteChain.then(task);
+  settingsWriteChain = result.catch(() => {});
+  return result;
+}
+
+/** Refuse a corrupt container instead of silently losing the write. */
+async function readWritableContainer(key) {
+  const stored = await chrome.storage.local.get({ [key]: {} });
+  const raw = stored ? stored[key] : undefined;
+  if (raw !== undefined && raw !== null && !isPlainObject(raw)) {
+    throw new Error('Corrupt stored ' + key + '.');
+  }
+  return raw || {};
+}
+
+async function setStoredSiteSettings(siteKey, patch) {
+  return serializeSettingsWrite(async () => {
+    const all = await readWritableContainer(SITE_SETTINGS_KEY);
+    const current = all[siteKey];
+    const settings = normalizeSettings({ ...(current || {}), ...patch });
+    await chrome.storage.local.set({ [SITE_SETTINGS_KEY]: { ...all, [siteKey]: settings } });
+    return settings;
+  });
 }
 
 async function getTabSession(tabId) {
@@ -591,12 +614,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       case 'SET_SITE_SETTINGS': {
         const tabId = Number(message.tabId ?? sender.tab?.id);
         const patch = message.settings && typeof message.settings === 'object' ? message.settings : {};
-        const current = message.siteKey ? (await getStoredSiteSettings())[message.siteKey] : null;
-        const settings = normalizeSettings({ ...(current || {}), ...patch });
-
-        if (message.siteKey) {
-          await setStoredSiteSettings(message.siteKey, settings);
-        }
+        const settings = message.siteKey
+          ? await setStoredSiteSettings(message.siteKey, patch)
+          : normalizeSettings(patch);
         await setTabSession(tabId, settings);
 
         const push = await pushTabState(tabId);
@@ -605,8 +625,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       case 'SET_TAB_BYPASS': {
         const tabId = Number(message.tabId);
         if (!Number.isInteger(tabId) || tabId < 0) throw new Error('Missing tabId.');
-        if (!isEligibleTab(await getEligibleTab(tabId))) return { ok: false, error: 'unsupported' };
-        await setTabBypass(tabId, Boolean(message.bypass));
+        const result = await setTabBypass(tabId, Boolean(message.bypass));
+        if (result.error) return { ok: false, error: result.error };
         const push = await pushTabState(tabId);
         const state = await buildTabState(tabId);
         return { ...state, pushed: push.ok, pushError: push.error || '' };
