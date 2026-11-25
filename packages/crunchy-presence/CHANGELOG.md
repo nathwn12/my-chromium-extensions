@@ -4,6 +4,8 @@ Notable changes to this project. Dates are ISO 8601. This package is local-only 
 
 ## [Unreleased]
 
+- Episode changes no longer mix one episode's title with another's progress. When the page details and the player update in either order, presence waits for both to report the new episode before publishing, then shows that episode's progress. A late media event during navigation can no longer bring back the episode you just left.
+
 ## [1.2.4] - 2026-11-24
 
 - A paused watch tab no longer publishes a card with no timestamps. Pause, idle and tab close share the same null-activity clear, and only a playing candidate publishes; resuming publishes it again.

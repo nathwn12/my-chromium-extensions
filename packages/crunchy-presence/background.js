@@ -284,19 +284,20 @@ export function mergeFrame(entry, frame, now = Date.now()) {
     signals: Array.isArray(frame.signals) ? frame.signals : [],
     receivedAt: Number.isFinite(frame.receivedAt) ? frame.receivedAt : now
   };
-  const prev = stored.frameId === 0 ? entry.top : entry.frames[stored.frameId];
+  // A hold releases only on changed evidence from the other source. A
+  // duplicate or keepalive from the old episode confirms nothing.
   if (stored.frameId === 0) {
     entry.top = stored;
     const key = identityKey(stored);
-    const prevKey = prev ? identityKey(prev) : entry.lastTopIdentity;
-    // A metadata-only identity change must be confirmed by a video report.
-    // A frame that carries its own video is already self-confirmed.
-    if (prevKey !== undefined && prevKey !== key && !stored.hasVideo && !entry.awaitingTop) {
-      entry.awaitingVideo = true;
-    }
+    const changed = entry.lastTopIdentity !== undefined && entry.lastTopIdentity !== key;
     entry.lastTopIdentity = key;
-    entry.awaitingTop = false;
+    if (changed) {
+      if (entry.awaitingTop) entry.awaitingTop = false;
+      // A frame carrying its own video is already self-confirmed.
+      else if (!stored.hasVideo) entry.awaitingVideo = true;
+    }
   } else {
+    const prev = entry.frames[stored.frameId];
     entry.frames[stored.frameId] = stored;
     const duration = Number(stored.duration);
     const identityChanged = prev && identityKey(prev) !== identityKey(stored);
@@ -304,10 +305,11 @@ export function mergeFrame(entry, frame, now = Date.now()) {
       prev && prev.hasVideo && stored.hasVideo &&
       Number.isFinite(duration) && Number(prev.duration) !== duration &&
       !isAdBreak(stored, entry.knownDuration);
-    // An ad or a same-episode seek is not a new episode. A real video change
-    // waits for the top frame to confirm it with fresh metadata.
-    if ((identityChanged || episodeVideo) && !entry.awaitingVideo) entry.awaitingTop = true;
-    if (stored.hasVideo) entry.awaitingVideo = false;
+    // An ad or a same-episode seek carries no new episode evidence.
+    if (identityChanged || episodeVideo) {
+      if (entry.awaitingVideo) entry.awaitingVideo = false;
+      else entry.awaitingTop = true;
+    }
   }
   entry.updatedAt = Math.max(entry.updatedAt || 0, stored.receivedAt);
   if (frame.keepalive !== true) {

@@ -268,6 +268,60 @@ test("video-first conflict blocks A title with B timing until metadata catches u
   assertCoherent(tab.last(), EP.B, "video-first converged");
 });
 
+test("a duplicate A metadata report does not release a video-first hold", () => {
+  const { top, vf, tab, drain } = twoFrames();
+  vf.setExtractor(() => vidOf(EP.B));
+  vf.fireDoc("play");
+  drain();
+  const held = tab.size();
+  top.fireDoc("play");                 // outgoing duplicate, extractor still A
+  drain();
+  assert.equal(tab.size(), held, "unchanged A metadata must not confirm B video");
+  assert.equal(tab.from(held).some((c) => isMixed(c, EP.B, EP.A)), false);
+  top.setHref(urlFor("B"));
+  top.setExtractor(() => metaOf(EP.B));
+  top.fireWin("popstate");
+  top.clock.advance(301);
+  drain();
+  assertCoherent(tab.last(), EP.B, "released by real B metadata");
+});
+
+test("a duplicate A video report does not release a top-first hold", () => {
+  const { top, vf, tab, drain } = twoFrames();
+  top.setHref(urlFor("B"));
+  top.setExtractor(() => metaOf(EP.B));
+  top.fireWin("popstate");
+  top.clock.advance(301);
+  drain();
+  const held = tab.size();
+  vf.fireDoc("play");                  // outgoing duplicate, extractor still A
+  drain();
+  assert.equal(tab.size(), held, "unchanged A video must not confirm B metadata");
+  assert.equal(tab.from(held).some((c) => isMixed(c, EP.A, EP.B)), false);
+  vf.setExtractor(() => vidOf(EP.B));
+  vf.fireDoc("play");
+  drain();
+  assertCoherent(tab.last(), EP.B, "released by real B video");
+});
+
+test("a real A keepalive does not release a top-first hold", () => {
+  const { top, vf, tab, drain } = twoFrames();
+  top.setHref(urlFor("B"));
+  top.setExtractor(() => metaOf(EP.B));
+  top.fireWin("popstate");
+  top.clock.advance(301);
+  drain();
+  const held = tab.size();
+  vf.clock.advance(30000);             // the poll sends a real keepalive from A
+  drain();
+  assert.equal(tab.size(), held, "keepalive carries no new episode evidence");
+  assert.equal(tab.from(held).some((c) => isMixed(c, EP.A, EP.B)), false);
+  vf.setExtractor(() => vidOf(EP.B));
+  vf.fireDoc("play");
+  drain();
+  assertCoherent(tab.last(), EP.B, "released by real B video");
+});
+
 // ------------------------------------------------------------ preserved behavior
 
 test("untrusted frame metadata stays ignored while its video still merges", () => {
@@ -292,6 +346,40 @@ test("same-episode reports keep publishing and never look like a handoff", () =>
   tab.drain(rig);
   assert.ok(tab.cards.length >= 2, "same-episode reports still reach the worker");
   assertCoherent(tab.last(), EP.A, "same-episode");
+});
+
+test("an equal-duration cross-origin seek is not rejected as a handoff", () => {
+  // Production signals here: frameId 5 is untrusted for metadata, duration is
+  // unchanged at 100, only position moves. An equal-duration cross-origin
+  // episode change is indistinguishable from this seek. We do not invent an
+  // ID and we do not blanket-reject seeks; the seek still publishes.
+  const entry = { tabId: 6, top: null, frames: {}, pageUrl: urlFor("A"), updatedAt: 0, rankAt: 0 };
+  mergeFrame(entry, { frameId: 0, series: EP.A.series, episodeTitle: EP.A.episodeTitle,
+    seasonNumber: 1, episodeNumber: 1, hasVideo: false, visible: true }, 1000);
+  mergeFrame(entry, { frameId: 5, hasVideo: true, paused: false, position: 10, duration: 100 }, 1100);
+  assertCoherent({ activity: buildActivity(resolveTab(entry, 1200), NOW) }, EP.A, "seek pre");
+  mergeFrame(entry, { frameId: 5, hasVideo: true, paused: false, position: 55, duration: 100 }, 2100);
+  const after = resolveTab(entry, 2200);
+  assert.ok(after, "a seek keeps the tab resolvable");
+  assert.equal(after.position, 55, "seek position reaches the card");
+  assert.equal(after.series, EP.A.series, "seek keeps the top identity");
+});
+
+test("same-episode recovery resumes after a real identity change", () => {
+  const { top, vf, tab, drain } = twoFrames();
+  vf.setExtractor(() => vidOf(EP.B));
+  vf.fireDoc("play");
+  drain();
+  const held = tab.size();
+  assert.equal(tab.size(), held, "hold is active");
+  // The top moves back to its own new identity. Changed evidence, not a
+  // duplicate, releases the hold.
+  top.setHref(urlFor("B"));
+  top.setExtractor(() => metaOf(EP.B));
+  top.fireWin("popstate");
+  top.clock.advance(301);
+  drain();
+  assertCoherent(tab.last(), EP.B, "recovery publishes B");
 });
 
 test("a valid older playing tab still wins over a newer paused tab", () => {
