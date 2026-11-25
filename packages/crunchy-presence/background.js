@@ -249,12 +249,18 @@ export function pruneFrames(entry, now = Date.now()) {
   return entry;
 }
 
+const IDENTITY_FIELDS = [
+  "series", "episodeTitle", "seasonNumber", "episodeNumber",
+  "artworkUrl", "seriesUrl", "episodeUrl"
+];
+
 /** Identity a frame actually reports. No shared ID is invented for the player. */
 function identityKey(frame) {
-  return JSON.stringify([
-    frame.series, frame.episodeTitle, frame.seasonNumber, frame.episodeNumber,
-    frame.artworkUrl, frame.seriesUrl, frame.episodeUrl
-  ]);
+  return JSON.stringify(IDENTITY_FIELDS.map((field) => frame[field]));
+}
+
+function hasIdentity(frame) {
+  return IDENTITY_FIELDS.some((field) => frame[field] !== null && frame[field] !== undefined);
 }
 
 /** Store one frame report on its tab entry (frameId 0 = top frame). */
@@ -262,10 +268,6 @@ export function mergeFrame(entry, frame, now = Date.now()) {
   if (!entry) return entry;
   if (!entry.frames) entry.frames = {};
   const knownBefore = entry.knownDuration;
-  const reportedDuration = Number(frame.duration);
-  if (Number.isFinite(reportedDuration) && reportedDuration >= 60) {
-    entry.knownDuration = reportedDuration;
-  }
   const stored = {
     frameId: Number.isFinite(frame.frameId) ? frame.frameId : 0,
     series: frame.series ?? null,
@@ -289,6 +291,10 @@ export function mergeFrame(entry, frame, now = Date.now()) {
   // duplicate or keepalive from the old episode confirms nothing.
   if (stored.frameId === 0) {
     entry.top = stored;
+    const reportedDuration = Number(stored.duration);
+    if (Number.isFinite(reportedDuration) && reportedDuration >= 60) {
+      entry.knownDuration = reportedDuration;
+    }
     const key = identityKey(stored);
     const changed = entry.lastTopIdentity !== undefined && entry.lastTopIdentity !== key;
     entry.lastTopIdentity = key;
@@ -299,29 +305,49 @@ export function mergeFrame(entry, frame, now = Date.now()) {
     }
   } else {
     const prev = entry.frames[stored.frameId];
+    const pinned = entry.videoFrameId === 0 ? entry.top : entry.frames[entry.videoFrameId];
+    const holdActive = entry.awaitingTop || entry.awaitingVideo;
     entry.frames[stored.frameId] = stored;
     const duration = Number(stored.duration);
-    const identityChanged = prev && identityKey(prev) !== identityKey(stored);
-    const episodeVideo =
-      prev && prev.hasVideo && stored.hasVideo &&
-      Number.isFinite(duration) && Number(prev.duration) !== duration &&
-      !isAdBreak(stored, knownBefore);
-    // A replaced or pruned player frame has no previous report to compare.
-    // Its own reported identity, or a duration different from the last known
-    // episode, is still changed evidence. A duplicate duration is not.
+    const foreign = hasIdentity(stored) && entry.lastTopIdentity !== undefined &&
+      identityKey(stored) !== entry.lastTopIdentity;
+    const adLike = isAdBreak(stored, knownBefore) ||
+      (Number.isFinite(duration) && duration > 0 && duration < 60 &&
+        Number.isFinite(knownBefore) && knownBefore > duration);
+    const usable = !foreign && !adLike;
+    const identityChanged = usable && prev && identityKey(prev) !== identityKey(stored);
+    const episodeVideo = usable && prev && prev.hasVideo && stored.hasVideo &&
+      Number.isFinite(duration) && Number(prev.duration) !== duration;
+    // A fresh frame has no prior report to compare. Its own identity may
+    // match the top, or a different duration may resolve an active hold.
+    // Outside a hold neither is proof of a new episode: a late duplicate or
+    // an unrelated frame must not own the card.
     const freshFrame = !prev && stored.hasVideo;
-    const identityMatchesTop = freshFrame && entry.lastTopIdentity !== undefined &&
-      identityKey(stored) === entry.lastTopIdentity;
-    const durationChanged = freshFrame && Number.isFinite(knownBefore) &&
-      Number.isFinite(duration) && duration !== knownBefore &&
-      !isAdBreak(stored, knownBefore);
-    // An ad or a same-episode seek carries no new episode evidence.
-    if (identityChanged || episodeVideo || identityMatchesTop || durationChanged) {
+    const identityMatchesTop = usable && freshFrame && hasIdentity(stored) &&
+      entry.lastTopIdentity !== undefined && identityKey(stored) === entry.lastTopIdentity;
+    const durationChanged = usable && freshFrame && holdActive &&
+      Number.isFinite(knownBefore) && Number.isFinite(duration) && duration !== knownBefore;
+    // A stale duplicate must not overwrite the current episode's duration.
+    const evidence = identityChanged || episodeVideo || identityMatchesTop || durationChanged;
+    if (Number.isFinite(duration) && duration >= 60 &&
+        (entry.knownDuration === undefined || duration === knownBefore || evidence)) {
+      entry.knownDuration = duration;
+    }
+    // A genuine same-episode replacement advances the pinned timing even
+    // when the old frame lingers and receivedAt ties.
+    const sameEpisodeAdvance = usable && !holdActive && freshFrame && pinned &&
+      pinned.hasVideo && pinned.frameId !== stored.frameId &&
+      Number.isFinite(knownBefore) && duration === knownBefore &&
+      Number.isFinite(stored.position) && Number.isFinite(pinned.position) &&
+      stored.position > pinned.position;
+    if (evidence) {
       // The frame that reported the change owns video truth. A stale frame
       // with an equal receivedAt must not win the card on a frameId tie.
       entry.videoFrameId = stored.frameId;
       if (entry.awaitingVideo) entry.awaitingVideo = false;
-      else entry.awaitingTop = true;
+      else if (!holdActive && (identityChanged || episodeVideo)) entry.awaitingTop = true;
+    } else if (sameEpisodeAdvance) {
+      entry.videoFrameId = stored.frameId;
     }
   }
   entry.updatedAt = Math.max(entry.updatedAt || 0, stored.receivedAt);

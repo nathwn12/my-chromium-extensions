@@ -366,6 +366,65 @@ test("changed evidence pins the video frame on an equal receivedAt tie", () => {
   assert.equal(resolved.position, 20, "changed frame wins the equal-time tie");
 });
 
+function heldEntry(tabId = 20) {
+  const entry = { tabId, top: null, frames: {}, pageUrl: urlFor("A"), updatedAt: 0, rankAt: 0 };
+  mergeFrame(entry, { frameId: 0, series: EP.A.series, episodeTitle: EP.A.episodeTitle,
+    seasonNumber: 1, episodeNumber: 1, hasVideo: false, visible: true }, 1000);
+  mergeFrame(entry, { frameId: 1, hasVideo: true, paused: false, position: 10, duration: 100 }, 1100);
+  mergeFrame(entry, { frameId: 0, series: EP.B.series, episodeTitle: EP.B.episodeTitle,
+    seasonNumber: 2, episodeNumber: 4, hasVideo: false, visible: true }, 2000);
+  assert.equal(resolveTab(entry, 2100), null, "hold is active");
+  return entry;
+}
+
+test("a delayed A duplicate cannot freeze progress after a completed handoff", () => {
+  const entry = heldEntry(21);
+  mergeFrame(entry, { frameId: 3, hasVideo: true, paused: false, position: 20, duration: 200,
+    receivedAt: 3000 }, 3000);
+  const done = resolveTab(entry, 3100);
+  assert.equal(done.series, EP.B.series);
+  assert.equal(done.position, 20, "handoff completed on frame 3");
+  // A late outgoing duplicate from the old episode carries a different
+  // duration. It is not a new episode and must not open another hold.
+  mergeFrame(entry, { frameId: 5, hasVideo: true, paused: false, position: 12, duration: 100,
+    receivedAt: 3000 }, 3000);
+  const afterDup = resolveTab(entry, 3100);
+  assert.ok(afterDup, "duplicate does not block the card");
+  assert.equal(afterDup.position, 20, "duplicate does not own the card");
+  // A genuine same-episode replacement advances while the old frame lingers,
+  // even with the same receivedAt as the duplicate.
+  mergeFrame(entry, { frameId: 4, hasVideo: true, paused: false, position: 60, duration: 200,
+    receivedAt: 3000 }, 3000);
+  const afterAdvance = resolveTab(entry, 3100);
+  assert.ok(afterAdvance, "replacement keeps the card live");
+  assert.equal(afterAdvance.position, 60, "stale pinned timing does not freeze progress");
+});
+
+test("a fresh ad during a hold does not release it", () => {
+  const entry = heldEntry(22);
+  mergeFrame(entry, { frameId: 7, hasVideo: true, paused: false, position: 1, duration: 15,
+    receivedAt: 3000 }, 3000);
+  assert.equal(resolveTab(entry, 3100), null, "ad timing cannot confirm the new episode");
+});
+
+test("a foreign-identity video frame during a hold does not release it", () => {
+  const entry = heldEntry(23);
+  mergeFrame(entry, {
+    frameId: 9, series: "Other Show", episodeTitle: "Other", seasonNumber: 9, episodeNumber: 9,
+    hasVideo: true, paused: false, position: 5, duration: 300, receivedAt: 3000
+  }, 3000);
+  assert.equal(resolveTab(entry, 3100), null, "unrelated identity cannot confirm the hold");
+});
+
+test("an unrelated non-video frame during a hold does not release it", () => {
+  const entry = heldEntry(24);
+  mergeFrame(entry, {
+    frameId: 8, series: "Other Show", episodeTitle: "Other", seasonNumber: 9, episodeNumber: 9,
+    hasVideo: false, visible: true, receivedAt: 3000
+  }, 3000);
+  assert.equal(resolveTab(entry, 3100), null, "metadata-only frame owns no video truth");
+});
+
 test("a real A keepalive does not release a top-first hold", () => {
   const { top, vf, tab, drain } = twoFrames();
   top.setHref(urlFor("B"));

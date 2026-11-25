@@ -4,7 +4,7 @@ Notable changes to this project. Dates are ISO 8601. This package is local-only 
 
 ## [Unreleased]
 
-- Episode changes no longer mix one episode's title with another's progress. When the page details and the player update in either order, presence waits for both to report the new episode before publishing, then shows that episode's progress. A replaced player frame still releases that wait when it reports the new episode. A late media event during navigation can no longer bring back the episode you just left.
+- Episode changes no longer mix one episode's title with another's progress. When the page details and the player update in either order, presence waits for both to report the new episode before publishing, then shows that episode's progress. A replaced player frame still releases that wait when it reports the new episode, and a later replacement of that player keeps progress current. Ads, unrelated frames and late events from the old episode cannot release the wait or take over the card. A late media event during navigation can no longer bring back the episode you just left.
 
 ## [1.2.4] - 2026-11-24
 
