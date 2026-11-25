@@ -261,6 +261,7 @@ function identityKey(frame) {
 export function mergeFrame(entry, frame, now = Date.now()) {
   if (!entry) return entry;
   if (!entry.frames) entry.frames = {};
+  const knownBefore = entry.knownDuration;
   const reportedDuration = Number(frame.duration);
   if (Number.isFinite(reportedDuration) && reportedDuration >= 60) {
     entry.knownDuration = reportedDuration;
@@ -304,9 +305,21 @@ export function mergeFrame(entry, frame, now = Date.now()) {
     const episodeVideo =
       prev && prev.hasVideo && stored.hasVideo &&
       Number.isFinite(duration) && Number(prev.duration) !== duration &&
-      !isAdBreak(stored, entry.knownDuration);
+      !isAdBreak(stored, knownBefore);
+    // A replaced or pruned player frame has no previous report to compare.
+    // Its own reported identity, or a duration different from the last known
+    // episode, is still changed evidence. A duplicate duration is not.
+    const freshFrame = !prev && stored.hasVideo;
+    const identityMatchesTop = freshFrame && entry.lastTopIdentity !== undefined &&
+      identityKey(stored) === entry.lastTopIdentity;
+    const durationChanged = freshFrame && Number.isFinite(knownBefore) &&
+      Number.isFinite(duration) && duration !== knownBefore &&
+      !isAdBreak(stored, knownBefore);
     // An ad or a same-episode seek carries no new episode evidence.
-    if (identityChanged || episodeVideo) {
+    if (identityChanged || episodeVideo || identityMatchesTop || durationChanged) {
+      // The frame that reported the change owns video truth. A stale frame
+      // with an equal receivedAt must not win the card on a frameId tie.
+      entry.videoFrameId = stored.frameId;
       if (entry.awaitingVideo) entry.awaitingVideo = false;
       else entry.awaitingTop = true;
     }
@@ -342,7 +355,13 @@ export function resolveTab(entry, now = Date.now()) {
   const byRecency = frames
     .slice()
     .sort((a, b) => b.receivedAt - a.receivedAt || a.frameId - b.frameId);
-  const videoFrame = byRecency.find((frame) => frame.hasVideo) || null;
+  const pinned = entry.videoFrameId === 0
+    ? entry.top
+    : entry.frames[entry.videoFrameId];
+  const videoFrame =
+    (pinned && pinned.hasVideo ? pinned : null) ||
+    byRecency.find((frame) => frame.hasVideo) ||
+    null;
 
   const pick = (field) => {
     if (top && top[field] !== null && top[field] !== undefined) return top[field];

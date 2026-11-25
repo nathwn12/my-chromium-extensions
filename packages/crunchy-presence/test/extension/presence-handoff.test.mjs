@@ -304,6 +304,68 @@ test("a duplicate A video report does not release a top-first hold", () => {
   assertCoherent(tab.last(), EP.B, "released by real B video");
 });
 
+test("a new player frame does not release a hold with duplicate A timing", () => {
+  const { top, tab, drain } = twoFrames();
+  top.setHref(urlFor("B"));
+  top.setExtractor(() => metaOf(EP.B));
+  top.fireWin("popstate");
+  top.clock.advance(301);
+  drain();
+  const held = tab.size();
+  tab.receive(1, { kind: "crp-gone", scope: "frame" });  // old player frame removed
+  tab.receive(2, {
+    kind: "crp-state", hasVideo: true, visible: true, paused: false,
+    position: 12, duration: 100
+  });
+  assert.equal(tab.size(), held, "unchanged A duration on a new frame confirms nothing");
+  tab.receive(3, {
+    kind: "crp-state", hasVideo: true, visible: true, paused: false,
+    position: 20, duration: 200
+  });
+  assertCoherent(tab.last(), EP.B, "new frame B timing releases the hold");
+});
+
+test("a pruned player frame does not latch the hold when B arrives on a new frame", () => {
+  const entry = { tabId: 12, top: null, frames: {}, pageUrl: urlFor("A"), updatedAt: 0, rankAt: 0 };
+  const topA = { frameId: 0, series: EP.A.series, episodeTitle: EP.A.episodeTitle,
+    seasonNumber: 1, episodeNumber: 1, hasVideo: false, visible: true };
+  const topB = { frameId: 0, series: EP.B.series, episodeTitle: EP.B.episodeTitle,
+    seasonNumber: 2, episodeNumber: 4, hasVideo: false, visible: true };
+  mergeFrame(entry, topA, 1000);
+  mergeFrame(entry, { frameId: 1, hasVideo: true, paused: false, position: 10, duration: 100 }, 1100);
+  mergeFrame(entry, topB, 2000);
+  assert.equal(resolveTab(entry, 2100), null, "hold is active");
+  mergeFrame(entry, topB, 100000);   // keep top fresh while frame 1 ages out
+  mergeFrame(entry, topB, 130000);   // frame 1 is now past FRAME_TTL_MS
+  assert.equal(entry.frames[1], undefined, "old player frame was pruned");
+  mergeFrame(entry, { frameId: 2, hasVideo: true, paused: false, position: 12, duration: 100 }, 130050);
+  assert.equal(resolveTab(entry, 130100), null, "duplicate A on a fresh frame does not release");
+  mergeFrame(entry, { frameId: 3, hasVideo: true, paused: false, position: 20, duration: 200 }, 130200);
+  const resolved = resolveTab(entry, 130300);
+  assert.ok(resolved, "genuine B on a fresh frame releases the hold");
+  assert.equal(resolved.series, EP.B.series);
+  assert.equal(resolved.position, 20);
+});
+
+test("changed evidence pins the video frame on an equal receivedAt tie", () => {
+  const entry = { tabId: 13, top: null, frames: {}, pageUrl: urlFor("A"), updatedAt: 0, rankAt: 0 };
+  mergeFrame(entry, { frameId: 0, series: EP.A.series, hasVideo: false, visible: true }, 1000);
+  mergeFrame(entry, { frameId: 1, hasVideo: true, paused: false, position: 10, duration: 100 }, 1100);
+  mergeFrame(entry, { frameId: 0, series: EP.B.series, hasVideo: false, visible: true }, 2000);
+  assert.equal(resolveTab(entry, 2100), null, "hold is active");
+  mergeFrame(entry, {
+    frameId: 2, hasVideo: true, paused: false, position: 12, duration: 100, receivedAt: 2000
+  }, 2000);
+  assert.equal(resolveTab(entry, 2100), null, "duplicate A on a new frame does not release");
+  mergeFrame(entry, {
+    frameId: 3, hasVideo: true, paused: false, position: 20, duration: 200, receivedAt: 2000
+  }, 2000);
+  const resolved = resolveTab(entry, 2100);
+  assert.ok(resolved, "hold released");
+  assert.equal(resolved.series, EP.B.series);
+  assert.equal(resolved.position, 20, "changed frame wins the equal-time tie");
+});
+
 test("a real A keepalive does not release a top-first hold", () => {
   const { top, vf, tab, drain } = twoFrames();
   top.setHref(urlFor("B"));
