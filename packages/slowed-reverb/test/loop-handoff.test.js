@@ -303,7 +303,11 @@ function handoffElement(tagName) {
       const index = list.indexOf(fn);
       if (index >= 0) list.splice(index, 1);
     },
-    dispatchEvent(type) { for (const fn of [...(listeners.get(type) || [])]) fn({ type, target: this }); },
+    dispatchEvent(type, props) {
+      const event = Object.assign({ type, target: this, preventDefault() {}, stopPropagation() {} }, props || {});
+      for (const fn of [...(listeners.get(type) || [])]) fn(event);
+      return event;
+    },
     attachShadow() { this.shadowRoot = handoffElement('shadow'); return this.shadowRoot; },
     play() { return Promise.resolve(); },
   };
@@ -333,15 +337,18 @@ function handoffBoot(sections, href) {
     documentElement: handoffElement('html'), visibilityState: 'visible', createElement: handoffElement,
     querySelector: () => null, addEventListener() {}, removeEventListener() {},
   };
+  const winListeners = new Map();
   const win = {
     document: doc, location: { href: href || PAGE_A }, getComputedStyle: () => ({}),
-    addEventListener() {}, removeEventListener() {},
+    addEventListener(type, fn) { const list = winListeners.get(type) || []; list.push(fn); winListeners.set(type, list); },
+    removeEventListener() {},
   };
   const timers = handoffTimers();
   const data = { playerActions: { sections: sections || [] } };
+  const storageWrites = [];
   const storage = {
     async get(key) { return { [key]: data[key] }; },
-    async set(items) { Object.assign(data, items); },
+    async set(items) { storageWrites.push(JSON.stringify(items)); Object.assign(data, items); },
     subscribe() { return () => {}; },
   };
   let clock = 1000;
@@ -366,11 +373,31 @@ function handoffBoot(sections, href) {
     storage, timers, now: () => clock,
   });
   return {
-    controller, timers, media: () => media,
+    controller, timers, storageWrites, doc,
+    media: () => media,
     advance(ms) { clock += ms; },
     setHref(next) { win.location.href = next; },
     replaceMedia(id) { media = makeMedia(id); return media; },
+    fireWin(type, props) {
+      for (const fn of [...(winListeners.get(type) || [])]) {
+        fn(Object.assign({ type, target: win, preventDefault() {} }, props || {}));
+      }
+    },
   };
+}
+
+function findUiNode(harness, ariaLabel) {
+  const hosts = harness.doc.documentElement.children.filter((node) => node.hasAttribute('data-slra-player-actions'));
+  assert.equal(hosts.length, 1, 'one injected UI host');
+  const found = [];
+  const collect = (node) => {
+    found.push(node);
+    for (const child of node.children || []) collect(child);
+  };
+  collect(hosts[0].shadowRoot);
+  const node = found.find((candidate) => candidate.getAttribute('aria-label') === ariaLabel);
+  assert.ok(node, 'real UI node found in shadow DOM: ' + ariaLabel);
+  return node;
 }
 
 const handoffSettle = async (rounds = 8) => {
@@ -482,4 +509,64 @@ test('handoff control: rapid A to B to C leaves C controllable', async () => {
   media.dispatchEvent('seeked');
   harness.timers.tickIntervals();
   assert.equal(media.currentTime, 7, 'C playback control survives');
+});
+
+function armPendingB(harness) {
+  const media = harness.media();
+  media.currentSrc = 'https://music.youtube.com/stream/song-b';
+  media.duration = 200;
+  media.currentTime = 0;
+  harness.controller.suspendSongIdentity();
+  harness.fireWin('keydown', { key: '3' });
+  return media;
+}
+
+test('handoff: a real From change commit during identity read writes nothing', async () => {
+  const harness = await armedA();
+  const media = armPendingB(harness);
+  const writesBefore = media.currentTimeWrites.length;
+  const savesBefore = harness.storageWrites.length;
+  const from = findUiNode(harness, 'From');
+  from.value = '0:20';
+  from.dispatchEvent('input');
+  from.dispatchEvent('change');
+  await handoffSettle();
+  assert.equal(harness.storageWrites.length, savesBefore, 'no A-section edit persisted');
+  assert.deepEqual(media.currentTimeWrites.slice(writesBefore), [], 'no transport seek into B');
+  assert.ok(!harness.timers.pending().includes(SETTLE_MS), 'no A settle re-armed');
+
+  media.currentTime = 0;
+  const lateBefore = media.currentTimeWrites.length;
+  harness.advance(SETTLE_MS);
+  harness.timers.fireTimeout(SETTLE_MS);
+  assert.deepEqual(media.currentTimeWrites.slice(lateBefore), [], 'no late settle seek into B');
+});
+
+test('handoff: a real From Enter commit during identity read writes nothing', async () => {
+  const harness = await armedA();
+  const media = armPendingB(harness);
+  const writesBefore = media.currentTimeWrites.length;
+  const from = findUiNode(harness, 'From');
+  from.value = '0:45';
+  from.dispatchEvent('input');
+  from.dispatchEvent('keydown', { key: 'Enter' });
+  await handoffSettle();
+  assert.deepEqual(media.currentTimeWrites.slice(writesBefore), [], 'no transport seek into B');
+  assert.ok(!harness.timers.pending().includes(SETTLE_MS), 'no A settle re-armed');
+});
+
+test('handoff control: a confirmed same-track From edit seeks, re-arms settle and persists', async () => {
+  const harness = await armedA();
+  const media = harness.media();
+  const writesBefore = media.currentTimeWrites.length;
+  const savesBefore = harness.storageWrites.length;
+  const from = findUiNode(harness, 'From');
+  from.value = '0:20';
+  from.dispatchEvent('input');
+  from.dispatchEvent('change');
+  await handoffSettle();
+  assert.ok(media.currentTimeWrites.slice(writesBefore).includes(20), 'confirmed edit sought its start');
+  assert.ok(harness.timers.pending().includes(SETTLE_MS), 'confirmed edit re-armed settle');
+  assert.equal(harness.storageWrites.length, savesBefore + 1, 'confirmed edit persisted once');
+  assert.ok(harness.storageWrites[savesBefore].includes('"startSeconds":20'), 'persisted edit names the confirmed song');
 });
