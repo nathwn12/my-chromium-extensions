@@ -1,6 +1,6 @@
 'use strict';
 
-/* global require, __dirname */
+/* global require, __dirname, setImmediate */
 
 // Offline envelope proof for the accelerated looping handoff. No playback,
 // no browser, no device: a fake wall clock drives numeric gain and mute state.
@@ -260,4 +260,226 @@ test('loop handoff: budget exhaustion never opens the raw next-song path', async
   } finally {
     env.restore();
   }
+});
+
+// ---------------------------------------------------------------------------
+// Track handoff: the outgoing A-B loop's settle correction must not seek a
+// reused incoming element while the incoming identity read is in flight.
+// No browser, no audio, no device: an injected clock, media and DOM only.
+// ---------------------------------------------------------------------------
+
+const ACTIONS_SOURCE = fs.readFileSync(path.join(ROOT, 'player-actions.js'), 'utf8');
+function loadActions() {
+  const sandbox = { module: { exports: {} }, URL };
+  vm.runInNewContext(ACTIONS_SOURCE, sandbox, { filename: 'player-actions.js' });
+  return sandbox.module.exports;
+}
+const actions = loadActions();
+const PAGE_A = 'https://music.youtube.com/watch?v=song-a';
+const PAGE_B = 'https://music.youtube.com/watch?v=song-b';
+const PAGE_C = 'https://music.youtube.com/watch?v=song-c';
+const SECTION_A = { videoId: 'song-a', startSeconds: 30, endSeconds: 60 };
+const SETTLE_MS = 1200;
+
+function handoffElement(tagName) {
+  const listeners = new Map();
+  return {
+    tagName: String(tagName).toUpperCase(),
+    children: [], parentElement: null, attributes: new Map(), style: {}, dataset: {},
+    isConnected: true, textContent: '', value: '', checked: false, type: '',
+    isContentEditable: false, scrollHeight: 0, clientHeight: 0,
+    classList: { add() {}, remove() {}, contains: () => false, toggle() {} },
+    appendChild(child) { this.children.push(child); child.parentElement = this; return child; },
+    append(...nodes) { for (const node of nodes) this.appendChild(node); },
+    remove() {},
+    setAttribute(name, value) { this.attributes.set(String(name), String(value)); },
+    getAttribute(name) { return this.attributes.has(name) ? this.attributes.get(name) : null; },
+    removeAttribute(name) { this.attributes.delete(name); },
+    hasAttribute(name) { return this.attributes.has(name); },
+    addEventListener(type, fn) { const list = listeners.get(type) || []; list.push(fn); listeners.set(type, list); },
+    removeEventListener(type, fn) {
+      const list = listeners.get(type);
+      if (!list) return;
+      const index = list.indexOf(fn);
+      if (index >= 0) list.splice(index, 1);
+    },
+    dispatchEvent(type) { for (const fn of [...(listeners.get(type) || [])]) fn({ type, target: this }); },
+    attachShadow() { this.shadowRoot = handoffElement('shadow'); return this.shadowRoot; },
+    play() { return Promise.resolve(); },
+  };
+}
+
+function handoffTimers() {
+  let nextId = 1;
+  const timeouts = new Map();
+  const intervals = new Map();
+  return {
+    setTimeout(fn, ms) { const id = nextId++; timeouts.set(id, { fn, ms }); return id; },
+    clearTimeout(id) { timeouts.delete(id); },
+    setInterval(fn, ms) { const id = nextId++; intervals.set(id, { fn, ms }); return id; },
+    clearInterval(id) { intervals.delete(id); },
+    pending() { return [...timeouts.values()].map((timer) => timer.ms).sort((a, b) => a - b); },
+    fireTimeout(ms) {
+      const due = [...timeouts.entries()].filter(([, timer]) => timer.ms === ms);
+      for (const [id, timer] of due) if (timeouts.has(id)) { timeouts.delete(id); timer.fn(); }
+      return due.length;
+    },
+    tickIntervals() { for (const timer of [...intervals.values()]) timer.fn(); },
+  };
+}
+
+function handoffBoot(sections, href) {
+  const doc = {
+    documentElement: handoffElement('html'), visibilityState: 'visible', createElement: handoffElement,
+    querySelector: () => null, addEventListener() {}, removeEventListener() {},
+  };
+  const win = {
+    document: doc, location: { href: href || PAGE_A }, getComputedStyle: () => ({}),
+    addEventListener() {}, removeEventListener() {},
+  };
+  const timers = handoffTimers();
+  const data = { playerActions: { sections: sections || [] } };
+  const storage = {
+    async get(key) { return { [key]: data[key] }; },
+    async set(items) { Object.assign(data, items); },
+    subscribe() { return () => {}; },
+  };
+  let clock = 1000;
+  const makeMedia = (id) => {
+    const node = handoffElement('video');
+    let value = 0;
+    node.currentTimeWrites = [];
+    Object.defineProperty(node, 'currentTime', {
+      configurable: true, get() { return value; },
+      set(next) { value = next; node.currentTimeWrites.push(next); },
+    });
+    node.currentSrc = 'https://music.youtube.com/stream/' + id;
+    node.duration = 300;
+    node.paused = false;
+    node.seeking = false;
+    return node;
+  };
+  let media = makeMedia('song-a');
+  const controller = actions.createPlayerActions({
+    window: win, document: doc, mediaProvider: () => media,
+    pageHook: { setVolume: async (percent) => ({ volume: percent, applied: true, source: 'player' }), syncVolumeUi() {} },
+    storage, timers, now: () => clock,
+  });
+  return {
+    controller, timers, media: () => media,
+    advance(ms) { clock += ms; },
+    setHref(next) { win.location.href = next; },
+    replaceMedia(id) { media = makeMedia(id); return media; },
+  };
+}
+
+const handoffSettle = async (rounds = 8) => {
+  for (let i = 0; i < rounds; i += 1) await new Promise((resolve) => setImmediate(resolve));
+};
+
+async function armedA() {
+  const harness = handoffBoot([SECTION_A], PAGE_A);
+  harness.controller.setSongId('song-a', PAGE_A);
+  await harness.controller.start();
+  await handoffSettle();
+  assert.deepEqual(harness.media().currentTimeWrites, [30], 'A section restore seek landed');
+  assert.ok(harness.timers.pending().includes(SETTLE_MS), 'A settle check is armed');
+  return harness;
+}
+
+test('handoff: outgoing settle does not seek a reused element during identity read', async () => {
+  const harness = await armedA();
+  const media = harness.media();
+
+  // Natural Next: the same element is reused for B, B is at its top, and the
+  // URL still names A while the identity read is in flight.
+  media.currentSrc = 'https://music.youtube.com/stream/song-b';
+  media.duration = 200;
+  media.currentTime = 0;
+  harness.controller.suspendSongIdentity();
+  media.dispatchEvent('timeupdate');
+  media.dispatchEvent('seeked');
+  assert.equal(media.currentTime, 0, 'stale media handlers wrote nothing');
+
+  harness.advance(900);
+  harness.timers.fireTimeout(SETTLE_MS);
+  assert.equal(
+    media.currentTime,
+    0,
+    'B stays at its own top; writes=' + JSON.stringify(media.currentTimeWrites)
+  );
+});
+
+test('handoff control: same-track settle still re-applies the saved start', async () => {
+  const harness = await armedA();
+  const media = harness.media();
+  media.currentTime = 0;
+  harness.advance(SETTLE_MS);
+  harness.timers.fireTimeout(SETTLE_MS);
+  assert.equal(media.currentTime, 30, 'same-track late correction restored the section');
+});
+
+test('handoff control: stale settle after identity resolution does not seek B', async () => {
+  const harness = await armedA();
+  const media = harness.media();
+  media.currentSrc = 'https://music.youtube.com/stream/song-b';
+  media.duration = 200;
+  media.currentTime = 0;
+  harness.controller.suspendSongIdentity();
+
+  // The push answers the suspension, but the URL has not caught up: the stale
+  // key still names A. The cancelled A-era settle must not fire into B.
+  harness.controller.setSongId('song-b', PAGE_B);
+  harness.advance(SETTLE_MS);
+  harness.timers.fireTimeout(SETTLE_MS);
+  assert.equal(
+    media.currentTime,
+    0,
+    'resolved B stays at its own top; writes=' + JSON.stringify(media.currentTimeWrites)
+  );
+});
+
+test('handoff control: invalidation closes the outgoing settle window', async () => {
+  const harness = await armedA();
+  const media = harness.media();
+  media.currentSrc = 'https://music.youtube.com/stream/song-b';
+  media.currentTime = 0;
+  harness.controller.suspendSongIdentity();
+  harness.controller.invalidateSongIdentity();
+  harness.timers.fireTimeout(SETTLE_MS);
+  assert.equal(media.currentTime, 0, 'invalidate clears the settle check');
+});
+
+test('handoff control: explicit Next with a replaced element and a confirmed URL stays isolated', async () => {
+  const harness = await armedA();
+  const media = harness.replaceMedia('song-b');
+  harness.setHref(PAGE_B);
+  harness.controller.setSongId('song-b', PAGE_B);
+  await handoffSettle();
+  harness.advance(SETTLE_MS);
+  harness.timers.fireTimeout(SETTLE_MS);
+  assert.equal(media.currentTime, 0, 'A loop never seeks B');
+  media.currentTime = 12;
+  media.dispatchEvent('timeupdate');
+  harness.timers.tickIntervals();
+  assert.equal(media.currentTime, 12, 'B playback control survives');
+});
+
+test('handoff control: rapid A to B to C leaves C controllable', async () => {
+  const harness = await armedA();
+  harness.replaceMedia('song-b');
+  harness.setHref(PAGE_B);
+  harness.controller.setSongId('song-b', PAGE_B);
+  await handoffSettle();
+  const media = harness.replaceMedia('song-c');
+  harness.setHref(PAGE_C);
+  harness.controller.setSongId('song-c', PAGE_C);
+  await handoffSettle();
+  harness.advance(SETTLE_MS);
+  harness.timers.fireTimeout(SETTLE_MS);
+  assert.equal(media.currentTime, 0, 'no A or B seek landed on C');
+  media.currentTime = 7;
+  media.dispatchEvent('seeked');
+  harness.timers.tickIntervals();
+  assert.equal(media.currentTime, 7, 'C playback control survives');
 });

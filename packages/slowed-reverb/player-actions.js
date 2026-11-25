@@ -715,6 +715,7 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
      */
     function suspendSongIdentity() {
       clearBoundaryHold();
+      clearSettleCheck();
       session.identityPending = true;
       session.confirmedKey = null;
       session.pressVouched = false;
