@@ -1,5 +1,6 @@
 (() => {
   const existing = globalThis.__slowedReverbAudioContent;
+  const listenerDisposers = [];
 
   function runtimeAlive() {
     try {
@@ -80,6 +81,7 @@
     retire() {
       if (state.retired) return;
       state.retired = true;
+      disposeGlobalListeners();
       clearSafetyPoll();
       stopRateWatchdog();
       stopPlayerActions();
@@ -134,10 +136,59 @@
     }
   }
 
+  function listenerScope() {
+    const doc = globalThis.document;
+    const win = globalThis.window;
+    return {
+      document: {
+        addEventListener: (type, fn, options) => addGlobalListener(doc, type, fn, options),
+        get visibilityState() {
+          return doc.visibilityState;
+        },
+      },
+      window: {
+        addEventListener: (type, fn, options) => addGlobalListener(win, type, fn, options),
+      },
+      realWindow: win,
+    };
+  }
+
+  function addGlobalListener(target, type, fn, options) {
+    if (state.retired) return;
+    const guarded = (event) => (state.retired ? undefined : fn(event));
+    target.addEventListener(type, guarded, options);
+    listenerDisposers.push(() => {
+      try {
+        target.removeEventListener(type, guarded, options);
+      } catch {
+      }
+    });
+  }
+
+  function addRuntimeListener(fn) {
+    if (state.retired) return;
+    const onMessage = chrome.runtime.onMessage;
+    const guarded = (message, sender, sendResponse) =>
+      state.retired ? false : fn(message, sender, sendResponse);
+    onMessage.addListener(guarded);
+    listenerDisposers.push(() => {
+      try {
+        if (typeof onMessage.removeListener === 'function') onMessage.removeListener(guarded);
+      } catch {
+      }
+    });
+  }
+
+  function disposeGlobalListeners() {
+    for (const dispose of listenerDisposers.splice(0)) dispose();
+  }
+
   function ensureGlobalListeners() {
     if (state.listenersReady) return;
 
-    chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    const { document, window } = listenerScope();
+
+    addRuntimeListener((message, _sender, sendResponse) => {
       if (message?.type === 'SLRA_PAGE_REVIVE') {
         queueRecovery(message.reason || 'page-hook');
         sendResponse({ ok: true });
@@ -256,6 +307,8 @@
   function ensureLifecycleListeners() {
     if (state.lifecycleListenersReady) return;
 
+    const { document, window, realWindow } = listenerScope();
+
     const revive = (reason) => queueRecovery(reason);
 
     window.addEventListener('pageshow', () => revive('pageshow'), { passive: true });
@@ -276,6 +329,7 @@
     }, { passive: true });
 
     window.addEventListener('message', (event) => {
+      const window = realWindow;
       if (event.source !== window) return;
       try {
         if (event.origin !== location.origin) return;
@@ -847,7 +901,7 @@
   }
 
   function queueRecovery(reason) {
-    if (recoveryTimer) return;
+    if (state.retired || recoveryTimer) return;
 
     if (!state.pageHookReady || reason === 'bootstrap' || reason === 'missing-hook') {
       void requestHookRefresh(reason);
@@ -874,7 +928,7 @@
   }
 
   async function requestHookRefresh(reason) {
-    if (state.hookRefreshQueued) return;
+    if (state.retired || state.hookRefreshQueued) return;
     state.hookRefreshQueued = true;
     const token = mintPageHookToken();
 
@@ -894,6 +948,7 @@
   }
 
   async function refreshRuntimeState() {
+    if (state.retired) return;
     try {
       const runtime = await chrome.runtime.sendMessage({ type: 'GET_TAB_RUNTIME_STATE' });
       if (runtime && typeof runtime === 'object') {
