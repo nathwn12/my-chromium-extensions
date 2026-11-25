@@ -235,3 +235,75 @@ test('current receipt after restart survives an old-session reply', async () => 
   assert.equal(status.processing, false, 'current receipt is preserved');
   assert.equal(h.deferred.length, before, 'old reply schedules no retry');
 });
+
+test('boundary: teardown STOP reply cannot restore processing on excluded frame', async () => {
+  const h = await loadEnabledContent();
+  const toggled = await h.sendMessage({
+    type: 'TOGGLE_CHANGED', siteKey: 'example.com', excluded: true,
+  });
+  assert.equal(toggled.excluded, true, 'real exclusion teardown ran');
+  assert.deepEqual(
+    h.deferred.map((d) => d.action),
+    ['start', 'setGain', 'stop'],
+    'STOP is the newest request at the teardown boundary',
+  );
+
+  // STOP's seq equals appliedStatusSeq at teardown. Its reply must still be
+  // invalidated, or it repaints an excluded frame as alive and processing.
+  h.deferred[2].resolve(clone(oldProcessing));
+  await sleep(20);
+
+  const status = await h.sendMessage({ type: 'GET_DOCUMENT_STATUS' });
+  assert.equal(status.processing, false, 'equal-ID teardown reply must not restore processing');
+  assert.equal(status.hookAlive, false, 'equal-ID teardown reply must not restore liveness');
+});
+
+test('boundary: newest pre-reinject reply cannot restore processing on new session', async () => {
+  const h = await loadEnabledContent();
+  await h.sendMessage({ type: 'TOGGLE_CHANGED', siteKey: 'example.com', excluded: true });
+  const oldCount = h.deferred.length;
+  h.sandbox.globalThis.__tabNormalizerContentScriptV5.reinject();
+  await sleep(60);
+  assert.ok(h.deferred.length > oldCount, 'new session issued its own requests');
+
+  // The last request of the old session has the seq sealed at reinject.
+  h.deferred[oldCount - 1].resolve(clone(oldProcessing));
+  await sleep(20);
+
+  const status = await h.sendMessage({ type: 'GET_DOCUMENT_STATUS' });
+  assert.equal(status.processing, false, 'equal-ID old reply must not paint the new session Active');
+  assert.equal(status.hookAlive, false, 'equal-ID old reply must not claim liveness for the new session');
+});
+
+test('sequenced request after restart still applies a current receipt', async () => {
+  const h = await loadEnabledContent();
+  await h.sendMessage({ type: 'TOGGLE_CHANGED', siteKey: 'example.com', excluded: true });
+  const oldCount = h.deferred.length;
+  h.sandbox.globalThis.__tabNormalizerContentScriptV5.reinject();
+  await sleep(60);
+
+  const current = h.deferred[h.deferred.length - 1];
+  assert.equal(current.action, 'setGain', 'new session issued its own control request');
+  current.resolve(clone(noSource));
+  await sleep(20);
+
+  const status = await h.sendMessage({ type: 'GET_DOCUMENT_STATUS' });
+  assert.equal(status.hookAlive, true, 'current receipt applied');
+  assert.equal(status.processing, false, 'current receipt preserved');
+});
+
+test('boundary: equal-ID failure reply cannot drive a retry after restart', async () => {
+  const h = await loadEnabledContent();
+  await h.sendMessage({ type: 'TOGGLE_CHANGED', siteKey: 'example.com', excluded: true });
+  const oldCount = h.deferred.length;
+  h.sandbox.globalThis.__tabNormalizerContentScriptV5.reinject();
+  await sleep(60);
+  const before = h.deferred.length;
+
+  h.deferred[oldCount - 1].resolve({ ok: false, alive: false, active: false, error: 'gone' });
+  await sleep(20);
+
+  assert.equal(h.deferred.length, before, 'no retry from an equal-ID failure reply');
+  const status = await h.sendMessage({ type: 'GET_DOCUMENT_STATUS' });
+  assert.equal(status.hookAlive, false, 'no liveness restored by a failure reply');
+});
