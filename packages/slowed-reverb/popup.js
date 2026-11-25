@@ -30,6 +30,7 @@ let popupState = {
 };
 let pollTimer = null;
 let lastApplyTime = 0;
+let saveSeq = 0;
 
 void init();
 
@@ -161,22 +162,24 @@ async function applyLiveSettings(settings) {
 
 async function applySettings(settings) {
   const normalized = normalizeSettings(settings);
+  const seq = ++saveSeq;
   popupState.settings = normalized;
 
-  await Promise.all([
-    chrome.runtime.sendMessage({
-      type: 'SET_SITE_SETTINGS',
-      tabId: activeTabId,
-      siteKey,
-      settings: normalized,
-      persist: true,
-    }),
-    ...(activeTabId && popupState.eligible
-      ? [chrome.tabs.sendMessage(activeTabId, { type: 'APPLY_LIVE_SETTINGS', settings: normalized }).catch(() => {})]
-      : []),
-  ]);
+  const save = chrome.runtime.sendMessage({
+    type: 'SET_SITE_SETTINGS',
+    tabId: activeTabId,
+    siteKey,
+    settings: normalized,
+    persist: true,
+  }).then((reply) => reply?.ok === true, () => false);
+  const push = activeTabId && popupState.eligible
+    ? chrome.tabs.sendMessage(activeTabId, { type: 'APPLY_LIVE_SETTINGS', settings: normalized }).catch(() => {})
+    : Promise.resolve();
+
+  const [saved] = await Promise.all([save, push]);
 
   await refreshLiveStatus();
+  if (!saved && seq === saveSeq) renderStatus('red', 'Could not save settings');
 }
 
 async function updateTabBypass(bypass) {
