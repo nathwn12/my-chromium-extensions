@@ -350,22 +350,22 @@ async function getTabBypass(tabId, siteKey) {
 }
 
 async function setTabBypass(tabId, bypass) {
-  let siteKey = '';
-  try {
-    const tab = await getEligibleTab(tabId);
-    siteKey = tab ? extractHostname(tab.url) : '';
-  } catch {
-    siteKey = '';
-  }
-  if (bypass) {
-    tabBypassById.set(tabId, siteKey);
-  } else {
-    tabBypassById.delete(tabId);
-  }
-  if (!siteKey) return;
-  await serializeSettingsWrite(async () => {
+  return serializeSettingsWrite(async () => {
+    let tab = null;
+    try {
+      tab = await getEligibleTab(tabId);
+    } catch {
+    }
+    if (!isEligibleTab(tab)) return { error: 'unsupported' };
+    const siteKey = extractHostname(tab.url);
     const toggles = await readWritableContainer(SITE_TOGGLES_KEY);
     await chrome.storage.local.set({ [SITE_TOGGLES_KEY]: { ...toggles, [siteKey]: !bypass } });
+    if (bypass) {
+      tabBypassById.set(tabId, siteKey);
+    } else {
+      tabBypassById.delete(tabId);
+    }
+    return {};
   });
 }
 
@@ -625,8 +625,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       case 'SET_TAB_BYPASS': {
         const tabId = Number(message.tabId);
         if (!Number.isInteger(tabId) || tabId < 0) throw new Error('Missing tabId.');
-        if (!isEligibleTab(await getEligibleTab(tabId))) return { ok: false, error: 'unsupported' };
-        await setTabBypass(tabId, Boolean(message.bypass));
+        const result = await setTabBypass(tabId, Boolean(message.bypass));
+        if (result.error) return { ok: false, error: result.error };
         const push = await pushTabState(tabId);
         const state = await buildTabState(tabId);
         return { ...state, pushed: push.ok, pushError: push.error || '' };

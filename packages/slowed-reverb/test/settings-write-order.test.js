@@ -60,9 +60,11 @@ function makeStorage(initial = {}, opts = {}) {
   };
 }
 
-function loadBackground(storage) {
+function loadBackground(storage, opts = {}) {
   const listeners = [];
   const tab = { id: 1, url: 'https://music.youtube.com/watch?v=abc' };
+  let tabGetCalls = 0;
+  let releaseTabGet = null;
   const sandbox = {
     console,
     URL,
@@ -93,7 +95,13 @@ function loadBackground(storage) {
       },
       tabs: {
         query: async () => [tab],
-        get: async (id) => (id === 1 ? tab : null),
+        get: async (id) => {
+          tabGetCalls += 1;
+          if (opts.slowFirstTabGet && tabGetCalls === 1) {
+            await new Promise((resolve) => { releaseTabGet = resolve; });
+          }
+          return id === 1 ? tab : null;
+        },
         sendMessage: async () => ({ ok: true }),
         onUpdated: { addListener: () => {} },
         onRemoved: { addListener: () => {} },
@@ -112,6 +120,7 @@ function loadBackground(storage) {
   assert.equal(listeners.length, 1, 'background registered one onMessage listener');
 
   return {
+    releaseTabGet() { if (releaseTabGet) releaseTabGet(); },
     send(message, sender = {}) {
       return new Promise((resolve) => {
         const returns = listeners[0](message, sender, resolve);
@@ -192,4 +201,46 @@ test('failed write cannot poison a later serialized write', async () => {
   assert.equal(recovered.ok, true, 'later write still succeeds');
   assert.equal(storage.value('siteSettings')['music.youtube.com'].slow, 1.2,
     'later write persists its value');
+});
+
+
+const popupState = { type: 'GET_POPUP_STATE', tabId: 1 };
+
+test('rejected bypass write must not surface as active', async () => {
+  const storage = makeStorage();
+  const worker = loadBackground(storage);
+  storage.setFailWrites('disk full');
+
+  const reply = await worker.send({ type: 'SET_TAB_BYPASS', tabId: 1, bypass: true });
+  assert.equal(reply.ok, false, 'write failure is acknowledged');
+
+  const state = await worker.send(popupState);
+  assert.equal(state.bypass, false, 'failed bypass must not become active state');
+});
+
+test('corrupt bypass container must not surface as active', async () => {
+  const storage = makeStorage({ siteToggles: 'junk' });
+  const worker = loadBackground(storage);
+
+  const reply = await worker.send({ type: 'SET_TAB_BYPASS', tabId: 1, bypass: true });
+  assert.equal(reply.ok, false, 'corrupt container is acknowledged');
+
+  const state = await worker.send(popupState);
+  assert.equal(state.bypass, false, 'refused bypass must not become active state');
+});
+
+test('opposite toggles keep request order when tab lookups resolve late', async () => {
+  const storage = makeStorage();
+  const worker = loadBackground(storage, { slowFirstTabGet: true });
+
+  const first = worker.send({ type: 'SET_TAB_BYPASS', tabId: 1, bypass: true });
+  const second = worker.send({ type: 'SET_TAB_BYPASS', tabId: 1, bypass: false });
+  await Promise.resolve();
+  worker.releaseTabGet();
+  await Promise.all([first, second]);
+
+  const toggles = storage.value('siteToggles');
+  assert.equal(toggles['music.youtube.com'], true, 'later off request persists last');
+  const state = await worker.send(popupState);
+  assert.equal(state.bypass, false, 'later off request owns the final state');
 });
