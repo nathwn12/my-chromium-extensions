@@ -1661,7 +1661,7 @@ test('controller: saving an empty section removes the song entry', async () => {
   assert.equal(harness.status(), 'Removed');
 });
 
-test('persistence: an identity drop must not let an Enter on empty fields delete the saved range', async () => {
+test('persistence: an explicit empty From edit wins over the saved display', async () => {
   const saved = [{ videoId: 'song-a', startSeconds: 30, endSeconds: 200 }];
   const storage = createStorage({ playerActions: { sections: saved } });
   const harness = createHarness({ storage });
@@ -1672,16 +1672,16 @@ test('persistence: an identity drop must not let an Enter on empty fields delete
 
   harness.controller.invalidateSongIdentity();
   await settle();
-  assert.equal(harness.fromValue(), '', 'the points are dropped from the panel');
-  assert.equal(harness.toValue(), '');
+  assert.equal(harness.fromValue(), '0:30', 'the saved range stays visible on identity drop');
+  assert.equal(harness.toValue(), '3:20');
   assert.deepEqual(storage.sections(), saved, 'the identity event itself writes nothing');
 
   harness.commit('From', '');
   await settle();
   assert.deepEqual(
     storage.sections(),
-    saved,
-    'an identity-driven empty commit must not erase the stored section'
+    [{ videoId: 'song-a', startSeconds: null, endSeconds: 200 }],
+    'the explicit empty edit wins over the displayed saved range'
   );
 });
 
@@ -2970,12 +2970,12 @@ test('F4: a post-invalidation From commit vouches the URL song and a stale read 
   harness.controller.invalidateSongIdentity();
   harness.controller.suspendSongIdentity();
   await settle();
-  assert.equal(harness.fromValue(), '', 'precondition: identity drop emptied the fields');
+  assert.equal(harness.fromValue(), '0:30', 'precondition: the saved range stays visible on identity drop');
 
   harness.commit('From', '0:15');
   await settle();
   assert.equal(media.currentTime, 15, 'the press vouches and seeks to the URL song');
-  assert.deepEqual(harness.storage.sections(), [{ videoId: 'song-a', startSeconds: 15, endSeconds: null }]);
+  assert.deepEqual(harness.storage.sections(), [{ videoId: 'song-a', startSeconds: 15, endSeconds: 60 }]);
 
   harness.controller.invalidateSongIdentity();
   await settle();
@@ -2983,7 +2983,7 @@ test('F4: a post-invalidation From commit vouches the URL song and a stale read 
   assert.equal(media.currentTime, 15, 'the committed seek is not undone');
   assert.deepEqual(
     harness.storage.sections(),
-    [{ videoId: 'song-a', startSeconds: 15, endSeconds: null }],
+    [{ videoId: 'song-a', startSeconds: 15, endSeconds: 60 }],
     'the committed write stands',
   );
 });

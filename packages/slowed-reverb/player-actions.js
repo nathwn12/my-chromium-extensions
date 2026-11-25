@@ -21,6 +21,7 @@
   const SETTLE_MS = 1200;
   const SETTLE_NEAR_ZERO_SECONDS = 1;
 const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
+  const BOUNDARY_HOLD_MARGIN_SECONDS = 0.5;
   const STORAGE_KEY = 'playerActions';
   const HOST_ATTR = 'data-slra-player-actions';
 
@@ -249,6 +250,11 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
       endSeconds: null,
       pendingRestore: false,
       restoreDeadlineAt: 0,
+      ambiguousVless: false,
+      lastSongKey: null,
+      displayKey: null,
+      displayStartSeconds: null,
+      displayEndSeconds: null,
     };
   }
 
@@ -261,12 +267,17 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
     if (session.songKey === key) return false;
     const firstEver = !session.everAdopted;
     session.everAdopted = true;
+    session.lastSongKey = key;
     session.songKey = key;
     session.restoredSongKey = null;
     session.startSeconds = null;
     session.endSeconds = null;
     session.pendingRestore = false;
     session.restoreDeadlineAt = 0;
+    session.ambiguousVless = false;
+    session.displayKey = null;
+    session.displayStartSeconds = null;
+    session.displayEndSeconds = null;
     session.identitySource = source === 'push' || source === 'url' ? source : null;
     session.confirmedKey = session.identitySource === 'push' || firstEver ? key : null;
     session.pressVouched = false;
@@ -528,6 +539,8 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
     let pageSongId = null;
     let songIdPushed = false;
     let pageSongHref = null;
+    let boundaryHoldId = null;
+    let boundaryHoldHref = null;
     let unsubscribeStorage = null;
     let session = createSectionSession();
     let active = true;
@@ -592,6 +605,11 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
      * points) or 'lost' (the navigation left the pushed song: drop them).
      */
     function currentSongIdentity() {
+      if (boundaryHoldId !== null) {
+        // A queued next id was pushed before this media ended. Keep identity
+        // on the armed song until a genuine end or source change releases it.
+        return { key: session.songKey, source: 'blip' };
+      }
       const fromUrl = songKeyFrom(currentHref());
       if (!songIdPushed) {
         return { key: fromUrl, source: fromUrl === null ? null : 'url' };
@@ -609,6 +627,38 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
 
     function currentSongKey() {
       return currentSongIdentity().key;
+    }
+
+    /**
+     * A v-less Home push cannot vouch for a different song on a controller
+     * that has already adopted one. forgetSong clears songKey on a watch
+     * to Home drop while the old song still plays, so use the adoption
+     * history instead. A first Home session and a same-id re-adoption stay
+     * allowed; everything else waits for a watch URL to name the key.
+     */
+    function ambiguousVlessPush(identity, key) {
+      return identity.source === 'push'
+        && songKeyFrom(currentHref()) === null
+        && session.everAdopted
+        && session.lastSongKey !== key;
+    }
+
+    /**
+     * A dropped identity or a replaced element clears the transport points.
+     * Keep the saved range for display only. It never arms or seeks a loop.
+     */
+    function rememberSavedDisplay() {
+      const key = session.lastSongKey;
+      const entry = savedReady && key !== null ? lookupSaved(saved, key) : null;
+      session.displayKey = entry ? key : null;
+      session.displayStartSeconds = entry ? entry.startSeconds : null;
+      session.displayEndSeconds = entry ? entry.endSeconds : null;
+    }
+
+    function clearSavedDisplay() {
+      session.displayKey = null;
+      session.displayStartSeconds = null;
+      session.displayEndSeconds = null;
     }
 
     /**
@@ -630,11 +680,41 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
     }
 
     /**
+     * The page hook force-pushes the queued next id on metadata and data
+     * events. YTM can do that before the current media ends, so adopting it
+     * now would clear the armed section and lose the loop's seek. Hold it
+     * while an armed loop sits at its end boundary.
+     */
+    function shouldHoldAtBoundary(id) {
+      if (!started || id === null || id === '') return false;
+      if (session.songKey === null || id === session.songKey) return false;
+      if (!isLoopEngaged(currentState())) return false;
+      const armed = resolveArmedLoop(currentState(), media ? media.duration : undefined);
+      if (armed === null || !media) return false;
+      const at = Number(media.currentTime);
+      return Number.isFinite(at) && at >= armed.threshold - BOUNDARY_HOLD_MARGIN_SECONDS;
+    }
+
+    function clearBoundaryHold() {
+      boundaryHoldId = null;
+      boundaryHoldHref = null;
+    }
+
+    function releaseBoundaryHold() {
+      if (boundaryHoldId === null) return;
+      const id = boundaryHoldId;
+      const href = boundaryHoldHref;
+      clearBoundaryHold();
+      applySongId(id, href);
+    }
+
+    /**
      * A source signal may already be another song, and the read that decides it
      * is in flight. Suspend the latch until the answer lands: nothing seeks in
      * the meantime, and an unreadable answer invalidates.
      */
     function suspendSongIdentity() {
+      clearBoundaryHold();
       session.identityPending = true;
       session.confirmedKey = null;
       session.pressVouched = false;
@@ -647,6 +727,7 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
      * left it; nothing can seek until something vouches for the media.
      */
     function invalidateSongIdentity() {
+      clearBoundaryHold();
       if (session.pressVouched) {
         session.pressVouched = false;
         session.identityPending = false;
@@ -657,6 +738,7 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
       pageSongId = null;
       pageSongHref = null;
       forgetSong(session);
+      rememberSavedDisplay();
       cancelSeekRetry();
       clearSettleCheck();
       syncTick();
@@ -666,6 +748,16 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
     /** Adopts the id pushed by the page hook (null when no track is loaded). */
     function setSongId(next, href) {
       const normalized = typeof next === 'string' && next !== '' ? next : null;
+      if (shouldHoldAtBoundary(normalized)) {
+        boundaryHoldId = normalized;
+        boundaryHoldHref = href;
+        return;
+      }
+      applySongId(normalized, href);
+    }
+
+    function applySongId(normalized, href) {
+      clearBoundaryHold();
       session.identityPending = false;
       songIdPushed = true;
       if (session.songKey === normalized && normalized !== null) {
@@ -750,6 +842,7 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
     function stop() {
       generation += 1;
       started = false;
+      clearBoundaryHold();
       stopTick();
       cancelSeekRetry();
       resetVolumePersistence();
@@ -811,6 +904,7 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
       everBound = true;
 
       if (replaced) {
+        clearBoundaryHold();
         cancelSeekRetry();
         clearSettleCheck();
         session.songKey = null;
@@ -820,6 +914,7 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
         session.startSeconds = null;
         session.endSeconds = null;
         clearPendingRestore(session);
+        rememberSavedDisplay();
         fromDirty = false;
         toDirty = false;
         syncPanel();
@@ -857,6 +952,7 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
      */
     function handleSourceChange() {
       if (!started) return;
+      clearBoundaryHold();
       syncSong();
       syncTick();
       syncPanel();
@@ -866,7 +962,11 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
       if (!media) return;
       if (!session.identityKnown) return;
       const target = resolveEndSeekTarget(currentState(), media.duration);
-      if (target === null) return;
+      if (target === null) {
+        releaseBoundaryHold();
+        return;
+      }
+      clearBoundaryHold();
       try {
         media.currentTime = target;
         const played = media.play();
@@ -922,14 +1022,20 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
       if (key === null) {
         if (identity.source === 'lost') {
           forgetSong(session);
+          rememberSavedDisplay();
           syncPanel();
         }
         cancelSeekRetry();
         syncTick();
         return;
       }
+      if (session.ambiguousVless && songKeyFrom(currentHref()) === key) {
+        session.ambiguousVless = false;
+      }
       const previousSong = session.songKey !== null;
+      const ambiguous = ambiguousVlessPush(identity, key);
       if (beginSong(session, key, identity.source)) {
+        session.ambiguousVless = ambiguous;
         clearUndo();
         cancelSeekRetry();
         clearSettleCheck();
@@ -970,7 +1076,7 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
       }
 
       const confirmed = session.songKey !== null && session.confirmedKey === session.songKey;
-      if (!confirmed && (media === null || mediaIsMidStream())) {
+      if (session.ambiguousVless || (!confirmed && (media === null || mediaIsMidStream()))) {
         session.pendingRestore = true;
         if (!session.restoreDeadlineAt) session.restoreDeadlineAt = now() + RESTORE_DEADLINE_MS;
         syncTick();
@@ -980,6 +1086,7 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
 
       session.startSeconds = entry.startSeconds;
       session.endSeconds = entry.endSeconds;
+      clearSavedDisplay();
       active = true;
       syncTick();
       syncPanel();
@@ -1037,13 +1144,19 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
       if (key === null) {
         if (identity.source === 'lost') {
           forgetSong(session);
+          rememberSavedDisplay();
           syncPanel();
         }
         cancelSeekRetry();
         syncTick();
         return;
       }
+      if (session.ambiguousVless && songKeyFrom(currentHref()) === key) {
+        session.ambiguousVless = false;
+      }
+      const ambiguous = ambiguousVlessPush(identity, key);
       if (beginSong(session, key, identity.source)) {
+        session.ambiguousVless = ambiguous;
         cancelSeekRetry();
         clearSettleCheck();
         fromDirty = false;
@@ -1066,6 +1179,7 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
         seeking: media.seeking,
       });
       if (target === null) return;
+      clearBoundaryHold();
       try {
         media.currentTime = target;
       } catch {
@@ -1097,6 +1211,7 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
         seeking: media.seeking,
       });
       if (target === null) return;
+      clearBoundaryHold();
       try {
         media.currentTime = target;
       } catch {
@@ -1632,15 +1747,19 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
     function paintStatus() {
       if (!ui) return;
       const live = readInputs();
+      const start = session.startSeconds;
+      const end = session.endSeconds;
       let bad = live.invalid;
-      const start = live.startSeconds;
-      const end = live.endSeconds;
 
       if (!bad) {
         if (end !== null && end <= (start === null ? 0 : start)) bad = true;
       }
       setInvalid(ui.from, live.from.kind === 'invalid' || bad);
       setInvalid(ui.to, live.to.kind === 'invalid' || bad);
+      if (fromDirty) ui.from.setAttribute('data-editing', 'true');
+      else ui.from.removeAttribute('data-editing');
+      if (toDirty) ui.to.setAttribute('data-editing', 'true');
+      else ui.to.removeAttribute('data-editing');
 
       let text;
       if (bad) {
@@ -1673,8 +1792,10 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
     function syncPanel() {
       if (!ui) return;
       ui.repeat.checked = active;
-      if (!fromDirty) ui.from.value = session.startSeconds === null ? '' : formatTime(session.startSeconds);
-      if (!toDirty) ui.to.value = session.endSeconds === null ? '' : formatTime(session.endSeconds);
+      const fromSeconds = session.startSeconds === null ? session.displayStartSeconds : session.startSeconds;
+      const toSeconds = session.endSeconds === null ? session.displayEndSeconds : session.endSeconds;
+      if (!fromDirty) ui.from.value = fromSeconds === null ? '' : formatTime(fromSeconds);
+      if (!toDirty) ui.to.value = toSeconds === null ? '' : formatTime(toSeconds);
       syncUndo();
       paintStatus();
     }
@@ -1697,6 +1818,7 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
       cancelSeekRetry();
       clearSettleCheck();
       clearPendingRestore(session);
+      clearSavedDisplay();
 
       let adoptedByPress = false;
       if (session.songKey === null) {

@@ -17,7 +17,7 @@
     },
     "packages/slowed-reverb": {
       "name": "slowed-reverb",
-      "version": "1.2.3",
+      "version": "1.2.10",
       "devDependencies": {
         "eslint": "^10.15.0",
         "globals": "^17.13.0",
@@ -25,7 +25,7 @@
     },
     "packages/youtube-music-presence": {
       "name": "youtube-music-presence",
-      "version": "1.1.15",
+      "version": "1.1.14",
     },
   },
   "packages": {

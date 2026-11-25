@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.10] - 2026-11-25
+
+- Fix: a v-less Home push for a different song no longer seeks the outgoing element. The saved
+  restore waits for a confirmed watch URL when an already-adopted controller cannot vouch for the
+  new id, including after a watch-to-Home visit. Native repeat, Next/Previous and confirmed watch
+  transitions are unchanged.
+- Fix: a dropped identity or a replaced media element no longer blanks From and To while Repeat
+  stays checked. The saved range is shown from a display-only copy until the song is confirmed
+  again, so the panel heals without a refresh and no display value can seek.
+- Fix: the status line reports the committed armed range while a field is being edited, so a
+  dirty From or To box no longer claims a range the loop is not using. The in-progress edit stays
+  in its box and commit-on-blur is unchanged.
+
+## [1.2.9] - 2026-11-24
+
+- Fix: a queued next id pushed before the current media ends is now held while an armed loop sits at its end boundary. The accelerated loop keeps its seek instead of losing the armed section and playing the next track early. A genuine end, source change, invalidation or stop releases the hold; Repeat-off and explicit Next/Previous still advance.
+
 ## [1.2.8]
 
 - Fix: a deliberate From, Now, To or Clear commit is now a vouch for the song the
