@@ -336,6 +336,8 @@ export function createWorker({
   let desiredRateScaled = false;
   /** A fresh worker has not published anything: "null" is already its clear. */
   let lastSent = "null";
+  /** Whether the activity actually on the wire carries a real timestamp pair. */
+  let lastSentTimed = false;
   let publishedIdentity = null;
   let limiter = null;
 
@@ -679,6 +681,7 @@ export function createWorker({
     const id = `${SOURCE_YOUTUBE_MUSIC}:${++sequence}`;
     if (post({ t: "activity", source: SOURCE_YOUTUBE_MUSIC, id, activity })) {
       lastSent = JSON.stringify(activity);
+      lastSentTimed = Boolean(activity && activity.timestamps);
       publishedIdentity = activityIdentity(activity);
     }
   }
@@ -749,7 +752,14 @@ export function createWorker({
     hasDesired = true;
     desiredRateScaled = rateScaled;
     persist();
-    push(false, activityIdentity(desired) !== publishedIdentity);
+    /**
+     * The first trustworthy total for a track changes the card from title-only
+     * to timed, so it goes out ahead of the pacing floor. It is still an urgent
+     * send, not a forced one: the rolling ceiling keeps its bound, and a later
+     * seek or refresh stays paced because the wire already carries timestamps.
+     */
+    const gainedTiming = Boolean(desired && desired.timestamps) && !lastSentTimed;
+    push(false, activityIdentity(desired) !== publishedIdentity || gainedTiming);
   }
 
   /** Publish an explicit clear for Music the last session left published. */
