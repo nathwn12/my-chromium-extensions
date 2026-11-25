@@ -2,6 +2,16 @@
 
 Notable changes to this package. Dates are ISO 8601. This package is local-only and is not published to a registry.
 
+## [1.1.15] - 2026-11-25
+
+- Presence no longer carries one track's timestamps onto the next. During a handoff the card shows the new title with no timer until the timing provably belongs to it: a player-bar `M:SS / M:SS` clock and a media element must agree on the duration, and a lone source is used only when there is no second source to disagree with it. A stale clock and a stale playing element that agree on the previous song are not freshness, so the content script also holds timestamps until the reported duration moves or the selected media element's source changes.
+- Timing withheld this way is restored on the next poll or media event: a duration that appears, a position that appears at the same duration, a clock that catches up or a changed media source all publish the correct total and playhead. A same-length new track whose media source never changes stays timer-free; that is the fail-closed choice, not a delay.
+- Two disagreeing player-bar clocks are a conflict, not a missing clock, so the stale element is never stamped in that state.
+
+## [1.1.14] - 2026-11-24
+
+- The timestamp span is the real duration at every playback rate. The worker biases the elapsed reference by bounded rate drift so the displayed time follows the sampled media position, and a track still at 0:00 reads 0:00. A 3:27 track no longer reads 4:51 at 0.70x or 2:42 at 1.30x. Discord's timer counts wall time and carries no rate field, so no payload can make a non-1x track literally run at that speed.
+
 ## [1.1.13] - 2026-11-24
 
 - Presence is published only from a live report that says playback is running. A paused report no longer puts a card on screen with no timer, and a pause or worker restart clears this extension's own presence through the null path so a native `lastActivity` snapshot cannot replay stale listening.

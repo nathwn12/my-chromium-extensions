@@ -43,8 +43,9 @@
   var lastHref = href();
   var lastSource = null;
   var lastTitle = null;
-  var lastPaused = null;
   var lastSample = null;
+  var lastCredibleDuration = null;
+  var pendingTiming = null;
   var reported = false;
   var settleTimer = null;
   var staleTimer = null;
@@ -68,6 +69,53 @@
     }
   }
 
+  /**
+   * Which song and which sample this is. Title, link, id and duration travel
+   * together: two songs can share a title, and a reused media element can keep
+   * the old duration after the player bar has switched to the next track.
+   */
+  function trackIdentity(state) {
+    return JSON.stringify([
+      state.title || null,
+      state.trackUrl || null,
+      state.mediaId || null
+    ]);
+  }
+
+  function sampleIdentity(state) {
+    return JSON.stringify([
+      state.title || null,
+      state.trackUrl || null,
+      state.mediaId || null,
+      typeof state.duration === "number" && isFinite(state.duration) ? state.duration : null
+    ]);
+  }
+
+  function sourceEvidence() {
+    return EXTRACT.mediaSourceOf ? EXTRACT.mediaSourceOf() : null;
+  }
+
+  /** Discord stamps floor(duration); compare media and clock in that same unit. */
+  function durationUnit(value) {
+    return typeof value === "number" && isFinite(value) ? Math.floor(value) : null;
+  }
+
+  /** True only when the current read is the sample already published. */
+  function unchanged(state) {
+    if (!lastSample || state.title !== lastSample.title || state.paused !== lastSample.paused) return false;
+    if (pendingTiming) {
+      if (trackIdentity(state) !== pendingTiming.track) return false;
+      var source = sourceEvidence();
+      if (source && lastSample.source && source !== lastSample.source) return false;
+      var duration = durationUnit(state.duration);
+      return duration === null || duration === pendingTiming.duration;
+    }
+    var hadPosition = lastSample.position !== null && lastSample.position !== undefined;
+    var hasPosition = state.position !== null && state.position !== undefined;
+    if (hadPosition !== hasPosition) return false;
+    return sampleIdentity(state) === lastSample.identity;
+  }
+
   function sourceNow() {
     try {
       return EXTRACT.sourceForLocation(location);
@@ -88,14 +136,15 @@
     if (!enabled) return;
     if (!reported) {
       lastTitle = null;
-      lastPaused = null;
       lastSample = null;
+      lastCredibleDuration = null;
       return;
     }
     reported = false;
     lastTitle = null;
-    lastPaused = null;
     lastSample = null;
+    lastCredibleDuration = null;
+    pendingTiming = null;
     send({ t: "ytmp-gone", source: sourceNow() || lastSource, scope: "tab" });
   }
 
@@ -110,14 +159,50 @@
       gone();
       return;
     }
+
+    /**
+     * Identity can change before its timing does. A stale bar clock and a stale
+     * media element can agree perfectly on the previous song, so agreement is
+     * not freshness. Hold timestamps until the reported duration moves.
+     */
+    var rawDuration = state.duration;
+    var identity = trackIdentity(state);
+    var mediaSource = sourceEvidence();
+    var rawUnit = durationUnit(rawDuration);
+    var credible = rawUnit !== null ? rawUnit : lastCredibleDuration;
+    if (lastSample && identity !== lastSample.track) {
+      pendingTiming = credible !== null && credible === lastCredibleDuration
+        ? { track: identity, duration: credible }
+        : null;
+    } else if (pendingTiming && identity !== pendingTiming.track) {
+      pendingTiming = null;
+    }
+    if (pendingTiming && mediaSource && lastSample.source && mediaSource !== lastSample.source) {
+      pendingTiming = null;
+    }
+    if (pendingTiming) {
+      var sampleUnit = durationUnit(state.duration);
+      if (sampleUnit === null || sampleUnit === pendingTiming.duration) {
+        state.duration = null;
+        state.position = null;
+      } else {
+        pendingTiming = null;
+      }
+    }
+    if (credible !== null) lastCredibleDuration = credible;
+
     state.at = Date.now();
     lastSource = source;
     lastTitle = state.title;
-    lastPaused = state.paused;
     lastSample = {
       title: state.title,
       paused: state.paused,
       position: state.position,
+      duration: state.duration,
+      rawDuration: rawDuration,
+      source: mediaSource,
+      track: identity,
+      identity: sampleIdentity(state),
       at: state.at
     };
     reported = true;
@@ -146,7 +231,7 @@
         gone();
         return;
       }
-      if (state.title === lastTitle && state.paused === lastPaused) return;
+      if (unchanged(state)) return;
       report(state);
     }, SPA_SETTLE_MS);
   }
@@ -204,6 +289,7 @@
     var last = lastSample;
     if (!last || last.paused || state.paused) return false;
     var live = state.position;
+    if (typeof live !== "number" || typeof last.position !== "number") return false;
     if (!isFinite(live) || !isFinite(last.position)) return false;
     if (live === last.position) return false;
     var rate = state.playbackRate;
@@ -223,6 +309,7 @@
   function reanchorDue(state) {
     var last = lastSample;
     if (!last || last.paused || state.paused) return false;
+    if (typeof state.position !== "number" || typeof last.position !== "number") return false;
     if (!isFinite(state.position) || !isFinite(last.position)) return false;
     if (state.position === last.position) return false;
     var rate = state.playbackRate;
@@ -283,7 +370,7 @@
       gone();
       return;
     }
-    if (!reported || state.title !== lastTitle || state.paused !== lastPaused) {
+    if (!reported || !unchanged(state)) {
       report(state);
       return;
     }

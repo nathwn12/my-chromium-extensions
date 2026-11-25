@@ -15,7 +15,7 @@ From the repository root, register the local native messaging host:
 node packages/youtube-music-presence/scripts/install-host.mjs
 ```
 
-Then install the stable runtime folder with `node scripts/install-extension.mjs youtube-music-presence`. Open `chrome://extensions`, enable Developer mode, choose **Load unpacked**, and select the folder the installer prints. Chrome keeps an unpacked extension as a folder path, so loading `packages/youtube-music-presence` would break if the checkout moves. In the extension popup, use the accessible presence switch to turn presence on or off. The choice persists across refreshes and Discord reconnects.
+Then open `chrome://extensions`, enable Developer mode, choose **Load unpacked**, and select `packages/youtube-music-presence`. In the extension popup, use the accessible presence switch to turn presence on or off. The choice persists across refreshes and Discord reconnects.
 
 ## Presence contract
 
@@ -37,7 +37,6 @@ From the repository root, with Bun installed:
 bun run --filter youtube-music-presence test
 node packages/youtube-music-presence/native/host.mjs --selftest
 node packages/youtube-music-presence/scripts/install-host.mjs --check
-node scripts/install-extension.mjs youtube-music-presence --check
 ```
 
 The suite covers Music-only extraction and UI, persistence/reconnect, artist payload, and timestamps through the outgoing activity frame.

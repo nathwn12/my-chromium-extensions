@@ -26,6 +26,9 @@
   "use strict";
 
   /** Every tunable selector, regex and cap lives here. */
+  /** The selected media element's source, kept local to this content script. */
+  var chosenSource = null;
+
   var RULES = {
     maxChars: 256,
     maxUrlChars: 1024,
@@ -40,6 +43,11 @@
 
     noise: {
       suffixes: [" - YouTube Music", " - YouTube", " | YouTube"]
+    },
+
+    /** Two clocks this close together describe the same track. */
+    timing: {
+      toleranceSeconds: 1
     },
 
     views: {
@@ -62,6 +70,8 @@
       musicTitleLink: ["ytmusic-player-bar .title a", ".middle-controls .title a"],
       musicBylineLinks: [".byline.ytmusic-player-bar a", "ytmusic-player-bar .subtitle a"],
       musicAlbumLink: [".complex-string.ytmusic-player-bar a"],
+      musicTime: ["ytmusic-player-bar .time", "ytmusic-player-bar .time-info"],
+      musicTimeScan: "ytmusic-player-bar *",
       trackIdFallbacks: ['a.ytp-title-link', 'link[rel="canonical"]'],
       musicArtwork: "ytmusic-player-bar img, ytmusic-player-bar img.image, #song-image img",
       jsonLd: 'script[type="application/ld+json"]'
@@ -280,21 +290,123 @@
   }
 
 
-  function readVideo(doc) {
-    var el = firstMatch(doc, RULES.dom.video);
-    if (!el) return { elapsed: null, length: null, paused: true, rate: null };
+  /** `M:SS / M:SS` as the player bar shows it for the title in the same bar. */
+  function parseClock(value) {
+    var text = clean(value);
+    if (!text) return null;
+    var m = /^(\d{1,3}):([0-5]?\d)\s*\/\s*(\d{1,3}):([0-5]?\d)$/.exec(text);
+    if (!m) return null;
+    var position = Number(m[1]) * 60 + Number(m[2]);
+    var duration = Number(m[3]) * 60 + Number(m[4]);
+    if (!Number.isFinite(position) || !Number.isFinite(duration) || duration <= 0) return null;
+    return { position: Math.min(position, duration), duration: duration };
+  }
 
-    var duration = finite(el.duration);
-    var position = finite(el.currentTime);
-    if (duration !== null && duration > 0 && position !== null && position > duration) {
-      position = duration;
+  /** Two displayed clocks that disagree; not the same as no clock at all. */
+  var CLOCK_CONFLICT = { conflict: true };
+
+  /**
+   * A player-bar clock is evidence only when every displayed clock agrees.
+   * The class list is a fast path; a pattern scan of the same player bar is
+   * the fallback, so a markup rename cannot silently restore stale timing.
+   * A disagreement is reported as a conflict: reading it as "no clock" would
+   * fall through to the media element and stamp the stale pair it just caught.
+   */
+  function readMusicTime(doc) {
+    var found = null;
+    function consider(nodes) {
+      for (var i = 0; i < nodes.length; i += 1) {
+        var clock = parseClock(textOf(nodes[i]));
+        if (!clock) continue;
+        if (found && (found.position !== clock.position || found.duration !== clock.duration)) return false;
+        found = clock;
+      }
+      return true;
     }
-    return {
-      elapsed: position,
-      length: duration !== null && duration > 0 ? duration : null,
-      paused: typeof el.paused === "boolean" ? el.paused : true,
-      rate: finite(el.playbackRate)
-    };
+    var selectors = RULES.dom.musicTime;
+    for (var s = 0; s < selectors.length; s += 1) {
+      if (!consider(queryAll(doc, selectors[s]))) return CLOCK_CONFLICT;
+    }
+    if (!found && !consider(queryAll(doc, RULES.dom.musicTimeScan))) return CLOCK_CONFLICT;
+    return found;
+  }
+
+  /** MediaSession playback is the page's own word, independent of a media element. */
+  function readPlaybackState(nav) {
+    try {
+      var value = nav && nav.mediaSession ? nav.mediaSession.playbackState : null;
+      return value === "playing" || value === "paused" ? value : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function readVideoEntries(doc) {
+    var els = queryAll(doc, RULES.dom.video);
+    var out = [];
+    for (var i = 0; i < els.length; i += 1) {
+      var el = els[i];
+      var duration = finite(el.duration);
+      var position = finite(el.currentTime);
+      if (duration !== null && duration > 0 && position !== null && position > duration) {
+        position = duration;
+      }
+      out.push({
+        duration: duration !== null && duration > 0 ? duration : null,
+        elapsed: position,
+        paused: typeof el.paused === "boolean" ? el.paused : true,
+        rate: finite(el.playbackRate),
+        source: typeof el.currentSrc === "string" && el.currentSrc
+          ? el.currentSrc
+          : typeof el.src === "string" && el.src ? el.src : null
+      });
+    }
+    return out;
+  }
+
+  /**
+   * Pick the media element that belongs to the current title. Document order
+   * never decides: with a player-bar clock, only a matching duration is that
+   * song's media element; without one, a lone playing element is the evidence.
+   * Otherwise timing is withheld rather than borrowed from a stale, hidden or
+   * paused element.
+   */
+  function chooseVideo(entries, musicTime) {
+    if (!entries.length) return { entry: null, coherent: false, useClock: Boolean(musicTime) };
+    var timed = [];
+    for (var t = 0; t < entries.length; t += 1) {
+      if (entries[t].duration !== null) timed.push(entries[t]);
+    }
+    if (!timed.length) return { entry: entries[0], coherent: false, useClock: Boolean(musicTime) };
+
+    if (musicTime) {
+      var matched = [];
+      for (var m = 0; m < timed.length; m += 1) {
+        if (Math.abs(timed[m].duration - musicTime.duration) <= RULES.timing.toleranceSeconds) {
+          matched.push(timed[m]);
+        }
+      }
+      return matched.length === 1 ? { entry: matched[0], coherent: true } : { entry: null, coherent: false };
+    }
+
+    var playing = [];
+    for (var p = 0; p < timed.length; p += 1) {
+      if (timed[p].paused === false) playing.push(timed[p]);
+    }
+    if (playing.length === 1) return { entry: playing[0], coherent: true };
+    if (playing.length > 1) {
+      for (var q = 1; q < playing.length; q += 1) {
+        var sameElapsed = playing[q].elapsed === playing[0].elapsed ||
+          (typeof playing[q].elapsed === "number" && typeof playing[0].elapsed === "number" &&
+            Math.abs(playing[q].elapsed - playing[0].elapsed) <= RULES.timing.toleranceSeconds);
+        if (Math.abs(playing[q].duration - playing[0].duration) > RULES.timing.toleranceSeconds || !sameElapsed) {
+          return { entry: null, coherent: false };
+        }
+      }
+      return { entry: playing[0], coherent: true };
+    }
+    if (timed.length === 1) return { entry: timed[0], coherent: true };
+    return { entry: null, coherent: false };
   }
 
 
@@ -567,6 +679,7 @@
   }
 
   function readUnsafe(doc, nav, loc) {
+    chosenSource = null;
     var href = hrefOf(loc);
     if (!href) href = hrefOf(doc && doc.location);
 
@@ -576,7 +689,15 @@
     var mediaId = mediaIdFrom(href);
     if (requiresMediaId && !mediaId) return null;
 
-    var video = readVideo(doc);
+    var clock = readMusicTime(doc);
+    var clockConflict = clock === CLOCK_CONFLICT;
+    var musicTime = clockConflict ? null : clock;
+    var playbackState = readPlaybackState(nav);
+    var chosen = clockConflict
+      ? { entry: null, coherent: false, conflict: true }
+      : chooseVideo(readVideoEntries(doc), musicTime);
+    var pick = chosen.entry;
+    chosenSource = chosen.coherent && pick ? pick.source : null;
     var session = readMediaSession(nav);
     var ld = readJsonLd(doc);
     var dom = readMusicDom(doc, href);
@@ -593,9 +714,23 @@
     var trackId = dom.trackId || mediaId;
     var trackUrl = trackId ? "https://music.youtube.com/watch?v=" + trackId : null;
 
-    var duration = video.length !== null ? video.length : ld ? ld.duration : null;
-    var position = video.elapsed;
+    var duration = null;
+    var position = null;
+    if (chosen.coherent && pick && pick.duration !== null) {
+      duration = pick.duration;
+      position = pick.elapsed;
+    } else if (!clockConflict && chosen.useClock && musicTime) {
+      duration = musicTime.duration;
+      position = musicTime.position;
+    } else if (!clockConflict && !musicTime && ld) {
+      duration = ld.duration;
+    }
     if (duration !== null && position !== null && position > duration) position = duration;
+
+    var paused = chosen.coherent && pick ? pick.paused
+      : playbackState === "playing" ? false
+      : playbackState === "paused" ? true
+      : true;
 
     return {
       title: title || null,
@@ -610,8 +745,8 @@
       mediaId: mediaId,
       duration: duration,
       position: position,
-      paused: video.paused,
-      playbackRate: video.rate,
+      paused: paused,
+      playbackRate: pick ? pick.rate : null,
       visible: safeVisible(doc)
     };
   }
@@ -631,6 +766,10 @@
       } catch (_) {
         return null;
       }
+    },
+    /** Local-only evidence: which media source the last read actually used. */
+    mediaSourceOf: function () {
+      return chosenSource;
     },
     read: read
   };
