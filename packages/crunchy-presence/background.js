@@ -249,6 +249,14 @@ export function pruneFrames(entry, now = Date.now()) {
   return entry;
 }
 
+/** Identity a frame actually reports. No shared ID is invented for the player. */
+function identityKey(frame) {
+  return JSON.stringify([
+    frame.series, frame.episodeTitle, frame.seasonNumber, frame.episodeNumber,
+    frame.artworkUrl, frame.seriesUrl, frame.episodeUrl
+  ]);
+}
+
 /** Store one frame report on its tab entry (frameId 0 = top frame). */
 export function mergeFrame(entry, frame, now = Date.now()) {
   if (!entry) return entry;
@@ -276,8 +284,31 @@ export function mergeFrame(entry, frame, now = Date.now()) {
     signals: Array.isArray(frame.signals) ? frame.signals : [],
     receivedAt: Number.isFinite(frame.receivedAt) ? frame.receivedAt : now
   };
-  if (stored.frameId === 0) entry.top = stored;
-  else entry.frames[stored.frameId] = stored;
+  const prev = stored.frameId === 0 ? entry.top : entry.frames[stored.frameId];
+  if (stored.frameId === 0) {
+    entry.top = stored;
+    const key = identityKey(stored);
+    const prevKey = prev ? identityKey(prev) : entry.lastTopIdentity;
+    // A metadata-only identity change must be confirmed by a video report.
+    // A frame that carries its own video is already self-confirmed.
+    if (prevKey !== undefined && prevKey !== key && !stored.hasVideo && !entry.awaitingTop) {
+      entry.awaitingVideo = true;
+    }
+    entry.lastTopIdentity = key;
+    entry.awaitingTop = false;
+  } else {
+    entry.frames[stored.frameId] = stored;
+    const duration = Number(stored.duration);
+    const identityChanged = prev && identityKey(prev) !== identityKey(stored);
+    const episodeVideo =
+      prev && prev.hasVideo && stored.hasVideo &&
+      Number.isFinite(duration) && Number(prev.duration) !== duration &&
+      !isAdBreak(stored, entry.knownDuration);
+    // An ad or a same-episode seek is not a new episode. A real video change
+    // waits for the top frame to confirm it with fresh metadata.
+    if ((identityChanged || episodeVideo) && !entry.awaitingVideo) entry.awaitingTop = true;
+    if (stored.hasVideo) entry.awaitingVideo = false;
+  }
   entry.updatedAt = Math.max(entry.updatedAt || 0, stored.receivedAt);
   if (frame.keepalive !== true) {
     entry.rankAt = Math.max(entry.rankAt || 0, stored.receivedAt);
@@ -296,6 +327,9 @@ export function mergeFrame(entry, frame, now = Date.now()) {
 export function resolveTab(entry, now = Date.now()) {
   if (!entry) return null;
   pruneFrames(entry, now);
+  // One source changed episode and the other has not confirmed it. Publishing
+  // now would join one episode's identity to another episode's timing.
+  if (entry.awaitingTop || entry.awaitingVideo) return null;
 
   const frames = [];
   if (entry.top) frames.push(entry.top);
@@ -899,8 +933,12 @@ if (hasChrome) {
     const out = {};
     for (const [tabId, entry] of [...tabStates]) {
       const resolved = resolveTab(entry, now);
-      if (!resolved) tabStates.delete(tabId);
-      else out[tabId] = resolved;
+      if (!resolved) {
+        // A handoff hold must keep its frames so the other source can confirm.
+        if (!entry.top && !Object.keys(entry.frames || {}).length) tabStates.delete(tabId);
+        continue;
+      }
+      out[tabId] = resolved;
     }
     return out;
   }
