@@ -961,6 +961,13 @@
 
   const CONTROL_ACTIONS = { START: 'start', STOP: 'stop', SET_GAIN: 'setGain' };
 
+  // Concurrent CONTROL_HOOK requests can resolve out of order: a delayed reply
+  // for an older request must not reapply over a newer confirmed receipt.
+  // Each request carries a monotonic seq; the receiving boundary drops any
+  // reply older than the newest already applied one.
+  let statusSeq = 0;
+  let appliedStatusSeq = 0;
+
   function postToPage(type, payload) {
     const action = CONTROL_ACTIONS[type];
     if (!action) return Promise.resolve(null);
@@ -969,21 +976,26 @@
 
   async function sendHookControl(action, payload) {
     if ((state.detached || state.excluded) && action !== 'stop') return null;
+    const seq = ++statusSeq;
     try {
       const response = await chrome.runtime.sendMessage({
         type: 'CONTROL_HOOK',
         action,
         payload: payload || {},
       });
-      applyHookStatus(response);
+      applyHookStatus(response, seq);
       return response || null;
     } catch {
       return null;
     }
   }
 
-  function applyHookStatus(response) {
+  function applyHookStatus(response, seq) {
     if (!response || typeof response !== 'object') return;
+    if (typeof seq === 'number') {
+      if (seq < appliedStatusSeq) return;
+      appliedStatusSeq = seq;
+    }
     if (response.alive === true) {
       state.injected = true;
       state.hookAlive = true;
