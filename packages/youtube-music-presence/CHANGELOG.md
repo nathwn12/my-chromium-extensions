@@ -2,6 +2,11 @@
 
 Notable changes to this package. Dates are ISO 8601. This package is local-only and is not published to a registry.
 
+## [1.1.16] - 2026-11-25
+
+- A changed total is published only with an owned reset: a playhead at or near zero, or a coherent source new to the last published sample. An owned first read publishes at once, so a genuinely fresh new duration is never held forever; a new source at the old total stays blocked.
+- A mid-song total under the same source cannot be told apart from ingested stale timing and fails closed at the incoming total until a different owned total arrives. Wall time alone never releases a hold, and a withheld read never becomes the baseline for the next decision.
+
 ## [1.1.15] - 2026-11-25
 
 - Presence no longer carries one track's timestamps onto the next. During a handoff the card shows the new title with no timer until the timing provably belongs to it: a player-bar `M:SS / M:SS` clock and a media element must agree on the duration, and a lone source is used only when there is no second source to disagree with it. A stale clock and a stale playing element that agree on the previous song are not freshness, so the content script also holds timestamps until the reported duration moves or the selected media element's source changes.

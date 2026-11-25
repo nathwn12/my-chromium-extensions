@@ -1020,6 +1020,7 @@
       resetMuteDampener(controller);
       return;
     }
+    resetMuteDampener(controller);
     if (controller.masterGain) hardZero(controller.masterGain.gain);
     bumpGeneration(controller);
     controller.sourceStale = true;

@@ -39,6 +39,7 @@
   var DRIFT_SECONDS = 2.5;
   var RATE_EPSILON = 0.01;
   var SPA_SETTLE_MS = 250;
+  var FRESH_POSITION_SECONDS = 2;
 
   var lastHref = href();
   var lastSource = null;
@@ -77,6 +78,7 @@
   function trackIdentity(state) {
     return JSON.stringify([
       state.title || null,
+      state.channel || null,
       state.trackUrl || null,
       state.mediaId || null
     ]);
@@ -100,13 +102,26 @@
     return typeof value === "number" && isFinite(value) ? Math.floor(value) : null;
   }
 
+  /**
+   * A changed total is fresh only with an owned reset: a playhead at the start
+   * of the track, or a coherent read whose source differs from the last
+   * published sample's source. `sourceEvidence()` is non-null only when the
+   * extractor picked a media element that agrees with the player-bar clock, so
+   * it proves ownership; a bare `currentSrc` string does not. All else fails
+   * closed.
+   */
+  function ownsFreshTiming(state, unit, mediaSource) {
+    if (unit === null || unit === lastCredibleDuration) return false;
+    var position = state.position;
+    if (typeof position === "number" && isFinite(position) && position >= 0 && position <= FRESH_POSITION_SECONDS) return true;
+    return Boolean(mediaSource) && (!lastSample || !lastSample.source || mediaSource !== lastSample.source);
+  }
+
   /** True only when the current read is the sample already published. */
   function unchanged(state) {
     if (!lastSample || state.title !== lastSample.title || state.paused !== lastSample.paused) return false;
     if (pendingTiming) {
       if (trackIdentity(state) !== pendingTiming.track) return false;
-      var source = sourceEvidence();
-      if (source && lastSample.source && source !== lastSample.source) return false;
       var duration = durationUnit(state.duration);
       return duration === null || duration === pendingTiming.duration;
     }
@@ -143,8 +158,8 @@
     reported = false;
     lastTitle = null;
     lastSample = null;
-    lastCredibleDuration = null;
-    pendingTiming = null;
+    /** Carry one guard across the blank page: a stale clock can survive it. */
+    pendingTiming = { track: null, duration: lastCredibleDuration };
     send({ t: "ytmp-gone", source: sourceNow() || lastSource, scope: "tab" });
   }
 
@@ -163,33 +178,38 @@
     /**
      * Identity can change before its timing does. A stale bar clock and a stale
      * media element can agree perfectly on the previous song, so agreement is
-     * not freshness. Hold timestamps until the reported duration moves.
+     * not freshness. Publish a changed total only with an owned reset: a
+     * near-zero playhead or a coherent source new to the last sample.
+     * A new source at the old total stays blocked. A mid-song total under the
+     * same source cannot be told apart from ingested stale timing, so it fails
+     * closed at the incoming total until a different owned total arrives. Wall
+     * time alone never releases a hold.
      */
     var rawDuration = state.duration;
     var identity = trackIdentity(state);
     var mediaSource = sourceEvidence();
     var rawUnit = durationUnit(rawDuration);
     var credible = rawUnit !== null ? rawUnit : lastCredibleDuration;
-    if (lastSample && identity !== lastSample.track) {
-      pendingTiming = credible !== null && credible === lastCredibleDuration
-        ? { track: identity, duration: credible }
-        : null;
-    } else if (pendingTiming && identity !== pendingTiming.track) {
-      pendingTiming = null;
+    var owned = ownsFreshTiming(state, rawUnit, mediaSource);
+    if (!lastSample && pendingTiming && pendingTiming.track === null) {
+      pendingTiming.track = identity;
     }
-    if (pendingTiming && mediaSource && lastSample.source && mediaSource !== lastSample.source) {
+    if (lastSample && identity !== lastSample.track) {
+      pendingTiming = owned ? null : { track: identity, duration: credible };
+    } else if (pendingTiming && identity !== pendingTiming.track) {
       pendingTiming = null;
     }
     if (pendingTiming) {
       var sampleUnit = durationUnit(state.duration);
-      if (sampleUnit === null || sampleUnit === pendingTiming.duration) {
+      if (sampleUnit === null || sampleUnit === pendingTiming.duration || !ownsFreshTiming(state, sampleUnit, mediaSource)) {
         state.duration = null;
         state.position = null;
       } else {
         pendingTiming = null;
       }
     }
-    if (credible !== null) lastCredibleDuration = credible;
+    /** A withheld read never becomes the baseline for the next decision. */
+    if (state.duration !== null && credible !== null) lastCredibleDuration = credible;
 
     state.at = Date.now();
     lastSource = source;

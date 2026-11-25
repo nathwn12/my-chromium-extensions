@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.11] - 2026-11-25
+
+- Fix: a source signal inside the mute cooldown no longer leaves the stale tap in place. The dampener is reset so the media controller rebuilds the graph and closes the raw audible path during a next-song handoff.
+
 ## [1.2.10] - 2026-11-25
 
 - Fix: a v-less Home push for a different song no longer seeks the outgoing element. The saved

@@ -524,7 +524,7 @@ test("an outgoing element's loadedmetadata cannot approve a stale clock pair", (
   );
 });
 
-test("a same-duration handoff releases when the selected media source changes", () => {
+test("a same-duration handoff stays held when only the media source changes", () => {
   const page = musicWatch("First Song", {
     duration: 366,
     currentTime: 47,
@@ -544,19 +544,38 @@ test("a same-duration handoff releases when the selected media source changes", 
   page.doc.querySelector("audio").currentSrc = "https://media.example/b";
   clock.advance(1000);
   handle.poll();
-  assert.equal(
-    states(handle).length,
-    3,
-    `fresh source must release the same-duration sample: title=${states(handle)[1].state.title} duration=${states(handle)[1].state.duration}`
-  );
-  const next = states(handle)[2].state;
-  assert.equal(next.title, "Second Song");
-  assert.equal(
-    next.duration,
-    366,
-    `fresh source settles the same-duration track: title=${next.title} elapsed=${next.position} duration=${next.duration}`
-  );
-  assert.equal(next.position, 47);
+  const held = states(handle)[states(handle).length - 1].state;
+  assert.equal(held.duration, null, `a new source at the old total is not fresh: title=${held.title} elapsed=${held.position} duration=${held.duration}`);
+  assert.equal(held.position, null);
+});
+
+test("a source change plus a fresh coherent duration releases the hold", () => {
+  const page = musicWatch("First Song", {
+    duration: 366,
+    currentTime: 47,
+    paused: false,
+    currentSrc: "https://media.example/a"
+  });
+  const clock = fakeClock();
+  const handle = bootWithClock(page, clock);
+
+  page.navigator.mediaSession = { metadata: { title: "Second Song" }, playbackState: "playing" };
+  page.setHref("https://music.youtube.com/watch?v=bbbbbbbbbbb");
+  clock.advance(1000);
+  handle.poll();
+  assert.equal(states(handle)[1].state.duration, null);
+
+  const bar = page.doc.querySelector("ytmusic-player-bar");
+  bar.append(node("span", { attrs: { class: "time" }, text: "0:48 / 2:09" }));
+  const media = page.doc.querySelector("audio");
+  media.currentSrc = "https://media.example/b";
+  media.duration = 129;
+  media.currentTime = 48;
+  clock.advance(1000);
+  handle.poll();
+  const next = states(handle)[states(handle).length - 1].state;
+  assert.equal(next.duration, 129, `the real total is restored: title=${next.title} elapsed=${next.position} duration=${next.duration}`);
+  assert.equal(next.position, 48);
 });
 
 test("an unchanged media source cannot approve a stale same-duration pair", () => {
@@ -610,8 +629,20 @@ test("a fractional media duration and integer bar clock hold across an emptied h
   media.currentTime = 48;
   clock.advance(1000);
   handle.poll();
+  const mid = states(handle)[states(handle).length - 1].state;
+  assert.equal(
+    mid.duration,
+    null,
+    `mid-song 129 under the same source fails closed: elapsed=${mid.position} duration=${mid.duration}`
+  );
+
+  bar.querySelector(".time").textContent = "0:02 / 2:09";
+  media.currentTime = 2;
+  clock.advance(1000);
+  handle.poll();
   const fresh = states(handle)[states(handle).length - 1].state;
-  assert.equal(fresh.duration, 129, `true 129 still restores: elapsed=${fresh.position} duration=${fresh.duration}`);
+  assert.equal(fresh.duration, 129, `a near-zero playhead restores: elapsed=${fresh.position} duration=${fresh.duration}`);
+  assert.equal(fresh.position, 2, `the real playhead follows: elapsed=${fresh.position}`);
 });
 
 test("a null timing gap does not make a returning stale duration fresh", () => {
@@ -645,8 +676,19 @@ test("a null timing gap does not make a returning stale duration fresh", () => {
   media.currentTime = 48;
   clock.advance(1000);
   handle.poll();
+  const mid = states(handle)[states(handle).length - 1].state;
+  assert.equal(
+    mid.duration,
+    null,
+    `mid-song 129 under the same source fails closed: elapsed=${mid.position} duration=${mid.duration}`
+  );
+
+  media.currentTime = 2;
+  clock.advance(1000);
+  handle.poll();
   const fresh = states(handle)[states(handle).length - 1].state;
-  assert.equal(fresh.duration, 129, `real B timing restores: elapsed=${fresh.position} duration=${fresh.duration}`);
+  assert.equal(fresh.duration, 129, `a near-zero playhead restores: elapsed=${fresh.position} duration=${fresh.duration}`);
+  assert.equal(fresh.position, 2, `the real playhead follows: elapsed=${fresh.position}`);
 });
 
 test("a duration appearing after a metadata-only state reports on the next poll", () => {
