@@ -4,7 +4,10 @@ Notable changes to this project. Dates are ISO 8601. This package is local-only 
 
 ## [Unreleased]
 
+## [1.2.5] - 2026-11-25
+
 - Episode changes no longer mix one episode's title with another's progress. When the page details and the player update in either order, presence waits for both to report the new episode before publishing, then shows that episode's progress. A replaced player frame still releases that wait when it reports the new episode, and a later replacement of that player keeps progress current. Ads and unrelated frames cannot release the wait or take over the card. After a completed handoff, a late event from the old episode cannot take over the card. A genuine short episode with matching details is not mistaken for an ad. A late media event during navigation can no longer bring back the episode you just left.
+- Known limit: an equal-duration handoff with no usable track identity stays held. This version is not browser- or Discord-validated and is not release-ready.
 
 ## [1.2.4] - 2026-11-24
 

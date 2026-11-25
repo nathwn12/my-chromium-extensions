@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.6.6] - 2026-11-25
+
+- Local patch version for the staged Audio Normalizer fixes: stale status replies, stale session replies and equal-ID replies are dropped so an older event cannot overwrite the current session.
+
 ## [5.6.5] - 2026-11-24
 
 ### Fixed

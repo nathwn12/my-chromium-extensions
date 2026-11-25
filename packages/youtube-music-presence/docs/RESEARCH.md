@@ -25,7 +25,7 @@ The extension's desktop IPC path is the only supported product transport.
 | 2026-11-25 | Arming and suppression compare durations in floored integer seconds, the unit stamped on the wire. During `emptied`, a 366.4 s media element and a 0:47 / 6:06 bar clock (366 s) hold the same duration instead of bypassing the gate, while a real 2:09 (129 s) releases; a same-duration source change alone stays held. | `content.js`, content tests. |
 | 2026-11-25 | Two displayed clocks that disagree are a conflict, not a missing clock: the read emits metadata without timestamps instead of falling through to the media element it just caught disagreeing. | `extract-youtube.js`, extractor tests. |
 | 2026-11-25 | The package version was 1.1.15. | `manifest.json`, `package.json`, root lockfile, root README and this package changelog. |
-| 2026-11-25 | The package version is 1.1.17. | `manifest.json`, `package.json`, root lockfile, root README and this package changelog. |
+| 2026-11-25 | The package version is 1.1.18. | `manifest.json`, `package.json`, root lockfile, root README and this package changelog. |
 
 The package check validates the emitted activity payload, not Discord's UI. No live observation in this seam establishes that Discord's member list actually renders `state` when `status_display_type: 1` is present.
 
