@@ -516,6 +516,9 @@
   function handleReinject() {
     refreshLocationState();
     console.log('[cs] reinjected on:', state.hostname, location.href);
+    // Drop replies still in flight from the previous instance before the new
+    // session issues its own requests.
+    appliedStatusSeq = statusSeq;
     if (state.detached) {
       state.detached = false;
       state.bootstrapped = false;
@@ -757,6 +760,9 @@
     listenerRemovers = [];
     state.bootstrapped = false;
     state.runtimeListenerArmed = false;
+    // Invalidate replies from this session, including the STOP just posted:
+    // none may reassert state on a torn-down frame.
+    appliedStatusSeq = statusSeq;
     rememberExclusion(state.siteKey, true);
     console.log('[cs] torn down (excluded):', state.siteKey, reason);
   }
@@ -961,6 +967,13 @@
 
   const CONTROL_ACTIONS = { START: 'start', STOP: 'stop', SET_GAIN: 'setGain' };
 
+  // Concurrent CONTROL_HOOK requests can resolve out of order: a delayed reply
+  // for an older request must not reapply over a newer confirmed receipt.
+  // Each request carries a monotonic seq; the receiving boundary drops any
+  // reply at or older than the newest already applied one.
+  let statusSeq = 0;
+  let appliedStatusSeq = 0;
+
   function postToPage(type, payload) {
     const action = CONTROL_ACTIONS[type];
     if (!action) return Promise.resolve(null);
@@ -969,21 +982,26 @@
 
   async function sendHookControl(action, payload) {
     if ((state.detached || state.excluded) && action !== 'stop') return null;
+    const seq = ++statusSeq;
     try {
       const response = await chrome.runtime.sendMessage({
         type: 'CONTROL_HOOK',
         action,
         payload: payload || {},
       });
-      applyHookStatus(response);
+      applyHookStatus(response, seq);
       return response || null;
     } catch {
       return null;
     }
   }
 
-  function applyHookStatus(response) {
+  function applyHookStatus(response, seq) {
     if (!response || typeof response !== 'object') return;
+    if (typeof seq === 'number') {
+      if (seq <= appliedStatusSeq) return;
+      appliedStatusSeq = seq;
+    }
     if (response.alive === true) {
       state.injected = true;
       state.hookAlive = true;

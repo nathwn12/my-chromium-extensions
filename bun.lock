@@ -5,7 +5,7 @@
     "": {},
     "packages/audio-normalizer": {
       "name": "audio-normalizer",
-      "version": "5.6.5",
+      "version": "5.6.6",
       "devDependencies": {
         "@types/chrome": "~0.3.7",
         "typescript": "^7.0.2",
@@ -13,11 +13,11 @@
     },
     "packages/crunchy-presence": {
       "name": "crunchy-presence",
-      "version": "1.2.4",
+      "version": "1.2.5",
     },
     "packages/slowed-reverb": {
       "name": "slowed-reverb",
-      "version": "1.2.11",
+      "version": "1.2.12",
       "devDependencies": {
         "eslint": "^10.15.0",
         "globals": "^17.13.0",
@@ -25,7 +25,7 @@
     },
     "packages/youtube-music-presence": {
       "name": "youtube-music-presence",
-      "version": "1.1.17",
+      "version": "1.1.18",
     },
   },
   "packages": {

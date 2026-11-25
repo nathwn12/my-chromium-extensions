@@ -67,7 +67,7 @@ test("the payload follows real imports, not only the manifest", () => {
     ],
     "slowed-reverb": [
       "background.js", "shared.js", "player-actions.js", "content-script.js",
-      "page-hook.js", "dattorro-worklet.js", ".dev/section-import.json",
+      "page-hook.js", "dattorro-worklet.js",
       "popup.html", "popup.css", "popup.js", "icons/icon24.png",
     ],
     "crunchy-presence": [
@@ -88,6 +88,31 @@ test("the payload follows real imports, not only the manifest", () => {
     assert.equal(resolved.includes("test/extension/activity.test.mjs"), false);
     assert.equal(resolved.includes("scripts/e2e-ipc.mjs"), false);
   }
+});
+
+test("an optional import joins the payload only when the file exists", () => {
+  const fixture = mkdtempSync(path.join(tmpdir(), "wdr-ext-payload-"));
+  tempRoots.push(fixture);
+  writeFileSync(
+    path.join(fixture, "manifest.json"),
+    JSON.stringify({
+      name: "Fixture",
+      version: "1.0.0",
+      manifest_version: 3,
+      background: { service_worker: "background.js" },
+    }),
+  );
+  writeFileSync(path.join(fixture, "background.js"), "importScripts('.dev/section-import.json');\n");
+
+  const absent = resolvePayload(fixture);
+  assert.ok(absent.includes("background.js"));
+  assert.equal(absent.includes(".dev/section-import.json"), false, "an absent optional file stays out of the payload");
+
+  const optional = path.join(fixture, ".dev", "section-import.json");
+  mkdirSync(path.dirname(optional), { recursive: true });
+  writeFileSync(optional, "{}\n");
+  const present = resolvePayload(fixture);
+  assert.ok(present.includes(".dev/section-import.json"), "the same reference joins once the file exists");
 });
 
 test("--check goes red when one payload file is deleted", async () => {

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.12] - 2026-11-25
+
+- Local patch version for the staged Slowed Reverb fixes: failed popup saves keep a visible receipt, settings writes are serialized, retired listeners are dropped, and a pending UI edit no longer starts a loop settle while a source read is in flight.
+
 ## [1.2.11] - 2026-11-25
 
 - Fix: a source signal inside the mute cooldown no longer leaves the stale tap in place. The dampener is reset so the media controller rebuilds the graph and closes the raw audible path during a next-song handoff.

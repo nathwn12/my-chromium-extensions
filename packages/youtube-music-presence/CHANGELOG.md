@@ -2,6 +2,12 @@
 
 Notable changes to this package. Dates are ISO 8601. This package is local-only and is not published to a registry.
 
+## [Unreleased]
+
+## [1.1.18] - 2026-11-25
+
+- Local patch version for the staged presence timing handoff fixes. A changed total now releases a held read only with ownership evidence, and a same-track source baseline keeps a later changed total classified as outgoing.
+
 ## [1.1.17] - 2026-11-25
 
 - A player-announced backward seek now reopens a held timing gate only when the media is playing and the read matches the last published timed sample's identity, duration unit, non-null coherent source and playhead. A paused seek, a clock conflict, a changed total and a stale handoff all stay withheld, and the single comparison baseline stays local to the content script.

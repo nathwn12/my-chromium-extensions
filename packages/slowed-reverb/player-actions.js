@@ -715,6 +715,7 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
      */
     function suspendSongIdentity() {
       clearBoundaryHold();
+      clearSettleCheck();
       session.identityPending = true;
       session.confirmedKey = null;
       session.pressVouched = false;
@@ -1812,6 +1813,14 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
         setInvalid(ui.to, true);
         ui.status.textContent = 'Invalid range';
         ui.status.classList.add('invalid');
+        return;
+      }
+
+      // An adopted song whose identity is being re-read owns the transport.
+      // A commit now would seek the reused element and save the edit to the
+      // outgoing song. A dropped song (null key) can still vouch by press.
+      if (session.identityPending && session.songKey !== null) {
+        paintStatus();
         return;
       }
 

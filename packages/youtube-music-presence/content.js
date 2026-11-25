@@ -100,6 +100,10 @@
     return EXTRACT.mediaSourceOf ? EXTRACT.mediaSourceOf() : null;
   }
 
+  function clockAgreement() {
+    return Boolean(EXTRACT.clockAgreesOf && EXTRACT.clockAgreesOf());
+  }
+
   /** Discord stamps floor(duration); compare media and clock in that same unit. */
   function durationUnit(value) {
     return typeof value === "number" && isFinite(value) ? Math.floor(value) : null;
@@ -227,7 +231,29 @@
     }
     if (pendingTiming) {
       var sampleUnit = durationUnit(state.duration);
-      if (sampleUnit === null || sampleUnit === pendingTiming.duration || !ownsFreshTiming(state, sampleUnit, mediaSource)) {
+      /**
+       * Releasing a hold needs ownership, not just a changed total. A new
+       * identity may reuse the previous media element, so a coherent total
+       * that differs from both the held and the credited total is enough there.
+       * A hold on the same track is different: a blank page or an incoherent
+       * read can leave the last sample source-less, so compare against the
+       * last published timed sample, never the withheld one. Under that same
+       * source a changed total is outgoing timing and stays held.
+       */
+      var sameTrackHold = Boolean(lastTimed) && identity === lastTimed.track;
+      var baselineSource = sameTrackHold ? lastTimed.source : lastSample && lastSample.source;
+      var position = state.position;
+      var nearZero =
+        typeof position === "number" && isFinite(position) && position >= 0 &&
+        position <= FRESH_POSITION_SECONDS;
+      var newSource = Boolean(mediaSource) && (!baselineSource || mediaSource !== baselineSource);
+      var newIdentityOwns = Boolean(mediaSource) && !sameTrackHold && clockAgreement();
+      if (
+        sampleUnit === null ||
+        sampleUnit === pendingTiming.duration ||
+        sampleUnit === lastCredibleDuration ||
+        (!nearZero && !newSource && !newIdentityOwns)
+      ) {
         state.duration = null;
         state.position = null;
       } else {

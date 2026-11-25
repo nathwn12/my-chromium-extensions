@@ -249,14 +249,25 @@ export function pruneFrames(entry, now = Date.now()) {
   return entry;
 }
 
+const IDENTITY_FIELDS = [
+  "series", "episodeTitle", "seasonNumber", "episodeNumber",
+  "artworkUrl", "seriesUrl", "episodeUrl"
+];
+
+/** Identity a frame actually reports. No shared ID is invented for the player. */
+function identityKey(frame) {
+  return JSON.stringify(IDENTITY_FIELDS.map((field) => frame[field]));
+}
+
+function hasIdentity(frame) {
+  return IDENTITY_FIELDS.some((field) => frame[field] !== null && frame[field] !== undefined);
+}
+
 /** Store one frame report on its tab entry (frameId 0 = top frame). */
 export function mergeFrame(entry, frame, now = Date.now()) {
   if (!entry) return entry;
   if (!entry.frames) entry.frames = {};
-  const reportedDuration = Number(frame.duration);
-  if (Number.isFinite(reportedDuration) && reportedDuration >= 60) {
-    entry.knownDuration = reportedDuration;
-  }
+  const knownBefore = entry.knownDuration;
   const stored = {
     frameId: Number.isFinite(frame.frameId) ? frame.frameId : 0,
     series: frame.series ?? null,
@@ -276,8 +287,75 @@ export function mergeFrame(entry, frame, now = Date.now()) {
     signals: Array.isArray(frame.signals) ? frame.signals : [],
     receivedAt: Number.isFinite(frame.receivedAt) ? frame.receivedAt : now
   };
-  if (stored.frameId === 0) entry.top = stored;
-  else entry.frames[stored.frameId] = stored;
+  // A hold releases only on changed evidence from the other source. A
+  // duplicate or keepalive from the old episode confirms nothing.
+  if (stored.frameId === 0) {
+    entry.top = stored;
+    const reportedDuration = Number(stored.duration);
+    if (Number.isFinite(reportedDuration) && reportedDuration >= 60) {
+      entry.knownDuration = reportedDuration;
+    }
+    const key = identityKey(stored);
+    const changed = entry.lastTopIdentity !== undefined && entry.lastTopIdentity !== key;
+    entry.lastTopIdentity = key;
+    if (changed) {
+      if (entry.awaitingTop) entry.awaitingTop = false;
+      // A frame carrying its own video is already self-confirmed.
+      else if (!stored.hasVideo) entry.awaitingVideo = true;
+    }
+  } else {
+    const prev = entry.frames[stored.frameId];
+    const pinned = entry.videoFrameId === 0 ? entry.top : entry.frames[entry.videoFrameId];
+    const holdActive = entry.awaitingTop || entry.awaitingVideo;
+    entry.frames[stored.frameId] = stored;
+    const duration = Number(stored.duration);
+    const topHasIdentity = Boolean(entry.top && hasIdentity(entry.top));
+    const frameIdentity = hasIdentity(stored) ? identityKey(stored) : null;
+    const identityMatch = frameIdentity !== null && topHasIdentity &&
+      frameIdentity === entry.lastTopIdentity;
+    // The pinned player naming a different episode than the top is conflict.
+    // It opens or maintains a hold; it is never release evidence.
+    const identityConflict = frameIdentity !== null && topHasIdentity &&
+      frameIdentity !== entry.lastTopIdentity && stored.frameId === entry.videoFrameId;
+    // A short clip carrying the top's identity is a short episode, not an ad.
+    const adLike = !identityMatch && (isAdBreak(stored, knownBefore) ||
+      (Number.isFinite(duration) && duration > 0 && duration < 60 &&
+        Number.isFinite(knownBefore) && knownBefore > duration));
+    const prevChanged = !adLike && prev && (
+      identityKey(prev) !== identityKey(stored) ||
+      (prev.hasVideo && stored.hasVideo && Number.isFinite(duration) &&
+        duration !== Number(prev.duration))
+    );
+    const durationSignal = !adLike && Number.isFinite(knownBefore) &&
+      Number.isFinite(duration) && duration > 0 && duration !== knownBefore;
+    // Conflict opens the hold. A new frame with no prior report and no
+    // identity cannot open one: that is a late duplicate or an unrelated frame.
+    const opensHold = !holdActive && (identityConflict || (!frameIdentity && prevChanged));
+    // Only a top change pending for video can be released by video evidence.
+    const releasesHold = entry.awaitingVideo &&
+      (identityMatch || (!frameIdentity && (prevChanged || durationSignal)));
+    // A genuine same-episode replacement advances the pinned timing even
+    // when the old frame lingers and receivedAt ties.
+    const sameEpisodeAdvance = !holdActive && !prev && stored.hasVideo && pinned &&
+      pinned.hasVideo && pinned.frameId !== stored.frameId && !adLike && !frameIdentity &&
+      Number.isFinite(knownBefore) && duration === knownBefore &&
+      Number.isFinite(stored.position) && Number.isFinite(pinned.position) &&
+      stored.position > pinned.position;
+    if (Number.isFinite(duration) && duration > 0 &&
+        (entry.knownDuration === undefined || duration === knownBefore ||
+          identityMatch || opensHold || releasesHold)) {
+      entry.knownDuration = duration;
+    }
+    if (opensHold) {
+      entry.videoFrameId = stored.frameId;
+      entry.awaitingTop = true;
+    } else if (releasesHold) {
+      entry.videoFrameId = stored.frameId;
+      entry.awaitingVideo = false;
+    } else if (identityMatch || sameEpisodeAdvance) {
+      entry.videoFrameId = stored.frameId;
+    }
+  }
   entry.updatedAt = Math.max(entry.updatedAt || 0, stored.receivedAt);
   if (frame.keepalive !== true) {
     entry.rankAt = Math.max(entry.rankAt || 0, stored.receivedAt);
@@ -296,6 +374,9 @@ export function mergeFrame(entry, frame, now = Date.now()) {
 export function resolveTab(entry, now = Date.now()) {
   if (!entry) return null;
   pruneFrames(entry, now);
+  // One source changed episode and the other has not confirmed it. Publishing
+  // now would join one episode's identity to another episode's timing.
+  if (entry.awaitingTop || entry.awaitingVideo) return null;
 
   const frames = [];
   if (entry.top) frames.push(entry.top);
@@ -306,7 +387,13 @@ export function resolveTab(entry, now = Date.now()) {
   const byRecency = frames
     .slice()
     .sort((a, b) => b.receivedAt - a.receivedAt || a.frameId - b.frameId);
-  const videoFrame = byRecency.find((frame) => frame.hasVideo) || null;
+  const pinned = entry.videoFrameId === 0
+    ? entry.top
+    : entry.frames[entry.videoFrameId];
+  const videoFrame =
+    (pinned && pinned.hasVideo ? pinned : null) ||
+    byRecency.find((frame) => frame.hasVideo) ||
+    null;
 
   const pick = (field) => {
     if (top && top[field] !== null && top[field] !== undefined) return top[field];
@@ -899,8 +986,12 @@ if (hasChrome) {
     const out = {};
     for (const [tabId, entry] of [...tabStates]) {
       const resolved = resolveTab(entry, now);
-      if (!resolved) tabStates.delete(tabId);
-      else out[tabId] = resolved;
+      if (!resolved) {
+        // A handoff hold must keep its frames so the other source can confirm.
+        if (!entry.top && !Object.keys(entry.frames || {}).length) tabStates.delete(tabId);
+        continue;
+      }
+      out[tabId] = resolved;
     }
     return out;
   }

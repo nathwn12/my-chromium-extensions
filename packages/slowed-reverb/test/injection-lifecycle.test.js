@@ -182,6 +182,7 @@ function createContentEnv(opts = {}) {
   class StubMedia extends EventTarget {
     constructor(muted) {
       super();
+      this._listenerCounts = new Map();
       this.playbackRate = 1;
       this.preservesPitch = true;
       this.mozPreservesPitch = true;
@@ -194,6 +195,17 @@ function createContentEnv(opts = {}) {
       this.currentSrc = 'https://music.youtube.com/stream';
       this.srcObject = null;
       this.isConnected = true;
+    }
+    addEventListener(type, fn, opts) {
+      this._listenerCounts.set(type, (this._listenerCounts.get(type) || 0) + 1);
+      return super.addEventListener(type, fn, opts);
+    }
+    removeEventListener(type, fn, opts) {
+      this._listenerCounts.set(type, Math.max(0, (this._listenerCounts.get(type) || 0) - 1));
+      return super.removeEventListener(type, fn, opts);
+    }
+    listenerCountFor(type) {
+      return this._listenerCounts.get(type) || 0;
     }
     pause() {
       this.paused = true;
@@ -273,6 +285,10 @@ function createContentEnv(opts = {}) {
         addListener(fn) {
           runtimeHandlers.push(fn);
         },
+        removeListener(fn) {
+          const index = runtimeHandlers.indexOf(fn);
+          if (index >= 0) runtimeHandlers.splice(index, 1);
+        },
       },
       sendMessage: async (msg) => {
         if (env.invalidated) throw new Error('Extension context invalidated.');
@@ -308,11 +324,21 @@ function createContentEnv(opts = {}) {
     addEventListener: (type, fn) => {
       (docListeners[type] = docListeners[type] || []).push(fn);
     },
+    removeEventListener: (type, fn) => {
+      const list = docListeners[type] || [];
+      const index = list.indexOf(fn);
+      if (index >= 0) list.splice(index, 1);
+    },
   };
   const posted = [];
   sandbox.window = {
     addEventListener: (type, fn) => {
       (winListeners[type] = winListeners[type] || []).push(fn);
+    },
+    removeEventListener: (type, fn) => {
+      const list = winListeners[type] || [];
+      const index = list.indexOf(fn);
+      if (index >= 0) list.splice(index, 1);
     },
     postMessage: (msg) => {
       posted.push(msg);
@@ -1160,4 +1186,73 @@ test('I: only a native slider drag outranks a pending restore', async () => {
     ],
     'a slider drag is a user change; a poll is only a reading'
   );
+});
+
+test('W1: retire unregisters runtime, document and window listeners', async () => {
+  const env = createContentEnv();
+  await env.settle(4);
+  const before = env.counts();
+  assert.ok(
+    before.runtimeHandlers >= 1 && before.docListeners >= 3 && before.winListeners >= 3,
+    'precondition: global listeners registered ' + JSON.stringify(before)
+  );
+
+  env.sandbox.__slowedReverbAudioContent.retire();
+
+  const after = env.counts();
+  assert.strictEqual(after.runtimeHandlers, 0, 'runtime.onMessage listener removed');
+  assert.strictEqual(after.docListeners, 0, 'document listeners removed');
+  assert.strictEqual(after.winListeners, 0, 'window listeners removed');
+});
+
+test('W2: a retired instance ignores late play, pageshow and runtime refreshes', async () => {
+  const env = createContentEnv();
+  const media = env.addMedia(false);
+  env.fireDoc('play', media);
+  for (let i = 0; i < 40 && media.playbackRate !== 0.8; i++) await env.settle(2);
+  assert.strictEqual(media.playbackRate, 0.8, 'precondition: attached before retire');
+  assert.strictEqual(media.muted, true, 'precondition: muted before retire');
+
+  const messages = [];
+  const original = env.sandbox.chrome.runtime.sendMessage;
+  env.sandbox.chrome.runtime.sendMessage = async (msg) => {
+    messages.push(msg && msg.type);
+    return original(msg);
+  };
+  const dataset = env.sandbox.document.documentElement.dataset;
+
+  env.sandbox.__slowedReverbAudioContent.retire();
+  delete dataset.slraToken;
+  const mark = messages.length;
+
+  env.fireDoc('play', media);
+  env.fireWin('pageshow', {});
+  await env.settle(10);
+
+  assert.strictEqual(media.listenerCountFor('ratechange'), 0, 'a late play must not attach media listeners');
+  assert.strictEqual(media.playbackRate, 1, 'a late play must not re-attach the element');
+  assert.strictEqual(media.muted, false, 'a late play must not re-mute the element');
+  assert.strictEqual(
+    messages.length,
+    mark,
+    'no runtime message after teardown: ' + JSON.stringify(messages.slice(mark))
+  );
+  assert.strictEqual(dataset.slraToken, undefined, 'no page-hook token rewrite after teardown');
+});
+
+test('W3: dead-runtime reinjection leaves exactly one active listener set', async () => {
+  const env = createContentEnv();
+  await env.settle(4);
+  const baseline = env.counts();
+
+  env.sandbox.chrome.runtime.id = undefined;
+  env.invalidated = true;
+  env.getUrlInvalidated = true;
+  vm.runInContext(read('shared.js'), env.sandbox, { filename: 'shared.js' });
+  vm.runInContext(read('content-script.js'), env.sandbox, { filename: 'content-script.js' });
+  await env.settle(4);
+
+  assert.strictEqual(env.counts().runtimeHandlers, baseline.runtimeHandlers, 'one runtime listener');
+  assert.strictEqual(env.counts().docListeners, baseline.docListeners, 'one document listener set');
+  assert.strictEqual(env.counts().winListeners, baseline.winListeners, 'one window listener set');
 });

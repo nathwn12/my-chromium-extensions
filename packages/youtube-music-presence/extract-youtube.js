@@ -28,6 +28,8 @@
   /** Every tunable selector, regex and cap lives here. */
   /** The selected media element's source, kept local to this content script. */
   var chosenSource = null;
+  /** Whether that element's playhead agreed with the displayed clock. */
+  var chosenClockAgrees = false;
 
   var RULES = {
     maxChars: 256,
@@ -680,6 +682,7 @@
 
   function readUnsafe(doc, nav, loc) {
     chosenSource = null;
+    chosenClockAgrees = false;
     var href = hrefOf(loc);
     if (!href) href = hrefOf(doc && doc.location);
 
@@ -698,6 +701,15 @@
       : chooseVideo(readVideoEntries(doc), musicTime);
     var pick = chosen.entry;
     chosenSource = chosen.coherent && pick ? pick.source : null;
+    /**
+     * Local ownership evidence only: the chosen element may match the clock's
+     * total while its playhead still belongs to the outgoing song. This never
+     * changes extraction or the wire state; the hold gate alone reads it.
+     */
+    if (chosenSource && musicTime && typeof pick.elapsed === "number") {
+      chosenClockAgrees =
+        Math.abs(pick.elapsed - musicTime.position) <= RULES.timing.toleranceSeconds;
+    }
     var session = readMediaSession(nav);
     var ld = readJsonLd(doc);
     var dom = readMusicDom(doc, href);
@@ -770,6 +782,10 @@
     /** Local-only evidence: which media source the last read actually used. */
     mediaSourceOf: function () {
       return chosenSource;
+    },
+    /** Local-only evidence: the chosen playhead agreed with the shown clock. */
+    clockAgreesOf: function () {
+      return chosenClockAgrees;
     },
     read: read
   };
