@@ -425,6 +425,42 @@ test("an unrelated non-video frame during a hold does not release it", () => {
   assert.equal(resolveTab(entry, 3100), null, "metadata-only frame owns no video truth");
 });
 
+test("a pinned frame reporting B identity before the top opens a hold", () => {
+  const entry = { tabId: 30, top: null, frames: {}, pageUrl: urlFor("A"), updatedAt: 0, rankAt: 0 };
+  mergeFrame(entry, { frameId: 0, ...EP.A, hasVideo: false, visible: true }, 1000);
+  mergeFrame(entry, { frameId: 5, ...EP.A, hasVideo: true, paused: false,
+    position: 10, duration: 100 }, 1100);
+  assert.equal(resolveTab(entry, 1200).series, EP.A.series, "coherent A before conflict");
+  // The trusted video frame changes to B while the top still says A. The
+  // disagreement must hold the card, not publish A identity with B timing.
+  mergeFrame(entry, { frameId: 5, ...EP.B, hasVideo: true, paused: false,
+    position: 20, duration: 200 }, 2000);
+  assert.equal(resolveTab(entry, 2100), null, "identity conflict opens a hold");
+  mergeFrame(entry, { frameId: 0, ...EP.B, hasVideo: false, visible: true }, 3000);
+  const resolved = resolveTab(entry, 3100);
+  assert.equal(resolved.series, EP.B.series);
+  assert.equal(resolved.position, 20);
+});
+
+test("a supported short episode with matching identity is not an ad", () => {
+  const SHORT = { series: "Short Show", episodeTitle: "Short Episode",
+    seasonNumber: 3, episodeNumber: 7 };
+  const entry = { tabId: 31, top: null, frames: {}, pageUrl: urlFor("A"), updatedAt: 0, rankAt: 0 };
+  mergeFrame(entry, { frameId: 0, ...EP.A, hasVideo: false, visible: true }, 1000);
+  mergeFrame(entry, { frameId: 5, ...EP.A, hasVideo: true, paused: false,
+    position: 10, duration: 100 }, 1100);
+  applyGoneToEntry(entry, 0, "frame", 2000);
+  mergeFrame(entry, { frameId: 0, ...SHORT, hasVideo: false, visible: true }, 2100);
+  assert.equal(resolveTab(entry, 2200), null, "hold for the new top identity");
+  mergeFrame(entry, { frameId: 5, ...SHORT, hasVideo: true, paused: false,
+    position: 5, duration: 30 }, 2300);
+  const resolved = resolveTab(entry, 2400);
+  assert.ok(resolved, "matching identity confirms the short episode");
+  assert.equal(resolved.series, SHORT.series);
+  assert.equal(resolved.duration, 30, "short duration is the episode, not an ad");
+  assert.equal(resolved.position, 5);
+});
+
 test("a real A keepalive does not release a top-first hold", () => {
   const { top, vf, tab, drain } = twoFrames();
   top.setHref(urlFor("B"));

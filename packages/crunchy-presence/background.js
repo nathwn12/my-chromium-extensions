@@ -309,44 +309,50 @@ export function mergeFrame(entry, frame, now = Date.now()) {
     const holdActive = entry.awaitingTop || entry.awaitingVideo;
     entry.frames[stored.frameId] = stored;
     const duration = Number(stored.duration);
-    const foreign = hasIdentity(stored) && entry.lastTopIdentity !== undefined &&
-      identityKey(stored) !== entry.lastTopIdentity;
-    const adLike = isAdBreak(stored, knownBefore) ||
+    const topHasIdentity = Boolean(entry.top && hasIdentity(entry.top));
+    const frameIdentity = hasIdentity(stored) ? identityKey(stored) : null;
+    const identityMatch = frameIdentity !== null && topHasIdentity &&
+      frameIdentity === entry.lastTopIdentity;
+    // The pinned player naming a different episode than the top is conflict.
+    // It opens or maintains a hold; it is never release evidence.
+    const identityConflict = frameIdentity !== null && topHasIdentity &&
+      frameIdentity !== entry.lastTopIdentity && stored.frameId === entry.videoFrameId;
+    // A short clip carrying the top's identity is a short episode, not an ad.
+    const adLike = !identityMatch && (isAdBreak(stored, knownBefore) ||
       (Number.isFinite(duration) && duration > 0 && duration < 60 &&
-        Number.isFinite(knownBefore) && knownBefore > duration);
-    const usable = !foreign && !adLike;
-    const identityChanged = usable && prev && identityKey(prev) !== identityKey(stored);
-    const episodeVideo = usable && prev && prev.hasVideo && stored.hasVideo &&
-      Number.isFinite(duration) && Number(prev.duration) !== duration;
-    // A fresh frame has no prior report to compare. Its own identity may
-    // match the top, or a different duration may resolve an active hold.
-    // Outside a hold neither is proof of a new episode: a late duplicate or
-    // an unrelated frame must not own the card.
-    const freshFrame = !prev && stored.hasVideo;
-    const identityMatchesTop = usable && freshFrame && hasIdentity(stored) &&
-      entry.lastTopIdentity !== undefined && identityKey(stored) === entry.lastTopIdentity;
-    const durationChanged = usable && freshFrame && holdActive &&
-      Number.isFinite(knownBefore) && Number.isFinite(duration) && duration !== knownBefore;
-    // A stale duplicate must not overwrite the current episode's duration.
-    const evidence = identityChanged || episodeVideo || identityMatchesTop || durationChanged;
-    if (Number.isFinite(duration) && duration >= 60 &&
-        (entry.knownDuration === undefined || duration === knownBefore || evidence)) {
-      entry.knownDuration = duration;
-    }
+        Number.isFinite(knownBefore) && knownBefore > duration));
+    const prevChanged = !adLike && prev && (
+      identityKey(prev) !== identityKey(stored) ||
+      (prev.hasVideo && stored.hasVideo && Number.isFinite(duration) &&
+        duration !== Number(prev.duration))
+    );
+    const durationSignal = !adLike && Number.isFinite(knownBefore) &&
+      Number.isFinite(duration) && duration > 0 && duration !== knownBefore;
+    // Conflict opens the hold. A new frame with no prior report and no
+    // identity cannot open one: that is a late duplicate or an unrelated frame.
+    const opensHold = !holdActive && (identityConflict || (!frameIdentity && prevChanged));
+    // Only a top change pending for video can be released by video evidence.
+    const releasesHold = entry.awaitingVideo &&
+      (identityMatch || (!frameIdentity && (prevChanged || durationSignal)));
     // A genuine same-episode replacement advances the pinned timing even
     // when the old frame lingers and receivedAt ties.
-    const sameEpisodeAdvance = usable && !holdActive && freshFrame && pinned &&
-      pinned.hasVideo && pinned.frameId !== stored.frameId &&
+    const sameEpisodeAdvance = !holdActive && !prev && stored.hasVideo && pinned &&
+      pinned.hasVideo && pinned.frameId !== stored.frameId && !adLike && !frameIdentity &&
       Number.isFinite(knownBefore) && duration === knownBefore &&
       Number.isFinite(stored.position) && Number.isFinite(pinned.position) &&
       stored.position > pinned.position;
-    if (evidence) {
-      // The frame that reported the change owns video truth. A stale frame
-      // with an equal receivedAt must not win the card on a frameId tie.
+    if (Number.isFinite(duration) && duration > 0 &&
+        (entry.knownDuration === undefined || duration === knownBefore ||
+          identityMatch || opensHold || releasesHold)) {
+      entry.knownDuration = duration;
+    }
+    if (opensHold) {
       entry.videoFrameId = stored.frameId;
-      if (entry.awaitingVideo) entry.awaitingVideo = false;
-      else if (!holdActive && (identityChanged || episodeVideo)) entry.awaitingTop = true;
-    } else if (sameEpisodeAdvance) {
+      entry.awaitingTop = true;
+    } else if (releasesHold) {
+      entry.videoFrameId = stored.frameId;
+      entry.awaitingVideo = false;
+    } else if (identityMatch || sameEpisodeAdvance) {
       entry.videoFrameId = stored.frameId;
     }
   }
