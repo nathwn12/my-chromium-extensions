@@ -516,6 +516,9 @@
   function handleReinject() {
     refreshLocationState();
     console.log('[cs] reinjected on:', state.hostname, location.href);
+    // Drop replies still in flight from the previous instance before the new
+    // session issues its own requests.
+    appliedStatusSeq = statusSeq;
     if (state.detached) {
       state.detached = false;
       state.bootstrapped = false;
@@ -757,6 +760,9 @@
     listenerRemovers = [];
     state.bootstrapped = false;
     state.runtimeListenerArmed = false;
+    // Invalidate replies from this session, including the STOP just posted:
+    // none may reassert state on a torn-down frame.
+    appliedStatusSeq = statusSeq;
     rememberExclusion(state.siteKey, true);
     console.log('[cs] torn down (excluded):', state.siteKey, reason);
   }

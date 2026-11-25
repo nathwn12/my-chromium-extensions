@@ -89,7 +89,7 @@ async function loadEnabledContent() {
     const ret = runtimeListeners[0](message, {}, resolve);
     if (ret !== true) resolve(undefined);
   });
-  return { deferred, sendMessage };
+  return { deferred, sendMessage, sandbox };
 }
 
 const noSource = {
@@ -156,4 +156,82 @@ test('stale not-alive reply cannot drop a newer valid receipt or trigger resync'
   assert.equal(h.deferred.length, before, 'no spurious liveness resync from the stale reply');
   const status = await h.sendMessage({ type: 'GET_DOCUMENT_STATUS' });
   assert.equal(status.hookAlive, true, 'newer valid receipt is preserved');
+});
+
+test('late success after real teardown cannot restore processing or liveness', async () => {
+  const h = await loadEnabledContent();
+  assert.deepEqual(h.deferred.map((d) => d.action), ['start', 'setGain']);
+
+  const toggled = await h.sendMessage({
+    type: 'TOGGLE_CHANGED', siteKey: 'example.com', excluded: true,
+  });
+  assert.equal(toggled.excluded, true, 'real exclusion teardown ran');
+  assert.deepEqual(
+    h.deferred.map((d) => d.action),
+    ['start', 'setGain', 'stop'],
+    'teardown posted STOP through the real sendHookControl path',
+  );
+
+  h.deferred[0].resolve(clone(oldProcessing));
+  await sleep(20);
+
+  const status = await h.sendMessage({ type: 'GET_DOCUMENT_STATUS' });
+  assert.equal(status.processing, false, 'late success must not restore processing on an excluded frame');
+  assert.equal(status.hookAlive, false, 'late success must not restore liveness on an excluded frame');
+});
+
+test('late success before a restarted session receipt cannot restore processing', async () => {
+  const h = await loadEnabledContent();
+  assert.deepEqual(h.deferred.map((d) => d.action), ['start', 'setGain']);
+
+  await h.sendMessage({ type: 'TOGGLE_CHANGED', siteKey: 'example.com', excluded: true });
+  const beforeRestart = h.deferred.length;
+  h.sandbox.globalThis.__tabNormalizerContentScriptV5.reinject();
+  await sleep(60);
+  assert.ok(h.deferred.length > beforeRestart, 'restart issued fresh control requests');
+
+  // The previous session's delayed START reply lands before any new receipt.
+  h.deferred[0].resolve(clone(oldProcessing));
+  await sleep(20);
+
+  const status = await h.sendMessage({ type: 'GET_DOCUMENT_STATUS' });
+  assert.equal(status.processing, false, 'old reply must not paint the new session Active');
+  assert.equal(status.hookAlive, false, 'old reply must not claim liveness for the new session');
+});
+
+test('late failure after restart cannot drive a spurious retry', async () => {
+  const h = await loadEnabledContent();
+  // A current receipt makes the old failure's "was alive" path reachable.
+  h.deferred[1].resolve(clone(noSource));
+  await sleep(20);
+  await h.sendMessage({ type: 'TOGGLE_CHANGED', siteKey: 'example.com', excluded: true });
+  h.sandbox.globalThis.__tabNormalizerContentScriptV5.reinject();
+  await sleep(60);
+
+  const before = h.deferred.length;
+  const stop = h.deferred.find((d) => d.action === 'stop');
+  assert.ok(stop, 'teardown left a STOP request pending across the restart');
+  stop.resolve({ ok: false, alive: false, active: false, error: 'gone' });
+  await sleep(20);
+
+  assert.equal(h.deferred.length, before, 'stale failure must not schedule a retry on the new session');
+});
+
+test('current receipt after restart survives an old-session reply', async () => {
+  const h = await loadEnabledContent();
+  await h.sendMessage({ type: 'TOGGLE_CHANGED', siteKey: 'example.com', excluded: true });
+  h.sandbox.globalThis.__tabNormalizerContentScriptV5.reinject();
+  await sleep(60);
+
+  const fresh = h.deferred[h.deferred.length - 1];
+  fresh.resolve(clone(noSource));
+  await sleep(20);
+  const before = h.deferred.length;
+
+  h.deferred[0].resolve(clone(oldProcessing));
+  await sleep(20);
+
+  const status = await h.sendMessage({ type: 'GET_DOCUMENT_STATUS' });
+  assert.equal(status.processing, false, 'current receipt is preserved');
+  assert.equal(h.deferred.length, before, 'old reply schedules no retry');
 });
