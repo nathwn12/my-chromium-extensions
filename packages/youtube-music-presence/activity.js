@@ -24,12 +24,17 @@
  * them, else absent. The title is never the tooltip.
  *
  * Timestamps are integer SECONDS on the wire: `start = floor(anchor/1000) -
- * floor(clamp(position))`, `end = start + floor(duration)`. The span is the real
- * duration at every playback rate. Discord's timer counts wall time and carries
- * no playback rate, so the worker biases the elapsed reference before it gets
- * here; stretching `end` would instead change the displayed length of the track.
- * Nothing is stamped unless the tab is playing with a finite position and a
- * positive duration; `now` goes in as milliseconds.
+ * floor(clamp(position))`, `end = start + floor(duration)`. A sample already at
+ * the end (floor(clamp(position)) >= floor(duration)) is the repeat boundary:
+ * its pair would end at or before the sample instant, which Discord renders as
+ * an elapsed-only card, so the start rolls over to `floor(anchor/1000)`. A pair
+ * that would still be empty or expired is omitted, as is a total under one
+ * whole second. The span is the real duration at every playback rate. Discord's
+ * timer counts wall time and carries no playback rate, so the worker biases the
+ * elapsed reference before it gets here; stretching `end` would instead change
+ * the displayed length of the track. Nothing is stamped unless the tab is
+ * playing with a finite position and a positive duration; `now` goes in as
+ * milliseconds.
  *
  * The anchor is a property of the SAMPLE, never of the send. `now` is the
  * sample reference: the instant the position was sampled, always a stored
@@ -161,12 +166,16 @@ function watchPageUrl(raw) {
  * floor(clamp(position))`, `end = start + floor(duration)`. The span is the real
  * duration at 1x and at any other rate: Discord's timer counts wall time and
  * has no rate field, so a rate-scaled end would change how long the track reads
- * as (3:27 becomes 4:51 at 0.70x and 2:42 at 1.30x). Position is clamped to
- * `[0, duration]`, and no timestamps at all unless the tab is playing with a
- * positive duration and a real position. `now` is milliseconds and is the
- * sample reference: the instant the position was sampled, a stored value, not
- * a clock read taken here. The anchor is `state.at` when that is a finite
- * stamp no more than 5 s ahead of `now`, else `now` itself — so a state
+ * as (3:27 becomes 4:51 at 0.70x and 2:42 at 1.30x). A position already at the
+ * end while playing is the repeat boundary: its pair would finish at or before
+ * the sample instant, so the start rolls over to the anchor and the card keeps
+ * a full span instead of an expired one. An empty or expired pair, or a total
+ * below one whole second, is omitted rather than put on the wire. Position is
+ * clamped to `[0, duration]`, and no timestamps at all unless the tab is
+ * playing with a positive duration and a real position. `now` is milliseconds
+ * and is the sample reference: the instant the position was sampled, a stored
+ * value, not a clock read taken here. The anchor is `state.at` when that is a
+ * finite stamp no more than 5 s ahead of `now`, else `now` itself — so a state
  * sampled at T stamps the same `start` however late it is rebuilt. Passing a
  * fresh clock as `now` breaks that guarantee (a rejected stamp then falls
  * back to a moving limit); the builder does not second-guess the caller.
@@ -259,12 +268,25 @@ export function buildActivity(sourceOrState, stateOrNow, nowArg) {
     Number.isFinite(duration) && duration > 0 &&
     Number.isFinite(position)
   ) {
-    const clamped = Math.min(Math.max(position, 0), duration);
-    const start = Math.floor(anchor / 1000) - Math.floor(clamped);
-    activity.timestamps = {
-      start,
-      end: start + Math.floor(duration),
-    };
+    const seconds = Math.floor(duration);
+    if (seconds >= 1) {
+      const clamped = Math.min(Math.max(position, 0), duration);
+      /**
+       * floor(clamped) >= floor(duration) is the repeat boundary: Discord's
+       * integer clock already reads the end, so the sampled pair would finish
+       * at or before its own instant. Anchor a fresh loop instead of emitting
+       * a pair Discord renders as an elapsed-only card.
+       */
+      const atEnd = Math.floor(clamped) >= seconds;
+      const start = atEnd
+        ? Math.floor(anchor / 1000)
+        : Math.floor(anchor / 1000) - Math.floor(clamped);
+      const end = start + seconds;
+      /** Never put an empty or already-expired pair on the wire. */
+      if (end > start && end > Math.floor(now / 1000)) {
+        activity.timestamps = { start, end };
+      }
+    }
   }
 
   return activity;

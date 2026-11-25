@@ -26,6 +26,7 @@ The extension's desktop IPC path is the only supported product transport.
 | 2026-11-25 | Two displayed clocks that disagree are a conflict, not a missing clock: the read emits metadata without timestamps instead of falling through to the media element it just caught disagreeing. | `extract-youtube.js`, extractor tests. |
 | 2026-11-25 | The package version was 1.1.15. | `manifest.json`, `package.json`, root lockfile, root README and this package changelog. |
 | 2026-11-25 | The package version is 1.1.18. | `manifest.json`, `package.json`, root lockfile, root README and this package changelog. |
+| 2026-11-26 | The package version is 1.1.19. | `manifest.json`, `package.json`, root lockfile, root README and this package changelog. |
 
 The package check validates the emitted activity payload, not Discord's UI. No live observation in this seam establishes that Discord's member list actually renders `state` when `status_display_type: 1` is present.
 

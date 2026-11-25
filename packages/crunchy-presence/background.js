@@ -189,14 +189,20 @@ export function buildActivity(state, now = Date.now(), options = {}) {
 
   const position = Number(state.position);
   const duration = Number(state.duration);
-  if (state.paused === false && Number.isFinite(duration) && duration > 0) {
-    const atSec =
+  const durationSec = Math.floor(duration);
+  if (state.paused === false && Number.isFinite(duration) && duration > 0 && durationSec >= 1) {
+    const reportedSec =
       Number.isFinite(position) && position >= 0 ? Math.floor(position) : 0;
+    // At or past the end, the old maths stamped `end` at `now`; the pair was
+    // born expired and Discord dropped the total for a bare elapsed timer.
+    // Stop one whole second short instead: an end at the next second boundary
+    // is still in the future, and `end - start` stays the real episode length,
+    // so the total is never rewritten to a shorter read.
+    const atSec = Math.min(reportedSec, durationSec - 1);
     const baseSec = Math.floor(now / 1000) * 1000;
-    const durationSec = Math.floor(duration);
     activity.timestamps = {
       start: Math.round(baseSec - atSec * 1000),
-      end: Math.round(baseSec + Math.max(0, durationSec - atSec) * 1000)
+      end: Math.round(baseSec + (durationSec - atSec) * 1000)
     };
   }
 
@@ -263,6 +269,17 @@ function hasIdentity(frame) {
   return IDENTITY_FIELDS.some((field) => frame[field] !== null && frame[field] !== undefined);
 }
 
+/**
+ * A same-episode read under half the known length is a different video (the
+ * ad/clip ratio `isAdBreak` already uses), not a new length for this episode.
+ * Keeping the known length is what stops a collapsed read from rewriting the
+ * card's total. A real correction stays near the total, and a new episode
+ * resets the latch through its changed identity.
+ */
+function collapsedDuration(duration, known) {
+  return Number.isFinite(known) && known > 0 && duration > 0 && duration * 2 < known;
+}
+
 /** Store one frame report on its tab entry (frameId 0 = top frame). */
 export function mergeFrame(entry, frame, now = Date.now()) {
   if (!entry) return entry;
@@ -290,13 +307,28 @@ export function mergeFrame(entry, frame, now = Date.now()) {
   // A hold releases only on changed evidence from the other source. A
   // duplicate or keepalive from the old episode confirms nothing.
   if (stored.frameId === 0) {
-    entry.top = stored;
-    const reportedDuration = Number(stored.duration);
-    if (Number.isFinite(reportedDuration) && reportedDuration >= 60) {
-      entry.knownDuration = reportedDuration;
-    }
     const key = identityKey(stored);
     const changed = entry.lastTopIdentity !== undefined && entry.lastTopIdentity !== key;
+    const reportedDuration = Number(stored.duration);
+    if (Number.isFinite(reportedDuration) && reportedDuration >= 60) {
+      if (changed || !collapsedDuration(reportedDuration, entry.knownDuration)) {
+        entry.knownDuration = reportedDuration;
+        entry.knownDurationIdentity = key;
+      } else {
+        // Same episode, a much shorter read: keep the known total on the frame
+        // too, so a top frame that owns the video cannot collapse the card.
+        stored.duration = entry.knownDuration;
+      }
+    } else if (changed) {
+      // The top moved on without a length; the known length belongs to the
+      // episode just left, so a confirming frame may set the new total.
+      entry.knownDurationIdentity = undefined;
+    } else if (entry.knownDurationIdentity === undefined &&
+        Number.isFinite(entry.knownDuration)) {
+      // First identity to name a length learned from an identity-less frame.
+      entry.knownDurationIdentity = key;
+    }
+    entry.top = stored;
     entry.lastTopIdentity = key;
     if (changed) {
       if (entry.awaitingTop) entry.awaitingTop = false;
@@ -341,10 +373,24 @@ export function mergeFrame(entry, frame, now = Date.now()) {
       Number.isFinite(knownBefore) && duration === knownBefore &&
       Number.isFinite(stored.position) && Number.isFinite(pinned.position) &&
       stored.position > pinned.position;
+    // A collapsed read is a new length only with evidence the episode moved:
+    // video confirming a top-first change, or a trusted frame naming the
+    // current top under an identity that has not set the length yet. A
+    // player-first change stays ambiguous and keeps the known length until the
+    // top confirms; that is what the hold is for.
+    const collapsed = collapsedDuration(duration, knownBefore);
+    const newEpisodeLength = releasesHold ||
+      (identityMatch && entry.knownDurationIdentity !== entry.lastTopIdentity);
     if (Number.isFinite(duration) && duration > 0 &&
         (entry.knownDuration === undefined || duration === knownBefore ||
-          identityMatch || opensHold || releasesHold)) {
+          identityMatch || opensHold || releasesHold) &&
+        !(collapsed && !newEpisodeLength)) {
       entry.knownDuration = duration;
+      if (identityMatch) entry.knownDurationIdentity = entry.lastTopIdentity;
+    } else if (collapsed && identityMatch && duration >= 60) {
+      // Same episode, a much shorter read: keep the known total on the frame
+      // so the card cannot collapse to it.
+      stored.duration = knownBefore;
     }
     if (opensHold) {
       entry.videoFrameId = stored.frameId;

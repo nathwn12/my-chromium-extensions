@@ -87,13 +87,13 @@ The host sends this as `SET_ACTIVITY` with `args: { pid, activity }`. Everything
 | `type` | `3` (WATCHING) | must be exactly 3 |
 | `details` | series name, else episode title; with a synopsis, ``<series> · S1 E5`` when both numbers are known | ≤ 128 characters |
 | `state` | smart-truncated synopsis when one is shown, else `S1 E5 · 12:34 / 24:00` | ≤ 128 characters |
-| `timestamps.start` | now - position, epoch ms, both floored to whole seconds so an unchanged position second yields identical bytes and the worker dedupe fires | integer, end > start |
-| `timestamps.end` | now + (duration - position), epoch ms, same second quantisation | integer |
+| `timestamps.start` | now - playhead, epoch ms, both floored to whole seconds so an unchanged position second yields identical bytes and the worker dedupe fires; the playhead is clamped to `duration - 1` s | integer, end > start |
+| `timestamps.end` | now + (duration - clamped playhead), epoch ms, same second quantisation; the clamp keeps `end` in the future, so the pair is never born expired and its span is still the episode length | integer |
 | `assets.large_image` | Crunchyroll artwork `https` URL, or a Discord asset key | non-empty |
 | `assets.large_text` | episode title, else series | ≤ 128 characters |
 | `buttons` | `Watch Episode` → episode URL, `View Series` → series URL; a lone episode link is labelled `Watch on Crunchyroll` | ≤ 2, label ≤ 32, url https Crunchyroll |
 
-Timestamps are only attached while `paused` is explicitly `false` and a duration is known. Discord renders elapsed and remaining from that pair; a paused activity carries no timer. The synopsis option is opt-in and off by default; when it is on and a synopsis exists, it replaces the timer line but the timestamps stay attached. Without the option the phase-1 layout is unchanged, so a spoiler never appears unexpectedly. Buttons are only attached for `https` `crunchyroll.com` URLs; when neither direct link exists, the phase-1 `pageUrl` button is used. Smart truncation fits 128 characters by cutting at the last sentence end (`. `/`! `/`? `), else the last space, strips a dangling `·`/`,`/space and appends `…` only when text was cut.
+Timestamps are only attached while `paused` is explicitly `false` and a duration of at least one whole second is known; a sub-second total carries no timer. Discord renders elapsed and remaining from that pair; a paused activity carries no timer. The synopsis option is opt-in and off by default; when it is on and a synopsis exists, it replaces the timer line but the timestamps stay attached. Without the option the phase-1 layout is unchanged, so a spoiler never appears unexpectedly. Buttons are only attached for `https` `crunchyroll.com` URLs; when neither direct link exists, the phase-1 `pageUrl` button is used. Smart truncation fits 128 characters by cutting at the last sentence end (`. `/`! `/`? `), else the last space, strips a dangling `·`/`,`/space and appends `…` only when text was cut.
 
 ## Framing
 
@@ -163,6 +163,7 @@ A meta description carries the episode title before the synopsis, so that prefix
 The content script runs with `all_frames: true`, so the top page and the player frame both report. The worker keys state by `sender.tab.id`:
 
 - One record per tab. The newest informative report from any frame in that tab becomes the tab's record.
+- A much shorter read from the same episode (under half the known length) is a different video and never replaces the known total, whether it arrives from the top frame or the player. `knownDurationIdentity` records which identity set the length, so a changed episode, or a player frame verifying the current episode under an identity that has not set it yet, still accepts a new length.
 - A report with neither a video nor real metadata is ignored by the content script; `crp-gone` carries a scope — `pagehide` sends `scope: "tab"` and deletes the whole tab entry at once, an SPA URL change sends `scope: "frame"` and drops just that frame (the entry is deleted only when no frames remain) so a still-playing iframe survives a top-frame navigation. A same-tab navigation away from Crunchyroll drops the entry via `tabs.onUpdated`, and a loading/discarded signal with no readable URL schedules a 1.5 s clear that any arriving `crp-state` cancels, so a reload never blanks.
 - Across tabs, a playing tab beats a paused one; ties go to the most recently updated tab.
 - A tab is eligible when it has a video and is either playing or on screen. A paused tab that is hidden stops counting.

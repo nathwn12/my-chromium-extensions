@@ -110,6 +110,17 @@
   }
 
   /**
+   * A read proves a total only when its playhead sits strictly inside it. At or
+   * past the end there is no headroom: the sample is the repeat boundary, or a
+   * clock-only read with no media behind it, and neither says anything about
+   * how long the track really is.
+   */
+  function playheadInside(state, unit) {
+    var position = state.position;
+    return typeof position === "number" && isFinite(position) && position >= 0 && position < unit;
+  }
+
+  /**
    * A changed total is fresh only with an owned reset: a playhead at the start
    * of the track, or a coherent read whose source differs from the last
    * published sample's source. `sourceEvidence()` is non-null only when the
@@ -228,6 +239,26 @@
     }
     if (pendingTiming && loopReopensHold(state, identity, rawUnit, mediaSource)) {
       pendingTiming = null;
+    }
+    /**
+     * A same-track total never replaces the credited one by shrinking. The
+     * player bar can collapse to its own elapsed pair ("0:02 / 0:02") at a
+     * repeat boundary while the element's duration is momentarily gone, and the
+     * extractor then falls back to that clock. Such a read has no headroom to
+     * prove a total, so hold its timing and keep `lastCredibleDuration`. No
+     * hold is armed here: a `pendingTiming` at the collapsed total would also
+     * reject the real total when it returns (`sampleUnit === pendingTiming.duration`).
+     */
+    var collapsedShrink =
+      Boolean(lastSample) &&
+      identity === lastSample.track &&
+      lastCredibleDuration !== null &&
+      rawUnit !== null &&
+      rawUnit < lastCredibleDuration &&
+      !playheadInside(state, rawUnit);
+    if (collapsedShrink) {
+      state.duration = null;
+      state.position = null;
     }
     if (pendingTiming) {
       var sampleUnit = durationUnit(state.duration);

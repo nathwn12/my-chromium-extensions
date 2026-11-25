@@ -129,10 +129,80 @@ test("button only for an https Crunchyroll URL", () => {
   assert.equal(pickButtonUrl("not a url"), null);
 });
 
-test("timestamps clamp a position past the end", () => {
+test("every timestamped frame ends in the future with the real duration as its span", () => {
+  const playheads = [
+    ["mid-episode", 754],
+    ["last whole second", 1439],
+    ["at the end", 1440],
+    ["fractional end", 1440.9],
+    ["stale read past the end", 9999]
+  ];
+  for (const [label, position] of playheads) {
+    for (const sentAt of [NOW, NOW + 999]) {
+      const activity = buildActivity(playing({ position }), sentAt);
+      assert.ok(activity.timestamps, `${label} at +${sentAt - NOW}ms still carries timestamps`);
+      const { start, end } = activity.timestamps;
+      assert.ok(
+        end > Math.floor(sentAt / 1000) * 1000,
+        `${label}: pair is born expired: ${JSON.stringify(activity)}`
+      );
+      assert.ok(end > start, `${label}: end must follow start: ${JSON.stringify(activity)}`);
+      assert.equal(
+        end - start,
+        1440 * 1000,
+        `${label}: the span must stay the real episode length: ${JSON.stringify(activity)}`
+      );
+    }
+  }
+});
+
+test("timestamps clamp a position past the end without a dead pair", () => {
   const activity = buildActivity(playing({ position: 9999, duration: 1440 }), NOW);
-  assert.equal(activity.timestamps.start, NOW - 9_999_000);
-  assert.equal(activity.timestamps.end, NOW);
+  assert.equal(activity.timestamps.start, NOW - 1_439_000);
+  assert.equal(activity.timestamps.end, NOW + 1_000);
+  assert.ok(activity.timestamps.end > NOW, "a playing read past the end is never born expired");
+  assert.equal(activity.timestamps.end - activity.timestamps.start, 1440 * 1000);
+});
+
+test("a much smaller same-episode duration cannot collapse the known length", () => {
+  const episode = {
+    series: "Frieren: Beyond Journey's End",
+    episodeTitle: "The Beginning",
+    seasonNumber: 1,
+    episodeNumber: 5
+  };
+
+  // The top frame carries its own video: a 24:00 episode read as 10:00 must
+  // not rewrite the length the card already knows.
+  const topEntry = { tabId: 41, top: null, frames: {}, pageUrl: TAB_URL, updatedAt: 0, rankAt: 0 };
+  mergeFrame(topEntry, { frameId: 0, ...episode, hasVideo: true, paused: false, position: 100, duration: 1440 }, NOW);
+  mergeFrame(topEntry, { frameId: 0, ...episode, hasVideo: true, paused: false, position: 101, duration: 600 }, NOW + 1000);
+  assert.equal(topEntry.knownDuration, 1440, "a short same-episode read does not overwrite the known length");
+  const card = resolveTab(topEntry, NOW + 1001);
+  assert.equal(card.duration, 1440, "the card keeps the real total");
+  assert.equal(card.position, 101, "the playhead still follows the read");
+
+  // A trusted frame naming the same episode is not a new length either.
+  const videoEntry = { tabId: 42, top: null, frames: {}, pageUrl: TAB_URL, updatedAt: 0, rankAt: 0 };
+  mergeFrame(videoEntry, { frameId: 0, ...episode, hasVideo: false, visible: true }, NOW);
+  mergeFrame(videoEntry, { frameId: 3, ...episode, hasVideo: true, paused: false, position: 100, duration: 1440 }, NOW + 1000);
+  mergeFrame(videoEntry, { frameId: 3, ...episode, hasVideo: true, paused: false, position: 101, duration: 600 }, NOW + 2000);
+  assert.equal(videoEntry.knownDuration, 1440, "an identity-matching short read does not overwrite it either");
+
+  // A new episode may legitimately be shorter; a small correction is not a
+  // collapse.
+  mergeFrame(topEntry, {
+    frameId: 0, ...episode, episodeNumber: 6, episodeTitle: "Next",
+    hasVideo: true, paused: false, position: 5, duration: 600
+  }, NOW + 2000);
+  assert.equal(topEntry.knownDuration, 600, "a changed identity accepts the new length");
+  assert.equal(resolveTab(topEntry, NOW + 2001).duration, 600);
+
+  mergeFrame(topEntry, {
+    frameId: 0, ...episode, episodeNumber: 6, episodeTitle: "Next",
+    hasVideo: true, paused: false, position: 6, duration: 1380
+  }, NOW + 3000);
+  assert.equal(topEntry.knownDuration, 1380, "a near-full-length correction still lands");
 });
 
 test("pickBestTab prefers playing, then the most recent update", () => {

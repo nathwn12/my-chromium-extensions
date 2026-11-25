@@ -4,6 +4,10 @@ Notable changes to this package. Dates are ISO 8601. This package is local-only 
 
 ## [Unreleased]
 
+## [1.1.19] - 2026-11-26
+
+- A playing sample at the end of a track now rolls the start over to the sample instant, so the card keeps a live full-span timer into the next loop instead of a pair whose end sits at or before the sample and renders as elapsed-only; a pair that would be empty or already expired, and any total under one whole second, is omitted. A same-track total read that shrinks below the credited length with no headroom — the playhead not strictly inside it — is held: it never replaces the credited total and arms no pending hold, so the real total returns on the next coherent read.
+
 ## [1.1.18] - 2026-11-25
 
 - Local patch version for the staged presence timing handoff fixes. A changed total now releases a held read only with ownership evidence, and a same-track source baseline keeps a later changed total classified as outgoing.

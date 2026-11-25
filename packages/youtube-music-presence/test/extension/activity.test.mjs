@@ -655,14 +655,49 @@ test("timestamps are integer seconds, never milliseconds", () => {
 });
 
 test("timestamps clamp the position into the duration", () => {
+  const inside = buildActivity("youtube-music", musicState({ position: 150 }), NOW);
+  assert.equal(inside.timestamps.start, NOW_SECONDS - 150);
+  assert.equal(inside.timestamps.end, NOW_SECONDS - 150 + 200);
+
+  /** A position past the end is the repeat boundary, never an expired pair. */
   const past = buildActivity("youtube-music", musicState({ position: 700 }), NOW);
-  assert.equal(past.timestamps.start, 1_700_000_000 - 200);
-  assert.equal(past.timestamps.end, 1_700_000_000);
+  assert.equal(past.timestamps.start, NOW_SECONDS);
+  assert.equal(past.timestamps.end, NOW_SECONDS + 200);
+  assert.ok(past.timestamps.end > NOW_SECONDS, "a clamped past-the-end read is still live");
   assert.equal(past.status_display_type, 1);
 
   const negative = buildActivity("youtube-music", musicState({ position: -5 }), NOW);
-  assert.equal(negative.timestamps.start, 1_700_000_000);
-  assert.equal(negative.timestamps.end, 1_700_000_000 + 200);
+  assert.equal(negative.timestamps.start, NOW_SECONDS);
+  assert.equal(negative.timestamps.end, NOW_SECONDS + 200);
+  assert.equal(negative.timestamps.end - negative.timestamps.start, 200);
+});
+
+test("a playing read at the end rolls over to a live pair, never a zero span", () => {
+  const activity = buildActivity(
+    "youtube-music",
+    musicState({ duration: 2, position: 2, paused: false }),
+    NOW
+  );
+  assert.ok("timestamps" in activity, "a playing read with a positive total still stamps time");
+  assert.equal(activity.timestamps.start, NOW_SECONDS);
+  assert.equal(activity.timestamps.end, NOW_SECONDS + 2);
+  assert.ok(activity.timestamps.end > NOW_SECONDS, "the pair is live at its sample instant");
+  assert.ok(activity.timestamps.end > activity.timestamps.start, "a zero-span pair is not a card");
+  assert.equal(activity.timestamps.end - activity.timestamps.start, 2, "the span is the sampled total");
+});
+
+test("a sub-second total omits timestamps rather than a zero span", () => {
+  const activity = buildActivity("youtube-music", musicState({ duration: 0.5, position: 0.1 }), NOW);
+  assert.equal("timestamps" in activity, false);
+});
+
+test("a sample whose pair is already expired emits no timestamps", () => {
+  const stale = buildActivity(
+    "youtube-music",
+    musicState({ duration: 3, position: 0, at: NOW - 6000 }),
+    NOW
+  );
+  assert.equal("timestamps" in stale, false);
 });
 
 test("elapsed/end come from the real media clock: audio-backed playback still stamps time", () => {
