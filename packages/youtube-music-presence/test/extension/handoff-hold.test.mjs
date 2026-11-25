@@ -138,8 +138,12 @@ test("a source change alone cannot approve a same-duration handoff", () => {
   media.currentTime = 48;
   env.advance();
   const mid = env.states().at(-1);
-  assert.equal(mid.duration, null, `a mid-song total under the same source fails closed: ${detail(mid)}`);
-  assert.equal(mid.position, null, detail(mid));
+  assert.equal(
+    mid.duration,
+    129,
+    `a coherent incoming total restores the card mid-song: ${detail(mid)}`
+  );
+  assert.equal(mid.position, 48, detail(mid));
 
   env.setClock("0:02 / 2:09");
   media.currentTime = 2;
@@ -328,8 +332,8 @@ test("a resume, a seek and a mid-song total cannot borrow the old duration", () 
   media.currentTime = 120;
   env.advance();
   const mid = env.states().at(-1);
-  assert.equal(mid.duration, null, `120 s under an already-seen source is ambiguous: ${detail(mid)}`);
-  assert.equal(mid.position, null, detail(mid));
+  assert.equal(mid.duration, 129, `a coherent new total is real incoming timing: ${detail(mid)}`);
+  assert.equal(mid.position, 120, detail(mid));
 
   env.setClock("0:02 / 2:09");
   media.currentTime = 2;
