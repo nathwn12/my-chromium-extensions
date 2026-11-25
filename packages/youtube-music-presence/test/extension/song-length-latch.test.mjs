@@ -271,18 +271,21 @@ test("ownership guards still hold through pause, loop and rate on the final trac
 });
 
 /**
- * The urgent latch delivers the total fast without moving its anchor: a sample
- * taken at t=0 and delivered at t=800 must still start its timer at t=0.
+ * The urgent latch delivers the total fast without moving its anchor. Sample
+ * 900 ms into one epoch second and deliver 800 ms later, across the boundary
+ * and well inside the 5 s skew: the timer must start in the sample's second,
+ * not the wire's. A delivery-time anchor would fail this by one second.
  */
-test("an urgent first-total latch keeps the sample anchor", async () => {
-  const clock = fakeClock();
+test("an urgent first-total latch keeps the sample anchor across a second boundary", async () => {
+  const clock = fakeClock(BASE + 900);
   const { chrome, wireLog, page } = await boot(clock);
   page.next(PAGE_B, "Song B");
   page.feed(chrome);
   page.next(PAGE_C, "Song C");
   page.feed(chrome);
 
-  // Content samples C's trusted pair at t=0; delivery is late by 800 ms.
+  // Content samples C's trusted pair 900 ms into the second; delivery is late
+  // by 800 ms and lands in the next second, still inside the skew window.
   page.timed(0, 144, "https://media.example/c");
   const sampledAt = clock.now();
   clock.advance(800);
@@ -291,5 +294,63 @@ test("an urgent first-total latch keeps the sample anchor", async () => {
   const good = wireLog.find((f) => f.details === "Song C" && f.span === 144);
   assert.ok(good, "the trusted pair must reach the wire at delivery time");
   assert.equal(good.at, sampledAt + 800, "wire instant is the delivery time");
-  assert.equal(good.start, Math.floor(sampledAt / 1000), "start is the sample instant, not the wire instant");
+  assert.equal(
+    Math.floor(good.at / 1000),
+    Math.floor(sampledAt / 1000) + 1,
+    "the sample and wire instants must straddle an epoch-second boundary"
+  );
+  assert.equal(good.at - sampledAt, 800, "the delay stays inside the 5 s sample skew");
+  assert.equal(good.start, Math.floor(sampledAt / 1000), "start is the sample second, not the wire second");
+});
+
+/**
+ * Probe for the two paths that put activity on the port without calling
+ * deliver(): clearPresence posts null, and reconnect replays desired. After a
+ * clear/reconnect cycle the first pair for the same identity must still latch
+ * immediately, which proves lastSentTimed tracks the wire, not a stale value.
+ */
+test("clear and reconnect keep lastSentTimed aligned with the wire", async () => {
+  const clock = fakeClock();
+  const { chrome, wireLog, page } = await boot(clock);
+  page.next(PAGE_B, "Song B");
+  page.feed(chrome);
+  page.next(PAGE_C, "Song C");
+  page.feed(chrome);
+  page.timed(0, 144, "https://media.example/c");
+  page.feed(chrome);
+  assert.equal(wireLog.at(-1).span, 144, "the wire carries a timed C before the clear");
+
+  // Presence off posts null straight down the port, bypassing deliver().
+  chrome.storage.onChanged.fire({ enabled: { newValue: false } }, "local");
+  assert.equal(wireLog.at(-1).details, null, "an explicit clear went on the wire");
+
+  // While off, content reports C metadata-only: no sendable port, no deliver.
+  const metadataC = page.states()[2];
+  chrome.runtime.onMessage.fire(
+    { t: "ytmp-state", source: "youtube-music", state: { ...metadataC, at: clock.now() } },
+    { id: "ext-test-id", tab: { id: 1, url: PAGE_C }, frameId: 0 },
+    () => {}
+  );
+  assert.equal(wireLog.at(-1).details, null, "the off state stays clear");
+
+  // Presence on reconnects and replays desired through deliver().
+  chrome.storage.onChanged.fire({ enabled: { newValue: true } }, "local");
+  assert.equal(wireLog.at(-1).span, null, "reconnect replays metadata-only C");
+
+  // First trusted pair for the same identity: still urgent after the cycle.
+  // Feed the already-timed sample directly; an identical poll would be deduped.
+  const before = wireLog.length;
+  const sampleAt = clock.now();
+  chrome.runtime.onMessage.fire(
+    {
+      t: "ytmp-state",
+      source: "youtube-music",
+      state: { ...page.states()[3], at: sampleAt },
+    },
+    { id: "ext-test-id", tab: { id: 1, url: PAGE_C }, frameId: 0 },
+    () => {}
+  );
+  const immediate = wireLog.slice(before).find((f) => f.details === "Song C" && f.span === 144);
+  assert.ok(immediate, "the pair must latch at once after clear/reconnect");
+  assert.equal(immediate.at, sampleAt, "the wire instant is the sample instant, not a paced flush");
 });
