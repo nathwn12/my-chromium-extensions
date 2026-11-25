@@ -9,7 +9,9 @@
  * real activity. Media events, SPA navigation, visibility and pagehide drive
  * reports; a 1 s URL/title/pause poll covers the gaps, and predicts the running
  * position so a seek whose events were swallowed still re-aligns the card.
- * `timeupdate` is never observed.
+ * `timeupdate` is observed only for a large backward jump: a hidden tab can
+ * loop a track with no seeking/seeked/ended/play event while Chrome throttles
+ * the poll, and that jump is the only cheap signal the play restarted.
  */
 (function () {
   "use strict";
@@ -412,6 +414,37 @@
   }
 
   /**
+   * A hidden tab can restart the same track at the end of a loop without any
+   * of MEDIA_EVENTS, while Chrome throttles the poll to a crawl. `timeupdate`
+   * still fires, so a playhead that jumps back by more than a second against
+   * the last published one is the cheap backward-jump detector: report it so
+   * the worker re-anchors the card instead of counting on from the old play.
+   * Steady and forward updates are silent — `timeupdate` runs about 4 Hz and
+   * must not become a send stream. The baseline is the last published timed
+   * playhead, falling back to the last published sample when timing was
+   * withheld; once a seek or loop report has published, its updated playhead
+   * is the baseline and the same jump cannot send twice.
+   */
+  function onTimeUpdate(event) {
+    var target = event && event.target;
+    var tag = String(target && target.tagName || "").toUpperCase();
+    if (tag !== "VIDEO" && tag !== "AUDIO") return;
+    var baseline = null;
+    if (lastTimed && typeof lastTimed.position === "number" && isFinite(lastTimed.position)) {
+      baseline = lastTimed.position;
+    } else if (lastSample && typeof lastSample.position === "number" && isFinite(lastSample.position)) {
+      baseline = lastSample.position;
+    }
+    if (baseline === null) return;
+    var state = readState();
+    if (!enabled || !state || !state.title) return;
+    var position = state.position;
+    if (typeof position !== "number" || !isFinite(position)) return;
+    if (position >= baseline - 1) return;
+    report(state);
+  }
+
+  /**
    * The poll's own check on the player: if playback is running, the anchored
    * position predicts where the live one should be. A position far from that
    * prediction is a seek, a rate change or a swallowed event, so report it and
@@ -522,6 +555,7 @@
   document.addEventListener("yt-navigate-finish", onSpaNavigation);
   document.addEventListener("yt-page-data-updated", onSpaNavigation);
   document.addEventListener("visibilitychange", reportNow);
+  document.addEventListener("timeupdate", onTimeUpdate, true);
 
   window.addEventListener("popstate", onSpaNavigation);
   window.addEventListener("pagehide", function () {
