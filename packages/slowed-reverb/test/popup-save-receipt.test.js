@@ -37,11 +37,12 @@ function createPopup(opts = {}) {
 
   let now = 9000;
   const persistCalls = [];
+  const timers = [];
   const box = {
     console,
     URL,
     document: { getElementById: (id) => els[id] || null },
-    setInterval: () => 0,
+    setInterval: (fn, ms) => { timers.push({ fn, ms }); return timers.length; },
     clearInterval: () => {},
     setTimeout,
     clearTimeout,
@@ -51,7 +52,8 @@ function createPopup(opts = {}) {
         query: async () => [{ id: 1, url: 'https://music.youtube.com/watch?v=abc' }],
         sendMessage: async (_id, message) => {
           if (message.type === 'GET_LIVE_STATUS') {
-            return { ok: true, eligible: true, bypass: false, attachedCount: 1 };
+            const live = opts.onLiveStatus ? opts.onLiveStatus() : { ok: true, eligible: true, bypass: false, attachedCount: 1 };
+            return live;
           }
           if (message.type === 'APPLY_LIVE_SETTINGS') {
             if (opts.rejectLivePush) throw new Error('no receiver');
@@ -84,7 +86,13 @@ function createPopup(opts = {}) {
   vm.createContext(box);
   vm.runInContext(src('shared.js'), box, { filename: 'shared.js' });
   vm.runInContext(src('popup.js'), box, { filename: 'popup.js' });
-  return { els, persistCalls, setNow: (value) => { now = value; } };
+  return {
+    els,
+    persistCalls,
+    timers,
+    fireInterval: () => { for (const timer of timers) timer.fn(); },
+    setNow: (value) => { now = value; },
+  };
 }
 
 const settle = async () => {
@@ -182,4 +190,125 @@ test('live push failure stays a push failure, not a save receipt', async () => {
   assert.equal(popup.els['status-pill'].dataset.state, 'connected');
   assert.equal(popup.els['status-text'].textContent, 'Active');
   assert.equal(popup.persistCalls.length, 1);
+});
+
+test('recurring refresh keeps the failed save receipt visible', async () => {
+  const { value: popup, rejections } = await withRejections(async () => {
+    const p = createPopup({ onPersist: async () => { throw new Error('storage rejected'); } });
+    await settle();
+    changeSlow(p, 1.25, 9500);
+    await settle();
+    p.fireInterval();
+    await settle();
+    p.fireInterval();
+    await settle();
+    return p;
+  });
+
+  assert.equal(popup.timers.length, 1, 'the 1 s refresh is captured, not disabled');
+  assert.equal(popup.timers[0].ms, 1000);
+  assert.deepEqual(rejections, []);
+  assert.equal(popup.els['status-pill'].textContent, 'Error');
+  assert.equal(popup.els['status-pill'].dataset.state, 'error');
+  assert.equal(popup.els['status-text'].textContent, 'Could not save settings');
+});
+
+test('late success of an older save does not erase a newer failed save', async () => {
+  let releaseOld;
+  const gate = new Promise((resolve) => { releaseOld = resolve; });
+  let calls = 0;
+  const { value: popup, rejections } = await withRejections(async () => {
+    const p = createPopup({
+      onPersist: async () => {
+        calls += 1;
+        if (calls === 1) {
+          await gate;
+          return { ok: true };
+        }
+        throw new Error('storage rejected');
+      },
+    });
+    await settle();
+    changeSlow(p, 1.10, 9500);
+    await settle();
+    changeSlow(p, 1.20, 9600);
+    await settle();
+    releaseOld();
+    await settle();
+    return p;
+  });
+
+  assert.equal(calls, 2);
+  assert.deepEqual(rejections, []);
+  assert.equal(popup.els['status-pill'].dataset.state, 'error');
+  assert.equal(popup.els['status-text'].textContent, 'Could not save settings');
+});
+
+test('in-flight poll refresh resolving after a failed save does not erase the error', async () => {
+  let releaseLive;
+  const gate = new Promise((resolve) => { releaseLive = resolve; });
+  let liveCalls = 0;
+  const { value: popup, rejections } = await withRejections(async () => {
+    const p = createPopup({
+      onLiveStatus: async () => {
+        liveCalls += 1;
+        if (liveCalls === 2) await gate;
+        return { ok: true, eligible: true, bypass: false, attachedCount: 1 };
+      },
+      onPersist: async () => { throw new Error('storage rejected'); },
+    });
+    await settle();
+    p.fireInterval();
+    await settle();
+    changeSlow(p, 1.25, 9500);
+    await settle();
+    releaseLive();
+    await settle();
+    return p;
+  });
+
+  assert.ok(liveCalls >= 2, 'a poll refresh was in flight');
+  assert.deepEqual(rejections, []);
+  assert.equal(popup.els['status-pill'].dataset.state, 'error');
+  assert.equal(popup.els['status-text'].textContent, 'Could not save settings');
+});
+
+test('newer successful save clears the failed save receipt', async () => {
+  let calls = 0;
+  const { value: popup, rejections } = await withRejections(async () => {
+    const p = createPopup({
+      onPersist: async () => {
+        calls += 1;
+        return calls === 1 ? { ok: false } : { ok: true };
+      },
+    });
+    await settle();
+    changeSlow(p, 1.10, 9500);
+    await settle();
+    changeSlow(p, 1.20, 9600);
+    await settle();
+    return p;
+  });
+
+  assert.equal(calls, 2);
+  assert.deepEqual(rejections, []);
+  assert.equal(popup.els['status-pill'].dataset.state, 'connected');
+  assert.equal(popup.els['status-text'].textContent, 'Active');
+});
+
+test('power toggle clears the failed save receipt', async () => {
+  const { value: popup, rejections } = await withRejections(async () => {
+    const p = createPopup({ onPersist: async () => { throw new Error('storage rejected'); } });
+    await settle();
+    changeSlow(p, 1.25, 9500);
+    await settle();
+    p.setNow(9600);
+    p.els['power-toggle'].checked = false;
+    p.els['power-toggle'].fire('change');
+    await settle();
+    return p;
+  });
+
+  assert.deepEqual(rejections, []);
+  assert.notEqual(popup.els['status-pill'].dataset.state, 'error');
 });

@@ -30,7 +30,8 @@ let popupState = {
 };
 let pollTimer = null;
 let lastApplyTime = 0;
-let saveSeq = 0;
+let statusEpoch = 0;
+let saveFailed = false;
 
 void init();
 
@@ -80,6 +81,8 @@ resetBtnEl.addEventListener('click', () => {
 });
 
 async function init() {
+  const epoch = ++statusEpoch;
+  saveFailed = false;
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     activeTabId = tab?.id ?? null;
@@ -87,7 +90,7 @@ async function init() {
 
     if (!activeTabId) {
       setSupportedUi(false);
-      renderStatus('gray', 'No active tab.');
+      if (epoch === statusEpoch) renderStatus('gray', 'No active tab.');
       return;
     }
 
@@ -105,16 +108,16 @@ async function init() {
     powerToggleEl.checked = !popupState.bypass;
     applySettingsToUi(popupState.settings);
     setSupportedUi(popupState.eligible);
-    await refreshLiveStatus();
+    await refreshLiveStatus(epoch);
 
     if (popupState.eligible) {
       pollTimer = setInterval(() => {
-        void refreshLiveStatus();
+        void refreshLiveStatus(statusEpoch);
       }, 1000);
     }
   } catch {
     setSupportedUi(false);
-    renderStatus('gray', 'Waiting for tab');
+    if (epoch === statusEpoch) renderStatus('gray', 'Waiting for tab');
   }
 }
 
@@ -162,7 +165,7 @@ async function applyLiveSettings(settings) {
 
 async function applySettings(settings) {
   const normalized = normalizeSettings(settings);
-  const seq = ++saveSeq;
+  const epoch = ++statusEpoch;
   popupState.settings = normalized;
 
   const save = chrome.runtime.sendMessage({
@@ -178,12 +181,20 @@ async function applySettings(settings) {
 
   const [saved] = await Promise.all([save, push]);
 
-  await refreshLiveStatus();
-  if (!saved && seq === saveSeq) renderStatus('red', 'Could not save settings');
+  if (epoch !== statusEpoch) return;
+  if (saved) {
+    saveFailed = false;
+    await refreshLiveStatus(epoch);
+  } else {
+    saveFailed = true;
+    renderStatus('red', 'Could not save settings');
+  }
 }
 
 async function updateTabBypass(bypass) {
   if (!activeTabId) return;
+  const epoch = ++statusEpoch;
+  saveFailed = false;
   try {
     const state = await chrome.runtime.sendMessage({
       type: 'SET_TAB_BYPASS',
@@ -193,21 +204,23 @@ async function updateTabBypass(bypass) {
     popupState.bypass = Boolean(state?.bypass);
     powerToggleEl.checked = !popupState.bypass;
 
-    await refreshLiveStatus();
+    await refreshLiveStatus(epoch);
   } catch {
     powerToggleEl.checked = !popupState.bypass;
-    renderStatus('gray', 'Waiting for tab');
+    if (epoch === statusEpoch) renderStatus('gray', 'Waiting for tab');
   }
 }
 
-async function refreshLiveStatus() {
+async function refreshLiveStatus(epoch) {
+  const owner = typeof epoch === 'number' ? epoch : statusEpoch;
   if (!popupState.eligible || !activeTabId) {
-    renderStatus('gray', 'Waiting for tab');
+    if (owner === statusEpoch && !saveFailed) renderStatus('gray', 'Waiting for tab');
     return;
   }
 
   try {
     const live = await chrome.tabs.sendMessage(activeTabId, { type: 'GET_LIVE_STATUS' });
+    if (owner !== statusEpoch || saveFailed) return;
     if (!live?.ok) {
       renderStatus('gray', 'Waiting for tab');
       return;
@@ -217,7 +230,7 @@ async function refreshLiveStatus() {
     const dotColor = live.bypass ? 'gray' : live.attachedCount ? 'green' : 'gray';
     renderStatus(dotColor, buildStatusText(live));
   } catch {
-    renderStatus('gray', 'Waiting for tab');
+    if (owner === statusEpoch && !saveFailed) renderStatus('gray', 'Waiting for tab');
   }
 }
 
