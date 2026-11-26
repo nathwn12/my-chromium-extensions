@@ -17,28 +17,27 @@ Shows the Crunchyroll episode you are watching as Discord rich presence. Local o
 
 ## Install
 
+The [root README](../../README.md) carries the shared load-unpacked flow. Both paths load the folder containing `manifest.json`: for development select `packages/crunchy-presence` in this checkout; for a public release download the zip, unzip it anywhere and **Load unpacked** that folder in `chrome://extensions` with Developer mode on.
+
 ### 1. Install the native messaging host
 
-From the repository root:
+Presence needs a host registered once. From an unzipped release folder:
+
+```
+node scripts/install-host.mjs
+```
+
+From the repository root instead:
 
 ```
 node packages/crunchy-presence/scripts/install-host.mjs
 ```
 
-This writes `%LOCALAPPDATA%\crunchy-presence\host.cmd` and `host-manifest.json`, registers the host for Chrome (and for Edge and Brave, which share the installer), then prints a PASS/FAIL line per check and the extension ID it registered against. `node packages/crunchy-presence/scripts/install-host.mjs --check` verifies without writing.
+Registration sets up the host for Chrome (and for Edge and Brave, which share the installer), then prints a PASS/FAIL line per check and the extension ID it registered against. Add `--check` to verify a registration without writing.
 
 ### 2. Load the extension
 
-1. Install the stable runtime folder from the repository root:
-
-   ```text
-   node scripts/install-extension.mjs crunchy-presence
-   ```
-
-   It prints the folder it wrote, under `%LOCALAPPDATA%\crunchy-presence\extension`.
-2. Open `chrome://extensions`.
-3. Turn on **Developer mode**.
-4. **Load unpacked**, then select the printed path. Chrome keeps an unpacked extension as a folder path, so selecting this package folder would break if the checkout moves.
+Use the development or release path described above and in the [root README](../../README.md). Reload the extension in `chrome://extensions` after pulling changes or replacing a release zip.
 
 The manifest carries a fixed `key`, so the extension keeps the same ID across reloads and machines. The host's `allowed_origins` names exactly that ID.
 

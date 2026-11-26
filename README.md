@@ -9,7 +9,7 @@
 
 ## Why
 
-Four Chromium extensions, loaded unpacked from stable folders the installer creates. Nothing is published to a store. The two audio extensions work through a local audio graph on the pages you choose. The two presence extensions reach Discord through a local native messaging host, so no browser-to-cloud bridge is involved. There is no build step for the extensions themselves.
+Four Chromium extensions, loaded unpacked from the repository for development, or from a release zip. Nothing is published to a store. The two audio extensions work through a local audio graph on the pages you choose. The two presence extensions reach Discord through a local native messaging host, so no browser-to-cloud bridge is involved. There is no build step for the extensions themselves.
 
 ## Install
 
@@ -18,33 +18,14 @@ git clone https://github.com/nathwn12/my-chromium-extensions.git
 cd my-chromium-extensions
 ```
 
-Install the runtime for each extension you want:
+There are two ways to load an extension:
 
-```sh
-node scripts/install-extension.mjs audio-normalizer
-node scripts/install-extension.mjs slowed-reverb
-node scripts/install-extension.mjs crunchy-presence
-node scripts/install-extension.mjs youtube-music-presence
-```
+- **Development** — open `chrome://extensions`, turn on Developer mode, click **Load unpacked** and select `packages/<name>` in this checkout. The folder holding `manifest.json` is the extension; there is no build step.
+- **Release** — download the zip from [Releases](https://github.com/nathwn12/my-chromium-extensions/releases), unzip it anywhere, then **Load unpacked** the folder containing `manifest.json` the same way.
 
-Each command copies only the files that extension needs at runtime into `%LOCALAPPDATA%\<name>\extension` and prints the exact folder:
+Reload the extension in `chrome://extensions` after pulling changes or replacing a release zip.
 
-```
-Load unpacked: C:\Users\<you>\AppData\Local\<name>\extension
-```
-
-Open `chrome://extensions`, turn on Developer mode, click **Load unpacked**, and select that printed path. Chrome keeps an unpacked extension as a folder path, not a copy. Loading it from `packages/<name>` would break as soon as you move or delete the checkout. The stable target exists so the browser never follows the checkout. Re-run the installer after pulling changes, then reload the extension in `chrome://extensions`.
-
-Add `--check` to verify the installed files against the installer's recorded hashes without writing. Add `--uninstall` to remove only that extension's stable folder.
-
-The two presence extensions need a native messaging host. Register each once from the repository root:
-
-```sh
-node packages/crunchy-presence/scripts/install-host.mjs
-node packages/youtube-music-presence/scripts/install-host.mjs
-```
-
-Add `--check` to either command to verify a registration without writing.
+The two presence extensions also need a native messaging host, registered once. From an unzipped release folder run `node scripts/install-host.mjs`; from this repository run `node packages/<pkg>/scripts/install-host.mjs`, where `<pkg>` is `crunchy-presence` or `youtube-music-presence`.
 
 ## Use it
 
@@ -66,7 +47,6 @@ Then, per extension:
 
 - **Audio Normalizer** — the gain slider runs -12 to +12 dB; Speech, Music and Boost are presets. The setting is per site.
 - **Slowed Reverb** — speed runs 0.7x to 1.3x and reverb runs 0 to 100 percent.
-- **Extension installs** — `scripts/install-extension.mjs` writes the stable runtime folder. `--check` verifies it without writing; `--uninstall` removes it.
 - **Native hosts** — `install-host.mjs` writes the registration for one presence extension. `--check` verifies it without writing. Re-run the installer after a host update.
 - **Wiring check** — `node scripts/verify-integration.mjs` reads the tree and installs nothing.
 
@@ -94,7 +74,7 @@ Tests run in Node on `node --test`, never in a browser. The installer test uses 
 ```
 my-chromium-extensions/
 ├── packages/    four extensions, each with tests and docs
-├── scripts/     wiring check and host installers
+├── scripts/     wiring check, docs gate and dev tools; host installers live under packages/*/scripts/
 ├── tools/       cost audit
 └── .github/     ci, release, supply-chain
 ```

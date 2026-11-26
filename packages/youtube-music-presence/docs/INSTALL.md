@@ -2,9 +2,17 @@
 
 YouTube Music Presence publishes over desktop IPC to the Discord desktop app. Requirements: Windows 10/11, Chrome 120 or newer, Node 22 or newer, and Discord desktop running and signed in.
 
+The [root README](../../README.md) carries the shared install flow for development checkouts and release zips.
+
 ## Register the native host
 
-From the repository root:
+Presence needs the host registered once. From an unzipped release folder:
+
+```text
+node scripts/install-host.mjs
+```
+
+From the repository root instead:
 
 ```text
 node packages/youtube-music-presence/scripts/install-host.mjs
@@ -15,10 +23,10 @@ The installer registers `com.nathwn12.youtube_music_presence` for the extension'
 
 ## Load the extension
 
-1. Open `chrome://extensions` and enable **Developer mode**.
-2. Choose **Load unpacked** and select `packages/youtube-music-presence`.
-3. Start Discord desktop, then open YouTube Music.
-4. Use the accessible popup presence switch to enable or disable presence. The setting persists across page refresh and Discord restart.
+- **Development** — open `chrome://extensions` and enable **Developer mode**, choose **Load unpacked** and select `packages/youtube-music-presence`.
+- **Release** — download the zip, unzip it anywhere, then **Load unpacked** the folder containing `manifest.json`.
+
+Then start Discord desktop, open YouTube Music, and use the accessible popup presence switch to enable or disable presence. The setting persists across page refresh and Discord restart.
 
 Only Music pages are reported. The outgoing activity names `YouTube Music`, carries the track title in `details`, artist in `state`, and requests member-list state display with `status_display_type: 1`. The payload is covered by tests; the actual Discord rendering is not asserted here.
 

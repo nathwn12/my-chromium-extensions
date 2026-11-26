@@ -13,7 +13,7 @@ git clone https://github.com/nathwn12/my-chromium-extensions.git
 cd my-chromium-extensions/packages/audio-normalizer
 ```
 
-Then open `chrome://extensions`, enable **Developer mode**, click **Load unpacked**, and select the cloned folder (the one containing `manifest.json`). Visit a site with audio, click the extension icon, and switch **Active** on for that site.
+Then open `chrome://extensions`, enable **Developer mode**, click **Load unpacked**, and select the cloned folder (the one containing `manifest.json`). For a public release, download the zip, unzip it anywhere and **Load unpacked** the folder containing `manifest.json` instead; see the [root README](../../README.md). Visit a site with audio, click the extension icon, and switch **Active** on for that site.
 
 Once loaded, the extension measures the loudness of the sites you activate and moves each one toward its -20 LUFS program target and levels loud and quiet passages within each program instead of leaving loud and quiet tabs far apart. It adjusts tab audio gain locally in your browser; it asks for `storage` and `scripting`, plus read access to `http`/`https` pages so it can process their audio.
 

@@ -83,8 +83,13 @@ jobs:
             body="$(desc "$pkg")
 
           **Version:** $(version "$pkg")
-          **Install:** download the zip, unzip it anywhere, run \`node scripts/install-extension.mjs $pkg\` from that folder, then Load unpacked at the printed path in \`chrome://extensions\` with Developer mode on.
-          **Source:** \`packages/$pkg\` in this repository.
+          **Install:** download the zip, unzip it anywhere, then Load unpacked the folder containing \`manifest.json\` in \`chrome://extensions\` with Developer mode on.
+          **Source:** \`packages/$pkg\` in this repository."
+            if [ "$pkg" = crunchy-presence ] || [ "$pkg" = youtube-music-presence ]; then
+              body="$body
+          **Native host:** run \`node scripts/install-host.mjs\` once from the unzipped folder to register the host for Discord."
+            fi
+            body="$body
 
           This release is replaced in place on every update — the link never changes."
             if gh release view "$tag" >/dev/null 2>&1; then

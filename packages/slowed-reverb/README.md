@@ -13,7 +13,7 @@ git clone https://github.com/nathwn12/my-chromium-extensions.git
 cd my-chromium-extensions/packages/slowed-reverb
 ```
 
-Open `chrome://extensions`, switch on Developer mode, choose Load unpacked, and select the repo folder holding `manifest.json`.
+Open `chrome://extensions`, switch on Developer mode, choose Load unpacked, and select the repo folder holding `manifest.json`. For a public release, download the zip, unzip it anywhere and **Load unpacked** the folder containing `manifest.json` instead; see the [root README](../../README.md).
 
 Once it loads, open a YouTube Music tab, start playback, and click the extension icon. You need Chrome or Brave on desktop before any of this works.
 

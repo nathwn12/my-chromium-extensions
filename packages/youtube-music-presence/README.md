@@ -9,13 +9,11 @@ YouTube Music playback appears as one Discord desktop rich-presence activity. Th
 
 ## Install
 
-From the repository root, register the local native messaging host:
+The [root README](../../README.md) carries the shared load-unpacked flow. For development, open `chrome://extensions`, enable Developer mode, choose **Load unpacked** and select `packages/youtube-music-presence` in this checkout. For a public release, download the zip, unzip it anywhere and **Load unpacked** the folder containing `manifest.json`.
 
-```text
-node packages/youtube-music-presence/scripts/install-host.mjs
-```
+Presence also needs the native messaging host, registered once. From an unzipped release folder run `node scripts/install-host.mjs`; from the repository root run `node packages/youtube-music-presence/scripts/install-host.mjs`.
 
-Then open `chrome://extensions`, enable Developer mode, choose **Load unpacked**, and select `packages/youtube-music-presence`. In the extension popup, use the accessible presence switch to turn presence on or off. The choice persists across refreshes and Discord reconnects.
+In the extension popup, use the accessible presence switch to turn presence on or off. The choice persists across refreshes and Discord reconnects.
 
 ## Presence contract
 

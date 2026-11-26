@@ -29,7 +29,18 @@
       ]
     }
   ],
-  "forbidden": [],
+  "forbidden": [
+    {
+      "files": [
+        "README.md",
+        "packages/**/README.md"
+      ],
+      "patterns": [
+        "%LOCALAPPDATA%",
+        "install-extension"
+      ]
+    }
+  ],
   "generated": [],
   "checker": {
     "version": "0.1.0",
