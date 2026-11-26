@@ -4,6 +4,10 @@ Notable changes to this package. Dates are ISO 8601. This package is local-only 
 
 ## [Unreleased]
 
+## [1.1.22] - 2026-11-26
+
+- The player's `#progress-bar` ARIA pair (then the mini-player `input` value/max) is now authoritative for position and duration, so a music video with a stale media element or a lagging `M:SS / M:SS` bar clock no longer stamps an old playhead or a DASH total that keeps growing. Playback rate still comes from the playing media element even when timing comes from the bar; without a bar the element/clock path is unchanged.
+
 ## [1.1.21] - 2026-11-26
 
 - A hidden tab that loops the same track with no `seeking`/`seeked`/`ended`/`play` event and a throttled poll now re-anchors the card: the content script watches `timeupdate` only for a playhead that jumps back more than one second against the last published position. Steady and forward updates stay silent, so no 4 Hz send stream is added, and a jump already published by a seek cannot send twice; the card reads 0:00 at the restart instead of counting on from the previous play.

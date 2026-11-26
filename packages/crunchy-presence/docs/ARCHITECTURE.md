@@ -23,7 +23,7 @@ Chrome starts the host as a child process through the registered `host.cmd`. Chr
 | Component | Runs in | Job |
 | --- | --- | --- |
 | `extract.js` | content script, every frame | pure extraction from a document/navigator pair; never throws |
-| `content.js` | content script, every frame | report `crp-state` on media events (no `timeupdate`), URL changes, visibility changes, bfcache `pageshow` restores, plus a 30 s keepalive while a video exists |
+| `content.js` | content script, every frame | report `crp-state` on media events (no `timeupdate`), URL changes, visibility changes, bfcache `pageshow` restores, plus a 30 s keepalive while a video exists; a playing video whose `playbackRate` differs from 1 by at least 0.01 reports on a 2.5 s cadence instead so the worker can re-anchor on the media clock (1x and paused keep only the 30 s keepalive) |
 | `background.js` | MV3 service worker | keep per-tab state, pick one activity, throttle, own the native port and reconnect |
 | `options.js` / `popup.js` | extension pages | Application ID, synopsis option, status, diagnostics, enable toggle, current buttons |
 | `native\host.mjs` | Node child of Chrome | message loop, Discord IPC first with arRPC fallback per `hello`, activity forwarding, retry |

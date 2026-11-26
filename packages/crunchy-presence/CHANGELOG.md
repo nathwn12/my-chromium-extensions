@@ -4,6 +4,10 @@ Notable changes to this project. Dates are ISO 8601. This package is local-only 
 
 ## [Unreleased]
 
+## [1.2.7] - 2026-11-26
+
+- A video playing slower or faster than 1x now refreshes presence on a short 2.5 s cadence while it plays, so the Discord timer stays on the media clock instead of drifting up to ~6 s between 30 s keepalives; normal 1x and paused playback keep the single 30 s keepalive, and the worker's 4/20 s limiter still paces the sends.
+
 ## [1.2.6] - 2026-11-26
 
 - A playhead at or past the end no longer stamps a pair whose `end` sits at the sample instant, which Discord rendered as a bare elapsed timer with no total: the playhead is clamped to `duration - 1` s so the end is always in the future while the span stays the real episode length, and a sub-second total carries no timestamps. A same-episode short read no longer rewrites the card's length: a read under half the known length keeps the known total, `knownDurationIdentity` records which episode set it, and a changed episode or a player frame verifying the current episode under an identity that has not set the length yet still accepts a new one.

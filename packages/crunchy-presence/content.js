@@ -27,6 +27,11 @@
   const URL_POLL_MS = 1000;
   const SPA_SETTLE_MS = 300;
   const KEEPALIVE_MS = 30000;
+  // A non-1x playhead drifts from the worker's send-time anchor between
+  // keepalives. Refresh on a short cadence only while such a video is playing;
+  // 1x and paused keep the cheap 30 s keepalive.
+  const RATE_CADENCE_MS = 2500;
+  const RATE_EPSILON = 0.01;
 
   let lastHref = location.href;
   let lastInformative = false;
@@ -105,6 +110,15 @@
         state.seasonNumber !== null ||
         state.episodeNumber !== null
     );
+  }
+
+  /** Report interval for the current video: short only for live non-1x play. */
+  function cadenceFor(video) {
+    if (!video || video.paused !== false) return KEEPALIVE_MS;
+    const rate = Number(video.playbackRate);
+    return Number.isFinite(rate) && Math.abs(rate - 1) >= RATE_EPSILON
+      ? RATE_CADENCE_MS
+      : KEEPALIVE_MS;
   }
 
   function report(isKeepalive = false) {
@@ -201,7 +215,7 @@
       return;
     }
     if (video && video !== lastVideo) report(false);
-    if (video && Date.now() - lastReportAt >= KEEPALIVE_MS) report(true);
+    if (video && Date.now() - lastReportAt >= cadenceFor(video)) report(true);
   }
 
   try {

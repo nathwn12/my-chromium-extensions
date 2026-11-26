@@ -8,8 +8,11 @@
  * injected `doc` / `nav` / `loc` arguments.
  *
  * Rule of this file: never throw. Every field is nullable; a malformed page
- * yields nulls, never an exception. Playback comes from the real media
- * element (`<video>` or `<audio>`); duration is never invented.
+ * yields nulls, never an exception. The player progress bar (`#progress-bar`
+ * aria values, then the mini-player slider) is authoritative for position and
+ * duration when present; otherwise the media element and clock pair supplies
+ * them. The element supplies `playbackRate` even when the bar supplies the
+ * position.
  *
  * MediaSession values are trusted as-is: when the page publishes a title,
  * artist or album there, it is taken verbatim and only trimmed/collapsed like
@@ -331,6 +334,57 @@
     }
     if (!found && !consider(queryAll(doc, RULES.dom.musicTimeScan))) return CLOCK_CONFLICT;
     return found;
+  }
+
+  /**
+   * The player's own ARIA progress bar is the user-visible clock. Its pair is
+   * authoritative for position/duration when present: the element and the
+   * displayed M:SS clock can both lag the UI (DASH/music-video durations keep
+   * growing), so neither may override it. A pair is used only when both ends
+   * are finite, the max is positive and the position sits inside [0, max].
+   */
+  function readProgressBar(doc) {
+    function pair(node, positionOf, maxOf) {
+      if (!node) return null;
+      var position = positionOf(node);
+      var duration = maxOf(node);
+      if (position === null || duration === null || duration <= 0 || position > duration) return null;
+      return { position: position, duration: duration };
+    }
+    return pair(
+      queryOne(doc, "#progress-bar"),
+      function (node) { return finite(attrOf(node, "aria-valuenow")); },
+      function (node) { return finite(attrOf(node, "aria-valuemax")); }
+    ) || pair(
+      queryOne(doc, "input.ytMusicMiniPlayerProgressBar"),
+      function (node) { return finite(node.value); },
+      function (node) { return finite(node.max); }
+    );
+  }
+
+  /**
+   * Playback rate belongs to the playing media element, never to the clock.
+   * Prefer the chosen element, then a single playing element, then the element
+   * whose duration matches the authoritative UI total; a playing element with
+   * a finite rate is never dropped just because timing came from the bar.
+   */
+  function playbackRateFrom(entries, pick, progress) {
+    if (pick && typeof pick.rate === "number") return pick.rate;
+    var playing = [];
+    for (var i = 0; i < entries.length; i += 1) {
+      if (entries[i].paused === false && typeof entries[i].rate === "number") playing.push(entries[i]);
+    }
+    if (playing.length === 1) return playing[0].rate;
+    if (progress) {
+      for (var j = 0; j < entries.length; j += 1) {
+        var entry = entries[j];
+        if (typeof entry.rate === "number" && entry.duration !== null &&
+            Math.abs(entry.duration - progress.duration) <= RULES.timing.toleranceSeconds) {
+          return entry.rate;
+        }
+      }
+    }
+    return playing.length ? playing[0].rate : null;
   }
 
   /** MediaSession playback is the page's own word, independent of a media element. */
@@ -695,10 +749,12 @@
     var clock = readMusicTime(doc);
     var clockConflict = clock === CLOCK_CONFLICT;
     var musicTime = clockConflict ? null : clock;
+    var progress = readProgressBar(doc);
     var playbackState = readPlaybackState(nav);
+    var videoEntries = readVideoEntries(doc);
     var chosen = clockConflict
       ? { entry: null, coherent: false, conflict: true }
-      : chooseVideo(readVideoEntries(doc), musicTime);
+      : chooseVideo(videoEntries, musicTime);
     var pick = chosen.entry;
     chosenSource = chosen.coherent && pick ? pick.source : null;
     /**
@@ -728,7 +784,10 @@
 
     var duration = null;
     var position = null;
-    if (chosen.coherent && pick && pick.duration !== null) {
+    if (progress) {
+      duration = progress.duration;
+      position = progress.position;
+    } else if (chosen.coherent && pick && pick.duration !== null) {
       duration = pick.duration;
       position = pick.elapsed;
     } else if (!clockConflict && chosen.useClock && musicTime) {
@@ -758,7 +817,7 @@
       duration: duration,
       position: position,
       paused: paused,
-      playbackRate: pick ? pick.rate : null,
+      playbackRate: progress ? playbackRateFrom(videoEntries, pick, progress) : (pick ? pick.rate : null),
       visible: safeVisible(doc)
     };
   }
