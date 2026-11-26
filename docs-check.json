@@ -39,6 +39,19 @@
         "%LOCALAPPDATA%",
         "install-extension"
       ]
+    },
+    {
+      "files": [
+        "AGENTS.md",
+        "README.md"
+      ],
+      "patterns": [
+        "(?<!\\d\\.)\\bv?\\d+\\.\\d+\\.\\d+(?:[-+][0-9A-Za-z.-]+)?\\b(?!\\.\\d)",
+        "\\b[A-Za-z]:[\\\\/]",
+        "\\\\\\\\[^\\\\\\s]+",
+        "%LOCALAPPDATA%",
+        "\\b(?:npm|pnpm|yarn)\\s+(?:install|i|add)\\b"
+      ]
     }
   ],
   "generated": [],
