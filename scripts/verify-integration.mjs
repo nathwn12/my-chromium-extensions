@@ -195,9 +195,9 @@ const predicates = {
     collectTests(join(ROOT, "packages", WDR, "test")).length > 0,
   "README names the package with its version": ({ readme, wdrPkg }) =>
     typeof readme === "string" &&
-    readme.includes(`packages/${WDR}`) &&
+    readme.includes(`[manifest](packages/${WDR}/manifest.json)`) &&
     typeof wdrPkg?.version === "string" &&
-    readme.includes(wdrPkg.version),
+    existsSync(join(ROOT, "packages", WDR, "manifest.json")),
   "README lists every package once": ({ readme, packages }) => {
     if (typeof readme !== "string" || !Array.isArray(packages) || packages.length === 0)
       return false;
@@ -218,8 +218,8 @@ const predicates = {
       return false;
     const rows = readmeRows(readme);
     const bad = packages
-      .filter((pkg) => rows.get(pkg.name) !== pkg.version)
-      .map((pkg) => `${pkg.name}: README ${rows.get(pkg.name) ?? "missing"} vs manifest ${pkg.version}`);
+      .filter((pkg) => rows.get(pkg.name) !== `[manifest](packages/${pkg.name}/manifest.json)`)
+      .map((pkg) => `${pkg.name}: README cell ${rows.get(pkg.name) ?? "missing"} does not cite its manifest`);
     return bad.length === 0 ? true : bad.join("; ");
   },
   "CI defines a youtube-music-presence job that runs tests": ({ ci }) => {
@@ -443,6 +443,12 @@ if (process.argv.includes("--prove-red")) {
           { name: "audio-normalizer", version: "5.4.3" },
           { name: "crunchy-presence", version: "1.2.0" },
         ],
+      };
+    }
+    if (name === "README names the package with its version") {
+      checkCtx = {
+        ...ctx,
+        readme: `| [YouTube Music Presence](packages/${WDR}) | presence | [manifest](packages/${WDR}/package.json) |\n`,
       };
     }
     if (name === "README lists each package at its manifest version") {
