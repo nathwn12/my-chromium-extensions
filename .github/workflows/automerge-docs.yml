@@ -1,6 +1,6 @@
 # Docs-only pull requests merge themselves once their checks are green.
 # A change that touches anything outside *.md, docs/ or LICEN[CS]E is code:
-# this workflow does nothing and a human reviews it.
+# the check stays neutral (success), the PR is left for a human, and nothing merges.
 #
 # No checkout: the PR's code is never fetched or executed here. Only the GitHub
 # API file list is read, so a fork cannot run code with this write token.
