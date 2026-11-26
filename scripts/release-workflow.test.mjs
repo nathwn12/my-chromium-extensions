@@ -19,3 +19,19 @@ test("release workflow builds and publishes only the selected product", () => {
   assert.doesNotMatch(workflow, /publish crunchy-presence crunchy-presence/);
   assert.doesNotMatch(workflow, /publish youtube-music-presence youtube-music-presence/);
 });
+
+test("release workflow generates the body from the manifest", () => {
+  assert.match(workflow, /body="\$\(node scripts\/release-body\.mjs "\$pkg"\)"/);
+  assert.doesNotMatch(workflow, /\*\*Install:\*\* download the zip/);
+  assert.doesNotMatch(workflow, /\*\*Native host:\*\* run/);
+  assert.match(workflow, /title="\$\(name "\$pkg"\) \$\(version "\$pkg"\)"/);
+  assert.match(workflow, /gh release view "\$tag"/);
+  assert.match(workflow, /gh release upload "\$tag" "dist\/\$pkg\.zip" --clobber/);
+});
+
+test("release workflow checks the shipped zip before publishing", () => {
+  assert.match(
+    workflow,
+    /node scripts\/check-release-asset\.mjs --zip "dist\/\$PRODUCT\.zip" --product "\$PRODUCT"/
+  );
+});

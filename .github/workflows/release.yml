@@ -62,6 +62,11 @@ jobs:
           zip -r "dist/$PRODUCT.zip" scripts/install-extension.mjs
           unzip -l "dist/$PRODUCT.zip"
 
+      - name: Check release asset
+        env:
+          PRODUCT: ${{ github.event_name == 'workflow_dispatch' && inputs.product || github.ref_name }}
+        run: node scripts/check-release-asset.mjs --zip "dist/$PRODUCT.zip" --product "$PRODUCT"
+
       - name: Overwrite selected release
         env:
           PRODUCT: ${{ github.event_name == 'workflow_dispatch' && inputs.product || github.ref_name }}
@@ -75,23 +80,11 @@ jobs:
 
           version() { node -p "require('./packages/$1/manifest.json').version"; }
           name() { node -p "require('./packages/$1/manifest.json').name"; }
-          desc() { node -p "require('./packages/$1/manifest.json').description"; }
 
           publish() { # $1 package dir = $2 tag
             local pkg="$1" tag="$2" title body
             title="$(name "$pkg") $(version "$pkg")"
-            body="$(desc "$pkg")
-
-          **Version:** $(version "$pkg")
-          **Install:** download the zip, unzip it anywhere, then Load unpacked the folder containing \`manifest.json\` in \`chrome://extensions\` with Developer mode on.
-          **Source:** \`packages/$pkg\` in this repository."
-            if [ "$pkg" = crunchy-presence ] || [ "$pkg" = youtube-music-presence ]; then
-              body="$body
-          **Native host:** run \`node scripts/install-host.mjs\` once from the unzipped folder to register the host for Discord."
-            fi
-            body="$body
-
-          This release is replaced in place on every update — the link never changes."
+            body="$(node scripts/release-body.mjs "$pkg")"
             if gh release view "$tag" >/dev/null 2>&1; then
               gh release edit "$tag" --title "$title" --notes "$body"
             else
