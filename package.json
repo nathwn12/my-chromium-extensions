@@ -12,6 +12,7 @@
     "test": "bun run --filter audio-normalizer --filter crunchy-presence --filter slowed-reverb --filter youtube-music-presence test",
     "test:installer": "node --test scripts/install-extension.test.mjs",
     "lint": "bun run --filter slowed-reverb lint",
-    "typecheck": "bun run --filter audio-normalizer typecheck"
+    "typecheck": "bun run --filter audio-normalizer typecheck",
+    "docs:check": "node scripts/docs-check.mjs --strict"
   }
 }

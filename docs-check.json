@@ -1,0 +1,38 @@
+{
+  "versions": [
+    {
+      "name": "audio-normalizer",
+      "sources": [
+        "packages/audio-normalizer/manifest.json#version",
+        "packages/audio-normalizer/package.json#version"
+      ]
+    },
+    {
+      "name": "crunchy-presence",
+      "sources": [
+        "packages/crunchy-presence/manifest.json#version",
+        "packages/crunchy-presence/package.json#version"
+      ]
+    },
+    {
+      "name": "slowed-reverb",
+      "sources": [
+        "packages/slowed-reverb/manifest.json#version",
+        "packages/slowed-reverb/package.json#version"
+      ]
+    },
+    {
+      "name": "youtube-music-presence",
+      "sources": [
+        "packages/youtube-music-presence/manifest.json#version",
+        "packages/youtube-music-presence/package.json#version"
+      ]
+    }
+  ],
+  "forbidden": [],
+  "generated": [],
+  "checker": {
+    "version": "0.1.0",
+    "sha256": "de1fbf6861618f0651949e43b7cd0e5ceef5e89ce32a005ab7e883a8ec8ebe36"
+  }
+}
