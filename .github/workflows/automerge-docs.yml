@@ -1,0 +1,61 @@
+# Docs-only pull requests merge themselves once their checks are green.
+# A change that touches anything outside *.md, docs/ or LICEN[CS]E is code:
+# this workflow does nothing and a human reviews it.
+#
+# No checkout: the PR's code is never fetched or executed here. Only the GitHub
+# API file list is read, so a fork cannot run code with this write token.
+name: automerge-docs
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  automerge-docs:
+    # Same-repository, non-draft PRs only. A fork gets no write token here.
+    if: >-
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      PR_URL: ${{ github.event.pull_request.html_url }}
+
+    steps:
+      - name: Confirm a docs-only change
+        id: scope
+        shell: bash
+        run: |
+          files=$(gh pr view "$PR_URL" --json files --jq '.files[].path')
+          docs='^(.*\.md|docs/.*|LICEN[CS]E(\.md)?)$'
+          if [ -n "$files" ] && ! printf '%s\n' "$files" | grep -qvE "$docs"; then
+            echo "docs_only=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Approve and queue the squash merge
+        if: steps.scope.outputs.docs_only == 'true'
+        shell: bash
+        run: |
+          gh label create docs-automerge --color 0E8A16 \
+            --description "Docs-only PR queued by automerge-docs" --force >/dev/null 2>&1 || true
+          gh pr edit "$PR_URL" --add-label docs-automerge
+          gh pr review --approve "$PR_URL"
+          gh pr merge --auto --squash "$PR_URL"
+
+      # A PR that stops being docs-only loses the queued merge. The label is
+      # this workflow's own marker, so a human-enabled auto-merge is untouched.
+      - name: Drop a stale auto-merge when code changed
+        if: steps.scope.outputs.docs_only == 'false'
+        shell: bash
+        run: |
+          if gh pr view "$PR_URL" --json labels --jq '.labels[].name' | grep -qx 'docs-automerge'; then
+            gh pr edit "$PR_URL" --remove-label docs-automerge
+            gh pr merge --disable-auto "$PR_URL"
+          fi
