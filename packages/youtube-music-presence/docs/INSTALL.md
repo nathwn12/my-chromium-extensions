@@ -1,8 +1,8 @@
 # Install
 
-YouTube Music Presence publishes over desktop IPC to the Discord desktop app. Requirements: Windows 10/11, Chrome 120 or newer, Node 22 or newer, and Discord desktop running and signed in.
+YouTube Music Presence publishes over desktop IPC to the Discord desktop app. Requirements: Windows 10/11, Chrome 120 or newer, the Node version pinned by the repository root `.nvmrc` (mirrored by the root `package.json` `engines.node`), and Discord desktop running and signed in.
 
-The [root README](../../README.md) carries the shared install flow for development checkouts and release zips.
+The [root README](../../../README.md) carries the shared install flow for development checkouts and release zips.
 
 ## Register the native host
 
