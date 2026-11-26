@@ -39,14 +39,13 @@ jobs:
             echo "docs_only=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Approve and queue the squash merge
+      - name: Queue the squash merge
         if: steps.scope.outputs.docs_only == 'true'
         shell: bash
         run: |
           gh label create docs-automerge --color 0E8A16 \
             --description "Docs-only PR queued by automerge-docs" --force >/dev/null 2>&1 || true
           gh pr edit "$PR_URL" --add-label docs-automerge
-          gh pr review --approve "$PR_URL"
           gh pr merge --auto --squash "$PR_URL"
 
       # A PR that stops being docs-only loses the queued merge. The label is
