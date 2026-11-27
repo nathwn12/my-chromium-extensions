@@ -1,0 +1,255 @@
+/* ui-kit/components.css — shared popup/options primitives.
+   Load after tokens.css, before any extension-specific stylesheet. */
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  width: 320px;
+  background: var(--bg);
+  color: var(--ink);
+  font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+.popup {
+  padding: 14px;
+  display: grid;
+  gap: 12px;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+header img {
+  width: 24px;
+  height: 24px;
+  display: block;
+  flex-shrink: 0;
+}
+
+h1 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  flex: 1;
+}
+
+/* Status pill. data-state is the legacy attribute; data-tone is current.
+   Both are supported so extensions can migrate without a flag day. */
+.pill {
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--card);
+  font-size: 12px;
+  line-height: 16px;
+  white-space: nowrap;
+}
+
+.pill[data-state="connected"],
+.pill[data-tone="connected"] {
+  color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 40%, var(--line));
+}
+
+.pill[data-state="connecting"],
+.pill[data-state="idle"],
+.pill[data-tone="waiting"] {
+  color: var(--warn);
+  border-color: color-mix(in srgb, var(--warn) 40%, var(--line));
+}
+
+.pill[data-state="error"],
+.pill[data-state="disconnected"],
+.pill[data-tone="error"] {
+  color: var(--bad);
+  border-color: color-mix(in srgb, var(--bad) 40%, var(--line));
+}
+
+.pill[data-state="off"],
+.pill[data-tone="off"] {
+  color: var(--muted);
+}
+
+.card {
+  border: 1px solid var(--line);
+  background: var(--card);
+  border-radius: 10px;
+  padding: 12px;
+  display: grid;
+  gap: 10px;
+}
+
+/* Range slider: accent-color for engines that use native parts, plus the
+   custom WebKit/ Gecko thumb already used by the extensions. */
+input[type="range"] {
+  width: 100%;
+  height: 6px;
+  -webkit-appearance: none;
+  appearance: none;
+  accent-color: var(--accent);
+  background: var(--line);
+  border-radius: 3px;
+  outline: none;
+  cursor: pointer;
+  margin: 0;
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  background: var(--accent);
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+input[type="range"]::-moz-range-thumb {
+  width: 18px;
+  height: 18px;
+  background: var(--accent);
+  border: none;
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+input[type="range"]:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* Native checkbox switch (Chrome 128+). */
+input[type="checkbox"][switch] {
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+input[type="checkbox"][switch]:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Legacy .toggle wrapper, kept for compatibility with existing extensions
+   and with input-switch-polyfill's rendered shape. */
+.toggle {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.toggle input {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 36px;
+  height: 20px;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-radius: 999px;
+  background: var(--line);
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.06);
+  position: relative;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background-color 150ms ease;
+}
+
+.toggle input::before {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 150ms ease;
+}
+
+.toggle input:checked {
+  background: var(--accent);
+}
+
+.toggle input:checked::before {
+  transform: translateX(16px);
+}
+
+.toggle input:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.toggle input:disabled::before {
+  opacity: 0.7;
+}
+
+.toggle input:checked:disabled {
+  background: var(--muted);
+}
+
+.now {
+  margin: 0;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.buttons {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.detail {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+footer {
+  display: flex;
+  justify-content: flex-end;
+}
+
+footer a,
+footer button {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+footer a:hover,
+footer button:hover {
+  color: var(--accent);
+}
+
+footer a:focus-visible,
+footer button:focus-visible,
+input[type="range"]:focus-visible,
+.toggle input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .toggle input,
+  .toggle input::before {
+    transition: none;
+  }
+}

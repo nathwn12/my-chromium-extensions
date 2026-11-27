@@ -3,7 +3,10 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>YouTube Music Presence — Settings</title>
+    <meta name="color-scheme" content="light dark" />
+    <title>YouTube Music Presence - Settings</title>
+    <link rel="stylesheet" href="ui-kit/tokens.css" />
+    <link rel="stylesheet" href="ui-kit/components.css" />
     <link rel="stylesheet" href="options.css" />
   </head>
   <body>
@@ -19,7 +22,7 @@
       <section class="card" aria-labelledby="presence-title">
         <h2 id="presence-title">1. Presence</h2>
         <label class="toggle" for="enabled">
-          <input id="enabled" type="checkbox" role="switch" aria-describedby="presence-help presence-saved" />
+          <input id="enabled" type="checkbox" switch role="switch" aria-describedby="presence-help presence-saved" />
           <span>Presence</span>
         </label>
         <p id="presence-help" class="hint">

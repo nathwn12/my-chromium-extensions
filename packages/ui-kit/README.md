@@ -17,8 +17,8 @@ Link both stylesheets in `popup.html` and `options.html`, before the extension's
 ```html
 <head>
   <meta name="color-scheme" content="light dark">
-  <link rel="stylesheet" href="../ui-kit/tokens.css">
-  <link rel="stylesheet" href="../ui-kit/components.css">
+  <link rel="stylesheet" href="ui-kit/tokens.css">
+  <link rel="stylesheet" href="ui-kit/components.css">
   <link rel="stylesheet" href="popup.css">
 </head>
 ```
@@ -33,21 +33,6 @@ Set the accent per extension by overriding `--accent` on `:root` in a stylesheet
 ```
 
 The default is blue (`#3b82f6`) in both schemes. Any other token can be overridden the same way.
-
-## Tokens
-
-| Token | Light | Dark |
-| --- | --- | --- |
-| `--bg` | `#ffffff` | `#0d0f13` |
-| `--card` | `#f1f5f9` | `#161a21` |
-| `--line` | `#e2e8f0` | `#262c36` |
-| `--ink` | `#0f172a` | `#e8ecf2` |
-| `--muted` | `#64748b` | `#98a3b3` |
-| `--accent` | `#3b82f6` | `#3b82f6` (override per extension) |
-| `--ok` | `#15803d` | `#4ade80` |
-| `--warn` | `#b45309` | `#fbbf24` |
-| `--bad` | `#dc2626` | `#f87171` |
-
 ## Components
 
 - `.popup` — 320px body width, 14px padding, 12px grid gap.
@@ -65,7 +50,7 @@ The default is blue (`#3b82f6`) in both schemes. Any other token can be overridd
 - **Switch polyfill is conditional.** `input[type="checkbox"][switch]` is native in current Chrome. For older engines, load the loader as a module:
 
   ```html
-  <script type="module" src="../ui-kit/switch.js"></script>
+  <script type="module" src="ui-kit/switch.js"></script>
   ```
 
   It contains exactly:
@@ -75,3 +60,21 @@ The default is blue (`#3b82f6`) in both schemes. Any other token can be overridd
   ```
 
   The polyfill is intentionally **not bundled** here: the dynamic import stays in the shipped file, so the consuming extension must install/serve `input-switch-polyfill` itself. On browsers with native switch support, nothing is fetched.
+
+## Palette (nathwn12)
+
+One palette for every extension page. Values are light-dark() pairs. Extension icons carry their own vivid artwork set on a dark tile.
+
+| Token | Light | Dark | Use |
+| --- | --- | --- | --- |
+| --bg | #f4f3ef | #16171b | page |
+| --card | #ffffff | #23252b | cards |
+| --line | #ddd8d0 | #33363d | borders |
+| --ink | #1b1c1f | #ededed | text |
+| --muted | #6b6f76 | #9aa0a8 | secondary text |
+| --accent | #b5652e | #c97a3a | primary (burnt orange) |
+| --accent-2 | #8e2f3c | #a8434f | secondary (muted crimson) |
+| --neutral | #8a8f96 | #6b6f76 | neutral marks |
+| --ok | #4f7f4f | #6fa36f | success |
+| --warn | #8a6a1f | #c9a24a | warning |
+| --bad | #8e3b3b | #b25454 | error |

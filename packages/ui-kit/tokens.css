@@ -1,16 +1,27 @@
-/* ui-kit/tokens.css — design tokens. Load this first.
+/* ui-kit/tokens.css — the nathwn12 palette. Load this first.
+   Dark-first graphite, burnt orange primary, muted crimson secondary,
+   warm gray neutral. Every extension and icon draws from this set only.
    light-dark() needs the document to declare both schemes; see README.md. */
 
 :root {
   color-scheme: light dark;
 
-  --bg: light-dark(#ffffff, #0d0f13);
-  --card: light-dark(#f1f5f9, #161a21);
-  --line: light-dark(#e2e8f0, #262c36);
-  --ink: light-dark(#0f172a, #e8ecf2);
-  --muted: light-dark(#64748b, #98a3b3);
-  --accent: light-dark(#3b82f6, #3b82f6);
-  --ok: light-dark(#15803d, #4ade80);
-  --warn: light-dark(#b45309, #fbbf24);
-  --bad: light-dark(#dc2626, #f87171);
+  /* surfaces */
+  --bg: light-dark(#f4f3ef, #16171b);
+  --card: light-dark(#ffffff, #23252b);
+  --line: light-dark(#ddd8d0, #33363d);
+
+  /* text */
+  --ink: light-dark(#1b1c1f, #ededed);
+  --muted: light-dark(#6b6f76, #9aa0a8);
+
+  /* identity */
+  --accent: light-dark(#b5652e, #c97a3a);
+  --accent-2: light-dark(#8e2f3c, #a8434f);
+  --neutral: light-dark(#8a8f96, #6b6f76);
+
+  /* status */
+  --ok: light-dark(#4f7f4f, #6fa36f);
+  --warn: light-dark(#8a6a1f, #c9a24a);
+  --bad: light-dark(#8e3b3b, #b25454);
 }

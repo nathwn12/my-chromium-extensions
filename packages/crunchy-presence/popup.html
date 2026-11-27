@@ -3,7 +3,10 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
     <title>Crunchy Presence</title>
+    <link rel="stylesheet" href="ui-kit/tokens.css" />
+    <link rel="stylesheet" href="ui-kit/components.css" />
     <link rel="stylesheet" href="popup.css" />
   </head>
   <body>
@@ -30,7 +33,7 @@
       <p id="reason" class="detail" role="status" aria-live="polite" hidden></p>
 
       <label class="toggle" for="enabled">
-        <input id="enabled" type="checkbox" role="switch" aria-describedby="reason" />
+        <input id="enabled" type="checkbox" switch role="switch" aria-describedby="reason" />
         <span>Active</span>
       </label>
 
