@@ -34,7 +34,7 @@ export const REGISTRY_ROOTS = Object.freeze([
 /** Default registry runner: one `reg` child process, no shell. */
 export async function defaultExec(args) {
   try {
-    const { stdout, stderr } = await execFileAsync('reg', args, { windowsHide: true });
+    const { stdout, stderr } = await execFileAsync('reg', args, { windowsHide: true, timeout: 10000 });
     return { stdout, stderr, code: 0 };
   } catch (error) {
     const wrapped = new Error(

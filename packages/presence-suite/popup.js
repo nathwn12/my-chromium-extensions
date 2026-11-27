@@ -44,16 +44,11 @@ function ask(message) {
   });
 }
 
-/** The worker's live view, or the last persisted one while it restarts. */
-async function readStatus() {
+/** The worker's live view, or the status already read during this paint. */
+async function readStatus(fallback = {}) {
   const live = await ask({ t: "presence-get-status" });
   if (live) return live;
-  try {
-    const stored = await chrome.storage.local.get([STATUS_KEY]);
-    return (stored && stored[STATUS_KEY]) || {};
-  } catch (_) {
-    return {};
-  }
+  return fallback || {};
 }
 
 function renderStatus(status, enabled) {
@@ -93,14 +88,15 @@ function renderStatus(status, enabled) {
 async function render() {
   let stored = {};
   try {
-    stored = (await chrome.storage.local.get([ENABLED_KEY])) || {};
+    stored = (await chrome.storage.local.get([ENABLED_KEY, STATUS_KEY])) || {};
   } catch (_) {
     stored = {};
   }
   const map = stored[ENABLED_KEY];
   const enabled = {};
   for (const source of SOURCES) enabled[source] = resolveEnabled(map, source);
-  renderStatus(await readStatus(), enabled);
+  const fallback = stored[STATUS_KEY] || {};
+  renderStatus(await readStatus(fallback), enabled);
 }
 
 for (const [source, toggle] of toggles) {

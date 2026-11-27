@@ -1,0 +1,27 @@
+/* ui-kit/tokens.css — the nathwn12 palette. Load this first.
+   Dark-first graphite, burnt orange primary, muted crimson secondary,
+   warm gray neutral. Every extension and icon draws from this set only.
+   light-dark() needs the document to declare both schemes; see README.md. */
+
+:root {
+  color-scheme: light dark;
+
+  /* surfaces */
+  --bg: light-dark(#f4f3ef, #16171b);
+  --card: light-dark(#ffffff, #23252b);
+  --line: light-dark(#ddd8d0, #33363d);
+
+  /* text */
+  --ink: light-dark(#1b1c1f, #ededed);
+  --muted: light-dark(#6b6f76, #9aa0a8);
+
+  /* identity */
+  --accent: light-dark(#b5652e, #c97a3a);
+  --accent-2: light-dark(#8e2f3c, #a8434f);
+  --neutral: light-dark(#8a8f96, #6b6f76);
+
+  /* status */
+  --ok: light-dark(#4f7f4f, #6fa36f);
+  --warn: light-dark(#8a6a1f, #c9a24a);
+  --bad: light-dark(#8e3b3b, #b25454);
+}

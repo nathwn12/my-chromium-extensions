@@ -2,10 +2,22 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 
-import { STATUS_KEY, SOURCE_CRUNCHY, SOURCE_YOUTUBE_MUSIC } from "../config.js";
+import { ENABLED_KEY, STATUS_KEY, SOURCE_CRUNCHY, SOURCE_YOUTUBE_MUSIC } from "../config.js";
 import { createChrome, fireEvent, mountSurface } from "./helpers/fake-ui.mjs";
 
 const dir = fileURLToPath(new URL("..", import.meta.url));
+
+/** Count storage reads on the real fake-chrome API without changing the harness. */
+function spyReads(chrome) {
+  const reads = [];
+  const local = chrome.api.storage.local;
+  const realGet = local.get.bind(local);
+  local.get = async (keys) => {
+    reads.push(keys);
+    return realGet(keys);
+  };
+  return reads;
+}
 
 function fixture() {
   const status = {
@@ -68,6 +80,51 @@ test("popup asks the worker with the new message name", async () => {
   try {
     assert.ok(chrome.requests.some((message) => message.t === "presence-get-status"));
     assert.ok(!chrome.requests.some((message) => message.t === "ytmp-get-status"));
+  } finally {
+    ui.unmount();
+  }
+});
+
+// Mutation: restore readStatus()'s own get([STATUS_KEY]) when the worker is silent
+// -> reads.length is 2, and the single-read budget below goes red. Passing only
+// [ENABLED_KEY] from render() also fails the stored-fallback assertions.
+test("popup paints from one storage read and one message, falling back to stored status", async () => {
+  const status = {
+    bridgeState: "connected",
+    activities: { [SOURCE_CRUNCHY]: { details: "Series", state: "S1 E2" } },
+  };
+  const chrome = createChrome({
+    local: {
+      [ENABLED_KEY]: { [SOURCE_CRUNCHY]: true, [SOURCE_YOUTUBE_MUSIC]: true },
+      [STATUS_KEY]: status,
+    },
+    status: null, // worker is silent: the status read with enabled must carry the paint
+  });
+  const reads = spyReads(chrome);
+  const ui = await mountSurface({ surface: "popup", extensionDir: dir, chrome });
+  try {
+    assert.equal(reads.length, 1, JSON.stringify(reads));
+    assert.deepEqual(reads[0], [ENABLED_KEY, STATUS_KEY]);
+    assert.equal(chrome.requests.length, 1);
+    assert.equal(chrome.requests[0].t, "presence-get-status");
+    assert.equal(ui.doc.getElementById("bridge").textContent, "Connected");
+    assert.match(ui.doc.getElementById(SOURCE_CRUNCHY + "-now").textContent, /Series/);
+  } finally {
+    ui.unmount();
+  }
+});
+
+// Mutation: let the stored status win over the worker answer -> bridge shows
+// "Connected" instead of "Error" and this test goes red.
+test("popup keeps the worker answer authoritative over the stored fallback", async () => {
+  const chrome = createChrome({
+    local: { [STATUS_KEY]: { bridgeState: "connected" } },
+    status: { bridgeState: "error", reason: "Live failure" },
+  });
+  const ui = await mountSurface({ surface: "popup", extensionDir: dir, chrome });
+  try {
+    assert.equal(ui.doc.getElementById("bridge").textContent, "Error");
+    assert.match(ui.doc.getElementById("reason").textContent, /Live failure/);
   } finally {
     ui.unmount();
   }

@@ -15,6 +15,7 @@ import { fileURLToPath } from 'node:url';
 
 import {
   HOST_NAME,
+  INSTALL_DIR_NAME,
   REGISTRY_ROOTS,
   defaultExec,
   installPaths,
@@ -82,7 +83,7 @@ export async function removeHost(options = {}) {
 const USAGE = `usage: node scripts/uninstall-host.mjs [--check] [--json]
 
 Removes the three native messaging registry keys and
-%LOCALAPPDATA%\\youtube-music-presence. --check only reports presence.`;
+%LOCALAPPDATA%\\${INSTALL_DIR_NAME}. --check only reports presence.`;
 
 function parseArgs(argv) {
   const options = { check: false, json: false, help: false };

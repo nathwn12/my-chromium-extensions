@@ -120,8 +120,8 @@ test("each surface loads only its own local code: no remote URL, no inline scrip
     assert.equal(scripts[0].textContent.trim(), "", "the script element carries no inline body");
 
     const styles = doc.querySelectorAll("link[rel=stylesheet]");
-    assert.equal(styles.length, 1, `${surface}.html has exactly one stylesheet`);
-    assert.equal(styles[0].getAttribute("href"), `${surface}.css`);
+    assert.equal(styles.length, 3, surface + ".html loads the kit and its own stylesheet");
+    assert.deepEqual(Array.from(styles).map((s) => s.getAttribute("href")), ["ui-kit/tokens.css", "ui-kit/components.css", surface + ".css"]);
 
     for (const node of doc.querySelectorAll("*")) {
       for (const [name, value] of Object.entries(node.attrs)) {

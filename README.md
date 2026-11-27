@@ -9,7 +9,7 @@
 
 ## Why
 
-Five Chromium extensions, loaded unpacked from the repository for development, or from a release zip. Nothing is published to a store. The two audio extensions work through a local audio graph on the pages you choose. The two presence extensions reach Discord through a local native messaging host, so no browser-to-cloud bridge is involved. There is no build step for the extensions themselves.
+Five Chromium extensions, loaded unpacked from the repository for development, or from a release zip. Nothing is published to a store. The two audio extensions work through a local audio graph on the pages you choose. The presence extensions reach Discord through a local native messaging host, so no browser-to-cloud bridge is involved. There is no build step for the extensions themselves.
 
 ## Install
 
@@ -25,17 +25,19 @@ There are two ways to load an extension:
 
 Reload the extension in `chrome://extensions` after pulling changes or replacing a release zip.
 
-The two presence extensions also need a native messaging host, registered once. From an unzipped release folder run `node scripts/install-host.mjs`; from this repository run `node packages/<pkg>/scripts/install-host.mjs`, where `<pkg>` is `crunchy-presence` or `youtube-music-presence`.
+The presence extensions also need a native messaging host, registered once. From an unzipped release folder run `node scripts/install-host.mjs`; from this repository run `node packages/<pkg>/scripts/install-host.mjs`, where `<pkg>` is `presence-suite` for the current extension, or `crunchy-presence` and `youtube-music-presence` for the two legacy ones.
 
 ## Use it
 
 | Extension | What it does | Version |
 | --- | --- | --- |
-| [Audio Normalizer](packages/audio-normalizer) | Brings every site you switch on to one target loudness through a local audio graph. | [manifest](packages/audio-normalizer/manifest.json) |
-| [Slowed Reverb](packages/slowed-reverb) | Slows YouTube Music playback and adds plate reverb in a local audio graph. | [manifest](packages/slowed-reverb/manifest.json) |
-| [Crunchy Presence](packages/crunchy-presence) | Reports the Crunchyroll episode you are watching as Discord rich presence. | [manifest](packages/crunchy-presence/manifest.json) |
-| [YouTube Music Presence](packages/youtube-music-presence) | Reports YouTube Music only to Discord desktop rich presence. | [manifest](packages/youtube-music-presence/manifest.json) |
-| [Presence Suite](packages/presence-suite) | Publishes YouTube Music and Crunchyroll as Discord rich presence through one native host and per-site switches. | [manifest](packages/presence-suite/manifest.json) |
+| [<img src="packages/audio-normalizer/icons/icon24.png" width="16" height="16" alt=""> Audio Normalizer](packages/audio-normalizer) | Brings every site you switch on to one target loudness through a local audio graph. | [manifest](packages/audio-normalizer/manifest.json) |
+| [<img src="packages/slowed-reverb/icons/icon24.png" width="16" height="16" alt=""> Slowed Reverb](packages/slowed-reverb) | Slows YouTube Music playback and adds plate reverb in a local audio graph. | [manifest](packages/slowed-reverb/manifest.json) |
+| [<img src="packages/crunchy-presence/icons/icon24.png" width="16" height="16" alt=""> Crunchy Presence](packages/crunchy-presence) | Legacy single-site extension; Presence Suite replaces it. | [manifest](packages/crunchy-presence/manifest.json) |
+| [<img src="packages/youtube-music-presence/icons/icon24.png" width="16" height="16" alt=""> YouTube Music Presence](packages/youtube-music-presence) | Legacy single-site extension reporting YouTube Music only; Presence Suite replaces it. | [manifest](packages/youtube-music-presence/manifest.json) |
+| [<img src="packages/presence-suite/icons/icon24.png" width="16" height="16" alt=""> Presence Suite](packages/presence-suite) | Publishes YouTube Music and Crunchyroll as Discord rich presence through one native host and per-site switches. | [manifest](packages/presence-suite/manifest.json) |
+
+Presence Suite is the current presence extension: both sites, one host, two switches. The two single-site packages stay in the tree for installs made before it existed.
 
 Then, per extension:
 
@@ -55,9 +57,9 @@ Then, per extension:
 
 - A Chromium browser: Chrome, Edge or Brave.
 - Node 26, the version in `.nvmrc` and the root `engines` field, to run the host installers, the native hosts and the tests.
-- Windows 10 or 11 for the two presence extensions: their hosts write registry entries and talk to Discord's local named pipe.
-- Discord desktop, signed in and running, for the two presence extensions only.
-- Chrome 120 or newer for the two presence extensions; both pin `minimum_chrome_version`. The two audio extensions declare no minimum.
+- Windows 10 or 11 for the presence extensions: their hosts write registry entries and talk to Discord's local named pipe.
+- Discord desktop, signed in and running, for the presence extensions only.
+- Chrome 120 or newer for the presence extensions; each pins `minimum_chrome_version`. The two audio extensions declare no minimum.
 
 ## Development
 
@@ -74,7 +76,7 @@ Tests run in Node on `node --test`, never in a browser. The installer test uses 
 
 ```
 my-chromium-extensions/
-├── packages/    four extensions, each with tests and docs
+├── packages/    five extensions, each with tests and docs
 ├── scripts/     wiring check, docs gate and dev tools; host installers live under packages/*/scripts/
 ├── tools/       cost audit
 └── .github/     ci, release, supply-chain

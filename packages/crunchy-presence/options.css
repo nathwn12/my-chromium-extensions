@@ -1,25 +1,15 @@
+/* Crunchy Presence options: accent override + package-specific rules. */
 :root {
-  color-scheme: dark;
-  --bg: #0d0f13;
-  --card: #161a21;
-  --line: #262c36;
-  --ink: #e8ecf2;
-  --muted: #98a3b3;
-  --accent: #f47521;
-  --ok: #4ade80;
-  --warn: #fbbf24;
-  --bad: #f87171;
-}
-
-* {
-  box-sizing: border-box;
+  --accent: #c97a3a;
 }
 
 body {
-  margin: 0;
+  width: auto;
+  max-width: 640px;
+  margin: 0 auto;
+  font: 15px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   background: var(--bg);
   color: var(--ink);
-  font: 15px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 }
 
 .page {
@@ -55,83 +45,12 @@ body {
   line-height: 20px;
 }
 
-.card {
-  background: var(--card);
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  padding: 20px;
-}
-
 .card h2 {
   margin: 0 0 10px;
   font-size: 15px;
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: var(--muted);
-}
-
-.toggle {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  font-weight: 400;
-  cursor: pointer;
-}
-
-.toggle input {
-  appearance: none;
-  -webkit-appearance: none;
-  width: 36px;
-  height: 20px;
-  margin: 0;
-  padding: 0;
-  border: none;
-  border-radius: 999px;
-  background: var(--line);
-  position: relative;
-  cursor: pointer;
-  flex-shrink: 0;
-  transition: background-color 150ms ease;
-}
-
-.toggle input::before {
-  content: "";
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  background: #fff;
-  transition: transform 150ms ease;
-}
-
-.toggle input:checked {
-  background: var(--accent);
-}
-
-.toggle input:checked::before {
-  transform: translateX(16px);
-}
-
-.toggle input:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-}
-
-.toggle input:disabled::before {
-  opacity: 0.7;
-}
-
-.toggle input:checked:disabled {
-  background: var(--muted);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .toggle input,
-  .toggle input::before {
-    transition: none;
-  }
 }
 
 .hint {
@@ -190,8 +109,7 @@ input[type="text"] {
 input[type="text"]:focus-visible,
 textarea:focus-visible,
 button:focus-visible,
-a:focus-visible,
-.toggle input:focus-visible {
+a:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
@@ -254,56 +172,6 @@ button.primary:hover {
   margin: 0;
   font-size: 14px;
   overflow-wrap: anywhere;
-}
-
-.pill {
-  display: inline-block;
-  padding: 1px 10px;
-  border-radius: 999px;
-  border: 1px solid var(--line);
-  font-size: 13px;
-  background: #0f1319;
-  white-space: nowrap;
-}
-
-#bridgeState.pill {
-  justify-self: start;
-}
-
-.pill[data-state="connected"] {
-  color: var(--ok);
-  border-color: #1f4d33;
-}
-
-.pill[data-state="connecting"],
-.pill[data-state="idle"] {
-  color: var(--warn);
-  border-color: #4d3f1f;
-}
-
-.pill[data-state="error"],
-.pill[data-state="disconnected"] {
-  color: var(--bad);
-  border-color: #4d2323;
-}
-
-.pill[data-tone="connected"] {
-  color: var(--ok);
-  border-color: #1f4d33;
-}
-
-.pill[data-tone="waiting"] {
-  color: var(--warn);
-  border-color: #4d3f1f;
-}
-
-.pill[data-tone="error"] {
-  color: var(--bad);
-  border-color: #4d2323;
-}
-
-.pill[data-tone="off"] {
-  color: var(--muted);
 }
 
 .error {

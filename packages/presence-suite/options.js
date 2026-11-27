@@ -78,9 +78,14 @@ function render() {
     const hostEl = el(source + "-host");
     const hostState = (status.hostSources || {})[source];
     if (hostEl) {
-      hostEl.textContent = labels[source] || "Not connected";
-      if (typeof hostState === "string") hostEl.dataset.state = hostState;
-      else delete hostEl.dataset.state;
+      if (enabled[source] === false) {
+        hostEl.textContent = "Off";
+        delete hostEl.dataset.state;
+      } else {
+        hostEl.textContent = labels[source] || "Not connected";
+        if (typeof hostState === "string") hostEl.dataset.state = hostState;
+        else delete hostEl.dataset.state;
+      }
     }
   }
 
@@ -109,7 +114,8 @@ function render() {
 async function load() {
   let stored = {};
   try {
-    stored = (await chrome.storage.local.get([ENABLED_KEY, STATUS_KEY])) || {};
+    const keys = [ENABLED_KEY, STATUS_KEY, ...SOURCES.map((source) => clientIdKey(source))];
+    stored = (await chrome.storage.local.get(keys)) || {};
   } catch (_) {
     stored = {};
   }
@@ -118,14 +124,7 @@ async function load() {
   clientIds = {};
   for (const source of SOURCES) {
     enabled[source] = resolveEnabled(map, source);
-    let id = null;
-    try {
-      const one = await chrome.storage.local.get([clientIdKey(source)]);
-      id = one ? one[clientIdKey(source)] : null;
-    } catch (_) {
-      id = null;
-    }
-    clientIds[source] = resolveClientId(id, source);
+    clientIds[source] = resolveClientId(stored[clientIdKey(source)], source);
   }
   if (stored[STATUS_KEY] && typeof stored[STATUS_KEY] === "object") status = stored[STATUS_KEY];
   const live = await ask({ t: "presence-get-status" });

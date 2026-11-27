@@ -60,6 +60,9 @@ export const REASON_COPY = Object.freeze({
   [REASON.HUNG + ":exhausted"]: "Discord stopped responding. Restart Discord, then try again.",
 });
 
+/** Waiting copy for a bridge that is still starting, not a hung response. */
+export const CONNECTING_COPY = "Starting the Discord bridge…";
+
 export const BRIDGE_LABELS = Object.freeze({
   [BRIDGE.IDLE]: "Idle",
   [BRIDGE.CONNECTING]: "Waiting",
@@ -160,7 +163,8 @@ export function presentStatus(status = {}, source) {
   if (isError) {
     reason = typeof status.reason === "string" && status.reason ? status.reason : REASON_COPY[REASON.REJECTED];
   } else if (isWaiting) {
-    reason = typeof status.reason === "string" && status.reason ? status.reason : REASON_COPY[REASON.HUNG];
+    const given = typeof status.reason === "string" && status.reason ? status.reason : null;
+    reason = given || (state === BRIDGE.CONNECTING ? CONNECTING_COPY : REASON_COPY[REASON.HUNG]);
   }
   return { label, state, reason, isError, isWaiting };
 }

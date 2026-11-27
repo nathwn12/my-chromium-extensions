@@ -437,6 +437,14 @@
       baseline = lastSample.position;
     }
     if (baseline === null) return;
+    /**
+     * Cheap gate: timeupdate runs about 4 Hz and a full read walks the
+     * player bar, so a steady or forward playhead must cost nothing. Only a
+     * target playhead itself behind the baseline can be the swallowed loop;
+     * the document-level read below still decides, and never a report.
+     */
+    var ownPosition = target.currentTime;
+    if (typeof ownPosition === "number" && isFinite(ownPosition) && ownPosition >= baseline - 1) return;
     var state = readState();
     if (!enabled || !state || !state.title) return;
     var position = state.position;
