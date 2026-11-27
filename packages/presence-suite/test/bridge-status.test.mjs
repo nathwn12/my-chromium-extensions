@@ -6,7 +6,9 @@ import {
   BRIDGE,
   BRIDGE_LABELS,
   CHOSEN_TRANSPORT,
+  CONNECTING_COPY,
   REASON,
+  REASON_COPY,
   STATUS_KEY,
   bridgeStatusOf,
   classifyBridgeFailure,
@@ -44,6 +46,20 @@ test("presentStatus is enabled-aware for a boolean or per-source map", () => {
   assert.equal(off.state, "off");
   assert.equal(off.isError, false);
   assert.equal(presentStatus({ bridgeState: "connected", enabled: false }).label, "Off");
+});
+
+// Mutation: drop the connecting branch in presentStatus() so it falls through to
+// REASON_COPY[REASON.HUNG] ("Waiting for Discord to respond.") -> red.
+test("connecting without a reason gets connecting copy, not the hung copy", () => {
+  const view = presentStatus({ bridgeState: BRIDGE.CONNECTING });
+  assert.equal(view.state, BRIDGE.CONNECTING);
+  assert.equal(view.label, BRIDGE_LABELS[BRIDGE.CONNECTING]);
+  assert.equal(view.reason, CONNECTING_COPY);
+  assert.notEqual(view.reason, REASON_COPY[REASON.HUNG]);
+  assert.ok(Object.isFrozen(REASON_COPY));
+  // An explicit reason still wins, as for every other waiting state.
+  assert.equal(presentStatus({ bridgeState: BRIDGE.CONNECTING, reason: "Handshake in flight" }).reason, "Handshake in flight");
+  assert.equal(presentStatus({ bridgeState: BRIDGE.WAITING }).reason, REASON_COPY[REASON.HUNG]);
 });
 
 test("classifyBridgeFailure recognises both sources diagnostic vocabularies", () => {

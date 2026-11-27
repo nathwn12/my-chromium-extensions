@@ -60,9 +60,10 @@ export const SOURCE_LIST = SOURCES;
 const SENDABLE = new Set([BRIDGE.CONNECTED, BRIDGE.CONNECTING, BRIDGE.WAITING]);
 
 /**
- * Paced limiter: at most one ordinary send per minGapMs and max per windowMs.
- * Newest wins; a pending payload replaces the previous one. Force bypasses
- * both so a toggle-off clear goes straight down the port.
+ * Paced limiter: at most max sends per windowMs, with a minGapMs floor for
+ * a caller that does not mark a payload urgent. Newest wins; a pending
+ * payload replaces the previous one. urgent skips the gap but never the
+ * window cap; force bypasses both so a toggle-off clear goes out at once.
  */
 export function createCoalescingLimiter({
   send,

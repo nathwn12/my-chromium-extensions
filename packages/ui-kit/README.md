@@ -59,7 +59,7 @@ The default is blue (`#3b82f6`) in both schemes. Any other token can be overridd
   if (!('switch' in HTMLInputElement.prototype)) import('input-switch-polyfill');
   ```
 
-  The polyfill is intentionally **not bundled** here: the dynamic import stays in the shipped file, so the consuming extension must install/serve `input-switch-polyfill` itself. On browsers with native switch support, nothing is fetched.
+  The polyfill is intentionally **not bundled** here: the dynamic import stays in the shipped file, so the consuming extension must install/serve `input-switch-polyfill` itself. On browsers with native switch support, nothing is fetched. When the import cannot resolve, the loader swallows it and the switch stays a plain checkbox.
 
 ## Palette (nathwn12)
 

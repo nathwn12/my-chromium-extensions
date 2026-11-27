@@ -38,7 +38,8 @@ the extension is local-only and never uploads anything.
 
 The popup and options styles are vendored in `ui-kit/` from `packages/ui-kit` at
 copy time; there is no build step for extensions. When the shared kit changes,
-update both copies so they stay in sync.
+update every vendored copy (this package, `packages/ui-kit` and each sibling
+extension) so they stay in sync.
 
 ## Per-site knobs
 

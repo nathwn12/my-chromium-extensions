@@ -16,11 +16,12 @@
   const EXTRACT = globalThis.CrunchyrollExtract;
   if (!EXTRACT || typeof EXTRACT.extract !== "function") return;
 
+  // "seeking" fires many times during one drag; each event would run a full
+  // extract() plus sendMessage. "seeked" reports once when the seek finishes.
   const MEDIA_EVENTS = [
     "loadedmetadata",
     "play",
     "pause",
-    "seeking",
     "seeked",
     "ended",
     "ratechange"
@@ -178,7 +179,16 @@
       clearInterval(pollTimer);
       pollTimer = null;
     }
-    send({ t: "presence-gone", source: "crunchy", scope: "tab" });
+    // The manifest injects into every frame. An iframe unloading (player swap,
+    // ad frame) must not delete the tab entry while another frame still plays.
+    // `window.top === window` touches no cross-origin properties; guard it
+    // anyway so a hostile frame cannot throw out of the unload handler.
+    let isTop = false;
+    try {
+      isTop = window.top === window;
+    } catch {
+    }
+    send({ t: "presence-gone", source: "crunchy", scope: isTop ? "tab" : "frame" });
   });
 
   window.addEventListener("pageshow", () => {
@@ -208,10 +218,10 @@
     if (!enabled) return;
     checkUrl();
     const video = document.querySelector("video");
-    if (!video) {
-      stopPoll();
-      return;
-    }
+    // Do not stop the poll here. During an SPA transition the video can appear
+    // a few hundred ms later; if the observer did not restart the poll the tab
+    // would stay silent forever. Keep the 1 s tick cheap and let the observer
+    // and report paths own starting it. Only pagehide stops it (a real unload).
     if (video && video !== lastVideo) report(false);
     if (video && Date.now() - lastReportAt >= cadenceFor(video)) report(true);
   }
@@ -219,7 +229,12 @@
   try {
     const target =
       document.querySelector("#player-container") || document.documentElement || document;
-    const observer = new MutationObserver(() => {
+    let dirty = false;
+    let scheduled = false;
+    const flush = () => {
+      scheduled = false;
+      if (!dirty) return;
+      dirty = false;
       if (!enabled) return;
       checkUrl();
       const video = document.querySelector("video");
@@ -227,6 +242,21 @@
         startPoll();
         if (video !== lastVideo) report(false);
       }
+    };
+    const schedule = () => {
+      if (scheduled) return;
+      scheduled = true;
+      // The player mutates continuously: checking the URL and DOM on every
+      // mutation is wasteful. Coalesce to one body run per animation frame.
+      if (typeof requestAnimationFrame === "function") {
+        requestAnimationFrame(flush);
+      } else {
+        setTimeout(flush, 0);
+      }
+    };
+    const observer = new MutationObserver(() => {
+      dirty = true;
+      schedule();
     });
     if (target && typeof observer.observe === "function") {
       observer.observe(target, { childList: true, subtree: true });

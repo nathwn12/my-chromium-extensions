@@ -10,7 +10,9 @@ import { fileURLToPath } from 'node:url';
 import { parseDocument } from 'yaml';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const SKIP_DIRS = new Set(['node_modules', '.git']);
+// Agent/session state (.nstack) is scratch, not repository content: a parked
+// session's handoff or ledger must never turn the repository's docs gate red.
+const SKIP_DIRS = new Set(['node_modules', '.git', '.nstack']);
 const SKIP_FILES = new Set(['bun.lock', 'bun.lockb']);
 const EXTENSIONS = new Set(['.json', '.yaml', '.yml']);
 

@@ -27,6 +27,13 @@
         "packages/youtube-music-presence/manifest.json#version",
         "packages/youtube-music-presence/package.json#version"
       ]
+    },
+    {
+      "name": "presence-suite",
+      "sources": [
+        "packages/presence-suite/manifest.json#version",
+        "packages/presence-suite/package.json#version"
+      ]
     }
   ],
   "forbidden": [

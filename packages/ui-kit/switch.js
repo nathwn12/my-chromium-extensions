@@ -1,6 +1,7 @@
-// ui-kit/switch.js — conditional switch-polyfill loader.
+// ui-kit/switch.js - conditional switch-polyfill loader.
 // Load as a module: <script type="module" src="../ui-kit/switch.js"></script>
-// Intentionally NOT bundled: the dynamic import is left in the shipped file so
-// each consuming extension resolves/serves input-switch-polyfill itself.
-// Browsers with native <input type="checkbox" switch> fetch nothing.
-if (!('switch' in HTMLInputElement.prototype)) import('input-switch-polyfill');
+// The polyfill is not bundled: a browser without native <input switch> asks
+// for the package and keeps the plain checkbox when that import fails.
+if (!("switch" in HTMLInputElement.prototype)) {
+  import("input-switch-polyfill").catch(function () {});
+}
