@@ -1,0 +1,27 @@
+{
+  // Corruption-focused Markdown guard, NOT a style gate.
+  // default:false disables every markdownlint rule; only the two below are on.
+  // The default rule set reports 2351 issues on the current tree, so enabling it
+  // would force a mass reformat (= mangling). We only loosen, never tighten,
+  // and never edit existing docs to make this gate green.
+  "config": {
+    "default": false,
+
+    // OFF: existing prose contains a single trailing space (one docs line) and
+    // legitimate 2-space hard breaks elsewhere. MD009 accepts only 0 or br_spaces
+    // (2), never 1, so no setting passes without editing that doc. Loosened off.
+    "MD009": false,
+    // ON for prose, OFF inside fenced code: the only hard tabs on the baseline are
+    // inside a verbatim ```json example. Tabs in normal prose still fail the gate.
+    "MD010": { "code_blocks": false },
+    // ON: more than two consecutive blank lines signal accidental duplication.
+    "MD012": { "maximum": 2 },
+
+    // Explicitly OFF (already off via default:false; listed to document intent):
+    "MD041": false, // first line need not be an H1; docs may start with badges/metadata.
+    "MD013": false, // line length is style; the baseline breaks it hundreds of times.
+    "MD022": false, // headings without surrounding blank lines are style, not corruption.
+    "MD032": false, // lists without surrounding blank lines are style, not corruption.
+    "MD024": false // duplicate headings are legitimate in this docs set.
+  }
+}

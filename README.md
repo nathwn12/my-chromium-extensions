@@ -1,15 +1,15 @@
 <h1 align="center">my-chromium-extensions</h1>
-<p align="center"><strong>Four Chromium extensions for loudness levelling, slowed reverb, and Discord presence in Crunchyroll and YouTube Music.</strong></p>
+<p align="center"><strong>Five Chromium extensions for loudness levelling, slowed reverb, and Discord presence in Crunchyroll and YouTube Music.</strong></p>
 
 <p align="center">
   <img src="https://img.shields.io/badge/platform-chrome%20brave-blue" alt="platform">
-  <img src="https://img.shields.io/badge/extensions-4-brightgreen" alt="4 extensions">
+  <img src="https://img.shields.io/badge/extensions-5-brightgreen" alt="5 extensions">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT">
 </p>
 
 ## Why
 
-Four Chromium extensions, loaded unpacked from the repository for development, or from a release zip. Nothing is published to a store. The two audio extensions work through a local audio graph on the pages you choose. The two presence extensions reach Discord through a local native messaging host, so no browser-to-cloud bridge is involved. There is no build step for the extensions themselves.
+Five Chromium extensions, loaded unpacked from the repository for development, or from a release zip. Nothing is published to a store. The two audio extensions work through a local audio graph on the pages you choose. The two presence extensions reach Discord through a local native messaging host, so no browser-to-cloud bridge is involved. There is no build step for the extensions themselves.
 
 ## Install
 
@@ -35,6 +35,7 @@ The two presence extensions also need a native messaging host, registered once. 
 | [Slowed Reverb](packages/slowed-reverb) | Slows YouTube Music playback and adds plate reverb in a local audio graph. | [manifest](packages/slowed-reverb/manifest.json) |
 | [Crunchy Presence](packages/crunchy-presence) | Reports the Crunchyroll episode you are watching as Discord rich presence. | [manifest](packages/crunchy-presence/manifest.json) |
 | [YouTube Music Presence](packages/youtube-music-presence) | Reports YouTube Music only to Discord desktop rich presence. | [manifest](packages/youtube-music-presence/manifest.json) |
+| [Presence Suite](packages/presence-suite) | Publishes YouTube Music and Crunchyroll as Discord rich presence through one native host and per-site switches. | [manifest](packages/presence-suite/manifest.json) |
 
 Then, per extension:
 

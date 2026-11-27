@@ -14,3 +14,12 @@ jobs:
           node-version-file: .nvmrc
       - name: Strict docs gate
         run: node scripts/docs-check.mjs --strict
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - name: Install dependencies (frozen lockfile)
+        run: bun install --frozen-lockfile
+      - name: Markdown corruption guard
+        run: bun run docs:lint:md
+      - name: YAML/JSON corruption guard
+        run: bun run docs:lint:yaml

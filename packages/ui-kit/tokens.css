@@ -1,0 +1,16 @@
+/* ui-kit/tokens.css — design tokens. Load this first.
+   light-dark() needs the document to declare both schemes; see README.md. */
+
+:root {
+  color-scheme: light dark;
+
+  --bg: light-dark(#ffffff, #0d0f13);
+  --card: light-dark(#f1f5f9, #161a21);
+  --line: light-dark(#e2e8f0, #262c36);
+  --ink: light-dark(#0f172a, #e8ecf2);
+  --muted: light-dark(#64748b, #98a3b3);
+  --accent: light-dark(#3b82f6, #3b82f6);
+  --ok: light-dark(#15803d, #4ade80);
+  --warn: light-dark(#b45309, #fbbf24);
+  --bad: light-dark(#dc2626, #f87171);
+}
