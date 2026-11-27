@@ -57,6 +57,9 @@ jobs:
             youtube-music-presence)
               (cd packages/youtube-music-presence && zip -r ../../dist/youtube-music-presence.zip manifest.json background.js config.js activity.js bridge-status.js content.js extract-youtube.js popup.html popup.css popup.js options.html options.css options.js icons/icon16.png icons/icon24.png icons/icon32.png icons/icon48.png icons/icon128.png native/host.mjs native/arrpc.mjs native/ipc.mjs native/native-framing.mjs scripts/extension-key.mjs scripts/install-host.mjs scripts/uninstall-host.mjs)
               ;;
+            presence-suite)
+              (cd packages/presence-suite && zip -r ../../dist/presence-suite.zip manifest.json background.js config.js activity.js bridge-status.js content.js extract-youtube.js popup.html popup.css popup.js options.html options.css options.js switch.js icons/icon16.png icons/icon24.png icons/icon32.png icons/icon48.png icons/icon128.png sources/crunchy/extract.js sources/crunchy/content.js sources/crunchy/activity.js sources/crunchy/frame-merge.js ui-kit/tokens.css ui-kit/components.css native/host.mjs native/ipc.mjs native/arrpc.mjs native/native-framing.mjs scripts/extension-key.mjs scripts/install-host.mjs scripts/uninstall-host.mjs)
+              ;;
             *) echo "Unsupported product: $PRODUCT" >&2; exit 1 ;;
           esac
           zip -r "dist/$PRODUCT.zip" scripts/install-extension.mjs
@@ -74,7 +77,7 @@ jobs:
         run: |
           set -euo pipefail
           case "$PRODUCT" in
-            audio-normalizer|slowed-reverb|crunchy-presence|youtube-music-presence) ;;
+            audio-normalizer|slowed-reverb|crunchy-presence|youtube-music-presence|presence-suite) ;;
             *) echo "Unsupported product: $PRODUCT" >&2; exit 1 ;;
           esac
 

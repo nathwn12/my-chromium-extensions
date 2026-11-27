@@ -1,0 +1,86 @@
+/* Presence Suite options: suite accent, wider body, per-source form rows. */
+:root {
+  --accent: #7c5cff;
+}
+
+body {
+  width: min(560px, 100%);
+}
+
+.options {
+  padding: 20px;
+}
+
+.sources {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 12px;
+}
+
+.source-name {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.field {
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.field input {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--ink);
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+}
+
+.reason {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.diagnostics {
+  gap: 8px;
+}
+
+.diagnostics h2 {
+  margin: 0;
+  font-size: 13px;
+}
+
+.diagnostics button {
+  justify-self: end;
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--card);
+  color: var(--ink);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+}
+
+.diagnostics button:hover {
+  color: var(--accent);
+}
+
+textarea {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--ink);
+  font: 11px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace;
+  resize: vertical;
+}

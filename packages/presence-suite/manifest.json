@@ -1,0 +1,66 @@
+{
+  "manifest_version": 3,
+  "name": "Presence Suite",
+  "short_name": "Presence Suite",
+  "version": "1.0.0",
+  "description": "Show YouTube Music and Crunchyroll as Discord rich presence through one native host.",
+  "minimum_chrome_version": "120",
+  "permissions": [
+    "nativeMessaging",
+    "storage",
+    "alarms"
+  ],
+  "host_permissions": [
+    "https://*.crunchyroll.com/*",
+    "https://music.youtube.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://music.youtube.com/*"
+      ],
+      "js": [
+        "extract-youtube.js",
+        "content.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": true
+    },
+    {
+      "matches": [
+        "https://*.crunchyroll.com/*"
+      ],
+      "js": [
+        "sources/crunchy/extract.js",
+        "sources/crunchy/content.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": true
+    }
+  ],
+  "action": {
+    "default_title": "Presence Suite",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAx2/oZObOlcgX6UeuQmeWRTvndGKWu/qFQLvmixuiEEz9YWQ/nAz7EuA2/WanQGprzD7EJjwrTIBY7dV7X81/5iO7Sc7a9jsR4Xv5MF7WFAOrygciDmaGaIiSbm9amja7voXfPYpp/ajrj+0JSHAe/+7p5lNA3chkWNK+vHFRmst4uiwVGa988UbjUXqcRO66P/A7HZioRXu0w8DN5hHkNbqeustV3IeGV4nkwJwhFc1+RTYCU4YbyZrhiq10zuoSGhWgW5NtBnor/Lpcf65zvKKj0ISQYa31m0SfvK6Ijor+1uCaR19SQAt3FxN8ktJ65RLU7jSnFtTSxSpsVLbijwIDAQAB"
+}

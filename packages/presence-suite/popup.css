@@ -1,0 +1,25 @@
+/* Presence Suite popup: only the suite accent and source-row layout. */
+:root {
+  --accent: #7c5cff;
+}
+
+.sources {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+}
+
+.source-name {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.reason {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}

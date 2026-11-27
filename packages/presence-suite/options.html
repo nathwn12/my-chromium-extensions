@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>Presence Suite settings</title>
+    <link rel="stylesheet" href="ui-kit/tokens.css" />
+    <link rel="stylesheet" href="ui-kit/components.css" />
+    <link rel="stylesheet" href="options.css" />
+  </head>
+  <body>
+    <main class="popup options">
+      <header>
+        <img src="icons/icon24.png" alt="" width="24" height="24" />
+        <h1>Presence Suite</h1>
+        <span id="bridgeState" class="pill" data-state="unknown" data-tone="waiting" role="status" aria-live="polite">Not connected</span>
+      </header>
+      <p id="reason" class="reason" role="status" aria-live="polite" hidden></p>
+
+      <ul id="sources" class="sources">
+        <li class="source card" data-source="crunchy">
+          <h2 class="source-name">Crunchyroll</h2>
+          <p id="crunchy-activity" class="now">Nothing playing</p>
+          <p id="crunchy-host" class="detail" data-state="unknown">Not connected</p>
+          <label class="toggle" for="enabled-crunchy">
+            <input id="enabled-crunchy" type="checkbox" switch role="switch" data-source="crunchy" checked />
+            <span>Enabled</span>
+          </label>
+          <label class="field" for="clientId-crunchy">
+            <span>Application ID</span>
+            <input id="clientId-crunchy" type="text" inputmode="numeric" spellcheck="false" data-source="crunchy" />
+          </label>
+        </li>
+        <li class="source card" data-source="youtube-music">
+          <h2 class="source-name">YouTube Music</h2>
+          <p id="youtube-music-activity" class="now">Nothing playing</p>
+          <p id="youtube-music-host" class="detail" data-state="unknown">Not connected</p>
+          <label class="toggle" for="enabled-youtube-music">
+            <input id="enabled-youtube-music" type="checkbox" switch role="switch" data-source="youtube-music" checked />
+            <span>Enabled</span>
+          </label>
+          <label class="field" for="clientId-youtube-music">
+            <span>Application ID</span>
+            <input id="clientId-youtube-music" type="text" inputmode="numeric" spellcheck="false" data-source="youtube-music" />
+          </label>
+        </li>
+      </ul>
+
+      <p id="presence-saved" class="reason" role="status" aria-live="polite"></p>
+
+      <section class="card diagnostics">
+        <h2>Diagnostics</h2>
+        <button id="refresh" type="button">Refresh</button>
+        <textarea id="diagnostics" rows="12" readonly spellcheck="false"></textarea>
+      </section>
+    </main>
+    <script type="module" src="switch.js"></script>
+    <script type="module" src="options.js"></script>
+  </body>
+</html>

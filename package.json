@@ -9,10 +9,17 @@
     "node": "26"
   },
   "scripts": {
-    "test": "bun run --filter audio-normalizer --filter crunchy-presence --filter slowed-reverb --filter youtube-music-presence test",
+    "test": "bun run --filter audio-normalizer --filter crunchy-presence --filter presence-suite --filter slowed-reverb --filter youtube-music-presence test",
     "test:installer": "node --test scripts/install-extension.test.mjs",
     "lint": "bun run --filter slowed-reverb lint",
     "typecheck": "bun run --filter audio-normalizer typecheck",
-    "docs:check": "node scripts/docs-check.mjs --strict"
+    "docs:check": "node scripts/docs-check.mjs --strict",
+    "docs:lint:md": "markdownlint-cli2 \"**/*.md\" \"#node_modules\" \"#packages/*/node_modules\"",
+    "docs:lint:yaml": "node scripts/check-yaml-json.mjs",
+    "docs:lint": "bun run docs:check && bun run docs:lint:md && bun run docs:lint:yaml"
+  },
+  "devDependencies": {
+    "markdownlint-cli2": "0.24.2",
+    "yaml": "2.8.3"
   }
 }
