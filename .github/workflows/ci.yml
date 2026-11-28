@@ -1,80 +1,58 @@
-# A docs-only change (*.md, docs/, LICEN[CS]E) keeps the required check green and runs no build.
+# nathwn12 house CI - four extensions plus a shared presence suite
+#
+# Required check on main is the JOB NAME `root-gate` - do not rename it.
+# `root-gate` runs the root `bun run test`, which fans out to all five package
+# test scripts. The duplicated per-package `Tests` steps were removed: the
+# proof kept is root-gate's `bun run test` (same five scripts, one install).
+# Each other job keeps only its unique proof (QA, lint, typecheck, selftest,
+# native IPC e2e). Cheap checks run first in `static`; jobs stay parallel so a
+# slow audio QA does not serialize behind the root suite.
+#
+# release.yml has NO workflow_run dependency on ci job names: it is tag/dispatch
+# driven, so renaming nothing here cannot break a release.
+# A docs-only change keeps the required check green; scope is API-based.
+# No package slicing is added: the per-package jobs already are the slice, and
+# main runs all of them.
 name: ci
 on:
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
 permissions:
   contents: read
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'push' }}
 
-# Bun installs and runs the scripts; Node remains the runtime (engines.node 26 and
-# the tests' node:test semantics). Every install job pins bun 1.4.4 and uses the
-# committed bun.lock with --frozen-lockfile.
 jobs:
-  integration:
+  static:
     runs-on: windows-2025
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
         with:
-          # Full history: the scope step below diffs against the base branch with
-          # `...`, which needs a merge base (and, on a push, the `before` commit).
-          fetch-depth: 0
-      - name: Detect a docs-only change
+          fetch-depth: 1
+      - name: Scope from the GitHub API
         id: scope
         shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          PR: ${{ github.event.pull_request.number }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.event.after }}
         run: |
+          set -euo pipefail
           docs='^(.*\.md|docs/.*|LICEN[CS]E(\.md)?)$'
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            git fetch --no-tags origin "${{ github.base_ref }}"
-            changed=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD")
-          elif [ "${{ github.event_name }}" = "push" ] && [ -n "${{ github.event.before }}" ]; then
-            changed=$(git diff --name-only "${{ github.event.before }}" HEAD || true)
-          else
-            changed=$(git ls-files)
+          files=""
+          if [ "$EVENT" = "pull_request" ] && [ -n "$PR" ]; then
+            files=$(gh api "repos/$REPO/pulls/$PR/files" --paginate --jq '.[].filename' || true)
+          elif [ "$EVENT" = "push" ] && [ -n "$BEFORE" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ]; then
+            files=$(gh api "repos/$REPO/compare/$BEFORE...$AFTER" --paginate --jq '.files[].filename' || true)
           fi
-          if [ -n "$changed" ] && ! printf '%s\n' "$changed" | grep -qvE "$docs"; then
-            echo "code=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "code=true" >> "$GITHUB_OUTPUT"
-          fi
-      - uses: actions/setup-node@v7
-        if: steps.scope.outputs.code == 'true'
-        with:
-          node-version-file: .nvmrc
-      - name: Verify integration (reads the tree, installs nothing)
-        if: steps.scope.outputs.code == 'true'
-        run: node scripts/verify-integration.mjs
-
-      - name: Scope
-        if: always()
-        run: |
-          echo "scope: ${{ steps.scope.outputs.code == 'true' && 'code changed - the full gate ran' || 'docs-only - build skipped, the check stays green' }}"
-
-  audio-normalizer:
-    runs-on: windows-2025
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          # Full history: the scope step below diffs against the base branch with
-          # `...`, which needs a merge base (and, on a push, the `before` commit).
-          fetch-depth: 0
-      - name: Detect a docs-only change
-        id: scope
-        shell: bash
-        run: |
-          docs='^(.*\.md|docs/.*|LICEN[CS]E(\.md)?)$'
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            git fetch --no-tags origin "${{ github.base_ref }}"
-            changed=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD")
-          elif [ "${{ github.event_name }}" = "push" ] && [ -n "${{ github.event.before }}" ]; then
-            changed=$(git diff --name-only "${{ github.event.before }}" HEAD || true)
-          else
-            changed=$(git ls-files)
-          fi
-          if [ -n "$changed" ] && ! printf '%s\n' "$changed" | grep -qvE "$docs"; then
+          if [ -n "$files" ] && ! printf '%s\n' "$files" | grep -qvE "$docs"; then
             echo "code=false" >> "$GITHUB_OUTPUT"
           else
             echo "code=true" >> "$GITHUB_OUTPUT"
@@ -87,13 +65,84 @@ jobs:
         if: steps.scope.outputs.code == 'true'
         with:
           node-version-file: .nvmrc
+      - name: Cache bun install
+        if: steps.scope.outputs.code == 'true'
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          restore-keys: ${{ runner.os }}-bun-
       - name: Install (root lockfile)
         if: steps.scope.outputs.code == 'true'
         run: bun install --frozen-lockfile
-      - name: Tests
+      - name: Verify integration (reads the tree, installs nothing)
+        if: steps.scope.outputs.code == 'true'
+        run: node scripts/verify-integration.mjs
+      - name: Version coherence
+        if: steps.scope.outputs.code == 'true'
+        run: node scripts/check-versions.mjs
+      - name: Lint (slowed-reverb)
+        if: steps.scope.outputs.code == 'true'
+        working-directory: packages/slowed-reverb
+        run: bun run lint
+      - name: Typecheck (audio-normalizer)
         if: steps.scope.outputs.code == 'true'
         working-directory: packages/audio-normalizer
-        run: bun run test
+        run: bun run typecheck
+      - name: Scope
+        if: always()
+        run: |
+          echo "scope: ${{ steps.scope.outputs.code == 'true' && 'code changed - the full gate ran' || 'docs-only - the required check stays green' }}"
+
+  audio-normalizer:
+    runs-on: windows-2025
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+      - name: Scope from the GitHub API
+        id: scope
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          PR: ${{ github.event.pull_request.number }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.event.after }}
+        run: |
+          set -euo pipefail
+          docs='^(.*\.md|docs/.*|LICEN[CS]E(\.md)?)$'
+          files=""
+          if [ "$EVENT" = "pull_request" ] && [ -n "$PR" ]; then
+            files=$(gh api "repos/$REPO/pulls/$PR/files" --paginate --jq '.[].filename' || true)
+          elif [ "$EVENT" = "push" ] && [ -n "$BEFORE" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ]; then
+            files=$(gh api "repos/$REPO/compare/$BEFORE...$AFTER" --paginate --jq '.files[].filename' || true)
+          fi
+          if [ -n "$files" ] && ! printf '%s\n' "$files" | grep -qvE "$docs"; then
+            echo "code=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: oven-sh/setup-bun@v2
+        if: steps.scope.outputs.code == 'true'
+        with:
+          bun-version: 1.4.4
+      - uses: actions/setup-node@v7
+        if: steps.scope.outputs.code == 'true'
+        with:
+          node-version-file: .nvmrc
+      - name: Cache bun install
+        if: steps.scope.outputs.code == 'true'
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          restore-keys: ${{ runner.os }}-bun-
+      - name: Install (root lockfile)
+        if: steps.scope.outputs.code == 'true'
+        run: bun install --frozen-lockfile
       - name: Feed transition QA
         if: steps.scope.outputs.code == 'true'
         working-directory: packages/audio-normalizer
@@ -102,89 +151,38 @@ jobs:
         if: steps.scope.outputs.code == 'true'
         working-directory: packages/audio-normalizer
         run: node qa/program-boundary-qa.cjs
-      - name: Typecheck
-        if: steps.scope.outputs.code == 'true'
-        working-directory: packages/audio-normalizer
-        run: bun run typecheck
-
       - name: Scope
         if: always()
         run: |
-          echo "scope: ${{ steps.scope.outputs.code == 'true' && 'code changed - the full gate ran' || 'docs-only - build skipped, the check stays green' }}"
-
-  slowed-reverb:
-    runs-on: windows-2025
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          # Full history: the scope step below diffs against the base branch with
-          # `...`, which needs a merge base (and, on a push, the `before` commit).
-          fetch-depth: 0
-      - name: Detect a docs-only change
-        id: scope
-        shell: bash
-        run: |
-          docs='^(.*\.md|docs/.*|LICEN[CS]E(\.md)?)$'
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            git fetch --no-tags origin "${{ github.base_ref }}"
-            changed=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD")
-          elif [ "${{ github.event_name }}" = "push" ] && [ -n "${{ github.event.before }}" ]; then
-            changed=$(git diff --name-only "${{ github.event.before }}" HEAD || true)
-          else
-            changed=$(git ls-files)
-          fi
-          if [ -n "$changed" ] && ! printf '%s\n' "$changed" | grep -qvE "$docs"; then
-            echo "code=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "code=true" >> "$GITHUB_OUTPUT"
-          fi
-      - uses: oven-sh/setup-bun@v2
-        if: steps.scope.outputs.code == 'true'
-        with:
-          bun-version: 1.4.4
-      - uses: actions/setup-node@v7
-        if: steps.scope.outputs.code == 'true'
-        with:
-          node-version-file: .nvmrc
-      - name: Install (root lockfile)
-        if: steps.scope.outputs.code == 'true'
-        run: bun install --frozen-lockfile
-      - name: Lint
-        if: steps.scope.outputs.code == 'true'
-        working-directory: packages/slowed-reverb
-        run: bun run lint
-      - name: Tests
-        if: steps.scope.outputs.code == 'true'
-        working-directory: packages/slowed-reverb
-        run: bun run test
-
-      - name: Scope
-        if: always()
-        run: |
-          echo "scope: ${{ steps.scope.outputs.code == 'true' && 'code changed - the full gate ran' || 'docs-only - build skipped, the check stays green' }}"
+          echo "scope: ${{ steps.scope.outputs.code == 'true' && 'code changed - the full gate ran' || 'docs-only - the required check stays green' }}"
 
   crunchy-presence:
     runs-on: windows-2025
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
         with:
-          # Full history: the scope step below diffs against the base branch with
-          # `...`, which needs a merge base (and, on a push, the `before` commit).
-          fetch-depth: 0
-      - name: Detect a docs-only change
+          fetch-depth: 1
+      - name: Scope from the GitHub API
         id: scope
         shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          PR: ${{ github.event.pull_request.number }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.event.after }}
         run: |
+          set -euo pipefail
           docs='^(.*\.md|docs/.*|LICEN[CS]E(\.md)?)$'
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            git fetch --no-tags origin "${{ github.base_ref }}"
-            changed=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD")
-          elif [ "${{ github.event_name }}" = "push" ] && [ -n "${{ github.event.before }}" ]; then
-            changed=$(git diff --name-only "${{ github.event.before }}" HEAD || true)
-          else
-            changed=$(git ls-files)
+          files=""
+          if [ "$EVENT" = "pull_request" ] && [ -n "$PR" ]; then
+            files=$(gh api "repos/$REPO/pulls/$PR/files" --paginate --jq '.[].filename' || true)
+          elif [ "$EVENT" = "push" ] && [ -n "$BEFORE" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ]; then
+            files=$(gh api "repos/$REPO/compare/$BEFORE...$AFTER" --paginate --jq '.files[].filename' || true)
           fi
-          if [ -n "$changed" ] && ! printf '%s\n' "$changed" | grep -qvE "$docs"; then
+          if [ -n "$files" ] && ! printf '%s\n' "$files" | grep -qvE "$docs"; then
             echo "code=false" >> "$GITHUB_OUTPUT"
           else
             echo "code=true" >> "$GITHUB_OUTPUT"
@@ -197,45 +195,52 @@ jobs:
         if: steps.scope.outputs.code == 'true'
         with:
           node-version-file: .nvmrc
+      - name: Cache bun install
+        if: steps.scope.outputs.code == 'true'
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          restore-keys: ${{ runner.os }}-bun-
       - name: Install (root lockfile)
         if: steps.scope.outputs.code == 'true'
         run: bun install --frozen-lockfile
-      - name: Tests
-        if: steps.scope.outputs.code == 'true'
-        working-directory: packages/crunchy-presence
-        run: bun run test
       - name: Native host selftest
         if: steps.scope.outputs.code == 'true'
         working-directory: packages/crunchy-presence
         run: bun run selftest
-
       - name: Scope
         if: always()
         run: |
-          echo "scope: ${{ steps.scope.outputs.code == 'true' && 'code changed - the full gate ran' || 'docs-only - build skipped, the check stays green' }}"
+          echo "scope: ${{ steps.scope.outputs.code == 'true' && 'code changed - the full gate ran' || 'docs-only - the required check stays green' }}"
 
   youtube-music-presence:
     runs-on: windows-2025
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
         with:
-          # Full history: the scope step below diffs against the base branch with
-          # `...`, which needs a merge base (and, on a push, the `before` commit).
-          fetch-depth: 0
-      - name: Detect a docs-only change
+          fetch-depth: 1
+      - name: Scope from the GitHub API
         id: scope
         shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          PR: ${{ github.event.pull_request.number }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.event.after }}
         run: |
+          set -euo pipefail
           docs='^(.*\.md|docs/.*|LICEN[CS]E(\.md)?)$'
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            git fetch --no-tags origin "${{ github.base_ref }}"
-            changed=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD")
-          elif [ "${{ github.event_name }}" = "push" ] && [ -n "${{ github.event.before }}" ]; then
-            changed=$(git diff --name-only "${{ github.event.before }}" HEAD || true)
-          else
-            changed=$(git ls-files)
+          files=""
+          if [ "$EVENT" = "pull_request" ] && [ -n "$PR" ]; then
+            files=$(gh api "repos/$REPO/pulls/$PR/files" --paginate --jq '.[].filename' || true)
+          elif [ "$EVENT" = "push" ] && [ -n "$BEFORE" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ]; then
+            files=$(gh api "repos/$REPO/compare/$BEFORE...$AFTER" --paginate --jq '.files[].filename' || true)
           fi
-          if [ -n "$changed" ] && ! printf '%s\n' "$changed" | grep -qvE "$docs"; then
+          if [ -n "$files" ] && ! printf '%s\n' "$files" | grep -qvE "$docs"; then
             echo "code=false" >> "$GITHUB_OUTPUT"
           else
             echo "code=true" >> "$GITHUB_OUTPUT"
@@ -248,13 +253,16 @@ jobs:
         if: steps.scope.outputs.code == 'true'
         with:
           node-version-file: .nvmrc
+      - name: Cache bun install
+        if: steps.scope.outputs.code == 'true'
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          restore-keys: ${{ runner.os }}-bun-
       - name: Install (root lockfile)
         if: steps.scope.outputs.code == 'true'
         run: bun install --frozen-lockfile
-      - name: Tests
-        if: steps.scope.outputs.code == 'true'
-        working-directory: packages/youtube-music-presence
-        run: bun run test
       - name: Native host selftest
         if: steps.scope.outputs.code == 'true'
         working-directory: packages/youtube-music-presence
@@ -267,34 +275,38 @@ jobs:
         if: steps.scope.outputs.code == 'true'
         working-directory: packages/youtube-music-presence
         run: node scripts/e2e-ipc.mjs
-
       - name: Scope
         if: always()
         run: |
-          echo "scope: ${{ steps.scope.outputs.code == 'true' && 'code changed - the full gate ran' || 'docs-only - build skipped, the check stays green' }}"
+          echo "scope: ${{ steps.scope.outputs.code == 'true' && 'code changed - the full gate ran' || 'docs-only - the required check stays green' }}"
 
   presence-suite:
     runs-on: windows-2025
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
         with:
-          # Full history: the scope step below diffs against the base branch with
-          # `...`, which needs a merge base (and, on a push, the `before` commit).
-          fetch-depth: 0
-      - name: Detect a docs-only change
+          fetch-depth: 1
+      - name: Scope from the GitHub API
         id: scope
         shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          PR: ${{ github.event.pull_request.number }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.event.after }}
         run: |
+          set -euo pipefail
           docs='^(.*\.md|docs/.*|LICEN[CS]E(\.md)?)$'
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            git fetch --no-tags origin "${{ github.base_ref }}"
-            changed=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD")
-          elif [ "${{ github.event_name }}" = "push" ] && [ -n "${{ github.event.before }}" ]; then
-            changed=$(git diff --name-only "${{ github.event.before }}" HEAD || true)
-          else
-            changed=$(git ls-files)
+          files=""
+          if [ "$EVENT" = "pull_request" ] && [ -n "$PR" ]; then
+            files=$(gh api "repos/$REPO/pulls/$PR/files" --paginate --jq '.[].filename' || true)
+          elif [ "$EVENT" = "push" ] && [ -n "$BEFORE" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ]; then
+            files=$(gh api "repos/$REPO/compare/$BEFORE...$AFTER" --paginate --jq '.files[].filename' || true)
           fi
-          if [ -n "$changed" ] && ! printf '%s\n' "$changed" | grep -qvE "$docs"; then
+          if [ -n "$files" ] && ! printf '%s\n' "$files" | grep -qvE "$docs"; then
             echo "code=false" >> "$GITHUB_OUTPUT"
           else
             echo "code=true" >> "$GITHUB_OUTPUT"
@@ -307,49 +319,52 @@ jobs:
         if: steps.scope.outputs.code == 'true'
         with:
           node-version-file: .nvmrc
+      - name: Cache bun install
+        if: steps.scope.outputs.code == 'true'
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          restore-keys: ${{ runner.os }}-bun-
       - name: Install (root lockfile)
         if: steps.scope.outputs.code == 'true'
         run: bun install --frozen-lockfile
-      - name: Tests
-        if: steps.scope.outputs.code == 'true'
-        working-directory: packages/presence-suite
-        run: bun run test
       - name: Native host selftest
         if: steps.scope.outputs.code == 'true'
         working-directory: packages/presence-suite
         run: bun run selftest
-
       - name: Scope
         if: always()
         run: |
-          echo "scope: ${{ steps.scope.outputs.code == 'true' && 'code changed - the full gate ran' || 'docs-only - build skipped, the check stays green' }}"
+          echo "scope: ${{ steps.scope.outputs.code == 'true' && 'code changed - the full gate ran' || 'docs-only - the required check stays green' }}"
 
-  # The root gate. Each job above runs one package's own script, so none of them
-  # executes the root `test` script - a broken root gate once passed CI unnoticed.
-  # This job runs exactly what a developer runs, and adds no wall time: it starts
-  # alongside the other six and finishes inside audio-normalizer's longer path.
   root-gate:
     runs-on: windows-2025
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
         with:
-          # Full history: the scope step below diffs against the base branch with
-          # `...`, which needs a merge base (and, on a push, the `before` commit).
-          fetch-depth: 0
-      - name: Detect a docs-only change
+          fetch-depth: 1
+      - name: Scope from the GitHub API
         id: scope
         shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          PR: ${{ github.event.pull_request.number }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.event.after }}
         run: |
+          set -euo pipefail
           docs='^(.*\.md|docs/.*|LICEN[CS]E(\.md)?)$'
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            git fetch --no-tags origin "${{ github.base_ref }}"
-            changed=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD")
-          elif [ "${{ github.event_name }}" = "push" ] && [ -n "${{ github.event.before }}" ]; then
-            changed=$(git diff --name-only "${{ github.event.before }}" HEAD || true)
-          else
-            changed=$(git ls-files)
+          files=""
+          if [ "$EVENT" = "pull_request" ] && [ -n "$PR" ]; then
+            files=$(gh api "repos/$REPO/pulls/$PR/files" --paginate --jq '.[].filename' || true)
+          elif [ "$EVENT" = "push" ] && [ -n "$BEFORE" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ]; then
+            files=$(gh api "repos/$REPO/compare/$BEFORE...$AFTER" --paginate --jq '.files[].filename' || true)
           fi
-          if [ -n "$changed" ] && ! printf '%s\n' "$changed" | grep -qvE "$docs"; then
+          if [ -n "$files" ] && ! printf '%s\n' "$files" | grep -qvE "$docs"; then
             echo "code=false" >> "$GITHUB_OUTPUT"
           else
             echo "code=true" >> "$GITHUB_OUTPUT"
@@ -362,14 +377,20 @@ jobs:
         if: steps.scope.outputs.code == 'true'
         with:
           node-version-file: .nvmrc
+      - name: Cache bun install
+        if: steps.scope.outputs.code == 'true'
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          restore-keys: ${{ runner.os }}-bun-
       - name: Install (root lockfile)
         if: steps.scope.outputs.code == 'true'
         run: bun install --frozen-lockfile
-      - name: Root test gate
+      - name: Root test gate (all five packages)
         if: steps.scope.outputs.code == 'true'
         run: bun run test
-
       - name: Scope
         if: always()
         run: |
-          echo "scope: ${{ steps.scope.outputs.code == 'true' && 'code changed - the full gate ran' || 'docs-only - build skipped, the check stays green' }}"
+          echo "scope: ${{ steps.scope.outputs.code == 'true' && 'code changed - the full gate ran' || 'docs-only - the required check stays green' }}"

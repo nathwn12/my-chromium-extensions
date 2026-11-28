@@ -40,6 +40,9 @@ jobs:
         with:
           node-version-file: .nvmrc
 
+      - name: Version coherence
+        run: node scripts/check-versions.mjs
+
       - name: Zip selected extension
         env:
           PRODUCT: ${{ github.event_name == 'workflow_dispatch' && inputs.product || github.ref_name }}
