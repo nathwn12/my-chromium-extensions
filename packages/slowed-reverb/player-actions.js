@@ -11,7 +11,7 @@
   const VOLUME_RESTORE_ATTEMPTS = 2;
   const VOLUME_RESTORE_RETRY_MS = 600;
   const VOLUME_RESTORE_TOLERANCE = 0.02;
-  const SAVED_LIMIT = 100;
+  const SAVED_LIMIT = 1000;
   const RESTORE_DEADLINE_MS = 3000;
   const PLAYER_BAR_TAG = 'YTMUSIC-PLAYER-BAR';
   const MAIN_PANEL_ID = 'main-panel';
@@ -1114,9 +1114,11 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
 
     /**
      * The armed section is the latch. One transient `wanted` false (a song id
-     * that blips mid-transition, a hidden tab) must never tear the backstop
-     * down for the rest of the song, so the interval follows the section and
-     * the handlers refuse to seek without an identity or in a hidden tab.
+     * that blips mid-transition) must never tear the backstop down for the rest
+     * of the song, so the interval follows the section and the handlers refuse
+     * to seek without an identity. Visibility is not a gate: a hidden tab may
+     * have only late element events and a throttled interval, and crossing B
+     * there still has to seek back to A.
      */
     function syncTick() {
       if (started && (isLoopEngaged(currentState()) || (session.pendingRestore && session.restoreDeadlineAt > 0))) {
@@ -1135,7 +1137,6 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
         syncPanel();
         return;
       }
-      if (!isVisible()) return;
       bindMedia();
       if (!media) return;
 
@@ -1192,11 +1193,12 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
      * is what makes the loop a latch: `timeupdate` keeps firing every ~250 ms
      * and `seeked` reports a landed seek, so a transient loss of identity or a
      * throttled interval cannot leave an armed section silent for the rest of
-     * the song. Guards match the tick: no identity and no visible tab means no
-     * seek, and `resolveSeekTarget` itself refuses a paused or seeking player.
+     * the song — including while the tab is hidden. Guards match the tick: no
+     * identity means no seek, and `resolveSeekTarget` itself refuses a paused
+     * or seeking player.
      */
     function handleProgress() {
-      if (!started || !media || !isVisible()) return;
+      if (!started || !media) return;
       const key = currentSongKey();
       if (key !== null && key !== session.songKey) {
         syncSong();

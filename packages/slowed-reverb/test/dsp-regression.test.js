@@ -128,6 +128,8 @@ function pumpBlocks(p, sr, seconds, input, holder) {
   return out;
 }
 
+// Baseline control: the pre-cap mapping (fully wet at max), kept here only so
+// the worklet-stability probes exercise an upper-bound wet send.
 function paramsFor(intensity) {
   const i = Math.max(0, Math.min(1, intensity));
   if (i <= 0) return { wetGain: 0, decay: 0, damping: 1, preDelay: 0 };
@@ -223,8 +225,11 @@ function main() {
   );
 
   check('2. capped *0.42 wet mapping is gone', csrc.indexOf('* 0.42') === -1);
-  const wetSrc = (csrc.match(/wetGain:\s*(Math\.pow\(i, 0\.75\)[^,\n]*),/) || [])[1] || '';
-  const wetFn = new Function('I', 'return (' + wetSrc.replace(/\bi\b/g, 'I') + ');');
+  const mapSrc = (csrc.match(/function computeDattorroParams\(intensity\) \{[\s\S]*?\n  \}/) || [])[0] || '';
+  const mapFn = new Function(mapSrc + '\nreturn computeDattorroParams;')();
+  const wetFn = (i) => mapFn(i).wetGain;
+  const wetCapSrc = (mapSrc.match(/const wetCap = ([0-9.]+);/) || [])[1] || '';
+  const wetCap = wetCapSrc === '' ? NaN : Number(wetCapSrc);
   const dryExpr = ((csrc.match(/dry:\s*([^\n]+)/) || [])[1] || '').replace(/,\s*$/, '').trim();
   const dryOwners = csrc.match(/Math\.sqrt\(Math\.max\(0, 1 - [^)]*\)\)/g) || [];
   const headroomSrc = (csrc.match(/const MIX_HEADROOM = ([0-9.]+);/) || [])[1] || '';
@@ -265,7 +270,12 @@ function main() {
     ' headroom=' + headroom + ' worst dip=' + worstDip.toFixed(3) + ' dB'
   );
   check('2. i=0 fully dry (wet 0, dry 1)', wetFn(0) === 0 && dry(0) === 1);
-  check('2. i=1 fully wet (wet 1, dry 0)', wetFn(1) === 1 && Math.abs(dry(1)) < 1e-12);
+  check(
+    '2. i=1 caps the wet send and keeps a strong direct signal',
+    Number.isFinite(wetCap) && wetCap > 0 && wetCap < 1 &&
+      wetFn(1) <= wetCap + 1e-12 && dry(wetFn(1)) >= 0.65,
+    'cap=' + wetCap + ' wet=' + wetFn(1).toFixed(3) + ' dry=' + dry(wetFn(1)).toFixed(3)
+  );
   check('2. level dip < 1 dB across 0..1', worstDip > -1, 'worst dip ' + worstDip.toFixed(2) + ' dB');
 
   check('3. sub-1e-20 flush present', wsrc.indexOf('1e-20') !== -1);
@@ -517,9 +527,7 @@ function main() {
     flushes12 + ' flushes in ' + blocks12 + ' blocks'
   );
 
-  const mapSrc = (csrc.match(/function computeDattorroParams\(intensity\) \{[\s\S]*?\n  \}/) || [])[0] || '';
-  const mapFn = new Function(mapSrc + '\nreturn computeDattorroParams;');
-  const map = mapFn();
+  const map = mapFn;
   const finiteMap = [0, 0.25, 0.5, 1, NaN, Infinity, -1, 4].every((i) => {
     const params = map(i);
     return Object.keys(params).every((k) => Number.isFinite(params[k]));

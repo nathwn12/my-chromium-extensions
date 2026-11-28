@@ -1517,6 +1517,11 @@
     if (i <= 0) {
       return { wetGain: 0, decay: 0, damping: 1, preDelay: 0 };
     }
+    // Scale the wet send instead of clipping it: a clipped curve went flat
+    // above ~50% and left half the slider dead. Scaling reaches the same
+    // bounded 0.6 maximum with a distinct value at every step, and the
+    // equal-power dry complement stays strong.
+    const wetCap = 0.6;
     return {
       preDelay: 0.44 + i * 0.1,
       preFilter: 0.7 + i * 0.1,
@@ -1525,7 +1530,7 @@
       decayDiff1: 0.65 + i * 0.05,
       decay: Math.pow(i, 0.75) * 0.58,
       damping: Math.min(0.5 + Math.pow(i, 0.6) * 0.4, 0.78),
-      wetGain: Math.pow(i, 0.75),
+      wetGain: wetCap * Math.pow(i, 0.75),
     };
   }
 

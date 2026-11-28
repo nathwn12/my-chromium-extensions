@@ -13,7 +13,7 @@
   function clampSlow(value) {
     const numeric = Number(value);
     if (!Number.isFinite(numeric)) return DEFAULT_SETTINGS.slow;
-    if (numeric < 0.7 || numeric > 1.3) return DEFAULT_SETTINGS.slow;
+    if (numeric < 0.6 || numeric > 1.3) return DEFAULT_SETTINGS.slow;
     return Math.round(numeric * 100) / 100;
   }
 

@@ -7,6 +7,7 @@ const {
 } = self.SlowedReverbShared;
 
 const {
+  SAVED_LIMIT,
   capSaved,
   mergeSavedLists,
   sanitizeSaved,
@@ -18,7 +19,6 @@ const SITE_SETTINGS_KEY = 'siteSettings';
 const SITE_TOGGLES_KEY = 'siteToggles';
 const TAB_SESSION_KEY = 'tabSessionById';
 const PLAYER_ACTIONS_KEY = 'playerActions';
-const PLAYER_SECTIONS_LIMIT = 100;
 const DEV_IMPORT_PATH = '.dev/section-import.json';
 const DEV_IMPORT_KEY = 'devSectionImport';
 const DEV_IMPORT_SUMMARY_KEY = 'devSectionImportSummary';
@@ -54,7 +54,7 @@ function queuePlayerSectionSave(entry) {
       const stored = await chrome.storage.local.get(PLAYER_ACTIONS_KEY);
       const raw = stored ? stored[PLAYER_ACTIONS_KEY] : null;
       const current = sanitizeSaved(raw ? raw.sections : undefined);
-      const next = capSaved(upsertSaved(current, normalized), PLAYER_SECTIONS_LIMIT);
+      const next = capSaved(upsertSaved(current, normalized), SAVED_LIMIT);
       const write = {};
       write[PLAYER_ACTIONS_KEY] = { sections: next };
       await chrome.storage.local.set(write);
@@ -116,8 +116,8 @@ function readStoredSections(raw) {
 
 /**
  * Merges saved sections from one local array. All-or-nothing: a single invalid
- * entry, a duplicate id, a malformed saved list, or a merge past
- * PLAYER_SECTIONS_LIMIT returns an error and leaves storage untouched. A
+ * entry, a duplicate id, a malformed saved list, or a merge past the shared
+ * SAVED_LIMIT returns an error and leaves storage untouched. A
  * videoId already saved keeps its destination entry and counts as skipped, new
  * ids append in source order, and the write carries every other playerActions
  * field through unchanged.
@@ -145,7 +145,7 @@ async function importPlayerSections(entries) {
           if (existing.index !== undefined) refused.index = existing.index;
           return refused;
         }
-        const merged = mergeSavedLists(existing.list, validated.batch, PLAYER_SECTIONS_LIMIT);
+        const merged = mergeSavedLists(existing.list, validated.batch, SAVED_LIMIT);
         if (merged.ok !== true) return merged;
         if (merged.imported > 0) {
           const next = isPlainObject(raw) ? { ...raw, sections: merged.sections } : { sections: merged.sections };

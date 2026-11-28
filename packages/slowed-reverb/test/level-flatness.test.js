@@ -12,7 +12,7 @@ const WIN_FROM = 1.5;
 const WIN_TO = 4.5;
 const TOLERANCE_DB = 0.5;
 const INTENSITIES = [0, 0.25, 0.5, 0.75, 1];
-const SPEEDS = [0.7, 0.85, 1, 1.15, 1.3];
+const SPEEDS = [0.6, 0.7, 0.85, 1, 1.15, 1.3];
 const OFF_GRID = [0.1, 0.35, 0.6, 0.85, 0.95];
 
 const failures = [];
@@ -437,6 +437,12 @@ function main() {
     '10. dark material is level-neutral across intensity at the reference speed',
     darkSpread <= 2.5,
     'spread ' + darkSpread.toFixed(2) + ' dB'
+  );
+
+  check(
+    '11. maximum intensity keeps a strong direct signal and a capped wet send',
+    triple(1).dry >= 0.65 && triple(1).params.wetGain <= 0.6 + 1e-12,
+    'dry=' + triple(1).dry.toFixed(3) + ' wet=' + triple(1).params.wetGain.toFixed(3)
   );
 
   if (failures.length > 0) {
