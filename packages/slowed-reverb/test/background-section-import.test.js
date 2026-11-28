@@ -14,7 +14,8 @@ const ROOT = path.join(__dirname, '..');
 const PLAYER_ACTIONS_KEY = 'playerActions';
 const MARKER_KEY = 'devSectionImport';
 const SUMMARY_KEY = 'devSectionImportSummary';
-const LIMIT = 100;
+const actions = require(path.join(__dirname, '..', 'player-actions.js'));
+const LIMIT = actions.SAVED_LIMIT;
 
 function readSource(name) {
   return fs.readFileSync(path.join(ROOT, name), 'utf8');
@@ -341,7 +342,7 @@ test('background: existing destination entries are written back verbatim', async
   assert.deepEqual(storage.sections(), [destination, incoming]);
 });
 
-test('background: an import that would pass 100 entries is rejected, not capped', async () => {
+test('background: an import that would pass the shared cap is rejected, not capped', async () => {
   const storage = createStorage({ playerActions: { sections: olderSections(LIMIT) } });
   const worker = loadBackground(storage);
   const before = storage.raw();
@@ -356,8 +357,66 @@ test('background: an import that would pass 100 entries is rejected, not capped'
   assert.equal(storage.setCalls.length, 0);
 });
 
-test('background: an import that lands exactly on 100 entries is accepted', async () => {
-  const storage = createStorage({ playerActions: { sections: olderSections(64) } });
+
+test('background: the worker cap is the shared export (1000), no new schema', async () => {
+  const worker = loadBackground(createStorage());
+  assert.equal(worker.sandbox.SlowedReverbPlayerActions.SAVED_LIMIT, 1000);
+  assert.equal(LIMIT, 1000);
+  assert.equal(worker.sandbox.PLAYER_SECTIONS_LIMIT, undefined,
+    'the worker has no second local cap constant');
+});
+
+test('background: an import that would pass 1000 entries is refused atomically', async () => {
+  const storage = createStorage({ playerActions: { sections: olderSections(1000) } });
+  const worker = loadBackground(storage);
+  const before = storage.raw();
+
+  const result = plain(await worker.importSections([{ videoId: 'vid-001', startSeconds: 1, endSeconds: 2 }]));
+
+  assert.equal(result.ok, false);
+  assert.equal(result.error, 'capacity_exceeded');
+  assert.equal(result.count, 1001);
+  assert.equal(result.limit, 1000);
+  assert.deepEqual(storage.raw(), before, 'nothing is written on an atomic refusal');
+  assert.equal(storage.setCalls.length, 0);
+});
+
+test('background: an import that lands exactly on 1000 entries is accepted', async () => {
+  const storage = createStorage({ playerActions: { sections: olderSections(964) } });
+  const worker = loadBackground(storage);
+
+  const result = plain(await worker.importSections(syntheticSections(36)));
+
+  assert.equal(result.ok, true);
+  assert.equal(result.imported, 36);
+  const sections = storage.sections();
+  assert.equal(sections.length, 1000);
+  assert.equal(sections[0].videoId, 'old-001');
+  assert.equal(sections[999].videoId, 'vid-036');
+});
+
+test('background: a legacy 100-entry list with extra fields migrates past the old cap', async () => {
+  const legacy = [];
+  for (let index = 0; index < 100; index += 1) {
+    legacy.push({ videoId: 'legacy-' + String(index + 1).padStart(3, '0'), startSeconds: index, endSeconds: null, note: 'kept-' + index });
+  }
+  const storage = createStorage({ playerActions: { sections: legacy } });
+  const worker = loadBackground(storage);
+
+  const result = plain(await worker.importSections(syntheticSections(36)));
+
+  assert.equal(result.ok, true, 'the old 100 ceiling must not block a new import');
+  assert.equal(result.imported, 36);
+  const sections = storage.sections();
+  assert.equal(sections.length, 136);
+  assert.deepEqual(sections[0], legacy[0], 'unseen fields survive the round trip verbatim');
+  assert.deepEqual(sections[99], legacy[99]);
+  assert.equal(sections.some((item) => 'savedAt' in item || 'expiresAt' in item || 'ttl' in item), false,
+    'migration adds no expiry field');
+});
+
+test('background: an import that lands exactly on the shared cap is accepted', async () => {
+  const storage = createStorage({ playerActions: { sections: olderSections(LIMIT - 36) } });
   const worker = loadBackground(storage);
 
   const result = plain(await worker.importSections(syntheticSections(36)));

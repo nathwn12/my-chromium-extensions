@@ -757,6 +757,25 @@
     }
   }
 
+  /**
+   * Persists the lock-pitch flag on the same SET_SITE_SETTINGS patch path as
+   * the wheel volume, and re-applies rate and pitch before the worker replies.
+   */
+  function saveLockPitch(enabled) {
+    const value = Boolean(enabled);
+    state.settings = normalizeSettings({ ...state.settings, lockPitch: value });
+    syncAllMedia();
+    try {
+      return chrome.runtime.sendMessage({
+        type: 'SET_SITE_SETTINGS',
+        siteKey: extractHostname(location.href),
+        settings: { lockPitch: value },
+      });
+    } catch {
+      return Promise.resolve({ ok: false, error: 'runtime_unavailable' });
+    }
+  }
+
   function currentMediaForPlayerActions() {
     for (const controller of state.media.values()) {
       if (controller.attached && controller.media && controller.media.isConnected) return controller.media;
@@ -789,6 +808,8 @@
           get: (key) => chrome.storage.local.get(key),
           saveSection: (entry) => chrome.runtime.sendMessage({ type: 'SAVE_PLAYER_SECTION', entry }),
           saveVolume: (percent) => savePlayerVolume(percent),
+          getLockPitch: () => state.settings.lockPitch === true,
+          saveLockPitch: (value) => saveLockPitch(value),
           subscribe: (callback) => {
             if (!chrome.storage || !chrome.storage.onChanged) return () => {};
             const handler = (changes, area) => {
@@ -887,7 +908,7 @@
         if (!controller.attached || controller.failed) continue;
         enforceElementMute(controller);
         if (Math.abs(controller.media.playbackRate - state.settings.slow) > 0.02) {
-          setMediaPlaybackState(controller, state.settings.slow);
+          setMediaPlaybackState(controller, state.settings.slow, state.settings.lockPitch);
         }
       }
     }, 2000);
@@ -1014,7 +1035,7 @@
     controller.rateHandler = () => {
       if (controller.internalRateWrite) return;
       if (shouldBeActiveForController(controller)) {
-        const intended = intendedPlaybackState(controller, state.settings.slow);
+        const intended = intendedPlaybackState(controller, state.settings.slow, state.settings.lockPitch);
         const rateDiffers = media.playbackRate !== intended.intendedRate || !pitchStateMatches(media, intended.intendedPitch);
         if (!rateDiffers && media.muted === isAudible(controller)) return;
         const coverParam = rateDiffers && !controller.sourceStale && controller.masterGain ? controller.masterGain.gain : null;
@@ -1029,7 +1050,7 @@
             coverParam.linearRampToValueAtTime(0, now + 0.005);
           }
         }
-        writeIntendedRate(controller, state.settings.slow);
+        writeIntendedRate(controller, state.settings.slow, state.settings.lockPitch);
         enforceElementMute(controller);
         if (coverParam && !controller.budgetBypassed) {
           rampGain(controller.masterGain.gain, media.volume);
@@ -1130,7 +1151,7 @@
     if (!ensureAttached(controller)) {
       if (controller.attached) {
         if (controller.sourceStale) {
-          writeIntendedRate(controller, state.settings.slow);
+          writeIntendedRate(controller, state.settings.slow, state.settings.lockPitch);
         }
         scheduleAttachRetry(controller, retryCount);
         return;
@@ -1159,7 +1180,7 @@
 
     updateWetChain(controller);
     const cleanSlow = parseFloat(state.settings.slow.toFixed(2));
-    setMediaPlaybackState(controller, cleanSlow);
+    setMediaPlaybackState(controller, cleanSlow, state.settings.lockPitch);
   }
 
   function scheduleAttachRetry(controller, retryCount = 0) {
@@ -1517,6 +1538,11 @@
     if (i <= 0) {
       return { wetGain: 0, decay: 0, damping: 1, preDelay: 0 };
     }
+    // Scale the wet send instead of clipping it: a clipped curve went flat
+    // above ~50% and left half the slider dead. Scaling reaches the same
+    // bounded 0.6 maximum with a distinct value at every step, and the
+    // equal-power dry complement stays strong.
+    const wetCap = 0.6;
     return {
       preDelay: 0.44 + i * 0.1,
       preFilter: 0.7 + i * 0.1,
@@ -1525,7 +1551,7 @@
       decayDiff1: 0.65 + i * 0.05,
       decay: Math.pow(i, 0.75) * 0.58,
       damping: Math.min(0.5 + Math.pow(i, 0.6) * 0.4, 0.78),
-      wetGain: Math.pow(i, 0.75),
+      wetGain: wetCap * Math.pow(i, 0.75),
     };
   }
 
@@ -1676,20 +1702,21 @@
     }
   }
 
-  function intendedPlaybackState(controller, rate) {
+  function intendedPlaybackState(controller, rate, lockPitch = false) {
     const neutral = Math.abs(rate - 1) < 0.001;
+    const preserved = lockPitch === true;
     return {
       neutral,
       intendedRate: neutral ? controller.originalRate : parseFloat(rate.toFixed(2)),
       intendedPitch: neutral
         ? controller.originalPitch
-        : { preservesPitch: false, mozPreservesPitch: false, webkitPreservesPitch: false },
+        : { preservesPitch: preserved, mozPreservesPitch: preserved, webkitPreservesPitch: preserved },
     };
   }
 
-  function writeIntendedRate(controller, rate) {
+  function writeIntendedRate(controller, rate, lockPitch = false) {
     const media = controller.media;
-    const { neutral, intendedRate, intendedPitch } = intendedPlaybackState(controller, rate);
+    const { neutral, intendedRate, intendedPitch } = intendedPlaybackState(controller, rate, lockPitch);
     if (media.playbackRate === intendedRate && pitchStateMatches(media, intendedPitch)) return true;
 
     controller.internalRateWrite = true;
@@ -1699,7 +1726,7 @@
         applyPitchState(media, controller.originalPitch);
         media.playbackRate = controller.originalRate;
       } else {
-        setPreservesPitch(media, false);
+        setPreservesPitch(media, lockPitch === true);
         media.playbackRate = parseFloat(rate.toFixed(2));
       }
     } finally {
@@ -1713,7 +1740,7 @@
   function alignBeforeAudible(controller) {
     if (!controller.attached) return false;
 
-    if (!writeIntendedRate(controller, state.settings.slow)) {
+    if (!writeIntendedRate(controller, state.settings.slow, state.settings.lockPitch)) {
       if (controller.masterGain) hardZero(controller.masterGain.gain);
       controller.sourceStale = true;
       return false;
@@ -1727,16 +1754,16 @@
     return true;
   }
 
-  function setMediaPlaybackState(controller, rate) {
+  function setMediaPlaybackState(controller, rate, lockPitch = false) {
     const media = controller.media;
-    const { intendedRate, intendedPitch } = intendedPlaybackState(controller, rate);
+    const { intendedRate, intendedPitch } = intendedPlaybackState(controller, rate, lockPitch);
     const intendedMuted = isAudible(controller);
 
     if (media.playbackRate === intendedRate && media.muted === intendedMuted && pitchStateMatches(media, intendedPitch)) {
       return;
     }
 
-    writeIntendedRate(controller, rate);
+    writeIntendedRate(controller, rate, lockPitch);
 
     if (intendedMuted) {
       enforceElementMute(controller);

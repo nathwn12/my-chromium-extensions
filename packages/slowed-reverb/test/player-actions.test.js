@@ -820,6 +820,21 @@ test('capSaved: keeps the newest entries and drops the oldest', () => {
 });
 
 
+test('cap: SAVED_LIMIT is the one shared 1000-song ceiling, no TTL', () => {
+  assert.equal(actions.SAVED_LIMIT, 1000, 'the shared export is the single cap');
+  const saved = [];
+  for (let index = 0; index < 1001; index += 1) {
+    saved.push({ videoId: 'song-' + index, startSeconds: index, endSeconds: null });
+  }
+  const capped = actions.capSaved(saved, actions.SAVED_LIMIT);
+  assert.equal(capped.length, 1000);
+  assert.equal(capped[0].videoId, 'song-1', 'the oldest saved section falls off the front');
+  assert.equal(capped[999].videoId, 'song-1000');
+  assert.deepEqual(Object.keys(capped[999]).sort(), ['endSeconds', 'startSeconds', 'videoId'],
+    'no expiry or saved-at field is introduced');
+});
+
+
 test('songKeyFrom prefers the URL v param over the media source', () => {
   assert.equal(actions.songKeyFrom('https://music.youtube.com/watch?v=abc&list=x', 'blob:src'), 'abc');
 });
@@ -1989,7 +2004,7 @@ function createSectionQueue(storage) {
       const stored = await storage.get('playerActions');
       const raw = stored && stored.playerActions;
       const current = actions.sanitizeSaved(raw ? raw.sections : undefined);
-      const next = actions.capSaved(actions.upsertSaved(current, entry), 100);
+      const next = actions.capSaved(actions.upsertSaved(current, entry), actions.SAVED_LIMIT);
       await storage.set({ playerActions: { sections: next } });
       return { ok: true, sections: next };
     });
@@ -2029,9 +2044,9 @@ test('controller: cross-tab - two tabs saving through one writer keep both songs
   assert.equal(sections.find((item) => item.videoId === 'song-b').startSeconds, 20);
 });
 
-test('controller: the persisted list is capped at 100 entries, oldest dropped', async () => {
+test('controller: the persisted list holds 1000 entries, oldest dropped on the 1001st', async () => {
   const sections = [];
-  for (let index = 0; index < 100; index += 1) {
+  for (let index = 0; index < 1000; index += 1) {
     sections.push({ videoId: 'song-' + index, startSeconds: index, endSeconds: null });
   }
   const storage = createStorage({ playerActions: { sections } });
@@ -2043,9 +2058,9 @@ test('controller: the persisted list is capped at 100 entries, oldest dropped', 
   await settle();
 
   const written = storage.sections();
-  assert.equal(written.length, 100);
+  assert.equal(written.length, 1000);
   assert.equal(written[0].videoId, 'song-1');
-  assert.equal(written[99].videoId, 'song-a');
+  assert.equal(written[999].videoId, 'song-a');
 });
 
 test('controller: status copy mirrors the section state', async () => {
@@ -3007,4 +3022,40 @@ test('F4: a commit never drags a mid-stream element that provenance names as ano
   harness.commit('From', '0:15');
   await settle();
   assert.equal(media.currentTime, 45, 'never seek into another song: the unconfirmed mid-stream element stays put');
+});
+
+test('lock pitch: the in-player toggle reads, writes and resyncs the persisted flag', async () => {
+  const writes = [];
+  let lockPitch = false;
+  const storage = createStorage();
+  storage.getLockPitch = () => lockPitch;
+  storage.saveLockPitch = (value) => {
+    writes.push(value);
+    lockPitch = Boolean(value);
+    return Promise.resolve({ ok: true });
+  };
+  const harness = createHarness({ storage });
+  await harness.start();
+
+  const toggle = harness.panel('Lock pitch');
+  assert.ok(toggle, 'the toggle lives on the existing in-player panel');
+  assert.equal(toggle.checked, false, 'off by default');
+
+  toggle.checked = true;
+  toggle.dispatchEvent('change');
+  assert.deepEqual(writes, [true], 'the change writes the flag once');
+  assert.equal(harness.panel('Lock pitch').checked, true, 'the toggle reflects the saved flag');
+
+  lockPitch = false;
+  harness.controller.sync();
+  assert.equal(harness.panel('Lock pitch').checked, false, 'an external settings change is reflected on sync');
+  assert.equal(harness.panel('Repeat').checked, true, 'the Repeat control is unaffected');
+  assert.equal(harness.status(), 'Set From or To', 'the section status is unaffected');
+});
+
+test('lock pitch: no toggle is added when the settings bridge is missing', async () => {
+  const harness = createHarness({ storage: createStorage() });
+  await harness.start();
+  assert.equal(harness.panel('Lock pitch'), null, 'no new surface without a persisted flag');
+  assert.ok(harness.panel('Repeat'), 'the existing Repeat control stays');
 });

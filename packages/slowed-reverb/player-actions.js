@@ -11,7 +11,7 @@
   const VOLUME_RESTORE_ATTEMPTS = 2;
   const VOLUME_RESTORE_RETRY_MS = 600;
   const VOLUME_RESTORE_TOLERANCE = 0.02;
-  const SAVED_LIMIT = 100;
+  const SAVED_LIMIT = 1000;
   const RESTORE_DEADLINE_MS = 3000;
   const PLAYER_BAR_TAG = 'YTMUSIC-PLAYER-BAR';
   const MAIN_PANEL_ID = 'main-panel';
@@ -527,6 +527,13 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
     const now = typeof settings.now === 'function' ? settings.now : () => Date.now();
     const pageHook = settings.pageHook || null;
     const storage = settings.storage || null;
+    const lockPitchApi = Boolean(storage)
+      && typeof storage.getLockPitch === 'function'
+      && typeof storage.saveLockPitch === 'function';
+
+    function currentLockPitch() {
+      return lockPitchApi && storage.getLockPitch() === true;
+    }
     const getStyle = typeof settings.getStyle === 'function'
       ? settings.getStyle
       : (node) => win.getComputedStyle(node);
@@ -1114,9 +1121,11 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
 
     /**
      * The armed section is the latch. One transient `wanted` false (a song id
-     * that blips mid-transition, a hidden tab) must never tear the backstop
-     * down for the rest of the song, so the interval follows the section and
-     * the handlers refuse to seek without an identity or in a hidden tab.
+     * that blips mid-transition) must never tear the backstop down for the rest
+     * of the song, so the interval follows the section and the handlers refuse
+     * to seek without an identity. Visibility is not a gate: a hidden tab may
+     * have only late element events and a throttled interval, and crossing B
+     * there still has to seek back to A.
      */
     function syncTick() {
       if (started && (isLoopEngaged(currentState()) || (session.pendingRestore && session.restoreDeadlineAt > 0))) {
@@ -1135,7 +1144,6 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
         syncPanel();
         return;
       }
-      if (!isVisible()) return;
       bindMedia();
       if (!media) return;
 
@@ -1192,11 +1200,12 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
      * is what makes the loop a latch: `timeupdate` keeps firing every ~250 ms
      * and `seeked` reports a landed seek, so a transient loss of identity or a
      * throttled interval cannot leave an armed section silent for the rest of
-     * the song. Guards match the tick: no identity and no visible tab means no
-     * seek, and `resolveSeekTarget` itself refuses a paused or seeking player.
+     * the song — including while the tab is hidden. Guards match the tick: no
+     * identity means no seek, and `resolveSeekTarget` itself refuses a paused
+     * or seeking player.
      */
     function handleProgress() {
-      if (!started || !media || !isVisible()) return;
+      if (!started || !media) return;
       const key = currentSongKey();
       if (key !== null && key !== session.songKey) {
         syncSong();
@@ -1604,6 +1613,19 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
       repeatText.textContent = 'Repeat section';
       repeatRow.append(repeat, repeatText);
 
+      let lockRow = null;
+      let lock = null;
+      if (lockPitchApi) {
+        lockRow = doc.createElement('label');
+        lockRow.className = 'slra-row';
+        lock = doc.createElement('input');
+        lock.type = 'checkbox';
+        lock.setAttribute('aria-label', 'Lock pitch');
+        const lockText = doc.createElement('span');
+        lockText.textContent = 'Lock pitch';
+        lockRow.append(lock, lockText);
+      }
+
       const fromRow = buildRow('From', 'Set From to now');
       const toRow = buildRow('To', 'Set To to now');
 
@@ -1622,7 +1644,10 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
       undo.disabled = true;
       actions.append(clear, save, undo);
 
-      panel.append(repeatRow, fromRow.row, toRow.row, status, actions);
+      const panelRows = [repeatRow];
+      if (lockRow) panelRows.push(lockRow);
+      panelRows.push(fromRow.row, toRow.row, status, actions);
+      panel.append(...panelRows);
 
       const volumeHud = doc.createElement('div');
       volumeHud.className = 'slra-volume';
@@ -1647,6 +1672,7 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
         shadow: shadow,
         panel: panel,
         repeat: repeat,
+        lock: lock,
         from: fromRow.input,
         to: toRow.input,
         fromNow: fromRow.now,
@@ -1665,6 +1691,12 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
         syncTick();
         syncPanel();
       });
+      if (lock) {
+        lock.addEventListener('change', () => {
+          void storage.saveLockPitch(lock.checked);
+          syncPanel();
+        });
+      }
       ui.from.addEventListener('input', () => {
         fromDirty = true;
         paintStatus();
@@ -1793,6 +1825,7 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
     function syncPanel() {
       if (!ui) return;
       ui.repeat.checked = active;
+      if (ui.lock) ui.lock.checked = currentLockPitch();
       const fromSeconds = session.startSeconds === null ? session.displayStartSeconds : session.startSeconds;
       const toSeconds = session.endSeconds === null ? session.displayEndSeconds : session.endSeconds;
       if (!fromDirty) ui.from.value = fromSeconds === null ? '' : formatTime(fromSeconds);

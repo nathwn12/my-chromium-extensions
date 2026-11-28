@@ -8,12 +8,13 @@
     slow: 1,
     reverbIntensity: 0,
     volume: null,
+    lockPitch: false,
   };
 
   function clampSlow(value) {
     const numeric = Number(value);
     if (!Number.isFinite(numeric)) return DEFAULT_SETTINGS.slow;
-    if (numeric < 0.7 || numeric > 1.3) return DEFAULT_SETTINGS.slow;
+    if (numeric < 0.6 || numeric > 1.3) return DEFAULT_SETTINGS.slow;
     return Math.round(numeric * 100) / 100;
   }
 
@@ -37,6 +38,10 @@
     return Math.min(100, Math.max(0, Math.round(numeric)));
   }
 
+  function clampLockPitch(value) {
+    return value === true;
+  }
+
   function normalizeSettings(raw) {
     const next = raw && typeof raw === 'object' ? raw : {};
     return {
@@ -45,6 +50,9 @@
         Object.prototype.hasOwnProperty.call(next, 'reverbIntensity') ? next.reverbIntensity : DEFAULT_SETTINGS.reverbIntensity
       ),
       volume: clampVolume(Object.prototype.hasOwnProperty.call(next, 'volume') ? next.volume : DEFAULT_SETTINGS.volume),
+      lockPitch: clampLockPitch(
+        Object.prototype.hasOwnProperty.call(next, 'lockPitch') ? next.lockPitch : DEFAULT_SETTINGS.lockPitch
+      ),
     };
   }
 

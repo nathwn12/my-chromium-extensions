@@ -503,6 +503,88 @@ test('guard: no identity, no seek, even on a timeupdate', async () => {
 });
 
 
+/**
+ * Background continuity. A hidden tab keeps the armed latch. Chromium may
+ * withhold the 100 ms interval and deliver only a late timeupdate, so neither
+ * loop handler may gate on document visibility. "Timers withheld" is staged
+ * explicitly: no tickIntervals() call at all, only the element's own event.
+ */
+function hideTab(harness) {
+  harness.dom.document.visibilityState = 'hidden';
+  harness.dom.document.dispatch('visibilitychange');
+}
+
+test('background: a hidden timeupdate with the backstop withheld still returns to A', async () => {
+  const harness = await armed();
+  const media = harness.media();
+  assert.equal(media.currentTime, SECTION.startSeconds, 'precondition: A restored');
+
+  hideTab(harness);
+  media.currentTime = SECTION.endSeconds;
+
+  assert.equal(harness.backstop(), true, 'the latch interval survives the hide');
+  assert.equal(media.currentTime, SECTION.endSeconds, 'withheld timers leave playback past B');
+
+  media.dispatchEvent('timeupdate');
+  assert.equal(media.currentTime, SECTION.startSeconds, 'a hidden timeupdate returns to A');
+  assert.equal(harness.backstop(), true, 'and the latch is still armed');
+});
+
+test('background: a hidden backstop tick and a hidden seek event both return to A', async () => {
+  const harness = await armed();
+  const media = harness.media();
+  hideTab(harness);
+
+  media.currentTime = SECTION.endSeconds + 12;
+  harness.timers.tickIntervals();
+  assert.equal(media.currentTime, SECTION.startSeconds, 'the hidden backstop seeks');
+
+  media.currentTime = SECTION.endSeconds + 12;
+  media.dispatchEvent('seeked');
+  assert.equal(media.currentTime, SECTION.startSeconds, 'a hidden seek event seeks too');
+});
+
+test('background: a hidden seek keeps identity, paused/seeking and song isolation', async () => {
+  const harness = createHarness({ storage: createStorage([SECTION, SONG_B]) });
+  await harness.start();
+  const media = harness.media();
+  harness.pushSong('song-a', songUrl('song-a'));
+  await settle();
+  assert.equal(media.currentTime, SECTION.startSeconds, 'precondition: A armed');
+  hideTab(harness);
+
+  media.currentTime = SECTION.endSeconds;
+  media.paused = true;
+  media.dispatchEvent('timeupdate');
+  assert.equal(media.currentTime, SECTION.endSeconds, 'a hidden paused player is not seeked');
+  media.paused = false;
+
+  media.seeking = true;
+  media.dispatchEvent('timeupdate');
+  assert.equal(media.currentTime, SECTION.endSeconds, 'a hidden seeking player is not seeked');
+  media.seeking = false;
+
+  harness.pushSong(null);
+  await settle();
+  media.dispatchEvent('timeupdate');
+  harness.timers.tickIntervals();
+  assert.equal(media.currentTime, SECTION.endSeconds, 'a hidden tab still refuses a seek without identity');
+
+  // Handoff to B while hidden. Move inside A first so the existing boundary
+  // handoff guard does not hold the queued id; B must still restore its own
+  // section in the hidden tab and A's section must never seek B.
+  media.currentTime = SECTION.startSeconds + 5;
+  harness.setHref(songUrl('song-b'));
+  harness.pushSong('song-b', songUrl('song-b'));
+  await settle();
+  assert.equal(media.currentTime, SONG_B.startSeconds, 'B restores its own start while hidden');
+  assert.equal(harness.backstop(), true, 'B inherits its own armed backstop');
+  media.currentTime = SONG_B.endSeconds;
+  media.dispatchEvent('timeupdate');
+  assert.equal(media.currentTime, SONG_B.startSeconds, 'B loops its own range, not A');
+});
+
+
 
 const SONG_B = { videoId: 'song-b', startSeconds: 10, endSeconds: 20 };
 
