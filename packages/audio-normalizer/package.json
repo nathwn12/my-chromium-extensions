@@ -1,7 +1,8 @@
 {
   "name": "audio-normalizer",
   "private": true,
-  "version": "5.7.1",
+  "version": "5.8.0",
+  "license": "MIT",
   "type": "commonjs",
   "devDependencies": {
     "@types/chrome": "~0.3.7",

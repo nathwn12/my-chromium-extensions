@@ -24,6 +24,9 @@ var LIMITER_RELEASE_SECONDS = 0.1;
 
 var AGC_BAND_DB = 2.5;
 var AGC_BOOST_CAP_DB = 6;
+var AGC_ATTACK_TC_SECONDS = 0.003; // 3 ms conventional program-AGC attack: follows a level rise before it is audible
+var AGC_RELEASE_TC_SECONDS = 0.25; // 250 ms conventional program-AGC release: recovers without audible pumping
+var AGC_SLEW_DB_PER_QUANTUM = 0.05; // hard per-quantum ceiling that the attack constant alone cannot guarantee at high sample rates
 var AGC_SILENCE_FLOOR_LUFS = -70;
 var SLOW_LOCK_LO_DB = 6;
 var SLOW_LOCK_HI_DB = 15;
@@ -676,6 +679,9 @@ class LoudnessNormalizerProcessor extends AudioWorkletProcessor {
     if (outCh > 6) outCh = 6;
 
     var sr = this.sr;
+    var agcAttackCoeff = Math.exp(-1 / (sr * AGC_ATTACK_TC_SECONDS));
+    var agcReleaseCoeff = Math.exp(-1 / (sr * AGC_RELEASE_TC_SECONDS));
+    var agcSlewPerSampleDb = AGC_SLEW_DB_PER_QUANTUM / 128;
     var ceiling = CEILING_LINEAR;
     var marginLin = dbToGain(-TP_DETECTOR_MARGIN_DB);
     var effCeiling = ceiling * marginLin;
@@ -796,7 +802,13 @@ class LoudnessNormalizerProcessor extends AudioWorkletProcessor {
       var agcCapMin = -MAX_CUT_DB - this.currentLoudnessDb;
       if (agcTargetDb > agcCapMax) agcTargetDb = agcCapMax;
       if (agcTargetDb < agcCapMin) agcTargetDb = agcCapMin;
-      this.currentAgcDb = agcTargetDb;
+      var agcNextDb = agcTargetDb + (this.currentAgcDb - agcTargetDb) * (agcTargetDb > this.currentAgcDb ? agcAttackCoeff : agcReleaseCoeff);
+      var agcMoveDb = agcNextDb - this.currentAgcDb;
+      if (agcMoveDb > agcSlewPerSampleDb) agcMoveDb = agcSlewPerSampleDb;
+      else if (agcMoveDb < -agcSlewPerSampleDb) agcMoveDb = -agcSlewPerSampleDb;
+      this.currentAgcDb += agcMoveDb;
+      if (this.currentAgcDb > agcCapMax) this.currentAgcDb = agcCapMax;
+      if (this.currentAgcDb < agcCapMin) this.currentAgcDb = agcCapMin;
       var agcLinSamp = dbToGain(this.currentAgcDb);
 
       var newP = 0;

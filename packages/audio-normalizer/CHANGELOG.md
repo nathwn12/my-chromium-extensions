@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.8.0] - 2026-11-28
+
+### Changed
+
+- AGC gain now follows conventional program-AGC ballistics: 3 ms attack / 250 ms release with a hard 0.05 dB per-128-sample slew ceiling. On the harness signals the measured maximum per-quantum gain step fell from 1.456 dB to 0.016 dB, with 0.0247 dB AM ripple and 0.413 s step recovery. The loudness target, true-peak ceiling and limiter are unchanged. These are harness measurements only; no listening-quality claim is made.
+
 ## [5.7.1] - 2026-11-28
 
 ### Changed

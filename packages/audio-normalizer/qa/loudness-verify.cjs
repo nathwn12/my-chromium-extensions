@@ -24,6 +24,10 @@ const DOCUMENTED_DEFAULT_TARGET_LUFS = -20;
 const DELTA_TOL_LU = 0.1; // pass criterion: |processor LUFS - reference LUFS| <= 0.1 LU
 const EPS_DB = 1e-6;
 const TARGET_PROBE_LUFS = -24;
+const AGC_RIPPLE_MAX_DB = 0.25; // audible gain modulation limit inside a 100 ms window after the meter settles
+const AGC_SLEW_MAX_DB_PER_QUANTUM = 0.05; // hard AGC gain-delta ceiling across one 128-frame render quantum
+const AGC_STEP_RECOVERY_MAX_SECONDS = 0.5; // AGC must reach its post-step target within half a second
+const AGC_STEP_RECOVERY_TOL_DB = 0.3; // recovery tolerance at +0.5 s (a few quanta of slew margin)
 
 const CLOSED_LOOP_TOL_LU = 0.2;
 const SETTLED_WINDOW_SECONDS = 5;
@@ -2339,6 +2343,91 @@ function main() {
   const stepUntested = stepRows.filter((r) => r.verdict === 'UNTESTED').length;
   const stepSummary = stepFails > 0 ? 'FAIL' : (stepUntested > 0 ? `${stepUntested} UNTESTED` : 'PASS');
 
+  const AGC_RIPPLE_WINDOW_SECONDS = 0.1;
+  const agcBallisticsRows = [];
+  {
+    const qAt = (tSec) => Math.round((tSec * SR) / BLOCK);
+    const agcTraceOf = (gainTrace, normTrace) => gainTrace.map((g, i) => g - normTrace[i]);
+    const toneInto = (buf, t0, t1, amp) => {
+      for (let i = Math.round(t0 * SR); i < Math.min(buf.length, Math.round(t1 * SR)); i++) {
+        buf[i] = amp * Math.sin(2 * Math.PI * 1000 * i / SR);
+      }
+    };
+    const driveAgc = (ProcHere, sig) => {
+      const rendered = renderThroughWorkletChannels(ProcHere, [sig], {});
+      return agcTraceOf(rendered.gainTrace, rendered.normTrace);
+    };
+    const maxDeltaDb = (trace, i0, i1) => {
+      let worst = 0;
+      for (let i = Math.max(1, i0); i < Math.min(i1, trace.length); i++) {
+        const d = Math.abs(trace[i] - trace[i - 1]);
+        if (d > worst) worst = d;
+      }
+      return worst;
+    };
+    const ripplePpDb = (trace, i0, i1, winQ) => {
+      let worst = 0;
+      for (let s = i0; s + winQ <= i1; s++) {
+        let mn = Infinity, mx = -Infinity;
+        for (let i = s; i < s + winQ; i++) { const v = trace[i]; if (v < mn) mn = v; if (v > mx) mx = v; }
+        const pp = mx - mn;
+        if (pp > worst) worst = pp;
+      }
+      return worst;
+    };
+    const finite = (trace) => trace.length > 0 && trace.every((v) => Number.isFinite(v));
+
+    const rippleSig = new Float32Array(SR * 24);
+    toneInto(rippleSig, 0, 8, 0.1413);
+    toneInto(rippleSig, 8, 24, 0.1413 / 2);
+    const rippleTrace = driveAgc(Proc48, rippleSig);
+    const rippleFrom = qAt(12);
+    let rippleMean = 0;
+    for (let i = rippleFrom; i < rippleTrace.length; i++) rippleMean += rippleTrace[i];
+    rippleMean /= Math.max(1, rippleTrace.length - rippleFrom);
+    const ripplePp = finite(rippleTrace) ? ripplePpDb(rippleTrace, rippleFrom, rippleTrace.length, Math.max(1, qAt(AGC_RIPPLE_WINDOW_SECONDS))) : NaN;
+    const rippleOk = Number.isFinite(ripplePp) && ripplePp <= AGC_RIPPLE_MAX_DB && Math.abs(rippleMean) >= 0.2;
+    agcBallisticsRows.push({ clause: 'am-ripple', measuredDb: ripplePp, threshold: '<= ' + AGC_RIPPLE_MAX_DB + ' dB p-p in 100 ms', settledAgcDb: rippleMean, verdict: rippleOk ? 'PASS' : 'FAIL', note: 'steady 1 kHz sine after a -6 dB preamble; engaged AGC must not modulate the gain' });
+
+    const stepSig = new Float32Array(SR * 24);
+    toneInto(stepSig, 0, 8, 0.1413);
+    toneInto(stepSig, 8, 16, 0.1413 / 2);
+    toneInto(stepSig, 16, 24, 0.1413);
+    const stepTrace = driveAgc(Proc48, stepSig);
+    const stepMaxDelta = finite(stepTrace) ? maxDeltaDb(stepTrace, 1, stepTrace.length) : NaN;
+    const slewOk = Number.isFinite(stepMaxDelta) && stepMaxDelta <= AGC_SLEW_MAX_DB_PER_QUANTUM + 1e-9;
+    const riseQ = qAt(16);
+    const settledTarget = stepTrace[stepTrace.length - 1];
+    let recoverySeconds = Infinity;
+    for (let i = riseQ; i < stepTrace.length; i++) {
+      if (Number.isFinite(stepTrace[i]) && Math.abs(stepTrace[i] - settledTarget) <= AGC_STEP_RECOVERY_TOL_DB) { recoverySeconds = (i - riseQ) * BLOCK / SR; break; }
+    }
+    const recoveryOk = Number.isFinite(recoverySeconds) && recoverySeconds <= AGC_STEP_RECOVERY_MAX_SECONDS + BLOCK / SR;
+    agcBallisticsRows.push({ clause: 'slew-and-step', maxPerQuantumDeltaDb: stepMaxDelta, recoverySeconds, recoveryToleranceDb: AGC_STEP_RECOVERY_TOL_DB, threshold: '<= ' + AGC_SLEW_MAX_DB_PER_QUANTUM + ' dB per quantum; recovery <= ' + AGC_STEP_RECOVERY_MAX_SECONDS + ' s', verdict: (slewOk && recoveryOk) ? 'PASS' : 'FAIL', note: '6 dB drop at 8 s, 6 dB rise at 16 s; gain read from the worklet meter surface' });
+
+    const smoothNeedle = [
+      '      var agcNextDb = agcTargetDb + (this.currentAgcDb - agcTargetDb) * (agcTargetDb > this.currentAgcDb ? agcAttackCoeff : agcReleaseCoeff);',
+      '      var agcMoveDb = agcNextDb - this.currentAgcDb;',
+      '      if (agcMoveDb > agcSlewPerSampleDb) agcMoveDb = agcSlewPerSampleDb;',
+      '      else if (agcMoveDb < -agcSlewPerSampleDb) agcMoveDb = -agcSlewPerSampleDb;',
+      '      this.currentAgcDb += agcMoveDb;',
+      '      if (this.currentAgcDb > agcCapMax) this.currentAgcDb = agcCapMax;',
+      '      if (this.currentAgcDb < agcCapMin) this.currentAgcDb = agcCapMin;',
+      '      var agcLinSamp = dbToGain(this.currentAgcDb);'
+    ].join('\n');
+    let snapMaxDelta = NaN, snapNote = '', snapVerdict = 'FAIL';
+    try {
+      if (!workletSource.includes(smoothNeedle)) throw new Error('AGC smoothing block not found in worklet source');
+      const snapProc = loadProcessor(workletSource.replace(smoothNeedle, '      this.currentAgcDb = agcTargetDb;\n      var agcLinSamp = dbToGain(this.currentAgcDb);'), SR);
+      const snapTrace = driveAgc(snapProc, stepSig);
+      snapMaxDelta = finite(snapTrace) ? maxDeltaDb(snapTrace, 1, snapTrace.length) : NaN;
+      snapVerdict = Number.isFinite(snapMaxDelta) && snapMaxDelta > AGC_SLEW_MAX_DB_PER_QUANTUM ? 'PASS' : 'FAIL';
+    } catch (e) { snapNote = e.message; }
+    agcBallisticsRows.push({ clause: 'snap-negative-control', maxPerQuantumDeltaDb: snapMaxDelta, verdict: snapVerdict, note: snapNote || 'snap variant must exceed the per-quantum ceiling (proves the gate bites)' });
+  }
+  const agcBallisticsFails = agcBallisticsRows.filter((r) => r.verdict === 'FAIL').length;
+  const agcBallisticsSummary = agcBallisticsFails > 0 ? 'FAIL' : 'PASS';
+
   const ONSET_BOUND_05_DB = -6.0;
   const ONSET_BOUND_10_DB = -8.0;
   const ONSET_QUIET_TOL_DB = 0.1;
@@ -2884,6 +2973,18 @@ function main() {
   }
   console.log(`STEP: ${stepSummary}`);
   console.log('');
+  console.log('AGC BALLISTICS (gain = this.telemetry.appliedGainDb - normGainDb, read per 128-frame quantum; no audio-path instrumentation):');
+  for (const a of agcBallisticsRows) {
+    if (a.clause === 'am-ripple') {
+      console.log(`am-ripple: steady 1 kHz sine after -6 dB preamble, settled AGC ${fmt(a.settledAgcDb)} dB | max p-p in 100 ms ${fmt(a.measuredDb, 4)} dB (limit ${AGC_RIPPLE_MAX_DB} dB) | verdict ${a.verdict}`);
+    } else if (a.clause === 'slew-and-step') {
+      console.log(`slew-and-step: 6 dB drop then 6 dB rise | max per-quantum AGC delta ${fmt(a.maxPerQuantumDeltaDb, 4)} dB (ceiling ${AGC_SLEW_MAX_DB_PER_QUANTUM}) | recovery ${fmt(a.recoverySeconds, 3)} s to within ${a.recoveryToleranceDb} dB of target (limit ${AGC_STEP_RECOVERY_MAX_SECONDS} s) | verdict ${a.verdict}`);
+    } else {
+      console.log(`snap-negative-control: snap variant max per-quantum AGC delta ${fmt(a.maxPerQuantumDeltaDb, 4)} dB (must exceed ${AGC_SLEW_MAX_DB_PER_QUANTUM}) | verdict ${a.verdict}${a.note ? ` — ${a.note}` : ''}`);
+    }
+  }
+  console.log(`AGC BALLISTICS: ${agcBallisticsSummary}`);
+  console.log('');
   console.log('ONSET (5.4.2 cold-start onset convergence: loud onset cut by 0.5 s, quiet onset untouched, guard-disabled negative control, silence bit-zero; SEE ALSO qa/feed-transition-qa.cjs + qa/program-boundary-qa.cjs):');
   for (const o of onsetRows) {
     if (o.clause === 'onset-loud') {
@@ -2968,6 +3069,8 @@ function main() {
     comfortRows,
     stepSummary,
     stepRows,
+    agcBallisticsSummary,
+    agcBallisticsRows,
     onsetSummary,
     onsetRows,
     onsetNegativeControl: onsetNeg,
@@ -2978,14 +3081,14 @@ function main() {
     levelRow,
     targetRow,
     resetRow,
-    overall: rows.every((r) => r.verdict === 'PASS') && clSummary === 'PASS' && tpSummary === 'PASS' && worstSummary === 'PASS' && advSummary === 'PASS' && hardClipSummary === 'PASS' && multiSummary === 'PASS' && r441Summary === 'PASS' && levelSummary === 'PASS' && msgSummary === 'PASS' && gainSummary === 'PASS' && comfortSummary === 'PASS' && stepSummary === 'PASS' && onsetSummary === 'PASS' && transitionSummary === 'PASS' && telemetrySummary === 'PASS' ? 'ALL PASS' : 'FAILURES PRESENT',
+    overall: rows.every((r) => r.verdict === 'PASS') && clSummary === 'PASS' && tpSummary === 'PASS' && worstSummary === 'PASS' && advSummary === 'PASS' && hardClipSummary === 'PASS' && multiSummary === 'PASS' && r441Summary === 'PASS' && levelSummary === 'PASS' && msgSummary === 'PASS' && gainSummary === 'PASS' && comfortSummary === 'PASS' && stepSummary === 'PASS' && agcBallisticsSummary === 'PASS' && onsetSummary === 'PASS' && transitionSummary === 'PASS' && telemetrySummary === 'PASS' ? 'ALL PASS' : 'FAILURES PRESENT',
   };
   fs.writeFileSync(REPORT_PATH, JSON.stringify(report, null, 2));
   console.log(`wrote ${REPORT_PATH}`);
   console.log(`wrote ${MANIFEST_PATH}`);
   console.log(`OVERALL: ${report.overall}`);
 
-  if (!rows.every((r) => r.verdict === 'PASS') || clSummary !== 'PASS' || tpSummary !== 'PASS' || worstSummary !== 'PASS' || advSummary !== 'PASS' || hardClipSummary !== 'PASS' || multiSummary !== 'PASS' || r441Summary !== 'PASS' || levelSummary !== 'PASS' || msgSummary !== 'PASS' || gainSummary !== 'PASS' || comfortSummary !== 'PASS' || stepSummary !== 'PASS' || onsetSummary !== 'PASS' || transitionSummary !== 'PASS' || telemetrySummary !== 'PASS') process.exitCode = 2;
+  if (!rows.every((r) => r.verdict === 'PASS') || clSummary !== 'PASS' || tpSummary !== 'PASS' || worstSummary !== 'PASS' || advSummary !== 'PASS' || hardClipSummary !== 'PASS' || multiSummary !== 'PASS' || r441Summary !== 'PASS' || levelSummary !== 'PASS' || msgSummary !== 'PASS' || gainSummary !== 'PASS' || comfortSummary !== 'PASS' || stepSummary !== 'PASS' || agcBallisticsSummary !== 'PASS' || onsetSummary !== 'PASS' || transitionSummary !== 'PASS' || telemetrySummary !== 'PASS') process.exitCode = 2;
 }
 
 function runSelfTestOnly(ff) {
