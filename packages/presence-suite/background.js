@@ -537,6 +537,50 @@ export function createWorker({
     }
   }
 
+  /** Only card text is cached; art and links always come from the live page. */
+  const CACHED_TEXT_FIELDS = ["title", "channel", "album", "views"];
+  const YT_VIDEO_ID = /^[A-Za-z0-9_-]{11}$/;
+
+  function cachedText(value) {
+    if (typeof value !== "string") return null;
+    const text = value.replace(/\s+/g, " ").trim();
+    return text ? text.slice(0, 256) : null;
+  }
+
+  function youtubeIdFromUrl(raw) {
+    if (typeof raw !== "string" || !raw) return null;
+    try {
+      const parsed = new URL(raw);
+      if (
+        parsed.hostname !== "music.youtube.com" && parsed.hostname !== "www.youtube.com" &&
+        parsed.hostname !== "youtube.com"
+      ) return null;
+      const id = parsed.searchParams.get("v");
+      return id && YT_VIDEO_ID.test(id) ? id : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /**
+   * The page URL and the player-bar track link must name the same video. An
+   * SPA can leave the URL on the previous song, and a title names nothing, so
+   * neither alone may borrow or persist named fields under a new ID.
+   */
+  function confirmedYoutubeId(state) {
+    if (!state || typeof state !== "object") return null;
+    const fromUrl =
+      typeof state.mediaId === "string" && YT_VIDEO_ID.test(state.mediaId) ? state.mediaId : null;
+    const fromBar = youtubeIdFromUrl(state.trackUrl);
+    return fromUrl && fromUrl === fromBar ? fromUrl : null;
+  }
+
+  function cachedTextKey(source, state) {
+    if (source !== SOURCE_YOUTUBE_MUSIC) return null;
+    const id = confirmedYoutubeId(state);
+    return id ? source + "|" + id : null;
+  }
+
   /** A cache key needs a source and a stable identity; no identity, no borrow. */
   function totalsKey(source, state) {
     if (!state || typeof state !== "object") return null;
@@ -593,11 +637,20 @@ export function createWorker({
         const stamp = Number(value.at);
         if (!Number.isFinite(total) || total <= 0 || !Number.isFinite(stamp) || stamp <= 0) continue;
         const plays = Number(value.plays);
-        totals.set(key, {
+        const record = {
           total,
           at: stamp,
           plays: Number.isFinite(plays) && plays > 0 ? plays : 1,
-        });
+        };
+        // Duration-only records stay valid; only card text is ever read back,
+        // so a legacy art/link field cannot survive a reload.
+        if (key.startsWith(SOURCE_YOUTUBE_MUSIC + "|")) {
+          for (const field of CACHED_TEXT_FIELDS) {
+            const text = cachedText(value[field]);
+            if (text) record[field] = text;
+          }
+        }
+        totals.set(key, record);
       }
     }
     capTotals();
@@ -638,7 +691,18 @@ export function createWorker({
     const plays = previous ? (session ? previous.plays + 1 : previous.plays) : 1;
     const totalChanged = !previous || Math.abs(previous.total - value) > 0.5;
     const playsChanged = !previous || plays !== previous.plays;
-    totals.set(key, { total: value, at, plays });
+    const record = { total: value, at, plays };
+    // Only live text for the exact confirmed ID is written; a cache-filled
+    // sample cannot launder the previous song's fields under a new identity.
+    if (cachedTextKey(source, state) === key) {
+      for (const field of CACHED_TEXT_FIELDS) {
+        const live = cachedText(state[field]);
+        const old = previous ? cachedText(previous[field]) : null;
+        if (live) record[field] = live;
+        else if (old) record[field] = old;
+      }
+    }
+    totals.set(key, record);
     lastRemembered.set(source, { key, at });
     capTotals();
     // A new total, or a new play, must survive suspension; a timestamp refresh can wait.
@@ -646,18 +710,34 @@ export function createWorker({
     else scheduleTotalsWrite();
   }
 
-  /** A remembered total fills only a missing total; a live read always wins. */
-  function withCachedTotal(source, state) {
+  /**
+   * A remembered total fills only a missing total; text fills only fields the
+   * live read left empty. Live values always win, art and links are never
+   * borrowed, and no position is ever invented.
+   */
+  function withCachedMetadata(source, state) {
     if (!state || state.paused !== false) return state;
-    const live = Number(state.duration);
-    if (Number.isFinite(live) && live > 0) return state;
-    const cached = totals.get(totalsKey(source, state));
-    if (!cached || !(cached.total > 0)) return state;
-    return { ...state, duration: cached.total };
+    const key = totalsKey(source, state);
+    const cached = key ? totals.get(key) : null;
+    if (!cached) return state;
+    const out = { ...state };
+    const live = Number(out.duration);
+    if (!(Number.isFinite(live) && live > 0) && Number(cached.total) > 0) {
+      out.duration = Number(cached.total);
+    }
+    if (cachedTextKey(source, state) === key) {
+      for (const field of CACHED_TEXT_FIELDS) {
+        if (!cachedText(out[field])) {
+          const text = cachedText(cached[field]);
+          if (text) out[field] = text;
+        }
+      }
+    }
+    return out;
   }
 
   function youtubeActivity(entry) {
-    const state = withCachedTotal(SOURCE_YOUTUBE_MUSIC, entry.state);
+    const state = withCachedMetadata(SOURCE_YOUTUBE_MUSIC, entry.state);
     const bias = rateBiasMs(state);
     const anchor = sampleAt(entry, entry.at) + bias;
     const activity = buildYoutube(bias ? { ...state, at: anchor } : state, anchor);
@@ -666,7 +746,7 @@ export function createWorker({
   }
 
   function crunchyActivity(state, at) {
-    const effective = withCachedTotal(SOURCE_CRUNCHY, state);
+    const effective = withCachedMetadata(SOURCE_CRUNCHY, state);
     const activity = buildCrunchy(effective, at, { synopsis: false });
     if (activity?.timestamps) rememberTotal(SOURCE_CRUNCHY, effective, effective.duration);
     return activity;
@@ -678,9 +758,14 @@ export function createWorker({
     pruneStale(tabs.get(SOURCE_CRUNCHY), at);
     persistTabs();
 
-    const youtubeEntries = [...tabs.get(SOURCE_YOUTUBE_MUSIC).values()].filter(
-      (entry) => !entry.restored && entry.state && entry.state.paused === false
-    );
+    // A warm card is eligible only when the exact current ID can fill its
+    // title; an arbitrary title or a stale page ID never promotes a tab.
+    const youtubeEntries = [...tabs.get(SOURCE_YOUTUBE_MUSIC).values()]
+      .filter((entry) => !entry.restored && entry.state && entry.state.paused === false)
+      .map((entry) => ({
+        ...entry,
+        state: withCachedMetadata(SOURCE_YOUTUBE_MUSIC, entry.state),
+      }));
     const bestYoutube = pickBestYoutubeTab(youtubeEntries);
     desired[SOURCE_YOUTUBE_MUSIC] = bestYoutube ? youtubeActivity(bestYoutube) : null;
 

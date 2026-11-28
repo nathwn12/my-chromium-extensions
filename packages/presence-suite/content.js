@@ -109,6 +109,31 @@
     return Boolean(EXTRACT.clockAgreesOf && EXTRACT.clockAgreesOf());
   }
 
+  var VIDEO_ID = /^[A-Za-z0-9_-]{11}$/;
+
+  function watchId(raw) {
+    if (typeof raw !== "string") return null;
+    var match = /^https:\/\/music\.youtube\.com\/watch\?v=([A-Za-z0-9_-]{11})(?:[&#]|$)/.exec(raw);
+    return match ? match[1] : null;
+  }
+
+  /**
+   * A titleless playing sample is reportable only with the exact current
+   * video: the page URL id and the player-bar track link must agree. The
+   * worker fills its text from cache; this gate never invents a title or a
+   * playhead, and it does not relax the worker's frame/source checks.
+   */
+  function warmTitleless(state) {
+    if (!state || state.title) return false;
+    if (state.paused !== false) return false;
+    var id = typeof state.mediaId === "string" && VIDEO_ID.test(state.mediaId) ? state.mediaId : null;
+    return Boolean(id) && id === watchId(state.trackUrl);
+  }
+
+  function showable(state) {
+    return Boolean(state) && (Boolean(state.title) || warmTitleless(state));
+  }
+
   /** Discord stamps floor(duration); compare media and clock in that same unit. */
   function durationUnit(value) {
     return typeof value === "number" && isFinite(value) ? Math.floor(value) : null;
@@ -234,7 +259,7 @@
 
   function report(state) {
     if (!enabled) return;
-    if (!state || !state.title) {
+    if (!showable(state)) {
       gone();
       return;
     }
@@ -392,7 +417,7 @@
       staleTimer = null;
       if (!enabled) return;
       var state = readState();
-      if (!state || !state.title) {
+      if (!showable(state)) {
         gone();
         return;
       }
@@ -472,7 +497,7 @@
     var ownPosition = target.currentTime;
     if (typeof ownPosition === "number" && isFinite(ownPosition) && ownPosition >= baseline - 1) return;
     var state = readState();
-    if (!enabled || !state || !state.title) return;
+    if (!enabled || !showable(state)) return;
     var position = state.position;
     if (typeof position !== "number" || !isFinite(position)) return;
     if (position >= baseline - 1) return;
@@ -573,7 +598,7 @@
     if (!enabled) return;
     checkUrl();
     var state = readState();
-    if (!state || !state.title) {
+    if (!showable(state)) {
       gone();
       return;
     }

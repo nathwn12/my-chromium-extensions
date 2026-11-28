@@ -777,10 +777,21 @@
     var album = dom.album || (session && session.album);
     var artwork = (session && session.artwork) || dom.artwork || (ld && ld.artwork);
 
-    if (!title) return null;
-
     var trackId = dom.trackId || mediaId;
     var trackUrl = trackId ? "https://music.youtube.com/watch?v=" + trackId : null;
+
+    if (!title) {
+      /**
+       * A cold replay can arrive before any page text exists. Route it only
+       * when the URL and the player-bar link name the exact same current
+       * video, the page is playing, and the clock did not conflict. The worker
+       * may fill text from its cache; no title, total or playhead is invented.
+       */
+      var warmIdEligible = source === "youtube-music" &&
+        playbackState === "playing" && !clockConflict &&
+        Boolean(mediaId) && Boolean(dom.trackId) && dom.trackId === mediaId;
+      if (!warmIdEligible) return null;
+    }
 
     var duration = null;
     var position = null;
@@ -801,20 +812,12 @@
       : playbackState === "paused" ? true
       : true;
     /**
-     * Only JSON-LD timing leaves a cold read with a total and no playhead: the
-     * bar, the element and the clock all said nothing. 0 is the honest value —
-     * the track is at its start as far as the page reports; a mid-song unknown
-     * stays unknown and keeps no pair. A real position, a paused read and a
-     * clock conflict all fall through untouched.
+     * A total with no measured playhead publishes metadata only. JSON-LD can
+     * describe a resumed mid-track player, so 0 would be a guess, not a start:
+     * the bar, the element and the clock all declined to name a position. The
+     * pair stays absent until a real playhead arrives; a remembered total can
+     * still pair with that measured position downstream.
      */
-    if (
-      typeof duration === "number" && Number.isFinite(duration) && duration > 0 &&
-      position === null && paused === false &&
-      !progress && !clockConflict && !musicTime &&
-      !(chosen.coherent && pick && pick.duration !== null)
-    ) {
-      position = 0;
-    }
     if (duration !== null && position !== null && position > duration) position = duration;
 
     return {

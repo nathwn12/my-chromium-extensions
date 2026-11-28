@@ -1,7 +1,7 @@
 // The JSON-LD branch of readUnsafe is the only one that can return a total
-// with no playhead on a cold playing read. A pinned start (0) is the honest
-// value there; every other timing source must win and a conflict must yield
-// nothing. Pure vm sandbox: no browser, no network, no audio.
+// with no playhead on a cold playing read. No playhead is invented there;
+// every measured timing source must win and a conflict must yield nothing.
+// Pure vm sandbox: no browser, no network, no audio.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -38,7 +38,8 @@ function fakeDoc(overrides = {}) {
       return found && !Array.isArray(found) ? found : null;
     },
     querySelectorAll(selector) {
-      const found = nodes[selector];
+      const key = Array.isArray(selector) ? selector.join(",") : selector;
+      const found = nodes[key];
       return Array.isArray(found) ? found : [];
     },
   };
@@ -63,11 +64,11 @@ function read(doc, playbackState = "playing") {
   return ctx.YoutubeExtract.read(doc, nav, LOC);
 }
 
-test("a cold playing read with only JSON-LD timing gets a pairable start", () => {
+test("a cold playing read with only JSON-LD timing keeps an unpaired total", () => {
   const state = read(fakeDoc());
   assert.equal(state.duration, 167, "the JSON-LD total is finite");
   assert.ok(Number.isFinite(state.duration), "duration is a number");
-  assert.equal(state.position, 0, "nothing else reported a playhead: 0 is honest");
+  assert.equal(state.position, null, "an unmeasured playhead stays unknown");
   assert.equal(state.paused, false, "MediaSession says playing");
 });
 
@@ -96,8 +97,15 @@ test("a conflicting clock still yields nothing", () => {
   assert.equal(state.position, null, "a conflict never pins a start");
 });
 
-test("the pinned start stays inside the total (clamp invariant)", () => {
-  const state = read(fakeDoc());
-  assert.equal(state.position, 0);
+test("a real playhead is clamped inside the total (clamp invariant)", () => {
+  const video = {
+    duration: 167, currentTime: 300, paused: false, playbackRate: 1,
+    currentSrc: "https://music.youtube.com/audio",
+  };
+  // readVideoEntries queries the whole selector list as one comma-joined string.
+  const VIDEO_SELECTORS = "#movie_player video.html5-main-video,video.html5-main-video,video,audio";
+  const state = read(fakeDoc({ [VIDEO_SELECTORS]: [video] }));
+  assert.equal(state.duration, 167);
+  assert.equal(state.position, 167, "a measured overrun clamps to the total");
   assert.ok(state.position <= state.duration, "position never exceeds duration");
 });
