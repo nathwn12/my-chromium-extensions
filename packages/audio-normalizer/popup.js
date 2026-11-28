@@ -6,16 +6,8 @@ const hostnameEl = /** @type {HTMLElement} */ (document.getElementById('hostname
 const statusPillEl = /** @type {HTMLElement | null} */ (document.getElementById('status-pill'));
 const excludeBtnEl = /** @type {HTMLButtonElement | null} */ (document.getElementById('exclude-btn'));
 const statusTextEl = /** @type {HTMLElement} */ (document.getElementById('status-text'));
-/** @type {NodeListOf<HTMLButtonElement>} */
-const presetButtons = document.querySelectorAll('[data-preset]');
 
 const popupShared = globalThis.TabNormalizerShared;
-
-const PRESETS = {
-  speech: -3,
-  music: 0,
-  boost: 3,
-};
 
 let hostname = '';
 let siteKey = '';
@@ -123,14 +115,6 @@ resetBtnEl.addEventListener('click', () => {
   void saveResetInner();
 });
 
-presetButtons.forEach((button) => {
-  button.addEventListener('click', () => {
-    const presetGain = PRESETS[button.dataset.preset];
-    if (typeof presetGain !== 'number') return;
-    applyPreset(presetGain);
-  });
-});
-
 if (excludeBtnEl) {
   excludeBtnEl.addEventListener('click', () => {
     void toggleExclusion();
@@ -174,7 +158,6 @@ async function init() {
     toggle.disabled = false;
     applyExcludedState();
     syncGainControlState();
-    syncPresetControlState();
 
     if (excluded) {
       renderStatus({ indicator: 'gray', text: EXCLUDED_TEXT, excluded: true });
@@ -205,20 +188,17 @@ function startStatusPolling() {
  */
 function applyExcludedState() {
   if (excludeBtnEl) {
-    excludeBtnEl.setAttribute('aria-pressed', excluded ? 'true' : 'false');
-    excludeBtnEl.setAttribute('aria-label', excluded ? 'Stop excluding this site' : 'Exclude this site');
-    excludeBtnEl.title = excluded ? 'Stop excluding this site' : 'Exclude this site';
+    excludeBtnEl.textContent = excluded ? 'Stop excluding' : 'Exclude site';
+    excludeBtnEl.dataset.excluded = excluded ? 'true' : 'false';
   }
   if (excluded) {
     toggle.disabled = true;
     gainSlider.disabled = true;
-    syncPresetControlState();
     renderStatus({ indicator: 'gray', text: EXCLUDED_TEXT, excluded: true });
     return;
   }
   toggle.disabled = false;
   syncGainControlState();
-  syncPresetControlState();
 }
 
 /**
@@ -272,7 +252,6 @@ async function toggleExclusion() {
 function disableAll(statusText) {
   toggle.disabled = true;
   gainSlider.disabled = true;
-  syncPresetControlState();
   renderStatus({ indicator: 'gray', text: statusText });
 }
 
@@ -355,7 +334,6 @@ async function toggleSite() {
     saveInFlight -= 1;
     toggle.disabled = false;
     syncGainControlState();
-    syncPresetControlState();
   }
 }
 
@@ -505,15 +483,6 @@ async function requestSliderSoftWake() {
   await softWakePromise;
 }
 
-function applyPreset(gainDb) {
-  if (gainSlider.disabled) return;
-
-  const nextGain = popupShared.clampGainDb(gainDb);
-  gainSlider.value = String(nextGain);
-  renderGain(nextGain);
-  void saveGainInner(nextGain);
-}
-
 async function refreshDocumentStatus() {
   const requestToken = ++statusRequestToken;
 
@@ -605,10 +574,6 @@ async function refreshDocumentStatus() {
     });
   } catch {
     if (requestToken !== statusRequestToken) return;
-    if (toggle.checked && runtimeActivationState === 'restricted') {
-      renderStatus({ indicator: 'gray', text: runtimeActivationMessage || 'Enabled. Reload on a supported page.' });
-      return;
-    }
     if (toggle.checked && runtimeActivationState === 'reloading') {
       renderStatus({ indicator: 'gray', text: runtimeActivationMessage || RELOADING_TEXT });
       return;
@@ -633,9 +598,6 @@ async function refreshDocumentStatus() {
 function getStatusText({ enabled, processing, activating, lastError, hookPresent, unprocessed }) {
   if (enabled && lastError) return lastError;
   if (enabled && processing) return 'Normalizer active.';
-  if (enabled && runtimeActivationState === 'restricted') {
-    return runtimeActivationMessage || 'Enabled. Reload on a supported page.';
-  }
   if (enabled && runtimeActivationState === 'reloading') {
     return runtimeActivationMessage || RELOADING_TEXT;
   }
@@ -705,16 +667,8 @@ function applyControlState({ enabled, gainDb }) {
   renderGain(gainSlider.value);
   lastPersistedGain = popupShared.clampGainDb(gainDb);
   syncGainControlState();
-  syncPresetControlState();
 }
 
 function syncGainControlState() {
   gainSlider.disabled = toggle.disabled || !toggle.checked;
-}
-
-function syncPresetControlState() {
-  const disabled = toggle.disabled || !toggle.checked;
-  for (const button of presetButtons) {
-    button.disabled = disabled;
-  }
 }

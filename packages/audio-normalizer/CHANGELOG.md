@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The popup is down to four controls: one per-site switch, one gain slider, Reset and one per-site exclude button. The Speech/Music/Boost presets and the −20 LUFS mode note are gone; Reset zeroes the gain for the site and leaves the switch on, and the exclude button is now a labelled 24px target.
+
 ## [5.6.6] - 2026-11-25
 
 - Local patch version for the staged Audio Normalizer fixes: stale status replies, stale session replies and equal-ID replies are dropped so an older event cannot overwrite the current session.

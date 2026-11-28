@@ -295,12 +295,6 @@ function loadPopup({ tabUrl, runtimeSendMessage, tabsSendMessage }) {
     'exclude-btn': makeFakeEl('exclude-btn'),
     'status-text': makeFakeEl('status-text'),
   };
-  const presetButtons = ['speech', 'music', 'boost'].map((p) => {
-    const b = makeFakeEl(`preset-${p}`);
-    b.dataset.preset = p;
-    return b;
-  });
-  presetButtons[Symbol.iterator] = Array.prototype[Symbol.iterator];
   const intervals = [];
   const tabsCalls = [];
   const runtimeCalls = [];
@@ -314,7 +308,6 @@ function loadPopup({ tabUrl, runtimeSendMessage, tabsSendMessage }) {
     Date,
     document: {
       getElementById: (id) => els[id] || null,
-      querySelectorAll: () => presetButtons,
     },
     window: { addEventListener: () => {} },
     chrome: {
@@ -339,7 +332,7 @@ function loadPopup({ tabUrl, runtimeSendMessage, tabsSendMessage }) {
   vm.createContext(sandbox);
   vm.runInContext(src('shared.js'), sandbox, { filename: 'shared.js' });
   vm.runInContext(src('popup.js'), sandbox, { filename: 'popup.js' });
-  return { sandbox, els, presetButtons, intervals, tabsCalls, runtimeCalls };
+  return { sandbox, els, intervals, tabsCalls, runtimeCalls };
 }
 
 test('record round-trip: excluded survives normalize and defaults to false', () => {
@@ -1232,8 +1225,8 @@ test('popup: excluded state disables the controls and offers undo', async () => 
   await settle(60);
   assert.equal(popup.els.toggle.disabled, true, 'Active switch disabled');
   assert.equal(popup.els['gain-slider'].disabled, true, 'gain slider disabled');
-  assert.equal(popup.els['exclude-btn'].attrs['aria-pressed'], 'true');
-  assert.equal(popup.els['exclude-btn'].attrs['aria-label'], 'Stop excluding this site');
+  assert.equal(popup.els['exclude-btn'].textContent, 'Stop excluding');
+  assert.equal(popup.els['exclude-btn'].dataset.excluded, 'true');
   assert.match(String(popup.els['status-text'].textContent), /nothing runs/i, 'one quiet line of text');
   assert.equal(popup.intervals.length, 0, 'no status polling while excluded');
 });
@@ -1253,8 +1246,8 @@ test('popup: clicking the exclude button persists only the exclusion flag', asyn
     tabsSendMessage: async () => ({ ok: true }),
   });
   await settle(60);
-  assert.equal(popup.els['exclude-btn'].attrs['aria-pressed'], 'false');
-  assert.equal(popup.els['exclude-btn'].attrs['aria-label'], 'Exclude this site');
+  assert.equal(popup.els['exclude-btn'].textContent, 'Exclude site');
+  assert.equal(popup.els['exclude-btn'].dataset.excluded, 'false');
 
   await popup.els['exclude-btn'].fire('click');
   await settle(60);
@@ -1262,7 +1255,8 @@ test('popup: clicking the exclude button persists only the exclusion flag', asyn
   assert.equal(writes.length, 1);
   assert.deepEqual(clone(writes[0].set), { excluded: true }, 'only the exclusion field is sent');
   assert.equal(popup.els.toggle.disabled, true, 'controls disable immediately');
-  assert.equal(popup.els['exclude-btn'].attrs['aria-pressed'], 'true');
+  assert.equal(popup.els['exclude-btn'].textContent, 'Stop excluding');
+  assert.equal(popup.els['exclude-btn'].dataset.excluded, 'true');
 
   await popup.els['exclude-btn'].fire('click');
   await settle(60);
@@ -1273,17 +1267,16 @@ test('popup: clicking the exclude button persists only the exclusion flag', asyn
   assert.equal(popup.els['gain-slider'].value, '4', 'prior gain intact');
 });
 
-test('popup: the exclude control is a 16px inline SVG button in the site row', () => {
+test('popup: the exclude control is a labelled button in the footer', () => {
   const html = src('popup.html');
   const css = src('popup.css');
-  const button = html.match(/<button[^>]*id="exclude-btn"[\s\S]*?<\/button>/);
-  assert.ok(button, 'the button exists');
-  assert.match(button[0], /<svg[^>]*width="16"[^>]*height="16"/, 'inline 16x16 SVG');
-  assert.match(button[0], /aria-pressed="false"/);
-  assert.match(button[0], /aria-label="Exclude this site"/);
-  assert.ok(html.indexOf('id="exclude-btn"') > html.indexOf('id="status-pill"'), 'sits beside the status pill');
-  assert.match(css, /#exclude-btn[\s\S]*?border-radius:\s*4px/);
-  assert.match(css, /#exclude-btn[^{]*\{\s*[^}]*color:\s*var\(--muted\)/);
-  assert.match(css, /#exclude-btn:hover[^{]*\{[^}]*var\(--ink\)/);
-  assert.match(css, /#exclude-btn\[aria-pressed="true"\][^{]*\{[^}]*var\(--bad\)/);
+  const buttons = html.match(/<button\b[^>]*>[\s\S]*?<\/button>/g) || [];
+  assert.equal(buttons.length, 2, 'the popup has exactly two buttons');
+  assert.match(buttons[0], /id="reset-btn"/, 'Reset is present');
+  assert.match(buttons[0], />\s*Reset\s*</, 'with a visible label');
+  assert.match(buttons[1], /id="exclude-btn"/, 'and the other is the exclude control');
+  assert.match(buttons[1], /data-excluded="false"/, 'in the not-excluded state');
+  assert.match(buttons[1], />\s*Exclude site\s*</, 'with visible text, not an icon');
+  assert.match(css, /#exclude-btn[^{]*\{[^}]*min-height:\s*24px/, 'a 24px minimum target');
+  assert.match(css, /#exclude-btn\[data-excluded="true"\][^{]*\{[^}]*var\(--bad\)/, 'the excluded state is coloured bad');
 });

@@ -48,7 +48,7 @@ Then, per extension:
 
 ## Configure it
 
-- **Audio Normalizer** — the gain slider runs -12 to +12 dB; Speech, Music and Boost are presets. The setting is per site.
+- **Audio Normalizer** — one gain slider (-12 to +12 dB), a Reset button that zeroes the gain for the site and leaves the switch on, plus a per-site exclude button; the setting is per site.
 - **Slowed Reverb** — speed runs 0.7x to 1.3x and reverb runs 0 to 100 percent.
 - **Native hosts** — `install-host.mjs` writes the registration for one presence extension. `--check` verifies it without writing. Re-run the installer after a host update.
 - **Wiring check** — `node scripts/verify-integration.mjs` reads the tree and installs nothing.

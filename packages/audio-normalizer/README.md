@@ -30,13 +30,13 @@ Then load `my-chromium-extensions/packages/audio-normalizer` unpacked with the s
 
 ## Use it
 
-Open a page that plays audio and click the extension icon. The popup names the current site. Switch **Active** on; the setting is saved per site (each hostname opts in separately), so it holds across tabs. Drag the gain slider (-12 to +12 dB) for an immediate output trim, or pick **Speech**, **Music**, or **Boost**. Click the reset button to zero the gain for this site (Active stays on).
+Open a page that plays audio and click the extension icon. The popup names the current site. Switch **Active** on; the setting is saved per site (each hostname opts in separately), so it holds across tabs. Drag the gain slider (-12 to +12 dB) for an immediate output trim, click **Reset** to zero the gain for this site (the switch stays on), or click **Exclude site** to stop normalizing this site.
 
 ## What you get
 
 - One **Active** **switch** per site, remembered across tabs.
 - Human-comfort loudness: within-program levelling (dead-band AGC — no adaptation inside ±2.5 LU of the program, engagement outside it) plus slow normalisation toward a fixed **-20 LUFS** program target, driven by gated integrated loudness per ITU-R BS.1770-4 / EBU R128 and measured from the levelled signal.
-- Speech, Music, and Boost presets plus a manual gain slider (-12 to +12 dB); the slider is an immediate output trim, separate from the target.
+- A manual gain slider (-12 to +12 dB) with a Reset button that zeroes the gain for the site and leaves the switch on, plus a per-site exclude button; the slider is an immediate output trim, separate from the target.
 - Fully local processing: your audio never leaves the browser.
 - A true-peak limiter holds output at or below **-1 dBTP**, measured offline against ffmpeg's true-peak meter across a fixture set and an adversarial sweep — not verified in a browser, and not a guarantee for every possible signal.
 - Startup: while an element attaches, it stays silent until its audio graph is routed (a 1.5-second fallback restores it if routing never completes), and the session pre-warms before your first playback. A loud cold start is attenuated toward the target from a ~50 ms probe (fast ~0.08 s slew): the 5.4.1 chain was already -9.30 dB down at 0.5 s (time to -6 dB 0.21 s), while this one reads -9.57 dB at 0.3 s (time to -6 dB 0.12 s), -9.96 dB by 1.0 s, and settles at -10.00 dB — measured offline in the loudness harness, not verified in a browser.

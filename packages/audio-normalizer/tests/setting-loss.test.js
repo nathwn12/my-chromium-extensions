@@ -189,13 +189,6 @@ function loadPopup({ tabUrl, runtimeSendMessage, tabsSendMessage }) {
     'status-text': makeFakeEl('status-text'),
   };
   els['gain-slider'].value = '0';
-  const presetButtons = ['speech', 'music', 'boost'].map((p) => {
-    const b = makeFakeEl(`preset-${p}`);
-    b.dataset.preset = p;
-    b.disabled = false;
-    return b;
-  });
-  presetButtons[Symbol.iterator] = Array.prototype[Symbol.iterator];
   const unloadHandlers = [];
   const intervals = [];
   const tabsCalls = [];
@@ -211,7 +204,6 @@ function loadPopup({ tabUrl, runtimeSendMessage, tabsSendMessage }) {
     Date: fakeDate,
     document: {
       getElementById: (id) => els[id] || null,
-      querySelectorAll: () => presetButtons,
     },
     window: { addEventListener: (t, fn) => { if (t === 'unload') unloadHandlers.push(fn); } },
     chrome: {
@@ -244,7 +236,7 @@ function loadPopup({ tabUrl, runtimeSendMessage, tabsSendMessage }) {
   vm.createContext(sandbox);
   vm.runInContext(src('shared.js'), sandbox, { filename: 'shared.js' });
   vm.runInContext(src('popup.js'), sandbox, { filename: 'popup.js' });
-  return { sandbox, els, presetButtons, unloadHandlers, intervals, tabsCalls, fakeDate };
+  return { sandbox, els, unloadHandlers, intervals, tabsCalls, fakeDate };
 }
 async function settle(ms = 30) { await new Promise((r) => setTimeout(r, ms)); }
 
@@ -493,7 +485,41 @@ test('defect3b: closing the popup cannot lose work (release persist lands after 
   assert.equal(stored['site:youtube.com'].gainDb, 6, 'release value lands in storage after simulated teardown');
 });
 
-test('defect3c: reset is a single storage write carrying gain alone', async () => {
+test('defect3c-reset: reset from a non-zero gain is one write carrying only gainDb: 0', async () => {
+  const storage = createFakeStorage({
+    'site:youtube.com': { enabled: true, gainDb: 6, seq: 1, mirror: true },
+  });
+  const bg = loadBackground(storage);
+  const sent = [];
+  const runtimeSendMessage = async (msg) => {
+    if (msg.type === 'SET_SITE_STATE') sent.push(clone(msg));
+    return bg.sendMessage(msg);
+  };
+  const popup = loadPopup({
+    tabUrl: 'https://youtube.com/watch',
+    runtimeSendMessage,
+    tabsSendMessage: async (tabId, msg) => {
+      if (msg?.type === 'GET_DOCUMENT_STATUS') return { ok: true, enabled: true, hostname: 'youtube.com', siteKey: 'youtube.com', gainDb: 6, hookAlive: false, hookActive: false, activating: false, lastError: '', indicator: 'gray' };
+      return { ok: true };
+    },
+  });
+  await settle(50);
+  const writesBefore = storage._setCalls.length;
+  popup.els['gain-slider'].disabled = false;
+  popup.els.toggle.checked = true;
+  await popup.els['reset-btn'].fire('click');
+  await settle(60);
+  assert.equal(sent.length, 1, 'reset sends exactly one SET_SITE_STATE');
+  assert.deepEqual(sent[0].set, { gainDb: 0 }, 'the intent carries only gainDb: 0');
+  const writes = storage._setCalls.slice(writesBefore).filter((w) => w['site:youtube.com']);
+  assert.equal(writes.length, 1, 'reset performs exactly ONE per-site storage write');
+  const rec = writes[0]['site:youtube.com'];
+  assert.equal(rec.gainDb, 0);
+  assert.equal(rec.enabled, true, 'reset touches only gain, never enabled');
+  assert.ok(Object.keys(writes[0]).length === 1 && writes[0]['site:youtube.com'], 'single top-level per-site key');
+});
+
+test('defect3c: a slider drag back to zero is a single storage write carrying gain alone', async () => {
   const storage = createFakeStorage({
     'site:youtube.com': { enabled: true, gainDb: 6, seq: 1, mirror: true },
   });
@@ -511,7 +537,12 @@ test('defect3c: reset is a single storage write carrying gain alone', async () =
   const writesBefore = storage._setCalls.length;
   popup.els['gain-slider'].disabled = false;
   popup.els.toggle.checked = true;
-  await popup.els['reset-btn'].fire('click');
+  // Drag to another value and back to zero: only the release persists.
+  for (const v of ['2', '0']) {
+    popup.els['gain-slider'].value = v;
+    await popup.els['gain-slider'].fire('input');
+  }
+  await popup.els['gain-slider'].fire('change');
   await settle(60);
   const writes = storage._setCalls.slice(writesBefore).filter((w) => w['site:youtube.com']);
   assert.equal(writes.length, 1, `reset performs exactly ONE per-site storage write (got ${writes.length})`);
@@ -817,6 +848,33 @@ test('popup reset renders the returned truth, never the sent values', async () =
   await popup.els['reset-btn'].fire('click');
   await settle(20);
   assert.equal(popup.els['gain-slider'].value, '4', 'reset displays the returned gain, not the sent 0');
+});
+
+test('popup slider drag renders the returned truth, never the sent values', async () => {
+  const runtimeSendMessage = async (msg) => {
+    if (msg.type === 'GET_SITE_STATE') return { ok: true, enabled: true, gainDb: 6, siteKey: 'youtube.com', seq: 3 };
+    if (msg.type === 'SET_SITE_STATE') return { ok: true, enabled: true, gainDb: 4, siteKey: 'youtube.com', seq: 4 };
+    return { ok: true };
+  };
+  const popup = loadPopup({
+    tabUrl: 'https://www.youtube.com/watch?v=1',
+    runtimeSendMessage,
+    tabsSendMessage: async (tabId, msg) => {
+      if (msg?.type === 'GET_DOCUMENT_STATUS') return { ok: true, enabled: true, hostname: 'youtube.com', siteKey: 'youtube.com', gainDb: 6, hookAlive: false, hookActive: false, activating: false, lastError: '', indicator: 'gray' };
+      return { ok: true };
+    },
+  });
+  await settle(50);
+  popup.els['gain-slider'].disabled = false;
+  popup.els.toggle.checked = true;
+  // Drag to another value and back to zero: the popup must show the returned truth, not the sent 0.
+  for (const v of ['2', '0']) {
+    popup.els['gain-slider'].value = v;
+    await popup.els['gain-slider'].fire('input');
+  }
+  await popup.els['gain-slider'].fire('change');
+  await settle(20);
+  assert.equal(popup.els['gain-slider'].value, '4', 'slider shows the returned gain, not the sent 0');
 });
 
 test('popup treats a truth-less response as a failure, not a success', async () => {

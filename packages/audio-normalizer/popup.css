@@ -3,82 +3,61 @@
   --accent: #c97a3a;
 }
 
-#exclude-btn {
-  appearance: none;
-  background: none;
-  border: 1px solid transparent;
-  border-radius: 4px;
-  padding: 0;
-  width: 16px;
-  height: 16px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--muted);
-  cursor: pointer;
-  flex-shrink: 0;
+.gain {
+  display: grid;
+  gap: 6px;
 }
 
-#exclude-btn:hover {
+.gain-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+#gain-value {
+  font-variant-numeric: tabular-nums;
   color: var(--ink);
 }
 
-#exclude-btn[aria-pressed="true"] {
-  color: var(--bad);
-}
-
-#exclude-btn:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-}
-
-#exclude-btn:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-
-#exclude-btn svg {
-  display: block;
-}
-
-.gain-readout {
-  margin: 0;
-  text-align: center;
-  font-size: 28px;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-}
-
-.preset-row {
+footer {
   display: flex;
+  justify-content: space-between;
+  align-items: center;
   gap: 8px;
-  flex-wrap: wrap;
-  justify-content: center;
 }
 
-.preset-button {
-  appearance: none;
+#exclude-btn,
+#reset-btn {
+  min-height: 24px;
   border: 1px solid var(--line);
   border-radius: 999px;
-  padding: 4px 12px;
-  background: #0f1319;
+  padding: 2px 10px;
+  background: transparent;
   color: var(--muted);
-  font: inherit;
   font-size: 12px;
   cursor: pointer;
 }
 
-.preset-button:hover {
+#exclude-btn:hover,
+#reset-btn:hover {
   color: var(--ink);
-  border-color: #3a4350;
 }
 
-.preset-button:disabled {
+#exclude-btn:focus-visible,
+#reset-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+#exclude-btn:disabled,
+#reset-btn:disabled {
   opacity: 0.55;
   cursor: not-allowed;
 }
 
-.preset-button:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
+#exclude-btn[data-excluded="true"] {
+  color: var(--bad);
+  border-color: color-mix(in srgb, var(--bad) 40%, var(--line));
 }

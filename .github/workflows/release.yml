@@ -48,7 +48,7 @@ jobs:
           rm -rf dist && mkdir -p dist
           case "$PRODUCT" in
             audio-normalizer)
-              (cd packages/audio-normalizer && zip -r ../../dist/audio-normalizer.zip manifest.json background.js shared.js content-script.js page-hook.js audio/normalizer-worklet.js popup.html popup.css popup.js icons/icon16.png icons/icon24.png icons/icon32.png icons/icon48.png icons/icon128.png)
+              (cd packages/audio-normalizer && zip -r ../../dist/audio-normalizer.zip manifest.json background.js shared.js content-script.js page-hook.js audio/normalizer-worklet.js popup.html popup.css popup.js icons/icon16.png icons/icon24.png icons/icon32.png icons/icon48.png icons/icon128.png ui-kit/tokens.css ui-kit/components.css)
               ;;
             slowed-reverb)
               (cd packages/slowed-reverb && zip -r ../../dist/slowed-reverb.zip manifest.json background.js shared.js player-actions.js content-script.js page-hook.js dattorro-worklet.js popup.html popup.css popup.js icons/icon16.png icons/icon24.png icons/icon32.png icons/icon48.png icons/icon128.png)

@@ -350,8 +350,10 @@ test('item10: reset zeroes gain, per-site opt-in copy', () => {
   const manifest = JSON.parse(read('manifest.json'));
   assert.ok(!/every tab/i.test(manifest.description), 'no every-tab claim');
   assert.ok(/per-site/i.test(manifest.description), 'per-site opt-in stated');
-  assert.ok(!/return a site to defaults/i.test(read('README.md')), 'no defaults claim');
-  assert.ok(/zero/i.test(read('README.md')), 'reset zeroes gain');
+  const readme = read('README.md');
+  assert.ok(!/return a site to defaults/i.test(readme), 'no defaults claim');
+  assert.ok(/zero/i.test(readme), 'reset zeroes gain');
+  assert.ok(/gain slider/i.test(readme), 'the gain slider is documented');
 });
 
 test('item1: own createMediaElementSource capture is not marked __tnWebAudio', async () => {
@@ -631,11 +633,6 @@ function loadPopup({ tabUrl, runtimeSendMessage, tabsSendMessage }) {
     'status-pill': makeFakeEl('status-pill'),
     'status-text': makeFakeEl('status-text'),
   };
-  const presetButtons = ['speech', 'music', 'boost'].map((p) => {
-    const b = makeFakeEl(`preset-${p}`);
-    b.dataset.preset = p;
-    return b;
-  });
   const sandbox = {
     console,
     setTimeout, clearTimeout,
@@ -645,7 +642,6 @@ function loadPopup({ tabUrl, runtimeSendMessage, tabsSendMessage }) {
     Date,
     document: {
       getElementById: (id) => els[id] || null,
-      querySelectorAll: () => presetButtons,
     },
     window: { addEventListener: () => {} },
     chrome: {

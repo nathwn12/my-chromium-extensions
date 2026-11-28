@@ -24,8 +24,8 @@
 - Feed reset (`docs/SPEC_FEED.md`): the worklet's `reset-program` contract folds `currentAgcDb` into `currentLoudnessDb` (total-clamp bound), zeroes AGC, clears meters/probe/pre-cut/warm, and preserves slow gain/trim/delay/limiter/TP histories/`totalFrames`/target/mode — applied gain never moves at the reset instant. `page-hook.js` sends exactly one `reset-program` per program via generation tokens (`__tnProgramGen` + `elementProgramGenerations` WeakMap, tab-wide `currentProgramGeneration`, per-session `lastResetGeneration`/`pendingResetGeneration`, flushed in `attachWorklet`/`notifySessionStart`). Cold probe is `FAST_ONSET_SECONDS` 0.05 / `FAST_ONSET_TC_SECONDS` 0.08, cut-only `desired = min(slow, probe)`. Never reset at attach time.
 
 ## Popup / QA Constraints
-- Preserve popup IDs — QA reads them directly: `#hostname`, `#status-pill`, `#status-text`, `#toggle`, `#gain-slider`, `#gain-value`, `#reset-btn`.
-- Popup disables gain/preset controls unless the per-site toggle is on.
+- Preserve popup IDs — QA reads them directly: `#hostname`, `#status-pill`, `#status-text`, `#toggle`, `#gain-slider`, `#gain-value`.
+- The popup carries four controls (per-site switch, gain slider, Reset, per-site exclude button) and disables the slider unless the switch is on.
 
 ## Git Hygiene
 - Run `git status` before committing. `.gitignore` is aggressive (`*.json` outside `package.json`, `qa/`) — new docs/config are silently ignored; only already-tracked files stay tracked (`tests/` is tracked and not ignored).

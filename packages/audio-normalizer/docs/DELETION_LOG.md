@@ -1,5 +1,24 @@
 # Code Deletion Log
 
+## [2026-11-28] Popup simplification — presets, Reset and the mode note are removed (SUPERSEDED)
+
+### Deleted
+- `popup.html`: the Speech/Music/Boost preset row, the footer Reset button, the −20 LUFS mode-note paragraph and the 16px inline-SVG exclude control in the header.
+- `popup.js`: `PRESETS`, `presetButtons`, `applyPreset()`, `syncPresetControlState()`, `resetBtnEl`, its click listener and `saveResetInner()`, plus the two dead `runtimeActivationState === 'restricted'` branches (`'restricted'` is never assigned anywhere; grep went from 2 hits to 0).
+- `popup.css`: `.gain-readout`, `.preset-row`, `.preset-button` and the 16px icon-button rules for `#exclude-btn`.
+
+### Replacement
+- Exactly three popup controls remain: the per-site switch, the gain slider and a labelled `#exclude-btn` in the footer, driven by visible text plus `data-excluded` instead of `aria-pressed`/`aria-label` icon state.
+
+### Verification
+- `node ../../scripts/run-tests.mjs tests` — 188 pass / 0 fail (was 185 pass; `tests/popup-surface.test.js` adds three boundary tests).
+- `bun run typecheck` — clean; `node scripts/docs-check.mjs --strict` — 0 findings; `bunx markdownlint-cli2 "packages/audio-normalizer/*.md" "README.md"` — 0 issues.
+- `node qa/feed-transition-qa.cjs` and `node qa/program-boundary-qa.cjs` — ALL PASS.
+- Audio Safety: pure Node/static checks only; no browser, no playback.
+
+### Superseded later the same day
+- Reset was restored at the owner's request; only the presets and the mode note stay deleted.
+
 ## [2026-11-13] 5.6.2 — the captureStream live-tap experiment is reverted
 
 ### Deleted (revert of 51951e1, 32fbde6, 17c9443)

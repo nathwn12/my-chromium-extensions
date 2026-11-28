@@ -15,38 +15,29 @@
       <img src="icons/icon24.png" alt="" width="24" height="24">
       <h1>Audio Normalizer</h1>
       <span id="status-pill" class="pill" data-state="idle">Waiting</span>
-      <button type="button" id="exclude-btn" aria-pressed="false" aria-label="Exclude this site" title="Exclude this site">
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true" focusable="false">
-          <circle cx="8" cy="8" r="6.25"></circle>
-          <line x1="3.6" y1="12.4" x2="12.4" y2="3.6"></line>
-        </svg>
-      </button>
     </header>
 
     <p id="hostname" class="detail">...</p>
 
-    <section class="card" aria-label="Gain">
-      <p class="gain-readout" id="gain-value" aria-live="polite">+0 dB</p>
-      <input type="range" id="gain-slider" min="-12" max="12" step="0.5" value="0" aria-label="Adjust gain">
-      <div class="preset-row" role="group" aria-label="Quick gain presets">
-        <button type="button" class="preset-button" data-preset="speech">Speech</button>
-        <button type="button" class="preset-button" data-preset="music">Music</button>
-        <button type="button" class="preset-button" data-preset="boost">Boost</button>
-      </div>
-    </section>
-
     <label class="toggle" for="toggle">
       <input type="checkbox" id="toggle" switch role="switch">
-      <span>Active</span>
+      <span>Normalize this site</span>
     </label>
 
-    <p class="detail mode-note">Tab loudness moves toward a −20 LUFS program target, with quiet passages lifted and loud ones held back.</p>
+    <div class="gain">
+      <div class="gain-head">
+        <label for="gain-slider">Gain</label>
+        <span id="gain-value" aria-live="polite">+0 dB</span>
+      </div>
+      <input type="range" id="gain-slider" min="-12" max="12" step="0.5" value="0">
+    </div>
+
+    <p id="status-text" class="detail" role="status">Checking…</p>
 
     <footer>
       <button type="button" id="reset-btn">Reset</button>
+      <button type="button" id="exclude-btn" data-excluded="false">Exclude site</button>
     </footer>
-
-    <p id="status-text" class="detail" role="status">Checking…</p>
   </main>
   <script src="shared.js"></script>
   <script src="popup.js"></script>
