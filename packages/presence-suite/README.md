@@ -1,4 +1,7 @@
-# Presence Suite
+<p align="center">
+  <img src="icons/icon128.png" width="128" height="128" alt="Presence Suite icon" />
+</p>
+<h1 align="center">Presence Suite</h1>
 
 One MV3 extension and one native messaging host publish Discord rich presence
 for two sites: **YouTube Music** (Listening) and **Crunchyroll** (Watching).
