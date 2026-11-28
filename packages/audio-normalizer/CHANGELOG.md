@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.7.1] - 2026-11-28
+
+### Changed
+
+- The popup now uses the shared ui-kit: a single accent pair with the kit's tokens and classes, the native `switch` control, and no `switch.js` polyfill.
+- The accent is the documented light/dark pair `light-dark(#9e521d, #df8f4d)` instead of the flat `#c97a3a`, so the popup keeps the same contrast in both colour schemes.
+
 ## [5.7.0] - 2026-11-28
 
 ### Changed

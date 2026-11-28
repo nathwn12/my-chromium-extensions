@@ -30,6 +30,7 @@ The extension's desktop IPC path is the only supported product transport.
 | 2026-11-26 | The package version is 1.1.20. | `manifest.json`, `package.json`, root lockfile, root README and this package changelog. |
 | 2026-11-26 | The package version is 1.1.21. | `manifest.json`, `package.json`, root lockfile, root README and this package changelog. |
 | 2026-11-26 | The package version is 1.1.22. | `manifest.json`, `package.json`, root lockfile, root README and this package changelog. |
+| 2026-11-28 | The package version is 1.1.23. | `manifest.json`, `package.json`, root lockfile, `CHANGELOG.md` and `docs-check.json`. |
 | 2026-11-26 | The player progress bar (`#progress-bar` aria values, then the mini-player slider) is authoritative for position and duration over a stale or DASH-grown media element; the element's `playbackRate` is read independently even when the bar supplies the position. | `extract-youtube.js`, `background.js`, ui-progress tests. |
 
 The package check validates the emitted activity payload, not Discord's UI. No live observation in this seam establishes that Discord's member list actually renders `state` when `status_display_type: 1` is present.

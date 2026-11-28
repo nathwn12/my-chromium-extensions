@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.13] - 2026-11-28
+
+- The popup now uses the shared ui-kit: a single accent pair with the kit's tokens and classes, the native `switch` control, and kit classes for the status pill, sliders and Reset button.
+- The original icon set is back at all five shipped sizes.
+
 ## [1.2.12] - 2026-11-25
 
 - Local patch version for the staged Slowed Reverb fixes: failed popup saves keep a visible receipt, settings writes are serialized, retired listeners are dropped, and a pending UI edit no longer starts a loop settle while a source read is in flight.
