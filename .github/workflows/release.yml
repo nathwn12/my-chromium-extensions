@@ -28,7 +28,7 @@ permissions:
 
 # One release run at a time. Queued, never cancelled.
 concurrency:
-  group: release
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.product || github.ref_name }}
   cancel-in-progress: false
 
 jobs:

@@ -35,3 +35,13 @@ test("release workflow checks the shipped zip before publishing", () => {
     /node scripts\/check-release-asset\.mjs --zip "dist\/\$PRODUCT\.zip" --product "\$PRODUCT"/
   );
 });
+
+test("release workflow uses a per-product concurrency group", () => {
+  // A constant group queues only one pending run; five tag pushes dropped three.
+  assert.doesNotMatch(workflow, /group:\s*release\r?\n/);
+  assert.match(
+    workflow,
+    /group:\s*release-\$\{\{\s*github\.event_name == 'workflow_dispatch'\s*&&\s*inputs\.product\s*\|\|\s*github\.ref_name\s*\}\}/
+  );
+  assert.match(workflow, /cancel-in-progress:\s*false/);
+});
