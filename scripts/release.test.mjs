@@ -150,6 +150,18 @@ test("CLI: an explicit version is rejected for two packages", () => {
   assert.deepEqual(snapshot(dir), before);
 });
 
+test("CLI: a version in the package position explains that it must come last", () => {
+  const { dir } = fixture();
+  const before = snapshot(dir);
+  const result = runCli(dir, ["audio-normalizer", "5.9.0", "presence-suite"]);
+  assert.equal(result.status, 1);
+  assert.equal(
+    result.stderr.trim(),
+    "release: an explicit version applies to exactly one package and must come last: release.mjs <package> <x.y.z> [flags]",
+  );
+  assert.deepEqual(snapshot(dir), before, "nothing was written");
+});
+
 test("CLI: dirty-path refusal fires only for a path about to be written", () => {
   const unrelated = fixture();
   writeFileSync(join(unrelated.dir, "README.md"), "unrelated work\n");

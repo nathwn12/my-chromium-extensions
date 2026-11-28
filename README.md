@@ -82,6 +82,14 @@ my-chromium-extensions/
 └── .github/     ci, release, supply-chain
 ```
 
+### Releasing
+
+```sh
+node scripts/release.mjs <package> [<package>...] <major|minor|patch|x.y.z> [--commit] [--tag] [--push]
+```
+
+One command bumps every version source for one or more packages — `manifest.json`, `package.json`, `bun.lock` and the top released CHANGELOG heading. `--dry-run` prints the plan and writes nothing; an explicit version applies to one package and must come last. `--tag` moves the stable product tag — the package directory name, exactly what `.github/workflows/release.yml` triggers on — and `--push` sends the branch and tags; each product publishes under its own concurrency group. A version disagreement between those four sources fails `node scripts/check-versions.mjs` in CI and in the release workflow before the zip is built.
+
 ## Status
 
 **Experimental** - pre-release; interfaces may change.

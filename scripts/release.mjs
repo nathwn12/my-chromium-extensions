@@ -7,6 +7,7 @@ import { buildPlan, validatePackageName } from "./release-lib.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const FLAGS = new Set(["--dry-run", "--commit", "--tag", "--push"]);
+const EXPLICIT_VERSION = /^\d+\.\d+\.\d+$/;
 const USAGE =
   "usage: node scripts/release.mjs <package> [<package>...] <major|minor|patch|x.y.z> [--dry-run] [--commit] [--tag] [--push]";
 
@@ -31,6 +32,9 @@ function parseArgs(args) {
   const bump = positional.at(-1);
   const pkgs = positional.slice(0, -1);
   if (!bump || pkgs.length === 0) fail(USAGE);
+  if (pkgs.some((pkg) => EXPLICIT_VERSION.test(pkg))) {
+    fail("an explicit version applies to exactly one package and must come last: release.mjs <package> <x.y.z> [flags]");
+  }
   for (const pkg of pkgs) {
     try { validatePackageName(pkg); } catch (error) { fail(error.message); }
   }
