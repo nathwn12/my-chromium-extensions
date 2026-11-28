@@ -12,7 +12,8 @@
  * global; createWorker takes the API object. Identity comes from config.js,
  * activity rules from activity.js and sources/crunchy/activity.js, status copy
  * from bridge-status.js. A total seen once is cached locally (TOTALS_KEY) and
- * reused on a cold sample so the first card is timed; a live total always wins.
+ * reused on a cold sample so the first card is timed; a live total wins only
+ * with ownership evidence, else the remembered one drives the outgoing card.
  */
 
 import {
@@ -61,6 +62,11 @@ export const UPDATE_WINDOW_MS = 20000;
 export const MIN_GAP_MS = 1500;
 /** Playback rates off 1x are re-anchored on this cadence. */
 export const RATE_INTERVAL_MS = 2500;
+/**
+ * A playhead this close to the start proves a fresh play. Mirrors the
+ * content script's FRESH_POSITION_SECONDS hold-gate evidence.
+ */
+export const FRESH_POSITION_SECONDS = 2;
 /**
  * Cap on remembered totals; least recently remembered entries go first.
  * ~80 bytes per entry x 1000 = ~80 KB against chrome.storage.local's 10 MB
@@ -263,6 +269,8 @@ export function createWorker({
   let lastTotalsWriteAt = -Infinity;
   /** Session state is per source; the other source's publishes cannot add plays. */
   const lastRemembered = new Map();
+  /** Last published timed sample per source; a changed total mid-play is stale. */
+  const lastTimed = new Map();
   let restored = false;
   let tabsReadable = true;
 
@@ -711,8 +719,53 @@ export function createWorker({
   }
 
   /**
+   * A changed live total for an identity we already remember is trusted only
+   * with ownership evidence. The worker has no media-element source, so a
+   * near-zero playhead counts only on a coherent identity with no timed sample
+   * yet in this play - a cold start or a genuinely new source. A read taken
+   * mid-play fails closed: its total belongs to an outgoing element. A
+   * different key has no remembered total and is always accepted. Mirrors the
+   * content script's ownsFreshTiming / playheadInside / pendingTiming gates.
+   */
+  function ownsLiveTotal(source, state, key, cachedTotal, live) {
+    if (!(Number.isFinite(live) && live > 0)) return true;
+    if (!(Number.isFinite(cachedTotal) && cachedTotal > 0)) return true;
+    if (Math.abs(cachedTotal - live) <= 0.5) return true;
+    if (lastTimed.get(source) === key) return false;
+    const coherent = source === SOURCE_YOUTUBE_MUSIC
+      ? Boolean(confirmedYoutubeId(state))
+      : Boolean(key);
+    if (!coherent) return false;
+    const raw = state.position;
+    const position = Number(raw);
+    const measured = raw !== null && raw !== undefined && raw !== "" && Number.isFinite(position);
+    return measured && position >= 0 && position <= FRESH_POSITION_SECONDS;
+  }
+
+  /**
+   * Decide the outgoing card's total before the builder stamps it. Without
+   * ownership evidence the remembered total drives the card and the cache is
+   * left untouched; cached text still fills warm cards exactly as before.
+   */
+  function withGuardedTotals(source, state) {
+    if (!state || state.paused !== false) return { state, trusted: true };
+    const key = totalsKey(source, state);
+    const cached = key ? totals.get(key) : null;
+    if (!cached) return { state: withCachedMetadata(source, state), trusted: true };
+    const live = Number(state.duration);
+    const trusted = ownsLiveTotal(source, state, key, Number(cached.total), live);
+    const effective = trusted ? state : { ...state, duration: Number(cached.total) };
+    return { state: withCachedMetadata(source, effective), trusted };
+  }
+
+  /** Remember the key we just published so a later changed total reads as stale. */
+  function markTimed(source, state) {
+    lastTimed.set(source, totalsKey(source, state));
+  }
+
+  /**
    * A remembered total fills only a missing total; text fills only fields the
-   * live read left empty. Live values always win, art and links are never
+   * live read left empty. An owned live value wins, art and links are never
    * borrowed, and no position is ever invented.
    */
   function withCachedMetadata(source, state) {
@@ -737,18 +790,24 @@ export function createWorker({
   }
 
   function youtubeActivity(entry) {
-    const state = withCachedMetadata(SOURCE_YOUTUBE_MUSIC, entry.state);
+    const { state, trusted } = withGuardedTotals(SOURCE_YOUTUBE_MUSIC, entry.state);
     const bias = rateBiasMs(state);
     const anchor = sampleAt(entry, entry.at) + bias;
     const activity = buildYoutube(bias ? { ...state, at: anchor } : state, anchor);
-    if (activity?.timestamps) rememberTotal(SOURCE_YOUTUBE_MUSIC, state, state.duration);
+    if (activity?.timestamps) {
+      markTimed(SOURCE_YOUTUBE_MUSIC, state);
+      if (trusted) rememberTotal(SOURCE_YOUTUBE_MUSIC, state, state.duration);
+    }
     return activity;
   }
 
   function crunchyActivity(state, at) {
-    const effective = withCachedMetadata(SOURCE_CRUNCHY, state);
+    const { state: effective, trusted } = withGuardedTotals(SOURCE_CRUNCHY, state);
     const activity = buildCrunchy(effective, at, { synopsis: false });
-    if (activity?.timestamps) rememberTotal(SOURCE_CRUNCHY, effective, effective.duration);
+    if (activity?.timestamps) {
+      markTimed(SOURCE_CRUNCHY, effective);
+      if (trusted) rememberTotal(SOURCE_CRUNCHY, effective, effective.duration);
+    }
     return activity;
   }
 

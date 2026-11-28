@@ -76,8 +76,10 @@ expiry, ~80 KB at ~80 bytes each — no extra storage permission). At the ceilin
 the least relevant track goes: play count decayed with a 90-day half-life, so
 relistening beats mere recency. A cold sample with no total rebuilds with that
 remembered value, so the first card shows the full length instead of a bare
-0:00; a live total always wins, because the cache must never override a fresh
-read. After a reconnect the host replays the last activity only while its end
+0:00; a live total replaces it only with ownership evidence - a near-zero
+playhead on a freshly owned source or a coherent new identity. A stale read
+mid-track keeps the remembered total on the outgoing card and in the cache.
+After a reconnect the host replays the last activity only while its end
 is still in the future, since an expired pair reaches Discord as an elapsed-only
 card.
 

@@ -168,16 +168,21 @@ test("a remembered total is never borrowed across tracks", async () => {
   assert.equal("timestamps" in activityOf(fx.port), false, "a different mediaId gets no range");
 });
 
-test("a live total overwrites the cache and the next rebuild uses it", async () => {
-  const key = "youtube-music|track-D";
+test("an owned live total overwrites the cache and the next rebuild uses it", async () => {
+  const id = "ddddddddddd";
+  const url = "https://music.youtube.com/watch?v=" + id;
+  const key = "youtube-music|" + id;
   const fx = fakeChrome({ [key]: { total: 100, at: BASE - 1000 } });
   await fx.worker.start();
+  const owned = (extra = {}) => ({
+    ...coldState(id), trackUrl: url, pageUrl: url, ...extra,
+  });
 
-  sendYoutube(fx.worker, { ...coldState("track-D"), duration: 200 });
-  assert.equal(spanOf(activityOf(fx.port)), 200, "the live read wins over the cached 100");
+  sendYoutube(fx.worker, owned({ duration: 200 }));
+  assert.equal(spanOf(activityOf(fx.port)), 200, "the owned live read wins over the cached 100");
 
   fx.clock.t += 10;
-  sendYoutube(fx.worker, coldState("track-D"));
+  sendYoutube(fx.worker, owned());
   assert.equal(spanOf(activityOf(fx.port)), 200, "the next cold rebuild uses the live value");
 
   fx.flushTimers();
