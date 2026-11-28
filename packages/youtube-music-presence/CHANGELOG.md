@@ -4,6 +4,11 @@ Notable changes to this package. Dates are ISO 8601. This package is local-only 
 
 ## [Unreleased]
 
+## [1.1.23] - 2026-11-28
+
+- The popup and options now use the shared ui-kit: a single accent pair with the kit's tokens and classes, and the switch polyfill is gone in favour of the native `switch` control.
+- Popup and options now share the kit's card, pill, detail, field and button vocabulary, so their layout, focus rings, target sizes and status tones agree; each page links the vendored kit stylesheets first and keeps only its own identity and status/code rules locally.
+
 ## [1.1.22] - 2026-11-26
 
 - The player's `#progress-bar` ARIA pair (then the mini-player `input` value/max) is now authoritative for position and duration, so a music video with a stale media element or a lagging `M:SS / M:SS` bar clock no longer stamps an old playhead or a DASH total that keeps growing. Playback rate still comes from the playing media element even when timing comes from the bar; without a bar the element/clock path is unchanged.
