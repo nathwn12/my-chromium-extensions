@@ -13,6 +13,7 @@ export const PRODUCTS = [
   "slowed-reverb",
   "crunchy-presence",
   "youtube-music-presence",
+  "presence-suite",
 ];
 
 export function manifestOf(product) {

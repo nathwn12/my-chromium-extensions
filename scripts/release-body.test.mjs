@@ -26,16 +26,19 @@ function expectedFor(product) {
   return lines.join("\n");
 }
 
-test("all four products get the exact documented byte shape", () => {
-  assert.deepEqual([...PRODUCTS].sort(), [...PRESENCE, "audio-normalizer", "slowed-reverb"].sort());
+test("all five products get the exact documented byte shape", () => {
+  assert.deepEqual(
+    [...PRODUCTS].sort(),
+    [...PRESENCE, "audio-normalizer", "slowed-reverb", "presence-suite"].sort()
+  );
   for (const product of PRODUCTS) {
     assert.equal(releaseBody(product), expectedFor(product), product);
   }
 });
 
-test("exactly the two presence products carry the native host line", () => {
+test("exactly the three nativeMessaging products carry the native host line", () => {
   const withHost = PRODUCTS.filter((product) => releaseBody(product).includes(HOST));
-  assert.deepEqual(withHost.sort(), [...PRESENCE].sort());
+  assert.deepEqual(withHost.sort(), [...PRESENCE, "presence-suite"].sort());
   for (const product of PRODUCTS) {
     assert.equal(
       requiresNativeHost(product),
@@ -62,6 +65,18 @@ test("the body has no trailing blank line", () => {
     assert.equal(body.endsWith("\n"), false, product);
     assert.equal(body.includes("\n\n\n"), false, product);
   }
+});
+
+test("presence-suite is supported with its real body and required install files", () => {
+  assert.ok(PRODUCTS.includes("presence-suite"), "presence-suite must be a supported product");
+  const manifest = manifestFor("presence-suite");
+  const body = releaseBody("presence-suite");
+  assert.equal(body, expectedFor("presence-suite"), "byte shape derives from the real manifest");
+  assert.ok(body.startsWith(manifest.description), "body opens with the package's real description");
+  assert.ok(body.includes(`**Version:** ${manifest.version}`), "version comes from the manifest");
+  assert.ok(body.includes(HOST), "nativeMessaging presence-suite requires the native host line");
+  assert.ok(body.includes("`manifest.json`"), "body names manifest.json as an install file");
+  assert.ok(body.includes("`node scripts/install-host.mjs`"), "body names the host installer as an install file");
 });
 
 test("the CLI prints the body verbatim and exits 1 for an unknown product", () => {
