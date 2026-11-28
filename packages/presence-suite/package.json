@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "description": "Local-only MV3 extension and native host publishing YouTube Music and Crunchyroll activity to Discord from one host.",
+  "license": "MIT",
   "engines": {
     "node": ">=22"
   },

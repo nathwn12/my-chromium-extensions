@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "description": "Local-only MV3 extension + native host that publishes Crunchyroll activity to Discord Canary over IPC.",
+  "license": "MIT",
   "engines": {
     "node": ">=22"
   },

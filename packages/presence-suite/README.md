@@ -95,3 +95,21 @@ card.
 
 See `docs/ARCHITECTURE.md` for the worker/message design and
 `docs/INSTALL.md` for host setup details.
+
+## Checks
+
+```
+bun run test
+bun run selftest
+node scripts/install-host.mjs --check --json
+```
+
+`bun run test` runs the package test suite.
+`bun run selftest` exercises the native host against fake Discord IPC and arRPC pipes and prints a PASS line per check.
+`node scripts/install-host.mjs --check --json` verifies the host registration without writing and prints each check as JSON.
+
+## Links
+
+- Root README: [README.md](../../README.md)
+- Native host installer: [install-host.mjs](scripts/install-host.mjs)
+- Changelog: [CHANGELOG.md](CHANGELOG.md)
