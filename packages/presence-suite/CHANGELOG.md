@@ -4,6 +4,8 @@ Notable changes to this project. Dates are ISO 8601. This package is local-only 
 
 ## [Unreleased]
 
+## [1.0.3] - 2026-11-28
+
 - A changed live total no longer overwrites a remembered one for the same identity without ownership evidence. A stale read mid-track keeps the remembered total on the outgoing card and in the cache; a near-zero playhead on a freshly owned source, a coherent new identity, or a genuinely different track still publishes its own live total. No playhead is invented.
 
 ## [1.0.2] - 2026-11-28

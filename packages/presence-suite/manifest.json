@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Presence Suite",
   "short_name": "Presence Suite",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Show YouTube Music and Crunchyroll as Discord rich presence through one native host.",
   "minimum_chrome_version": "120",
   "permissions": [
