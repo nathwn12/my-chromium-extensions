@@ -83,6 +83,15 @@ After a reconnect the host replays the last activity only while its end
 is still in the future, since an expired pair reaches Discord as an elapsed-only
 card.
 
+## Privacy
+
+Presence Suite is local-only: it reads page metadata from the two enabled sites
+on this machine and sends the activity through Chrome native messaging to the
+local host, which writes it to Discord over desktop IPC. It never uploads
+browsing data, runs analytics or contacts a remote server. Settings stay in
+`chrome.storage.local`; see [PRIVACY_POLICY.md](PRIVACY_POLICY.md) for the full
+policy.
+
 ## Hosts and requirements
 
 - Native messaging host name: `com.nathwn12.presence_suite`. One host speaks
