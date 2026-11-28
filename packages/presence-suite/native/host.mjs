@@ -3,9 +3,9 @@
  * Chrome native-messaging host for Presence Suite (YouTube Music + Crunchyroll).
  *
  * One Discord desktop IPC connection, opened on the first activity. The host
- * keeps the last activity and resends it after a reconnect, acks every
- * activity by its id, and never lets a missing Discord pipe end the native
- * loop: no client means `status waiting`, not a crash.
+ * keeps the last activity and resends it after a reconnect unless its range
+ * has already expired, acks every activity by its id, and never lets a missing
+ * Discord pipe end the native loop: no client means `status waiting`, not a crash.
  *
  *   node native/host.mjs           (stdio protocol; started by Chrome)
  *   node native/host.mjs --selftest
@@ -59,6 +59,26 @@ export function transportOverridesFromEnv(env = process.env) {
     clientOptions: ports.length > 0 ? { ports } : {},
     ipcOptions: pipes.length > 0 ? { pipes } : {},
   };
+}
+
+/**
+ * Whether a remembered activity may be replayed after a reconnect. Only a
+ * proven-expired range is withheld: Discord renders a finished {start,end}
+ * pair as an elapsed-only card, a stale 0:00 counting up. A missing or junk
+ * end is not proof of staleness, so it may be replayed. Ends below 1e12 are
+ * seconds; larger ones are milliseconds.
+ */
+export function isReplayable(activity, now = Date.now()) {
+  if (!activity || typeof activity !== "object" || Array.isArray(activity)) return true;
+  const timestamps = activity.timestamps;
+  if (!timestamps || typeof timestamps !== "object" || Array.isArray(timestamps)) return true;
+  const raw = timestamps.end;
+  if (typeof raw !== "number" && typeof raw !== "string") return true;
+  if (typeof raw === "string" && !raw.trim()) return true;
+  const end = Number(raw);
+  const current = Number(now);
+  if (!Number.isFinite(end) || !Number.isFinite(current)) return true;
+  return (end < 1e12 ? end * 1000 : end) > current;
 }
 
 /**
@@ -349,6 +369,9 @@ export function createHost({
         return;
       }
       if (entry.lastActivity === null || entry.lastActivity === undefined) return;
+      // A finished pair would land as an elapsed-only card; the worker
+      // republishes a live one once the bridge reports connected.
+      if (!isReplayable(entry.lastActivity, Date.now())) return;
 
       const result = await entry.client.setActivity(entry.lastActivity);
       if (!closed && !result.ok) handleFailure(source, entry, result.error);

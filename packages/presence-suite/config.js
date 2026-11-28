@@ -10,6 +10,7 @@
  *   local:   enabled = { crunchy: true, "youtube-music": true }
  *            clientId:<source> = a 17-20 digit override (optional)
  *            presenceStatus = last published status
+ *            trackTotals = last known total per track, reused on a cold play
  *   session: presenceTabs = per-source tab snapshot across MV3 suspension
  * Old crpStatus / ytmpStatus keys are left untouched; v1 does not migrate.
  */
@@ -35,6 +36,8 @@ export const ENABLED_KEY = "enabled";
 export const STATUS_KEY = "presenceStatus";
 /** session key holding the tab snapshot. */
 export const TABS_KEY = "presenceTabs";
+/** local key holding the last known total per track; keyed by source + identity. */
+export const TOTALS_KEY = "trackTotals";
 
 /** Desktop IPC is the only transport. */
 export const TRANSPORT_IPC = "ipc";

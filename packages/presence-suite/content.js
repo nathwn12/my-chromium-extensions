@@ -160,6 +160,32 @@
     return position < lastTimed.position - 1;
   }
 
+  /**
+   * A withheld read still publishes a card, so it must not strip the bar from a
+   * track that already has a credited total: keep that total and walk the head
+   * forward at the reported rate. A new identity gets nothing — a wrong total
+   * is worse than a short gap. Junk rates count as 1x and the head stays
+   * strictly inside the total so the repeat boundary still opens a fresh loop.
+   */
+  function holdTiming(state, identity) {
+    if (lastTimed === null || lastTimed.unit === null || identity !== lastTimed.track) {
+      state.duration = null;
+      state.position = null;
+      return;
+    }
+    state.duration = lastTimed.unit;
+    var rate = state.playbackRate;
+    if (!isFinite(rate) || rate <= 0) rate = 1;
+    /** gone() clears lastSample but not lastTimed; the timed stamp is the fallback. */
+    var baselineAt = lastSample ? lastSample.at : lastTimed.at;
+    if (typeof baselineAt !== "number" || !isFinite(baselineAt)) baselineAt = Date.now();
+    var predicted = lastTimed.position + ((Date.now() - baselineAt) / 1000) * rate;
+    var ceiling = lastTimed.unit - 1;
+    if (!isFinite(predicted) || predicted < 0) predicted = 0;
+    if (predicted > ceiling) predicted = ceiling;
+    state.position = predicted;
+  }
+
   /** True only when the current read is the sample already published. */
   function unchanged(state) {
     if (!lastSample || state.title !== lastSample.title || state.paused !== lastSample.paused) return false;
@@ -256,6 +282,7 @@
      * The same-track guard below cannot see this: the new identity is already
      * the published sample, and only `lastTimed` still names the old track.
      */
+    var pendingHold = false;
     var clockOnlyHandover =
       Boolean(lastTimed) &&
       identity !== lastTimed.track &&
@@ -264,10 +291,8 @@
       rawUnit !== null &&
       rawUnit < MIN_HANDOVER_TOTAL_SECONDS &&
       rawUnit < lastCredibleDuration;
-    if (clockOnlyHandover) {
-      state.duration = null;
-      state.position = null;
-    }
+    /** Same track keeps the bar; a new one stays unpaired until it proves a total. */
+    if (clockOnlyHandover) pendingHold = true;
     /**
      * A same-track total never replaces the credited one by shrinking. The
      * player bar can collapse to its own elapsed pair ("0:02 / 0:02") at a
@@ -284,12 +309,11 @@
       rawUnit !== null &&
       rawUnit < lastCredibleDuration &&
       !playheadInside(state, rawUnit);
-    if (collapsedShrink) {
-      state.duration = null;
-      state.position = null;
-    }
+    /** A collapse is a hold on the current track, not a new total. */
+    if (collapsedShrink) pendingHold = true;
     if (pendingTiming) {
-      var sampleUnit = durationUnit(state.duration);
+      /** An earlier hold already withheld this read, as the old null-and-fall-through did. */
+      var sampleUnit = pendingHold ? null : durationUnit(state.duration);
       /**
        * Releasing a hold needs ownership, not just a changed total. A new
        * identity may reuse the previous media element, so a coherent total
@@ -313,14 +337,15 @@
         sampleUnit === lastCredibleDuration ||
         (!nearZero && !newSource && !newIdentityOwns)
       ) {
-        state.duration = null;
-        state.position = null;
+        pendingHold = true;
       } else {
         pendingTiming = null;
       }
     }
+    /** One publish decision for every withheld read; credit stays untouched. */
+    if (pendingHold) holdTiming(state, identity);
     /** A withheld read never becomes the credited duration baseline. */
-    if (state.duration !== null && credible !== null) lastCredibleDuration = credible;
+    if (!pendingHold && state.duration !== null && credible !== null) lastCredibleDuration = credible;
 
     state.at = Date.now();
     lastSource = source;
@@ -341,7 +366,8 @@
         track: identity,
         unit: durationUnit(state.duration),
         source: mediaSource,
-        position: state.position
+        position: state.position,
+        at: state.at
       };
     }
     reported = true;

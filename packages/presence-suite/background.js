@@ -11,7 +11,8 @@
  * Pure helpers are exported so tests can import this file without a chrome
  * global; createWorker takes the API object. Identity comes from config.js,
  * activity rules from activity.js and sources/crunchy/activity.js, status copy
- * from bridge-status.js.
+ * from bridge-status.js. A total seen once is cached locally (TOTALS_KEY) and
+ * reused on a cold sample so the first card is timed; a live total always wins.
  */
 
 import {
@@ -24,6 +25,7 @@ import {
   SOURCE_YOUTUBE_MUSIC,
   STATUS_KEY,
   TABS_KEY,
+  TOTALS_KEY,
   enabledMap,
   resolveEnabled,
   sourceForUrl,
@@ -35,7 +37,12 @@ import {
   bridgeStatusOf,
   classifyBridgeFailure,
 } from "./bridge-status.js";
-import { buildActivity as buildYoutube, clampText as clampYoutube } from "./activity.js";
+import {
+  RATE_EPSILON,
+  SAMPLE_SKEW_MS,
+  buildActivity as buildYoutube,
+  clampText as clampYoutube,
+} from "./activity.js";
 import { buildActivity as buildCrunchy } from "./sources/crunchy/activity.js";
 import {
   applyGoneToEntry,
@@ -52,6 +59,23 @@ export const PONG_TIMEOUT_MS = 10000;
 export const MAX_UPDATES = 8;
 export const UPDATE_WINDOW_MS = 20000;
 export const MIN_GAP_MS = 1500;
+/** Playback rates off 1x are re-anchored on this cadence. */
+export const RATE_INTERVAL_MS = 2500;
+/**
+ * Cap on remembered totals; least recently remembered entries go first.
+ * ~80 bytes per entry x 1000 = ~80 KB against chrome.storage.local's 10 MB
+ * quota, so the cap needs no unlimitedStorage permission and stays the bound.
+ */
+export const TOTALS_MAX_ENTRIES = 1000;
+/** A play is a session: a new key, or this much time after the last one. */
+export const TOTALS_SESSION_GAP_MS = 10 * 60 * 1000;
+/**
+ * score = plays * 0.5 ** (ageDays / 90). Relistening beats mere recency, yet an
+ * abandoned favourite still decays below current listening.
+ */
+export const TOTALS_HALF_LIFE_DAYS = 90;
+/** At most one local-storage write of the totals map per this interval. */
+export const TOTALS_WRITE_INTERVAL_MS = 5000;
 export const BACKOFF_MIN_MS = 500;
 export const BACKOFF_MAX_MS = 8000;
 export const SOURCE_LIST = SOURCES;
@@ -156,6 +180,49 @@ export function isPongOverdue(lastPingAt, lastPongAt, at, timeoutMs = PONG_TIMEO
   return at - lastPingAt >= timeoutMs;
 }
 
+/**
+ * A finite rate more than RATE_EPSILON from 1. Missing or junk means 1x: an
+ * absent field must never change the cadence or the anchor by itself.
+ */
+export function isRateScaled(state) {
+  const rate = state && typeof state === "object" ? state.playbackRate : undefined;
+  if (typeof rate !== "number" || !Number.isFinite(rate)) return false;
+  return Math.abs(rate - 1) > RATE_EPSILON;
+}
+
+/**
+ * Anchor offset for a non-1x sample: half a rate interval of drift, negated,
+ * so the error straddles the truth instead of always lagging. Discord counts
+ * elapsed in wall time and carries no rate. Clamped to half the interval and
+ * to what has already played, so a track at 0:00 still reads 0:00.
+ */
+export function rateBiasMs(state) {
+  if (!isRateScaled(state)) return 0;
+  const limit = RATE_INTERVAL_MS / 2;
+  const bias = Math.max(-limit, Math.min(limit, (1 - state.playbackRate) * limit));
+  const position = Number(state.position);
+  if (!Number.isFinite(position)) return bias;
+  const played = Math.floor(Math.max(0, position)) * 1000;
+  return Math.max(-played, Math.min(played, bias));
+}
+
+/**
+ * The instant a sample was taken: its state.at when finite and no more than
+ * SAMPLE_SKEW_MS ahead of the stored receipt fallback, else that fallback. A
+ * stored fallback keeps a rejected stamp from drifting with every rebuild; a
+ * future stamp would put the card's bar in the future.
+ */
+export function sampleAt(entry, fallback = 0) {
+  if (!entry || typeof entry !== "object") return fallback;
+  const sampled = entry.state ? entry.state.at : undefined;
+  if (typeof sampled === "number" && Number.isFinite(sampled)) {
+    return sampled - fallback <= SAMPLE_SKEW_MS ? sampled : fallback;
+  }
+  const reported = entry.at;
+  if (typeof reported === "number" && Number.isFinite(reported)) return reported;
+  return fallback;
+}
+
 /** Build the worker around a chrome-like API object. */
 export function createWorker({
   chrome: api,
@@ -191,6 +258,11 @@ export function createWorker({
   let lastPersisted = "";
   let lastTabsJson = "";
   let restorePromise = null;
+  const totals = new Map();
+  let totalsWriteTimer = null;
+  let lastTotalsWriteAt = -Infinity;
+  /** Session state is per source; the other source's publishes cannot add plays. */
+  const lastRemembered = new Map();
   let restored = false;
   let tabsReadable = true;
 
@@ -465,6 +537,141 @@ export function createWorker({
     }
   }
 
+  /** A cache key needs a source and a stable identity; no identity, no borrow. */
+  function totalsKey(source, state) {
+    if (!state || typeof state !== "object") return null;
+    let identity = null;
+    if (source === SOURCE_YOUTUBE_MUSIC) {
+      identity = state.mediaId || state.trackUrl;
+    } else if (source === SOURCE_CRUNCHY) {
+      const composite = state.seriesUrl &&
+        state.seasonNumber !== null && state.seasonNumber !== undefined &&
+        state.episodeNumber !== null && state.episodeNumber !== undefined
+        ? `${state.seriesUrl}|${state.seasonNumber}|${state.episodeNumber}`
+        : null;
+      identity = state.episodeUrl || composite;
+    }
+    if (typeof identity !== "string" && typeof identity !== "number") return null;
+    const text = String(identity).trim();
+    return text ? source + "|" + text : null;
+  }
+
+  /** Decayed play count; a missing count is one play, never NaN. */
+  function totalScore(entry, at) {
+    const plays = Number.isFinite(entry.plays) && entry.plays > 0 ? entry.plays : 1;
+    const stamp = Number(entry.at);
+    const ageDays = Number.isFinite(stamp)
+      ? Math.max(0, (at - stamp) / (24 * 60 * 60 * 1000))
+      : 0;
+    return plays * Math.pow(0.5, ageDays / TOTALS_HALF_LIFE_DAYS);
+  }
+
+  /** Evict the lowest score first; an older `at` breaks ties. */
+  function capTotals() {
+    if (totals.size <= TOTALS_MAX_ENTRIES) return;
+    const at = now();
+    const lowestFirst = [...totals.entries()].sort((a, b) => {
+      const delta = totalScore(a[1], at) - totalScore(b[1], at);
+      return delta !== 0 ? delta : a[1].at - b[1].at;
+    });
+    for (const [key] of lowestFirst.slice(0, totals.size - TOTALS_MAX_ENTRIES)) totals.delete(key);
+  }
+
+  /** Corrupt or absent storage starts empty, the same way loadConfig does. */
+  async function loadTotals() {
+    let stored = null;
+    try {
+      stored = await api.storage.local.get([TOTALS_KEY]);
+    } catch (_) {
+      stored = null;
+    }
+    const raw = stored && stored[TOTALS_KEY];
+    if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+      for (const [key, value] of Object.entries(raw)) {
+        if (typeof key !== "string" || !key || !value || typeof value !== "object") continue;
+        const total = Number(value.total);
+        const stamp = Number(value.at);
+        if (!Number.isFinite(total) || total <= 0 || !Number.isFinite(stamp) || stamp <= 0) continue;
+        const plays = Number(value.plays);
+        totals.set(key, {
+          total,
+          at: stamp,
+          plays: Number.isFinite(plays) && plays > 0 ? plays : 1,
+        });
+      }
+    }
+    capTotals();
+  }
+
+  /** One write at a time; the flushed snapshot is always the current map. */
+  function flushTotals() {
+    if (totalsWriteTimer !== null) {
+      cancel(totalsWriteTimer);
+      totalsWriteTimer = null;
+    }
+    if (!api.storage?.local) return;
+    lastTotalsWriteAt = now();
+    capTotals();
+    const snapshot = {};
+    for (const [key, value] of totals) snapshot[key] = value;
+    try {
+      const write = api.storage.local.set({ [TOTALS_KEY]: snapshot });
+      if (write && typeof write.catch === "function") write.catch(() => {});
+    } catch (_) {}
+  }
+
+  function scheduleTotalsWrite() {
+    if (!api.storage?.local || totalsWriteTimer !== null) return;
+    const wait = Math.max(0, TOTALS_WRITE_INTERVAL_MS - (now() - lastTotalsWriteAt));
+    totalsWriteTimer = schedule(flushTotals, wait);
+  }
+
+  function rememberTotal(source, state, total) {
+    const value = Number(total);
+    if (!Number.isFinite(value) || value <= 0) return;
+    const key = totalsKey(source, state);
+    if (!key) return;
+    const at = now();
+    const previous = totals.get(key);
+    const last = lastRemembered.get(source);
+    const session = !last || last.key !== key || at - last.at > TOTALS_SESSION_GAP_MS;
+    const plays = previous ? (session ? previous.plays + 1 : previous.plays) : 1;
+    const totalChanged = !previous || Math.abs(previous.total - value) > 0.5;
+    const playsChanged = !previous || plays !== previous.plays;
+    totals.set(key, { total: value, at, plays });
+    lastRemembered.set(source, { key, at });
+    capTotals();
+    // A new total, or a new play, must survive suspension; a timestamp refresh can wait.
+    if (totalChanged || playsChanged) flushTotals();
+    else scheduleTotalsWrite();
+  }
+
+  /** A remembered total fills only a missing total; a live read always wins. */
+  function withCachedTotal(source, state) {
+    if (!state || state.paused !== false) return state;
+    const live = Number(state.duration);
+    if (Number.isFinite(live) && live > 0) return state;
+    const cached = totals.get(totalsKey(source, state));
+    if (!cached || !(cached.total > 0)) return state;
+    return { ...state, duration: cached.total };
+  }
+
+  function youtubeActivity(entry) {
+    const state = withCachedTotal(SOURCE_YOUTUBE_MUSIC, entry.state);
+    const bias = rateBiasMs(state);
+    const anchor = sampleAt(entry, entry.at) + bias;
+    const activity = buildYoutube(bias ? { ...state, at: anchor } : state, anchor);
+    if (activity?.timestamps) rememberTotal(SOURCE_YOUTUBE_MUSIC, state, state.duration);
+    return activity;
+  }
+
+  function crunchyActivity(state, at) {
+    const effective = withCachedTotal(SOURCE_CRUNCHY, state);
+    const activity = buildCrunchy(effective, at, { synopsis: false });
+    if (activity?.timestamps) rememberTotal(SOURCE_CRUNCHY, effective, effective.duration);
+    return activity;
+  }
+
   function recompute() {
     const at = now();
     pruneStale(tabs.get(SOURCE_YOUTUBE_MUSIC), at);
@@ -475,15 +682,13 @@ export function createWorker({
       (entry) => !entry.restored && entry.state && entry.state.paused === false
     );
     const bestYoutube = pickBestYoutubeTab(youtubeEntries);
-    desired[SOURCE_YOUTUBE_MUSIC] = bestYoutube
-      ? buildYoutube(bestYoutube.state, bestYoutube.at)
-      : null;
+    desired[SOURCE_YOUTUBE_MUSIC] = bestYoutube ? youtubeActivity(bestYoutube) : null;
 
     const crunchyEntries = {};
     for (const [tabId, entry] of tabs.get(SOURCE_CRUNCHY)) crunchyEntries[tabId] = resolveTab(entry, at);
     const bestCrunchy = pickCrunchyTab(crunchyEntries);
     desired[SOURCE_CRUNCHY] = bestCrunchy && bestCrunchy.paused === false && !bestCrunchy.adBreak
-      ? buildCrunchy(bestCrunchy, at, { synopsis: false })
+      ? crunchyActivity(bestCrunchy, at)
       : null;
 
     persist();
@@ -673,6 +878,7 @@ export function createWorker({
 
   async function start() {
     await loadConfig();
+    await loadTotals();
     await restore();
     armWatchdog();
     if (SOURCES.some((source) => enabled[source])) ensurePort();

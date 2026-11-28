@@ -796,12 +796,26 @@
     } else if (!clockConflict && !musicTime && ld) {
       duration = ld.duration;
     }
-    if (duration !== null && position !== null && position > duration) position = duration;
-
     var paused = chosen.coherent && pick ? pick.paused
       : playbackState === "playing" ? false
       : playbackState === "paused" ? true
       : true;
+    /**
+     * Only JSON-LD timing leaves a cold read with a total and no playhead: the
+     * bar, the element and the clock all said nothing. 0 is the honest value —
+     * the track is at its start as far as the page reports; a mid-song unknown
+     * stays unknown and keeps no pair. A real position, a paused read and a
+     * clock conflict all fall through untouched.
+     */
+    if (
+      typeof duration === "number" && Number.isFinite(duration) && duration > 0 &&
+      position === null && paused === false &&
+      !progress && !clockConflict && !musicTime &&
+      !(chosen.coherent && pick && pick.duration !== null)
+    ) {
+      position = 0;
+    }
+    if (duration !== null && position !== null && position > duration) position = duration;
 
     return {
       title: title || null,

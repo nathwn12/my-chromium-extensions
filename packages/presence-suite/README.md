@@ -64,6 +64,19 @@ session-storage tab snapshot used across service-worker restarts.
 untouched. The first release does no auto-migration and does not delete them;
 a clean install starts with the new keys and both switches on.
 
+## Timing
+
+Once a track or episode has published a timed card, the worker remembers its
+last known total in local storage (`trackTotals`: up to 1000 tracks, no
+expiry, ~80 KB at ~80 bytes each — no extra storage permission). At the ceiling
+the least relevant track goes: play count decayed with a 90-day half-life, so
+relistening beats mere recency. A cold sample with no total rebuilds with that
+remembered value, so the first card shows the full length instead of a bare
+0:00; a live total always wins, because the cache must never override a fresh
+read. After a reconnect the host replays the last activity only while its end
+is still in the future, since an expired pair reaches Discord as an elapsed-only
+card.
+
 ## Hosts and requirements
 
 - Native messaging host name: `com.nathwn12.presence_suite`. One host speaks
