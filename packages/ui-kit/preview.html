@@ -1,0 +1,192 @@
+<!doctype html>
+<!-- ui-kit/preview.html - eyeball surface only. Never shipped in an extension zip. -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>ui-kit preview</title>
+  <link rel="stylesheet" href="tokens.css">
+  <link rel="stylesheet" href="components.css">
+  <style>
+    /* Preview-only layout. Not part of the kit and not copied to packages. */
+    body { width: auto; max-width: none; margin: 0; padding: var(--space-4);
+           background: #cfd2d6; font-family: system-ui, sans-serif; }
+    body:has(.options) { width: auto; }
+    .layout { display: grid; grid-template-columns: max-content max-content;
+              gap: var(--space-4); align-items: start; }
+    .column { display: grid; gap: var(--space-4); align-content: start; }
+    .frame { padding: var(--space-3); border: 1px solid #787c84; }
+    .frame > p { margin: 0 0 var(--space-2); font: 600 var(--text-sm) system-ui, sans-serif; }
+    .w-popup { width: 320px; }
+    .w-options { width: 560px; }
+    .light { color-scheme: light; background: var(--bg); color: var(--ink); }
+    .dark { color-scheme: dark; background: var(--bg); color: var(--ink); }
+    .pills { display: flex; flex-wrap: wrap; gap: var(--space-1); }
+  </style>
+</head>
+<body>
+  <div class="layout">
+    <div class="column">
+      <section class="frame w-popup light">
+        <p>Light / popup 320px</p>
+        <main class="popup">
+          <header>
+            <img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24'%3E%3Crect width='24' height='24' rx='6' fill='%239e521d'/%3E%3Ccircle cx='12' cy='12' r='5' fill='%23fff'/%3E%3C/svg%3E" alt="" width="24" height="24">
+            <h1>Preview</h1>
+            <span class="pill" data-tone="connected">Connected</span>
+          </header>
+          <div class="pills">
+            <span class="pill" data-tone="connected">connected</span>
+            <span class="pill" data-tone="waiting">waiting</span>
+            <span class="pill" data-tone="error">error</span>
+            <span class="pill" data-tone="off">off</span>
+          </div>
+          <div class="card">
+            <h2 class="source-name">Now playing</h2>
+            <p class="now">A track title</p>
+            <p class="detail">Artist - Album</p>
+          </div>
+          <ul class="sources">
+            <li class="source card">
+              <h2 class="source-name">Source</h2>
+              <p class="now">A track title</p>
+              <p class="detail">Artist - Album</p>
+            </li>
+          </ul>
+          <p class="reason">Status detail, muted and readable.</p>
+          <label class="toggle"><input type="checkbox" checked><span>Switch on</span></label>
+          <label class="toggle"><input type="checkbox"><span>Switch off</span></label>
+          <label class="toggle"><input type="checkbox" disabled><span>Switch disabled</span></label>
+          <p class="readout">1.00x</p>
+          <input type="range" min="0" max="100" value="40" aria-label="Level">
+          <p class="readout-sm">40%</p>
+          <label class="field"><span>Application ID</span><input type="text" value="123456789"></label>
+          <label class="field"><span>Notes</span><textarea rows="2">Readable textarea</textarea></label>
+          <div><button type="button" class="btn">Reset</button> <button type="button" class="btn-primary">Save</button></div>
+          <footer><a href="tokens.css">Settings</a></footer>
+        </main>
+      </section>
+      <section class="frame w-options light">
+        <p>Light / options 560px</p>
+        <main class="popup options">
+          <header>
+            <img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24'%3E%3Crect width='24' height='24' rx='6' fill='%239e521d'/%3E%3Ccircle cx='12' cy='12' r='5' fill='%23fff'/%3E%3C/svg%3E" alt="" width="24" height="24">
+            <h1>Preview settings</h1>
+            <span class="pill" data-state="idle">Waiting</span>
+          </header>
+          <div class="pills">
+            <span class="pill" data-state="connected">connected</span>
+            <span class="pill" data-state="connecting">connecting</span>
+            <span class="pill" data-state="error">error</span>
+            <span class="pill" data-state="off">off</span>
+          </div>
+          <div class="card">
+            <h2 class="source-name">Card title</h2>
+            <p class="now">A track title</p>
+            <p class="detail">Artist - Album</p>
+          </div>
+          <ul class="sources">
+            <li class="source card">
+              <h2 class="source-name">Source</h2>
+              <p class="now">A track title</p>
+              <p class="detail">Artist - Album</p>
+            </li>
+          </ul>
+          <p class="reason">Status detail, muted and readable.</p>
+          <label class="toggle"><input type="checkbox" checked><span>Switch on</span></label>
+          <label class="toggle"><input type="checkbox"><span>Switch off</span></label>
+          <label class="toggle"><input type="checkbox" disabled><span>Switch disabled</span></label>
+          <p class="readout">1.00x</p>
+          <input type="range" min="0" max="100" value="40" aria-label="Level">
+          <p class="readout-sm">40%</p>
+          <label class="field"><span>Application ID</span><input type="text" value="123456789"></label>
+          <label class="field"><span>Notes</span><textarea rows="2">Readable textarea</textarea></label>
+          <div><button type="button" class="btn">Reset</button> <button type="button" class="btn-primary">Save</button></div>
+          <footer><a href="components.css">Settings</a></footer>
+        </main>
+      </section>
+    </div>
+    <div class="column">
+      <section class="frame w-popup dark">
+        <p>Dark / popup 320px</p>
+        <main class="popup">
+          <header>
+            <img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24'%3E%3Crect width='24' height='24' rx='6' fill='%23df8f4d'/%3E%3Ccircle cx='12' cy='12' r='5' fill='%2316171b'/%3E%3C/svg%3E" alt="" width="24" height="24">
+            <h1>Preview</h1>
+            <span class="pill" data-tone="connected">Connected</span>
+          </header>
+          <div class="pills">
+            <span class="pill" data-tone="connected">connected</span>
+            <span class="pill" data-tone="waiting">waiting</span>
+            <span class="pill" data-tone="error">error</span>
+            <span class="pill" data-tone="off">off</span>
+          </div>
+          <div class="card">
+            <h2 class="source-name">Now playing</h2>
+            <p class="now">A track title</p>
+            <p class="detail">Artist - Album</p>
+          </div>
+          <ul class="sources">
+            <li class="source card">
+              <h2 class="source-name">Source</h2>
+              <p class="now">A track title</p>
+              <p class="detail">Artist - Album</p>
+            </li>
+          </ul>
+          <p class="reason">Status detail, muted and readable.</p>
+          <label class="toggle"><input type="checkbox" checked><span>Switch on</span></label>
+          <label class="toggle"><input type="checkbox"><span>Switch off</span></label>
+          <label class="toggle"><input type="checkbox" disabled><span>Switch disabled</span></label>
+          <p class="readout">1.00x</p>
+          <input type="range" min="0" max="100" value="40" aria-label="Level">
+          <p class="readout-sm">40%</p>
+          <label class="field"><span>Application ID</span><input type="text" value="123456789"></label>
+          <label class="field"><span>Notes</span><textarea rows="2">Readable textarea</textarea></label>
+          <div><button type="button" class="btn">Reset</button> <button type="button" class="btn-primary">Save</button></div>
+          <footer><a href="tokens.css">Settings</a></footer>
+        </main>
+      </section>
+      <section class="frame w-options dark">
+        <p>Dark / options 560px</p>
+        <main class="popup options">
+          <header>
+            <img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24'%3E%3Crect width='24' height='24' rx='6' fill='%23df8f4d'/%3E%3Ccircle cx='12' cy='12' r='5' fill='%2316171b'/%3E%3C/svg%3E" alt="" width="24" height="24">
+            <h1>Preview settings</h1>
+            <span class="pill" data-state="idle">Waiting</span>
+          </header>
+          <div class="pills">
+            <span class="pill" data-state="connected">connected</span>
+            <span class="pill" data-state="connecting">connecting</span>
+            <span class="pill" data-state="error">error</span>
+            <span class="pill" data-state="off">off</span>
+          </div>
+          <div class="card">
+            <h2 class="source-name">Card title</h2>
+            <p class="now">A track title</p>
+            <p class="detail">Artist - Album</p>
+          </div>
+          <ul class="sources">
+            <li class="source card">
+              <h2 class="source-name">Source</h2>
+              <p class="now">A track title</p>
+              <p class="detail">Artist - Album</p>
+            </li>
+          </ul>
+          <p class="reason">Status detail, muted and readable.</p>
+          <label class="toggle"><input type="checkbox" checked><span>Switch on</span></label>
+          <label class="toggle"><input type="checkbox"><span>Switch off</span></label>
+          <label class="toggle"><input type="checkbox" disabled><span>Switch disabled</span></label>
+          <p class="readout">1.00x</p>
+          <input type="range" min="0" max="100" value="40" aria-label="Level">
+          <p class="readout-sm">40%</p>
+          <label class="field"><span>Application ID</span><input type="text" value="123456789"></label>
+          <label class="field"><span>Notes</span><textarea rows="2">Readable textarea</textarea></label>
+          <div><button type="button" class="btn">Reset</button> <button type="button" class="btn-primary">Save</button></div>
+          <footer><a href="components.css">Settings</a></footer>
+        </main>
+      </section>
+    </div>
+  </div>
+</body>
+</html>

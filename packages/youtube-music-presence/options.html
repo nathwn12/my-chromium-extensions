@@ -10,34 +10,32 @@
     <link rel="stylesheet" href="options.css" />
   </head>
   <body>
-    <main class="page">
-      <header class="hero">
-        <img src="icons/icon48.png" alt="" width="40" height="40" />
-        <div>
-          <h1>YouTube Music Presence</h1>
-          <p class="sub">Local only. Nothing leaves this machine except the Discord call.</p>
-        </div>
+    <main class="popup options">
+      <header>
+        <img src="icons/icon24.png" alt="" width="24" height="24" />
+        <h1>YouTube Music Presence</h1>
       </header>
+      <p class="detail">Local only. Nothing leaves this machine except the Discord call.</p>
 
       <section class="card" aria-labelledby="presence-title">
-        <h2 id="presence-title">1. Presence</h2>
+        <h2 id="presence-title" class="source-name">1. Presence</h2>
         <label class="toggle" for="enabled">
           <input id="enabled" type="checkbox" switch role="switch" aria-describedby="presence-help presence-saved" />
           <span>Presence</span>
         </label>
-        <p id="presence-help" class="hint">
+        <p id="presence-help" class="detail">
           Off stops the native host entirely. Nothing is published while it is off. Presence goes to
           the installed Discord desktop app over its local socket.
         </p>
-        <p id="presence-saved" class="saved" role="status" aria-live="polite"></p>
+        <p id="presence-saved" class="detail" role="status" aria-live="polite"></p>
       </section>
 
       <section id="status-section" class="card" aria-labelledby="status-title">
-        <h2 id="status-title">2. Status</h2>
+        <h2 id="status-title" class="source-name">2. Status</h2>
         <dl class="status" aria-live="polite">
           <div>
             <dt>Bridge</dt>
-            <dd id="bridgeState" class="pill" data-state="unknown" data-tone="waiting">Not connected</dd>
+            <dd id="bridgeState" class="pill" data-tone="waiting">Not connected</dd>
           </div>
           <div>
             <dt>Transport used</dt>
@@ -50,23 +48,25 @@
         </dl>
         <p id="reason" class="reason" role="status" aria-live="polite" hidden></p>
         <div class="row">
-          <button id="refresh" type="button">Refresh</button>
+          <button id="refresh" class="btn" type="button">Refresh</button>
         </div>
       </section>
 
       <section class="card" aria-labelledby="install-title">
-        <h2 id="install-title">3. Native host</h2>
-        <p class="hint">Run this once from the extension folder, with Node 22 or newer:</p>
+        <h2 id="install-title" class="source-name">3. Native host</h2>
+        <p class="detail">Run this once from the extension folder, with Node 22 or newer:</p>
         <pre id="install-command"><code>node scripts/install-host.mjs</code></pre>
-        <p class="hint">Verify the host files and registry entries without writing anything:</p>
+        <p class="detail">Verify the host files and registry entries without writing anything:</p>
         <pre id="install-check"><code>node scripts/install-host.mjs --check</code></pre>
       </section>
 
       <section class="card" aria-labelledby="diag-title">
-        <h2 id="diag-title">4. Diagnostics</h2>
-        <p class="hint">Raw status for a bug report. The status card never shows these strings.</p>
-        <label for="diagnostics">Diagnostics</label>
-        <textarea id="diagnostics" readonly rows="12" spellcheck="false"></textarea>
+        <h2 id="diag-title" class="source-name">4. Diagnostics</h2>
+        <p class="detail">Raw status for a bug report. The status card never shows these strings.</p>
+        <label class="field" for="diagnostics">
+          <span>Diagnostics</span>
+          <textarea id="diagnostics" rows="12" readonly spellcheck="false"></textarea>
+        </label>
       </section>
     </main>
     <script type="module" src="options.js"></script>

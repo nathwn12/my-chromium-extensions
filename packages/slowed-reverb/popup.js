@@ -140,8 +140,12 @@ function applySettingsToUi(settings) {
   popupState.settings = normalized;
   slowSliderEl.value = String(normalized.slow);
   intensitySliderEl.value = String(normalized.reverbIntensity);
-  slowReadoutEl.textContent = formatRate(normalized.slow);
-  intensityReadoutEl.textContent = formatPercent(normalized.reverbIntensity);
+  const slowText = formatRate(normalized.slow);
+  const intensityText = formatPercent(normalized.reverbIntensity);
+  slowReadoutEl.textContent = slowText;
+  slowSliderEl.setAttribute('aria-valuetext', slowText);
+  intensityReadoutEl.textContent = intensityText;
+  intensitySliderEl.setAttribute('aria-valuetext', intensityText.replace('%', ' percent'));
 }
 
 function throttledApply(settings) {
@@ -243,15 +247,15 @@ function renderStatus(indicator, text) {
   if (!statusPillEl) return;
   if (indicator === 'green') {
     statusPillEl.textContent = 'Active';
-    statusPillEl.dataset.state = 'connected';
+    statusPillEl.dataset.tone = 'connected';
   } else if (indicator === 'red') {
     statusPillEl.textContent = 'Error';
-    statusPillEl.dataset.state = 'error';
+    statusPillEl.dataset.tone = 'error';
   } else if (/power off|off for/i.test(text)) {
     statusPillEl.textContent = 'Off';
-    statusPillEl.dataset.state = 'off';
+    statusPillEl.dataset.tone = 'off';
   } else {
     statusPillEl.textContent = 'Waiting';
-    statusPillEl.dataset.state = 'idle';
+    statusPillEl.dataset.tone = 'waiting';
   }
 }

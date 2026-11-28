@@ -1,25 +1,4 @@
-/* Presence Suite popup: only the suite accent and source-row layout. */
+/* Presence Suite: identity accent only; tokens and components come from ui-kit. */
 :root {
-  --accent: #c97a3a;
-}
-
-.sources {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: grid;
-  gap: 10px;
-}
-
-.source-name {
-  margin: 0;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--muted);
-}
-
-.reason {
-  margin: 0;
-  color: var(--muted);
-  font-size: 12px;
+  --accent: light-dark(#3f5fa8, #8ea9e8);
 }

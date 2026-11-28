@@ -1,47 +1,4 @@
-/* YouTube Music Presence popup: accent override + package-specific rules. */
+/* YouTube Music Presence popup: package identity only; layout comes from the kit. */
 :root {
-  --accent: #a8434f;
-}
-
-.sources {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: grid;
-  gap: 8px;
-}
-
-.source {
-  border: 1px solid var(--line);
-  background: var(--card);
-  border-radius: 10px;
-  padding: 10px 12px;
-}
-
-.source-name {
-  margin: 0 0 2px;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--muted);
-}
-
-.reason {
-  margin: 0;
-  padding: 8px 10px;
-  border: 1px solid #4d3f1f;
-  background: #1c1710;
-  border-radius: 8px;
-  font-size: 12px;
-}
-
-.reason[role="alert"] {
-  border-color: #4d2323;
-  background: #1c1010;
-}
-
-a:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
+  --accent: light-dark(#a03a4a, #e08c9c);
 }

@@ -10,18 +10,18 @@
     <link rel="stylesheet" href="options.css" />
   </head>
   <body>
-    <main class="page">
-      <header class="hero">
-        <img src="icons/icon48.png" alt="" width="40" height="40" />
+    <main class="popup options">
+      <header>
+        <img src="icons/icon24.png" alt="" width="24" height="24" />
         <div>
           <h1>Crunchy Presence</h1>
-          <p class="sub">Local only. Nothing leaves this machine except the Discord IPC call.</p>
+          <p class="detail">Local only. Nothing leaves this machine except the Discord IPC call.</p>
         </div>
       </header>
 
       <section class="card" aria-labelledby="setup-title">
-        <h2 id="setup-title">1. Discord application</h2>
-        <p class="hint">
+        <h2 id="setup-title" class="source-name">1. Discord application</h2>
+        <p class="detail">
           Presence works out of the box with the built-in <strong>Crunchyroll</strong> application. Save a
           different application ID only if you want your own application name and artwork in Discord.
         </p>
@@ -37,8 +37,8 @@
         </ol>
 
         <form id="client-form" novalidate>
-          <label for="clientId">Application ID (built-in: Crunchyroll)</label>
-          <div class="row">
+          <label class="field" for="clientId">
+            <span>Application ID (built-in: Crunchyroll)</span>
             <input
               id="clientId"
               name="clientId"
@@ -50,33 +50,33 @@
               placeholder="123456789012345678"
               aria-describedby="clientId-help clientId-error"
             />
-            <button type="submit" class="primary">Save</button>
-          </div>
-          <p id="clientId-help" class="hint">
+          </label>
+          <p id="clientId-help" class="detail">
             17 to 20 digits. Clear the field and save to switch back to the built-in application.
           </p>
-          <p id="clientId-error" class="error" role="alert" hidden></p>
+          <p id="clientId-error" class="reason" role="alert" hidden></p>
+          <button type="submit" class="btn-primary">Save</button>
         </form>
       </section>
 
       <section class="card" aria-labelledby="presence-title">
-        <h2 id="presence-title">2. Presence</h2>
+        <h2 id="presence-title" class="source-name">2. Presence</h2>
         <label class="toggle" for="synopsis">
           <input id="synopsis" type="checkbox" />
           <span>Show episode synopsis in presence</span>
         </label>
-        <p class="hint">
+        <p class="detail">
           Off by default so a synopsis never appears unexpectedly. When enabled and an
           episode has one, Discord shows it instead of the episode timer.
         </p>
       </section>
 
       <section class="card" aria-labelledby="status-title">
-        <h2 id="status-title">3. Status</h2>
+        <h2 id="status-title" class="source-name">3. Status</h2>
         <dl class="status" aria-live="polite">
           <div>
             <dt>Bridge</dt>
-            <dd id="bridgeState" class="pill">unknown</dd>
+            <dd id="bridgeState" class="pill" data-tone="waiting">unknown</dd>
           </div>
           <div>
             <dt>Discord application</dt>
@@ -92,20 +92,22 @@
           </div>
         </dl>
         <div class="row">
-          <button id="test" type="button">Test presence</button>
-          <button id="refresh" type="button">Refresh</button>
+          <button id="test" type="button" class="btn">Test presence</button>
+          <button id="refresh" type="button" class="btn">Refresh</button>
         </div>
-        <p id="test-result" class="hint" role="status"></p>
+        <p id="test-result" class="detail" role="status"></p>
       </section>
 
       <section class="card" aria-labelledby="diag-title">
-        <h2 id="diag-title">4. Diagnostics</h2>
-        <p class="hint">Last extracted page state plus bridge status. Paste this when reporting a problem.</p>
-        <label class="sr-only" for="diagnostics">Diagnostics</label>
-        <textarea id="diagnostics" readonly rows="12" spellcheck="false"></textarea>
+        <h2 id="diag-title" class="source-name">4. Diagnostics</h2>
+        <p class="detail">Last extracted page state plus bridge status. Paste this when reporting a problem.</p>
+        <label class="field" for="diagnostics">
+          <span class="sr-only">Diagnostics</span>
+          <textarea id="diagnostics" readonly rows="12" spellcheck="false"></textarea>
+        </label>
         <div class="row">
-          <button id="copy" type="button">Copy diagnostics</button>
-          <span id="copy-result" class="hint" role="status"></span>
+          <button id="copy" type="button" class="btn">Copy diagnostics</button>
+          <span id="copy-result" class="detail" role="status"></span>
         </div>
       </section>
     </main>

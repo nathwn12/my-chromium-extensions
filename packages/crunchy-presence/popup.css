@@ -1,27 +1,4 @@
-/* Crunchy Presence popup: accent override + package-specific rules. */
+/* Crunchy Presence popup: product accent; the kit owns the components. */
 :root {
-  --accent: #c97a3a;
-}
-
-.notice {
-  border: 1px solid #4d3f1f;
-  background: #1c1710;
-  border-radius: 10px;
-  padding: 10px 12px;
-  font-size: 13px;
-}
-
-.notice p {
-  margin: 0 0 6px;
-}
-
-.notice a {
-  color: var(--accent);
-}
-
-.current {
-  border: 1px solid var(--line);
-  background: var(--card);
-  border-radius: 10px;
-  padding: 12px;
+  --accent: light-dark(#a84b0d, #f47521);
 }

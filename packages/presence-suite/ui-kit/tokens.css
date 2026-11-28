@@ -1,7 +1,9 @@
-/* ui-kit/tokens.css — the nathwn12 palette. Load this first.
-   Dark-first graphite, burnt orange primary, muted crimson secondary,
-   warm gray neutral. Every extension and icon draws from this set only.
-   light-dark() needs the document to declare both schemes; see README.md. */
+/* ui-kit/tokens.css - the nathwn12 palette. Load this first.
+   Dark-first graphite, one product accent, flat surfaces.
+   light-dark() resolves only when the document declares both schemes:
+   <meta name="color-scheme" content="light dark">.
+   Every token here is kit-owned: a package overrides only --accent
+   (optionally --accent-2). See README.md for the product contract. */
 
 :root {
   color-scheme: light dark;
@@ -10,18 +12,48 @@
   --bg: light-dark(#f4f3ef, #16171b);
   --card: light-dark(#ffffff, #23252b);
   --line: light-dark(#ddd8d0, #33363d);
+  --line-strong: light-dark(#8f8b84, #737a87);
 
   /* text */
   --ink: light-dark(#1b1c1f, #ededed);
-  --muted: light-dark(#6b6f76, #9aa0a8);
+  --muted: light-dark(#63676e, #9aa0a8);
 
-  /* identity */
+  /* identity - the only tokens a package may set */
   --accent: light-dark(#b5652e, #c97a3a);
   --accent-2: light-dark(#8e2f3c, #a8434f);
   --neutral: light-dark(#8a8f96, #6b6f76);
 
   /* status */
-  --ok: light-dark(#4f7f4f, #6fa36f);
+  --ok: light-dark(#457245, #6fa36f);
   --warn: light-dark(#8a6a1f, #c9a24a);
-  --bad: light-dark(#8e3b3b, #b25454);
+  --bad: light-dark(#8e3b3b, #d38484);
+
+  /* spacing scale */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+
+  /* radii */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-pill: 999px;
+
+  /* controls */
+  --control-h: 28px;
+  --focus-ring: 2px solid var(--accent);
+  --focus-offset: 2px;
+  --focus-offset-wide: 4px;
+
+  /* type */
+  --text-xs: 11px;
+  --text-sm: 12px;
+  --text-md: 13px;
+  --text-lg: 16px;
+
+  /* motion */
+  --ease: cubic-bezier(.2,.7,.3,1);
+  --dur: 150ms;
 }

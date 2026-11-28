@@ -1,183 +1,57 @@
-/* Crunchy Presence options: accent override + package-specific rules. */
+/* Crunchy Presence options: product accent + package-specific layout. */
 :root {
-  --accent: #c97a3a;
-}
-
-body {
-  width: auto;
-  max-width: 640px;
-  margin: 0 auto;
-  font: 15px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  background: var(--bg);
-  color: var(--ink);
-}
-
-.page {
-  max-width: 720px;
-  margin: 0 auto;
-  padding: 32px 20px 64px;
-  display: grid;
-  gap: 20px;
-}
-
-.hero {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-}
-
-.hero h1 {
-  margin: 0;
-  font-size: 20px;
-  line-height: 30px;
-  letter-spacing: 0.2px;
-}
-
-.hero img {
-  display: block;
-  flex-shrink: 0;
-}
-
-.sub {
-  margin: 2px 0 0;
-  color: var(--muted);
-  font-size: 13px;
-  line-height: 20px;
-}
-
-.card h2 {
-  margin: 0 0 10px;
-  font-size: 15px;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--muted);
-}
-
-.hint {
-  color: var(--muted);
-  font-size: 13px;
-  margin: 6px 0;
+  --accent: light-dark(#a84b0d, #f47521);
 }
 
 .steps {
-  margin: 8px 0 16px;
+  margin: var(--space-2) 0 var(--space-4);
   padding-left: 20px;
   color: var(--muted);
-  font-size: 14px;
+  font-size: var(--text-sm);
 }
 
 .steps a {
   color: var(--accent);
 }
 
-label {
-  display: block;
-  font-size: 13px;
-  font-weight: 600;
-  margin-bottom: 6px;
-}
-
 .row {
   display: flex;
-  gap: 10px;
+  gap: var(--space-2);
   flex-wrap: wrap;
   align-items: center;
-  margin-top: 8px;
 }
 
-input[type="text"],
-textarea {
-  width: 100%;
-  background: #0b0d11;
-  color: var(--ink);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 10px 12px;
-  font: inherit;
+.status {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
 }
 
-input[type="text"] {
-  flex: 1 1 260px;
-  font-variant-numeric: tabular-nums;
-  letter-spacing: 0.06em;
+.status > div {
+  display: grid;
+  grid-template-columns: 180px 1fr;
+  gap: var(--space-3);
+  align-items: baseline;
+}
+
+.status dt {
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+.status dd {
+  margin: 0;
+  font-size: var(--text-md);
+  overflow-wrap: anywhere;
 }
 
 #clientId::placeholder {
   color: #9aa3af;
 }
 
-input[type="text"]:focus-visible,
-textarea:focus-visible,
-button:focus-visible,
-a:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-
-input[aria-invalid="true"] {
-  border-color: var(--bad);
-}
-
-textarea {
-  resize: vertical;
+#diagnostics {
   font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-button {
-  background: #212733;
-  color: var(--ink);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 9px 16px;
-  font: inherit;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-button:hover {
-  border-color: #3a4350;
-}
-
-button.primary {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #140a02;
-}
-
-button.primary:hover {
-  filter: brightness(1.08);
-}
-
-.status {
-  display: grid;
-  gap: 10px;
-  margin: 0 0 4px;
-}
-
-.status > div {
-  display: grid;
-  grid-template-columns: 180px 1fr;
-  gap: 12px;
-  align-items: baseline;
-}
-
-.status dt {
-  color: var(--muted);
-  font-size: 13px;
-}
-
-.status dd {
-  margin: 0;
-  font-size: 14px;
-  overflow-wrap: anywhere;
-}
-
-.error {
-  color: var(--bad);
-  font-size: 13px;
-  margin: 6px 0 0;
+  font-size: var(--text-sm);
 }
 
 .sr-only {
@@ -195,6 +69,6 @@ button.primary:hover {
 @media (max-width: 480px) {
   .status > div {
     grid-template-columns: 1fr;
-    gap: 4px;
+    gap: var(--space-1);
   }
 }

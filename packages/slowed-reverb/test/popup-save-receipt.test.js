@@ -25,6 +25,9 @@ function createPopup(opts = {}) {
       textContent: '',
       disabled: false,
       dataset: {},
+      attrs: {},
+      setAttribute(name, value) { this.attrs[name] = String(value); },
+      getAttribute(name) { return Object.prototype.hasOwnProperty.call(this.attrs, name) ? this.attrs[name] : null; },
       _handlers: {},
       addEventListener(type, fn) {
         (this._handlers[type] = this._handlers[type] || []).push(fn);
@@ -116,6 +119,34 @@ function changeSlow(popup, value, now) {
   popup.els['slow-slider'].fire('change');
 }
 
+test('slider aria-valuetext speaks the units shown in each readout', async () => {
+  const { value: popup, rejections } = await withRejections(async () => {
+    const p = createPopup();
+    await settle();
+    assert.equal(p.els['slow-slider'].getAttribute('aria-valuetext'), '1.00x');
+    assert.equal(p.els['intensity-slider'].getAttribute('aria-valuetext'), '0 percent');
+
+    p.setNow(9500);
+    p.els['slow-slider'].value = '1.25';
+    p.els['slow-slider'].fire('input');
+    assert.equal(p.els['slow-readout'].textContent, '1.25x');
+    assert.equal(p.els['slow-slider'].getAttribute('aria-valuetext'), '1.25x');
+
+    p.els['intensity-slider'].value = '0.4';
+    p.els['intensity-slider'].fire('input');
+    assert.equal(p.els['intensity-readout'].textContent, '40%');
+    assert.equal(p.els['intensity-slider'].getAttribute('aria-valuetext'), '40 percent');
+
+    p.els['reset-btn'].fire('click');
+    await settle();
+    return p;
+  });
+
+  assert.deepEqual(rejections, []);
+  assert.equal(popup.els['slow-slider'].getAttribute('aria-valuetext'), '1.00x');
+  assert.equal(popup.els['intensity-slider'].getAttribute('aria-valuetext'), '0 percent');
+});
+
 test('save rejection reports an error receipt and no unhandled rejection', async () => {
   const { value: popup, rejections } = await withRejections(async () => {
     const p = createPopup({ onPersist: async () => { throw new Error('storage rejected'); } });
@@ -127,7 +158,7 @@ test('save rejection reports an error receipt and no unhandled rejection', async
 
   assert.deepEqual(rejections, []);
   assert.equal(popup.els['status-pill'].textContent, 'Error');
-  assert.equal(popup.els['status-pill'].dataset.state, 'error');
+  assert.equal(popup.els['status-pill'].dataset.tone, 'error');
   assert.match(popup.els['status-text'].textContent, /save/i);
   assert.equal(popup.els['slow-readout'].textContent, '1.25x');
 });
@@ -142,7 +173,7 @@ test('unsuccessful save reply reports an error receipt', async () => {
   });
 
   assert.deepEqual(rejections, []);
-  assert.equal(popup.els['status-pill'].dataset.state, 'error');
+  assert.equal(popup.els['status-pill'].dataset.tone, 'error');
   assert.match(popup.els['status-text'].textContent, /save/i);
 });
 
@@ -173,7 +204,7 @@ test('late rejection from an older save does not clobber a newer success', async
 
   assert.equal(calls, 2);
   assert.deepEqual(rejections, []);
-  assert.equal(popup.els['status-pill'].dataset.state, 'connected');
+  assert.equal(popup.els['status-pill'].dataset.tone, 'connected');
   assert.equal(popup.els['status-text'].textContent, 'Active');
 });
 
@@ -187,7 +218,7 @@ test('live push failure stays a push failure, not a save receipt', async () => {
   });
 
   assert.deepEqual(rejections, []);
-  assert.equal(popup.els['status-pill'].dataset.state, 'connected');
+  assert.equal(popup.els['status-pill'].dataset.tone, 'connected');
   assert.equal(popup.els['status-text'].textContent, 'Active');
   assert.equal(popup.persistCalls.length, 1);
 });
@@ -209,7 +240,7 @@ test('recurring refresh keeps the failed save receipt visible', async () => {
   assert.equal(popup.timers[0].ms, 1000);
   assert.deepEqual(rejections, []);
   assert.equal(popup.els['status-pill'].textContent, 'Error');
-  assert.equal(popup.els['status-pill'].dataset.state, 'error');
+  assert.equal(popup.els['status-pill'].dataset.tone, 'error');
   assert.equal(popup.els['status-text'].textContent, 'Could not save settings');
 });
 
@@ -240,7 +271,7 @@ test('late success of an older save does not erase a newer failed save', async (
 
   assert.equal(calls, 2);
   assert.deepEqual(rejections, []);
-  assert.equal(popup.els['status-pill'].dataset.state, 'error');
+  assert.equal(popup.els['status-pill'].dataset.tone, 'error');
   assert.equal(popup.els['status-text'].textContent, 'Could not save settings');
 });
 
@@ -269,7 +300,7 @@ test('in-flight poll refresh resolving after a failed save does not erase the er
 
   assert.ok(liveCalls >= 2, 'a poll refresh was in flight');
   assert.deepEqual(rejections, []);
-  assert.equal(popup.els['status-pill'].dataset.state, 'error');
+  assert.equal(popup.els['status-pill'].dataset.tone, 'error');
   assert.equal(popup.els['status-text'].textContent, 'Could not save settings');
 });
 
@@ -292,7 +323,7 @@ test('newer successful save clears the failed save receipt', async () => {
 
   assert.equal(calls, 2);
   assert.deepEqual(rejections, []);
-  assert.equal(popup.els['status-pill'].dataset.state, 'connected');
+  assert.equal(popup.els['status-pill'].dataset.tone, 'connected');
   assert.equal(popup.els['status-text'].textContent, 'Active');
 });
 
@@ -310,5 +341,5 @@ test('power toggle clears the failed save receipt', async () => {
   });
 
   assert.deepEqual(rejections, []);
-  assert.notEqual(popup.els['status-pill'].dataset.state, 'error');
+  assert.notEqual(popup.els['status-pill'].dataset.tone, 'error');
 });

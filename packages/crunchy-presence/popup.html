@@ -14,7 +14,7 @@
       <header>
         <img src="icons/icon24.png" alt="" width="24" height="24" />
         <h1>Crunchy Presence</h1>
-        <span id="bridge" class="pill" data-state="unknown" role="status" aria-live="polite"
+        <span id="bridge" class="pill" data-tone="off" role="status" aria-live="polite"
           >Not connected</span
         >
       </header>
@@ -24,13 +24,13 @@
         Custom application ID in use — change it in Settings.
       </p>
 
-      <section class="current" aria-live="polite">
+      <section class="card" aria-live="polite">
         <p id="now" class="now">Nothing playing</p>
         <p id="detail" class="detail"></p>
         <ul id="buttons" class="buttons" hidden></ul>
       </section>
 
-      <p id="reason" class="detail" role="status" aria-live="polite" hidden></p>
+      <p id="reason" class="reason" role="status" aria-live="polite" hidden></p>
 
       <label class="toggle" for="enabled">
         <input id="enabled" type="checkbox" switch role="switch" aria-describedby="reason" />

@@ -1,20 +1,4 @@
-/* Slowed Reverb popup: accent override + package-specific rules. */
+/* Slowed Reverb popup: product identity; layout comes from the shared ui-kit. */
 :root {
-  --accent: #a8434f;
-}
-
-.readout {
-  margin: 0;
-  text-align: center;
-  font-size: 28px;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-}
-
-.readout-sm {
-  margin: 0;
-  text-align: center;
-  font-size: 22px;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
+  --accent: light-dark(#5b4a93, #a99ade);
 }

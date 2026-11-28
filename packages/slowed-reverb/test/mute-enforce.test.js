@@ -1296,9 +1296,9 @@ async function main() {
     'no session gate on import-time rehydrate'
   );
   check(
-    'waiting pill uses idle, off stays for bypass (static)',
-    popupText.indexOf("dataset.state = 'idle'") !== -1 &&
-      /power off\|off for[\s\S]{0,120}dataset\.state = 'off'/.test(popupText),
+    'waiting pill uses the waiting tone, off stays for bypass (static)',
+    popupText.indexOf("dataset.tone = 'waiting'") !== -1 &&
+      /power off\|off for[\s\S]{0,120}dataset\.tone = 'off'/.test(popupText),
     'waiting pill still shares off grey'
   );
   check(

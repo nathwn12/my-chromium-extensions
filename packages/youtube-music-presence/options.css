@@ -1,151 +1,25 @@
-/* YouTube Music Presence options: accent override + package-specific rules. */
+/* YouTube Music Presence options: package identity + the status/code layout
+   the kit has no primitive for. Everything else comes from ui-kit. */
 :root {
-  --accent: #a8434f;
-}
-
-body {
-  width: auto;
-  max-width: 640px;
-  margin: 0 auto;
-  padding: 32px 20px 56px;
-  background: var(--bg);
-  color: var(--ink);
-  font: 14px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-}
-
-.page {
-  max-width: 680px;
-  margin: 0 auto;
-  display: grid;
-  gap: 16px;
-}
-
-.hero {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.hero img {
-  width: 40px;
-  height: 40px;
-  display: block;
-  flex-shrink: 0;
-}
-
-.sub {
-  margin: 2px 0 0;
-  color: var(--muted);
-  font-size: 12px;
-}
-
-h2 {
-  margin: 0;
-  font-size: 14px;
-  font-weight: 600;
-}
-
-.hint {
-  margin: 0;
-  color: var(--muted);
-  font-size: 12px;
-}
-
-label {
-  font-size: 13px;
-  font-weight: 500;
-}
-
-.row {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  flex-wrap: wrap;
-}
-
-input[type="text"] {
-  flex: 1;
-  min-width: 200px;
-  padding: 8px 10px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: #0f1319;
-  color: var(--ink);
-  font: inherit;
-  font-variant-numeric: tabular-nums;
-}
-
-select {
-  padding: 8px 10px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: #0f1319;
-  color: var(--ink);
-  font: inherit;
-}
-
-button {
-  padding: 8px 14px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: #1c212b;
-  color: var(--ink);
-  font: inherit;
-  cursor: pointer;
-}
-
-button.primary {
-  border-color: transparent;
-  background: var(--accent);
-  color: #fff;
-  font-weight: 600;
-}
-
-button:hover {
-  border-color: #33404f;
-}
-
-button.primary:hover {
-  background: #4752c4;
-}
-
-input[type="text"][aria-invalid="true"] {
-  border-color: var(--bad);
-}
-
-.error {
-  margin: 0;
-  color: var(--bad);
-  font-size: 12px;
-}
-
-.saved {
-  margin: 0;
-  min-height: 0;
-  color: var(--muted);
-  font-size: 12px;
-}
-
-.saved:empty {
-  display: none;
+  --accent: light-dark(#a03a4a, #e08c9c);
 }
 
 .status {
   margin: 0;
   display: grid;
-  gap: 6px;
+  gap: var(--space-2);
 }
 
 .status div {
   display: grid;
   grid-template-columns: 160px 1fr;
-  gap: 8px;
+  gap: var(--space-2);
   align-items: baseline;
 }
 
 .status dt {
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 
 .status dd {
@@ -155,7 +29,7 @@ input[type="text"][aria-invalid="true"] {
 
 .host {
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--text-xs);
 }
 
 .host[data-state="connected"] {
@@ -171,46 +45,28 @@ input[type="text"][aria-invalid="true"] {
   color: var(--bad);
 }
 
-.reason {
-  margin: 0;
-  padding: 8px 10px;
-  border: 1px solid #4d3f1f;
-  background: #1c1710;
-  border-radius: 8px;
-  font-size: 12px;
-}
-
-.reason[role="alert"] {
-  border-color: #4d2323;
-  background: #1c1010;
+#presence-saved:empty {
+  display: none;
 }
 
 pre {
   margin: 0;
-  padding: 10px 12px;
+  padding: var(--space-3);
   border: 1px solid var(--line);
-  border-radius: 8px;
-  background: #0f1319;
+  border-radius: var(--radius-sm);
+  background: var(--card);
   overflow-x: auto;
-  font: 12px/1.4 ui-monospace, "Cascadia Code", Consolas, monospace;
+  font: var(--text-sm)/1.4 ui-monospace, "Cascadia Code", Consolas, monospace;
 }
 
-textarea {
-  width: 100%;
-  padding: 10px 12px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: #0f1319;
-  color: var(--ink);
-  font: 12px/1.4 ui-monospace, "Cascadia Code", Consolas, monospace;
-  resize: vertical;
+#diagnostics {
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-size: var(--text-sm);
 }
 
-a:focus-visible,
-button:focus-visible,
-input:focus-visible,
-select:focus-visible,
-textarea:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
+.row {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  flex-wrap: wrap;
 }
