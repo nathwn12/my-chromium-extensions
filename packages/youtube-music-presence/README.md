@@ -2,6 +2,7 @@
   <img src="icons/icon128.png" width="128" height="128" alt="YouTube Music Presence icon" />
 </p>
 <h1 align="center">YouTube Music Presence</h1>
+<p align="center"><strong>YouTube Music playback appears as one Discord desktop rich-presence activity.</strong></p>
 
 YouTube Music playback appears as one Discord desktop rich-presence activity. The extension reads local page metadata and the real media clock, then sends one activity over Chrome native messaging and Discord desktop IPC. It does not report YouTube video activity or upload browsing data.
 
