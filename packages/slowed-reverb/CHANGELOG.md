@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-11-28
+
+- Playback speed now spans 0.60×–1.30× in 0.01× steps, with 1.00× as normal speed.
+- The reverb wet send scales across the whole intensity slider, and the dry signal stays audible at 100% intensity.
+- An armed A–B section loop keeps looping while the tab is hidden.
+- Saved A–B sections now hold up to 1000 entries with no time-based expiry.
+- An optional Lock Pitch toggle in the in-player Section panel keeps the original pitch at non-neutral speeds; it is off by default.
+
 ## [1.2.13] - 2026-11-28
 
 - The popup now uses the shared ui-kit: a single accent pair with the kit's tokens and classes, the native `switch` control, and kit classes for the status pill, sliders and Reset button.
