@@ -4,6 +4,10 @@ Notable changes to this project. Dates are ISO 8601. This package is local-only 
 
 ## [Unreleased]
 
+## [1.2.8] - 2026-11-28
+
+- The popup and options now use the shared ui-kit: a single accent pair with the kit's tokens and classes, and the switch polyfill is gone in favour of the native `switch` control.
+
 ## [1.2.7] - 2026-11-26
 
 - A video playing slower or faster than 1x now refreshes presence on a short 2.5 s cadence while it plays, so the Discord timer stays on the media clock instead of drifting up to ~6 s between 30 s keepalives; normal 1x and paused playback keep the single 30 s keepalive, and the worker's 4/20 s limiter still paces the sends.
