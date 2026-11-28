@@ -1,6 +1,6 @@
 /* Audio Normalizer popup: accent override + package-specific rules. */
 :root {
-  --accent: #c97a3a;
+  --accent: light-dark(#9e521d, #df8f4d);
 }
 
 .gain {
