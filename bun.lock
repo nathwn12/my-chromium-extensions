@@ -22,7 +22,7 @@
     },
     "packages/presence-suite": {
       "name": "presence-suite",
-      "version": "1.0.3",
+      "version": "1.1.0",
     },
     "packages/slowed-reverb": {
       "name": "slowed-reverb",

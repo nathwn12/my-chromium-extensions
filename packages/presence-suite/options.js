@@ -1,14 +1,18 @@
 /**
  * Presence Suite options controller.
  *
- * Per-source switches and application-ID overrides, plus a read-only
- * diagnostics block. Plain ES module; no new permissions. Shared config.js and
- * bridge-status.js keep validation and labels identical to the worker's.
+ * Per-source switches, one display settings record (clock and two buttons)
+ * and application-ID overrides, plus a read-only diagnostics block. Plain ES
+ * module; no new permissions. Shared config.js and bridge-status.js keep
+ * validation and labels identical to the worker's.
  */
 
 import {
+  CLOCK_DETAILED,
+  CLOCK_MINIMAL,
   DEFAULT_CLIENT_IDS,
   ENABLED_KEY,
+  SETTINGS_KEY,
   SOURCES,
   SOURCE_META,
   STATUS_KEY,
@@ -16,6 +20,7 @@ import {
   clientIdToPersist,
   resolveClientId,
   resolveEnabled,
+  resolveSettings,
 } from "./config.js";
 import { presentSources, presentStatus } from "./bridge-status.js";
 
@@ -26,10 +31,14 @@ const savedEl = el("presence-saved");
 const diagnosticsEl = el("diagnostics");
 const toggles = new Map(SOURCES.map((source) => [source, el("enabled-" + source)]));
 const clientFields = new Map(SOURCES.map((source) => [source, el("clientId-" + source)]));
+const clockToggle = el("clock-detailed");
+const listenToggle = el("button-listen");
+const albumToggle = el("button-album");
 
 let status = {};
 let enabled = {};
 let clientIds = {};
+let settings = resolveSettings(null);
 
 function ask(message) {
   return new Promise((resolve) => {
@@ -66,6 +75,10 @@ function render() {
   reasonEl.setAttribute("role", view.isError ? "alert" : "status");
   reasonEl.setAttribute("aria-live", view.isError ? "assertive" : "polite");
 
+  if (clockToggle) clockToggle.checked = settings.clock === CLOCK_DETAILED;
+  if (listenToggle) listenToggle.checked = settings.listenButton;
+  if (albumToggle) albumToggle.checked = settings.albumButton;
+
   const labels = presentSources(status.hostSources);
   const activities = status.activities || {};
   for (const source of SOURCES) {
@@ -101,6 +114,7 @@ function render() {
       },
       detail: status.detail ?? null,
       enabled: { ...enabled },
+      settings: { ...settings },
       applicationIds: { ...clientIds },
       defaults: { ...DEFAULT_CLIENT_IDS },
       activities,
@@ -114,12 +128,13 @@ function render() {
 async function load() {
   let stored = {};
   try {
-    const keys = [ENABLED_KEY, STATUS_KEY, ...SOURCES.map((source) => clientIdKey(source))];
+    const keys = [ENABLED_KEY, SETTINGS_KEY, STATUS_KEY, ...SOURCES.map((source) => clientIdKey(source))];
     stored = (await chrome.storage.local.get(keys)) || {};
   } catch (_) {
     stored = {};
   }
   const map = stored[ENABLED_KEY];
+  settings = resolveSettings(stored[SETTINGS_KEY]);
   enabled = {};
   clientIds = {};
   for (const source of SOURCES) {
@@ -150,6 +165,30 @@ for (const [source, toggle] of toggles) {
   });
 }
 
+/**
+ * All three display switches share one record: a change writes every field,
+ * so a partial or corrupt read can never half-apply the display choice.
+ */
+const displayToggles = [
+  [clockToggle, "clock", (checked) => (checked ? CLOCK_DETAILED : CLOCK_MINIMAL)],
+  [listenToggle, "listenButton", (checked) => checked],
+  [albumToggle, "albumButton", (checked) => checked],
+];
+for (const [toggle, field, toValue] of displayToggles) {
+  if (!toggle) continue;
+  toggle.addEventListener("change", async () => {
+    const next = { ...settings, [field]: toValue(toggle.checked) };
+    try {
+      await chrome.storage.local.set({ [SETTINGS_KEY]: resolveSettings(next) });
+      savedEl.textContent = "Display settings saved.";
+    } catch (_) {
+      toggle.checked = !toggle.checked;
+      savedEl.textContent = "Could not save. Reload and try again.";
+    }
+    await load();
+  });
+}
+
 for (const [source, field] of clientFields) {
   if (!field) continue;
   field.addEventListener("change", async () => {
@@ -174,7 +213,7 @@ if (refresh) refresh.addEventListener("click", () => { void load(); });
 
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== "local") return;
-  if (changes[ENABLED_KEY] || changes[STATUS_KEY] || SOURCES.some((source) => changes[clientIdKey(source)])) void load();
+  if (changes[ENABLED_KEY] || changes[SETTINGS_KEY] || changes[STATUS_KEY] || SOURCES.some((source) => changes[clientIdKey(source)])) void load();
 });
 
 void load();

@@ -11,6 +11,7 @@
  *            clientId:<source> = a 17-20 digit override (optional)
  *            presenceStatus = last published status
  *            trackTotals = last known total per track, reused on a cold play
+ *            displaySettings = { clock, listenButton, albumButton }
  *   session: presenceTabs = per-source tab snapshot across MV3 suspension
  * Old crpStatus / ytmpStatus keys are left untouched; v1 does not migrate.
  */
@@ -43,6 +44,20 @@ export const TOTALS_KEY = "trackTotals";
 export const TRANSPORT_IPC = "ipc";
 export const DEFAULT_TRANSPORT = TRANSPORT_IPC;
 export const TRANSPORT_KEY = "transport";
+
+/** One local record for every display choice; read and written as a whole. */
+export const SETTINGS_KEY = "displaySettings";
+
+/** Minimal counts up from the track's first play; detailed tracks the song. */
+export const CLOCK_MINIMAL = "minimal";
+export const CLOCK_DETAILED = "detailed";
+
+/** Applied on a fresh install and to every missing or corrupt stored field. */
+export const DEFAULT_SETTINGS = Object.freeze({
+  clock: CLOCK_MINIMAL,
+  listenButton: true,
+  albumButton: true,
+});
 
 /** Source registry: activity type, display copy, trusted host, application ID. */
 export const SOURCE_META = Object.freeze({
@@ -131,4 +146,19 @@ export function enabledMap(stored) {
   const out = {};
   for (const source of SOURCES) out[source] = resolveEnabled(stored, source);
   return out;
+}
+
+/**
+ * Resolve one display record from one read. A partial record keeps the
+ * defaults for its missing fields; a corrupt record keeps all of them. Only
+ * the exact detailed value changes the clock, and only an explicit false
+ * turns a button off, so junk never half-applies a display choice.
+ */
+export function resolveSettings(stored) {
+  if (!stored || typeof stored !== "object" || Array.isArray(stored)) return { ...DEFAULT_SETTINGS };
+  return {
+    clock: stored.clock === CLOCK_DETAILED ? CLOCK_DETAILED : CLOCK_MINIMAL,
+    listenButton: stored.listenButton === false ? false : true,
+    albumButton: stored.albumButton === false ? false : true,
+  };
 }

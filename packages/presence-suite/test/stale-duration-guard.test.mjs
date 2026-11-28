@@ -8,7 +8,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { createWorker } from "../background.js";
-import { SOURCE_YOUTUBE_MUSIC, TOTALS_KEY } from "../config.js";
+import { CLOCK_DETAILED, SETTINGS_KEY, SOURCE_YOUTUBE_MUSIC, TOTALS_KEY } from "../config.js";
 
 const BASE = 1_700_000_000_000;
 const ID = "aaaaaaaaaaa";
@@ -22,7 +22,11 @@ const OTHER_KEY = SOURCE_YOUTUBE_MUSIC + "|" + OTHER;
 function fakeChrome(seedTotals) {
   const clock = { t: BASE };
   const timers = [];
-  const state = { local: { [TOTALS_KEY]: seedTotals }, session: {} };
+  // These span assertions describe the detailed clock; the default is minimal.
+  const state = {
+    local: { [TOTALS_KEY]: seedTotals, [SETTINGS_KEY]: { clock: CLOCK_DETAILED } },
+    session: {},
+  };
   let nextHandle = 1;
   const area = (name) => ({
     async get(keys) {

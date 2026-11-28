@@ -53,9 +53,10 @@ install.
 - The popup lists both sources. Each row has its own switch: turning one off
   stops that site's card and leaves the other site running. The pill at the top
   shows the shared bridge state and the reason line shows friendly status copy.
-- Settings (the options tab) has a switch and an optional application ID for
-  each source, plus a read-only diagnostics block. An application ID is 17-20
-  digits; leave it empty to use that source's built-in ID.
+- Settings (the options tab) has an enabled switch and an optional application
+  ID for each source, plus a read-only diagnostics block. An application ID is
+  17-20 digits; leave it empty to use that source's built-in ID. The Display
+  switches are described below.
 - The worker reads the switch map from `storage.local` immediately, so a
   change in either surface takes effect without a reload.
 
@@ -68,20 +69,55 @@ session-storage tab snapshot used across service-worker restarts.
 untouched. The first release does no auto-migration and does not delete them;
 a clean install starts with the new keys and both switches on.
 
+### Display settings
+
+Settings keeps one `displaySettings` record in local storage with three
+switches:
+
+- **Detailed clock** — off by default. On, the card sends the real track
+  length as `start` and `end` and tracks the position inside the track.
+- **Listen / watch button** (`Listen on YouTube Music` / `Watch on
+  Crunchyroll`) — on by default.
+- **Album / artist button** (`View album` / `View artist`) — on by default.
+  Off, the second button is simply absent; with both button switches off there
+  is no `buttons` field at all.
+
+The record is remembered across browser restarts. Defaults apply field by
+field: a missing or unreadable field falls back on its own rather than
+discarding the whole record, so a partial or corrupt stored value still gives
+the minimal clock and both buttons on unless a field was saved explicitly.
+
 ## Timing
+
+There are two clock modes, chosen by the Detailed clock switch in Settings:
+
+- **Minimal (default)** sends only `start`, never `end`. Discord treats that
+  as an open-ended elapsed timer: it counts up indefinitely, so a song looped
+  for an hour reads `60:00`. The anchor is the first sample for that track
+  identity, not the position in the current pass — a repeat keeps climbing,
+  a pause and resume keeps the anchor, and a different song starts a new one.
+  With no stable identity no timer is sent rather than a guessed one.
+- **Detailed** sends `start` and `end` around the real track length and
+  tracks the position inside the track; at the end of a pass the pair
+  re-anchors to the next loop.
+
+The minimal anchor is held in the service worker's memory, so an MV3
+suspension restarts that climb from 0:00. The remembered mode setting itself
+survives restarts in `storage.local`. Both modes still need a playing tab
+with a positive duration and a measured position before any timestamps go out.
 
 Once a track or episode has published a timed card, the worker remembers its
 last known total in local storage (`trackTotals`: up to 1000 tracks, no
 expiry, ~80 KB at ~80 bytes each — no extra storage permission). At the ceiling
 the least relevant track goes: play count decayed with a 90-day half-life, so
 relistening beats mere recency. A cold sample with no total rebuilds with that
-remembered value, so the first card shows the full length instead of a bare
-0:00; a live total replaces it only with ownership evidence - a near-zero
+remembered value, so in detailed mode the first card shows the full length
+instead of a bare 0:00; a live total replaces it only with ownership evidence - a near-zero
 playhead on a freshly owned source or a coherent new identity. A stale read
 mid-track keeps the remembered total on the outgoing card and in the cache.
 After a reconnect the host replays the last activity only while its end
 is still in the future, since an expired pair reaches Discord as an elapsed-only
-card.
+card. A minimal activity has no end, so the replay guard does not apply to it.
 
 ## Privacy
 

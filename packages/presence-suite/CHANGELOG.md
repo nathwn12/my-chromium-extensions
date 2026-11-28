@@ -4,6 +4,10 @@ Notable changes to this project. Dates are ISO 8601. This package is local-only 
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-11-28
+
+- Added remembered display settings: the minimal clock (start only, counts up) is the default, with switches for the detailed clock and the listen/watch and album/artist buttons; buttons stay on by default and the minimal anchor restarts on MV3 suspension.
+
 ## [1.0.3] - 2026-11-28
 
 - A changed live total no longer overwrites a remembered one for the same identity without ownership evidence. A stale read mid-track keeps the remembered total on the outgoing card and in the cache; a near-zero playhead on a freshly owned source, a coherent new identity, or a genuinely different track still publishes its own live total. No playhead is invented.

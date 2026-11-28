@@ -4,9 +4,13 @@ import assert from "node:assert/strict";
 import {
   DEFAULT_CLIENT_ID,
   DEFAULT_CLIENT_IDS,
+  CLOCK_DETAILED,
+  CLOCK_MINIMAL,
+  DEFAULT_SETTINGS,
   DEFAULT_TRANSPORT,
   ENABLED_KEY,
   HOST_NAME,
+  SETTINGS_KEY,
   SOURCE_CRUNCHY,
   SOURCE_META,
   SOURCE_YOUTUBE_MUSIC,
@@ -19,6 +23,7 @@ import {
   enabledMap,
   resolveClientId,
   resolveEnabled,
+  resolveSettings,
   resolveTransport,
   sourceForUrl,
 } from "../config.js";
@@ -30,6 +35,7 @@ test("identity: fresh host name, new storage keys, IPC transport", () => {
   assert.equal(STATUS_KEY, "presenceStatus");
   assert.equal(TABS_KEY, "presenceTabs");
   assert.equal(ENABLED_KEY, "enabled");
+  assert.equal(SETTINGS_KEY, "displaySettings");
   assert.equal(DEFAULT_TRANSPORT, TRANSPORT_IPC);
   assert.equal(resolveTransport(), "ipc");
 });
@@ -95,4 +101,18 @@ test("enabled flags default true per source and only an explicit false disables"
   assert.equal(resolveEnabled({}, SOURCE_CRUNCHY), true);
   assert.equal(resolveEnabled(false), false);
   assert.equal(resolveEnabled(true), true);
+});
+
+test("display settings default to minimal with both buttons on, and partial or corrupt records cannot half-apply", () => {
+  assert.deepEqual(DEFAULT_SETTINGS, { clock: CLOCK_MINIMAL, listenButton: true, albumButton: true });
+  for (const stored of [undefined, null, {}, "junk", 42, []]) {
+    assert.deepEqual(resolveSettings(stored), DEFAULT_SETTINGS, String(stored));
+  }
+  assert.deepEqual(resolveSettings({ listenButton: false }), {
+    clock: CLOCK_MINIMAL, listenButton: false, albumButton: true,
+  });
+  assert.deepEqual(resolveSettings({ clock: CLOCK_DETAILED, albumButton: false }), {
+    clock: CLOCK_DETAILED, listenButton: true, albumButton: false,
+  });
+  assert.deepEqual(resolveSettings({ clock: "nonsense", listenButton: "no", albumButton: 0 }), DEFAULT_SETTINGS);
 });

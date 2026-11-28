@@ -67,7 +67,7 @@
  * test/extension/activity.test.mjs.
  */
 
-import { SOURCE_META, SOURCE_YOUTUBE_MUSIC, sourceForUrl } from "./config.js";
+import { CLOCK_MINIMAL, SOURCE_META, SOURCE_YOUTUBE_MUSIC, sourceForUrl } from "./config.js";
 
 const MAX_TEXT = 128;
 const MAX_BUTTON_LABEL = 32;
@@ -181,22 +181,36 @@ function watchPageUrl(raw) {
  * back to a moving limit); the builder does not second-guess the caller.
  * Whole seconds leave on the wire.
  *
- * Also accepts `(source, state, now)`; a leading source other than
+ * The optional trailing argument `{ clock, listenButton, albumButton, start }`
+ * carries the stored display settings in; this builder never reads storage
+ * and takes no clock of its own. Omitting it keeps the original payload
+ * byte-for-byte. `clock: "minimal"` emits one `start` and no `end`, so
+ * Discord counts up without bound; `start` is the worker's remembered whole
+ * seconds for this track identity, and without one no timestamps go out. An
+ * explicit false on a button flag drops that button, and no empty `buttons`
+ * array is ever emitted.
+ *
+ * Also accepts `(source, state, now, options)`; a leading source other than
  * `youtube-music` builds nothing. In the object form the second argument is
- * `now`, the sample reference. The rate bias lives in that anchor; there is no
- * separate sample instant and no rate arithmetic here.
+ * `now`, the sample reference and the third is `options`. The rate bias
+ * lives in that anchor; there is no separate sample instant and no rate
+ * arithmetic here.
  */
-export function buildActivity(sourceOrState, stateOrNow, nowArg) {
+export function buildActivity(sourceOrState, stateOrNow, nowArgOrOptions, optionsArg) {
   let state;
   let now;
+  let options;
   if (typeof sourceOrState === "string") {
     if (sourceOrState !== SOURCE_YOUTUBE_MUSIC) return null;
     state = stateOrNow;
-    now = typeof nowArg === "number" ? nowArg : Date.now();
+    now = typeof nowArgOrOptions === "number" ? nowArgOrOptions : Date.now();
+    options = optionsArg;
   } else {
     state = sourceOrState;
     now = typeof stateOrNow === "number" ? stateOrNow : Date.now();
+    options = nowArgOrOptions;
   }
+  if (!options || typeof options !== "object") options = {};
   const meta = SOURCE_META[SOURCE_YOUTUBE_MUSIC];
   if (!state || typeof state !== "object") return null;
 
@@ -254,9 +268,9 @@ export function buildActivity(sourceOrState, stateOrNow, nowArg) {
   const label = clampText(meta.buttonLabel, MAX_BUTTON_LABEL);
   const primaryUrl = trackUrl || watchPageUrl(state.pageUrl);
   const buttons = [];
-  if (primaryUrl && label) buttons.push({ label, url: primaryUrl });
-  if (albumUrl) buttons.push({ label: "View album", url: albumUrl });
-  else if (artistUrl) buttons.push({ label: "View artist", url: artistUrl });
+  if (options.listenButton !== false && primaryUrl && label) buttons.push({ label, url: primaryUrl });
+  if (options.albumButton !== false && albumUrl) buttons.push({ label: "View album", url: albumUrl });
+  else if (options.albumButton !== false && artistUrl) buttons.push({ label: "View artist", url: artistUrl });
   if (buttons.length) activity.buttons = buttons;
 
   const duration = Number(state.duration);
@@ -270,21 +284,35 @@ export function buildActivity(sourceOrState, stateOrNow, nowArg) {
   ) {
     const seconds = Math.floor(duration);
     if (seconds >= 1) {
-      const clamped = Math.min(Math.max(position, 0), duration);
-      /**
-       * floor(clamped) >= floor(duration) is the repeat boundary: Discord's
-       * integer clock already reads the end, so the sampled pair would finish
-       * at or before its own instant. Anchor a fresh loop instead of emitting
-       * a pair Discord renders as an elapsed-only card.
-       */
-      const atEnd = Math.floor(clamped) >= seconds;
-      const start = atEnd
-        ? Math.floor(anchor / 1000)
-        : Math.floor(anchor / 1000) - Math.floor(clamped);
-      const end = start + seconds;
-      /** Never put an empty or already-expired pair on the wire. */
-      if (end > start && end > Math.floor(now / 1000)) {
-        activity.timestamps = { start, end };
+      if (options.clock === CLOCK_MINIMAL) {
+        /**
+         * Minimal clock: one start and no end. Discord reads that as an
+         * open-ended elapsed timer, so a repeated song keeps climbing. The
+         * anchor is remembered by the worker for this track identity; with no
+         * remembered anchor no stamp is sent, never one rebuilt from the
+         * current pass's position.
+         */
+        const remembered = options.start;
+        if (Number.isInteger(remembered) && remembered > 0) {
+          activity.timestamps = { start: remembered };
+        }
+      } else {
+        const clamped = Math.min(Math.max(position, 0), duration);
+        /**
+         * floor(clamped) >= floor(duration) is the repeat boundary: Discord's
+         * integer clock already reads the end, so the sampled pair would finish
+         * at or before its own instant. Anchor a fresh loop instead of emitting
+         * a pair Discord renders as an elapsed-only card.
+         */
+        const atEnd = Math.floor(clamped) >= seconds;
+        const start = atEnd
+          ? Math.floor(anchor / 1000)
+          : Math.floor(anchor / 1000) - Math.floor(clamped);
+        const end = start + seconds;
+        /** Never put an empty or already-expired pair on the wire. */
+        if (end > start && end > Math.floor(now / 1000)) {
+          activity.timestamps = { start, end };
+        }
       }
     }
   }

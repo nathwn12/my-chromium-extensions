@@ -1,6 +1,6 @@
 {
   "name": "presence-suite",
-  "version": "1.0.3",
+  "version": "1.1.0",
   "private": true,
   "type": "module",
   "description": "Local-only MV3 extension and native host publishing YouTube Music and Crunchyroll activity to Discord from one host.",

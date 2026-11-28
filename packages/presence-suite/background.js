@@ -17,10 +17,12 @@
  */
 
 import {
+  CLOCK_MINIMAL,
   DEFAULT_CLIENT_ID,
   DEFAULT_TRANSPORT,
   ENABLED_KEY,
   HOST_NAME,
+  SETTINGS_KEY,
   SOURCES,
   SOURCE_CRUNCHY,
   SOURCE_YOUTUBE_MUSIC,
@@ -29,6 +31,7 @@ import {
   TOTALS_KEY,
   enabledMap,
   resolveEnabled,
+  resolveSettings,
   sourceForUrl,
 } from "./config.js";
 import {
@@ -238,6 +241,9 @@ export function createWorker({
 } = {}) {
   const tabs = new Map(SOURCES.map((source) => [source, new Map()]));
   const enabled = enabledMap(null);
+  let settings = resolveSettings(null);
+  /** Minimal-clock anchors: one remembered first-play instant per identity. */
+  const minimalStarts = new Map();
   const desired = {};
   const lastSent = {};
   for (const source of SOURCES) {
@@ -589,6 +595,35 @@ export function createWorker({
     return id ? source + "|" + id : null;
   }
 
+  /**
+   * Minimal clock anchors to the first sample for this track identity, never
+   * to the position inside the current pass: a loop of the same song keeps
+   * climbing, a pause/resume keeps the anchor, and a different identity gets
+   * a fresh one. It uses the same identity as remembered totals. With no
+   * identity or no valid instant, no stamp is sent rather than a guess. The
+   * map is worker-local; a suspension ends this run's anchor series.
+   */
+  function minimalStartSeconds(source, state, anchorMs) {
+    const key = totalsKey(source, state);
+    if (!key) return undefined;
+    let seconds = minimalStarts.get(key);
+    if (!Number.isInteger(seconds) || seconds <= 0) {
+      const at = Number(anchorMs);
+      seconds = Number.isFinite(at) && at > 0 ? Math.floor(at / 1000) : 0;
+      if (seconds <= 0) return undefined;
+      minimalStarts.set(key, seconds);
+    }
+    return seconds;
+  }
+
+  /** One trailing argument for both pure builders; they read no storage. */
+  function displayOptions(source, state, anchorMs) {
+    const start = settings.clock === CLOCK_MINIMAL
+      ? minimalStartSeconds(source, state, anchorMs)
+      : undefined;
+    return { ...settings, start };
+  }
+
   /** A cache key needs a source and a stable identity; no identity, no borrow. */
   function totalsKey(source, state) {
     if (!state || typeof state !== "object") return null;
@@ -789,11 +824,13 @@ export function createWorker({
     return out;
   }
 
-  function youtubeActivity(entry) {
+  function youtubeActivity(entry, at) {
     const { state, trusted } = withGuardedTotals(SOURCE_YOUTUBE_MUSIC, entry.state);
     const bias = rateBiasMs(state);
-    const anchor = sampleAt(entry, entry.at) + bias;
-    const activity = buildYoutube(bias ? { ...state, at: anchor } : state, anchor);
+    const sampled = sampleAt(entry, entry.at);
+    const anchor = sampled + bias;
+    const options = displayOptions(SOURCE_YOUTUBE_MUSIC, state, Math.min(sampled, at));
+    const activity = buildYoutube(bias ? { ...state, at: anchor } : state, anchor, options);
     if (activity?.timestamps) {
       markTimed(SOURCE_YOUTUBE_MUSIC, state);
       if (trusted) rememberTotal(SOURCE_YOUTUBE_MUSIC, state, state.duration);
@@ -803,7 +840,8 @@ export function createWorker({
 
   function crunchyActivity(state, at) {
     const { state: effective, trusted } = withGuardedTotals(SOURCE_CRUNCHY, state);
-    const activity = buildCrunchy(effective, at, { synopsis: false });
+    const options = displayOptions(SOURCE_CRUNCHY, effective, at);
+    const activity = buildCrunchy(effective, at, { synopsis: false, ...options });
     if (activity?.timestamps) {
       markTimed(SOURCE_CRUNCHY, effective);
       if (trusted) rememberTotal(SOURCE_CRUNCHY, effective, effective.duration);
@@ -826,7 +864,7 @@ export function createWorker({
         state: withCachedMetadata(SOURCE_YOUTUBE_MUSIC, entry.state),
       }));
     const bestYoutube = pickBestYoutubeTab(youtubeEntries);
-    desired[SOURCE_YOUTUBE_MUSIC] = bestYoutube ? youtubeActivity(bestYoutube) : null;
+    desired[SOURCE_YOUTUBE_MUSIC] = bestYoutube ? youtubeActivity(bestYoutube, at) : null;
 
     const crunchyEntries = {};
     for (const [tabId, entry] of tabs.get(SOURCE_CRUNCHY)) crunchyEntries[tabId] = resolveTab(entry, at);
@@ -971,6 +1009,14 @@ export function createWorker({
         if (next !== enabled[source]) setEnabled(source, next);
       }
     }
+    if (changes[SETTINGS_KEY]) {
+      const next = resolveSettings(changes[SETTINGS_KEY].newValue);
+      if (JSON.stringify(next) !== JSON.stringify(settings)) {
+        settings = next;
+        recompute();
+        persist();
+      }
+    }
   }
 
   function handleMessage(message, sender, sendResponse) {
@@ -993,12 +1039,13 @@ export function createWorker({
   async function loadConfig() {
     let stored = null;
     try {
-      stored = await api.storage.local.get([ENABLED_KEY]);
+      stored = await api.storage.local.get([ENABLED_KEY, SETTINGS_KEY]);
     } catch (_) {
       stored = null;
     }
     const map = stored && stored[ENABLED_KEY];
     for (const source of SOURCES) enabled[source] = resolveEnabled(map, source);
+    settings = resolveSettings(stored && stored[SETTINGS_KEY]);
   }
 
   function armWatchdog() {

@@ -2,7 +2,13 @@
  * Crunchyroll activity builder adapter for presence-suite.
  * Ported from crunchy-presence/background.js; WATCHING (type 3).
  * The worker calls buildActivity(state, now, options) for the crunchy source.
+ * `options` carries the shared display settings: `clock: "minimal"` emits a
+ * single remembered `start` with no `end`, and an explicit false on
+ * `listenButton` / `albumButton` drops that button. Omitting the fields
+ * keeps the original payload byte-for-byte.
  */
+import { CLOCK_MINIMAL } from "../../config.js";
+
 const MAX_TEXT = 128;
 
 /** Collapse whitespace, drop empties and single chars, hard-cap at 128 characters. */
@@ -144,11 +150,13 @@ export function buildActivity(state, now = Date.now(), options = {}) {
   let episodeUrl = pickButtonUrl(state.episodeUrl);
   if (!episodeUrl && !seriesUrl) episodeUrl = pickButtonUrl(state.pageUrl);
   const buttons = [];
-  if (episodeUrl) {
+  if (options.listenButton !== false && episodeUrl) {
     const label = seriesUrl ? "Watch Episode" : "Watch on Crunchyroll";
     buttons.push({ label: clampText(label, 32), url: episodeUrl });
   }
-  if (seriesUrl) buttons.push({ label: clampText("View Series", 32), url: seriesUrl });
+  if (options.albumButton !== false && seriesUrl) {
+    buttons.push({ label: clampText("View Series", 32), url: seriesUrl });
+  }
   if (buttons.length) activity.buttons = buttons.slice(0, 2);
 
   const position = Number(state.position);
@@ -164,10 +172,18 @@ export function buildActivity(state, now = Date.now(), options = {}) {
     // so the total is never rewritten to a shorter read.
     const atSec = Math.min(reportedSec, durationSec - 1);
     const baseSec = Math.floor(now / 1000) * 1000;
-    activity.timestamps = {
-      start: Math.round(baseSec - atSec * 1000),
-      end: Math.round(baseSec + (durationSec - atSec) * 1000)
-    };
+    if (options.clock === CLOCK_MINIMAL) {
+      // No end: Discord counts up. The worker owns the per-identity anchor.
+      const remembered = options.start;
+      if (Number.isInteger(remembered) && remembered > 0) {
+        activity.timestamps = { start: remembered };
+      }
+    } else {
+      activity.timestamps = {
+        start: Math.round(baseSec - atSec * 1000),
+        end: Math.round(baseSec + (durationSec - atSec) * 1000)
+      };
+    }
   }
 
   return activity;

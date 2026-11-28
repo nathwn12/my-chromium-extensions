@@ -11,6 +11,7 @@ import {
   clampText as clampCrunchy,
   pickButtonUrl as pickCrunchyButton,
 } from "../sources/crunchy/activity.js";
+import { CLOCK_DETAILED, CLOCK_MINIMAL } from "../config.js";
 
 const NOW = 1700000000000;
 const SEC = Math.floor(NOW / 1000);
@@ -155,4 +156,77 @@ test("crunchy activity: at most two buttons and https crunchyroll URLs only", ()
     episodeUrl: "https://www.crunchyroll.com/watch/G6VU774M5/x",
   }, NOW);
   assert.deepEqual(one.buttons.map((button) => button.label), ["Watch on Crunchyroll"]);
+});
+
+const SAMPLE = {
+  title: "Song",
+  channel: "Artist",
+  mediaId: "abc12345678",
+  trackUrl: "https://music.youtube.com/watch?v=abc12345678",
+  albumUrl: "https://music.youtube.com/browse/MPREabc",
+  paused: false,
+  duration: 240,
+  position: 60,
+  at: NOW,
+};
+
+// Mutation: emit an end under the minimal clock, or add the end by rebuilding
+// the pair from the current position instead of using the remembered anchor.
+test("youtube display options: minimal is start-only, detailed keeps today's exact pair", () => {
+  const minimal = buildYoutube(SAMPLE, NOW, {
+    clock: CLOCK_MINIMAL, listenButton: true, albumButton: true, start: SEC,
+  });
+  assert.deepEqual(minimal.timestamps, { start: SEC });
+  assert.equal("end" in minimal.timestamps, false);
+
+  const detailed = buildYoutube(SAMPLE, NOW, {
+    clock: CLOCK_DETAILED, listenButton: true, albumButton: true,
+  });
+  assert.deepEqual(detailed.timestamps, { start: SEC - 60, end: SEC + 180 });
+  assert.deepEqual(detailed, buildYoutube(SAMPLE, NOW), "omitting options is still byte-identical");
+});
+
+test("youtube display options: each button switch leaves exactly the other button", () => {
+  const both = buildYoutube(SAMPLE, NOW, { listenButton: true, albumButton: true });
+  assert.deepEqual(both.buttons, [
+    { label: "Listen on YouTube Music", url: "https://music.youtube.com/watch?v=abc12345678" },
+    { label: "View album", url: "https://music.youtube.com/browse/MPREabc" },
+  ]);
+  assert.deepEqual(buildYoutube(SAMPLE, NOW, { listenButton: true, albumButton: false }).buttons, [both.buttons[0]]);
+  assert.deepEqual(buildYoutube(SAMPLE, NOW, { listenButton: false, albumButton: true }).buttons, [both.buttons[1]]);
+  const none = buildYoutube(SAMPLE, NOW, { listenButton: false, albumButton: false });
+  assert.equal("buttons" in none, false, "no empty buttons array on the wire");
+});
+
+test("youtube minimal: a remembered anchor survives a loop; no anchor or a pause emits nothing", () => {
+  const options = { clock: CLOCK_MINIMAL, listenButton: true, albumButton: true, start: SEC };
+  const looped = buildYoutube({ ...SAMPLE, position: 0, at: NOW + 3_600_000 }, NOW + 3_600_000, options);
+  assert.deepEqual(looped.timestamps, { start: SEC }, "an hour later, still the first-play anchor");
+  const noAnchor = buildYoutube(SAMPLE, NOW, { clock: CLOCK_MINIMAL });
+  assert.equal("timestamps" in noAnchor, false);
+  const paused = buildYoutube({ ...SAMPLE, paused: true }, NOW, options);
+  assert.equal("timestamps" in paused, false, "paused tabs get no timer in either mode");
+});
+
+test("crunchy display options: each button switch leaves exactly the other button", () => {
+  const state = {
+    series: "Series", episodeTitle: "Episode", seasonNumber: 1, episodeNumber: 2,
+    seriesUrl: "https://www.crunchyroll.com/series/G6VU774M5",
+    episodeUrl: "https://www.crunchyroll.com/watch/G6VU774M5/x",
+    paused: false, duration: 240, position: 60,
+  };
+  const both = buildCrunchy(state, NOW, { listenButton: true, albumButton: true });
+  assert.deepEqual(both.buttons.map((button) => button.label), ["Watch Episode", "View Series"]);
+  assert.deepEqual(buildCrunchy(state, NOW, { listenButton: true, albumButton: false }).buttons, [both.buttons[0]]);
+  assert.deepEqual(buildCrunchy(state, NOW, { listenButton: false, albumButton: true }).buttons, [both.buttons[1]]);
+  const none = buildCrunchy(state, NOW, { listenButton: false, albumButton: false });
+  assert.equal("buttons" in none, false);
+  const minimal = buildCrunchy(state, NOW, {
+    clock: CLOCK_MINIMAL, listenButton: true, albumButton: true, start: SEC,
+  });
+  assert.deepEqual(minimal.timestamps, { start: SEC });
+  assert.equal("end" in minimal.timestamps, false);
+  assert.deepEqual(buildCrunchy(state, NOW).timestamps, {
+    start: NOW - 60000, end: NOW + 180000,
+  }, "omitting options keeps the crunchy pair byte-identical");
 });

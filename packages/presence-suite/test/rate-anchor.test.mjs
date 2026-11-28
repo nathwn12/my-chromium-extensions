@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { isRateScaled, rateBiasMs, sampleAt, createWorker } from "../background.js";
-import { SOURCE_YOUTUBE_MUSIC } from "../config.js";
+import { CLOCK_DETAILED, SETTINGS_KEY, SOURCE_YOUTUBE_MUSIC } from "../config.js";
 
 const BASE = 1_700_000_000_000;
 const WATCH_URL = "https://music.youtube.com/watch?v=abc12345678";
@@ -17,8 +17,9 @@ function fakeWorker() {
     postMessage(message) { this.posts.push(message); },
     disconnect() {},
   };
+  // Rate bias is a detailed-clock contract; opt this fixture into it.
   const area = () => ({
-    async get() { return {}; },
+    async get() { return { [SETTINGS_KEY]: { clock: CLOCK_DETAILED } }; },
     async set() {},
   });
   const api = {

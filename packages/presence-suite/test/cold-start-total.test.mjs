@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { createWorker } from "../background.js";
-import { SOURCE_CRUNCHY, SOURCE_YOUTUBE_MUSIC, TOTALS_KEY } from "../config.js";
+import { CLOCK_DETAILED, SETTINGS_KEY, SOURCE_CRUNCHY, SOURCE_YOUTUBE_MUSIC, TOTALS_KEY } from "../config.js";
 
 const BASE = 1_700_000_000_000;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -14,7 +14,12 @@ function fakeChrome(seedTotals) {
   const timers = [];
   const writes = [];
   let nextHandle = 1;
-  const state = { local: { [TOTALS_KEY]: seedTotals }, session: {} };
+  // These assertions describe detailed mode: opt in explicitly, since the
+  // shipped default is now the minimal clock.
+  const state = {
+    local: { [TOTALS_KEY]: seedTotals, [SETTINGS_KEY]: { clock: CLOCK_DETAILED } },
+    session: {},
+  };
   const area = (name) => ({
     async get(keys) {
       if (keys == null) return { ...state[name] };

@@ -7,7 +7,7 @@ import {
   isPongOverdue,
   pickBestYoutubeTab,
 } from "../background.js";
-import { HOST_NAME, SOURCE_CRUNCHY, SOURCE_YOUTUBE_MUSIC, TABS_KEY } from "../config.js";
+import { CLOCK_DETAILED, HOST_NAME, SETTINGS_KEY, SOURCE_CRUNCHY, SOURCE_YOUTUBE_MUSIC, TABS_KEY } from "../config.js";
 
 function fakeChrome() {
   const listeners = { message: [], alarm: [], removed: [], changed: [] };
@@ -153,4 +153,101 @@ test("pure worker helpers keep their contracts", () => {
     { at: 2, state: { title: "Playing", paused: false } },
   ]);
   assert.equal(best.state.title, "Playing");
+});
+
+const BASE = 1_700_000_000_000;
+const SEC = Math.floor(BASE / 1000);
+const WATCH = "https://music.youtube.com/watch?v=abc12345678";
+const OTHER = "https://music.youtube.com/watch?v=bbbbbbbbbbb";
+
+function musicState(extra = {}) {
+  return {
+    title: "Song", channel: "Artist", mediaId: "abc12345678",
+    trackUrl: WATCH, pageUrl: WATCH, albumUrl: "https://music.youtube.com/browse/MPREabc",
+    paused: false, duration: 100, position: 10, at: BASE,
+    ...extra,
+  };
+}
+
+function sendMusic(worker, state, url = WATCH) {
+  worker.handleMessage(
+    { t: "presence-state", source: SOURCE_YOUTUBE_MUSIC, state },
+    { id: "extension-under-test", frameId: 0, url, tab: { id: 7, url } }
+  );
+}
+
+test("minimal clock anchors to the first play, survives a loop and a pause, and resets on a new identity", async () => {
+  const chrome = fakeChrome();
+  let clock = BASE;
+  const worker = createWorker({ chrome: chrome.api, now: () => clock });
+  await worker.start();
+  const activity = () => worker.status().activities[SOURCE_YOUTUBE_MUSIC];
+
+  sendMusic(worker, musicState());
+  assert.deepEqual(activity().timestamps, { start: SEC });
+  assert.equal("end" in activity().timestamps, false);
+  assert.deepEqual(activity().buttons.map((button) => button.label), ["Listen on YouTube Music", "View album"]);
+
+  clock += 3_600_000; // one hour, one loop of the same identity
+  sendMusic(worker, musicState({ position: 0, at: clock }));
+  assert.deepEqual(activity().timestamps, { start: SEC }, "the timer climbs past the loop instead of jumping");
+
+  sendMusic(worker, musicState({ paused: true, position: 20, at: clock }));
+  assert.equal(activity(), null, "a paused tab publishes nothing");
+  sendMusic(worker, musicState({ position: 20, at: clock }));
+  assert.deepEqual(activity().timestamps, { start: SEC }, "resume keeps the anchor");
+
+  sendMusic(worker, musicState({
+    mediaId: "bbbbbbbbbbb", trackUrl: OTHER, pageUrl: OTHER, position: 0, at: clock,
+  }), OTHER);
+  assert.deepEqual(activity().timestamps, { start: Math.floor(clock / 1000) }, "a new song starts fresh");
+});
+
+test("stored settings win, corrupt falls back to minimal, and a storage change switches live", async () => {
+  const chrome = fakeChrome();
+  chrome.state.local[SETTINGS_KEY] = { clock: CLOCK_DETAILED, listenButton: false, albumButton: true };
+  const worker = createWorker({ chrome: chrome.api, now: () => BASE });
+  await worker.start();
+  sendMusic(worker, musicState());
+  const activity = () => worker.status().activities[SOURCE_YOUTUBE_MUSIC];
+
+  assert.deepEqual(activity().timestamps, { start: SEC - 10, end: SEC + 90 }, "the stored detailed mode wins");
+  assert.deepEqual(activity().buttons, [
+    { label: "View album", url: "https://music.youtube.com/browse/MPREabc" },
+  ], "the stored listen-button switch is respected");
+
+  worker.handleStorageChange({ [SETTINGS_KEY]: { newValue: "junk" } }, "local");
+  assert.deepEqual(activity().timestamps, { start: SEC }, "a corrupt record falls back to minimal");
+  assert.deepEqual(activity().buttons.map((button) => button.label), ["Listen on YouTube Music", "View album"]);
+
+  worker.handleStorageChange({
+    [SETTINGS_KEY]: { newValue: { clock: CLOCK_DETAILED, listenButton: true, albumButton: false } },
+  }, "local");
+  assert.deepEqual(activity().timestamps, { start: SEC - 10, end: SEC + 90 }, "detailed is restored live");
+  assert.deepEqual(activity().buttons.map((button) => button.label), ["Listen on YouTube Music"]);
+});
+
+test("a playing tab with no track identity gets no minimal anchor; a paused tab gets no timestamps in either mode", async () => {
+  for (const stored of [null, { [SETTINGS_KEY]: { clock: CLOCK_DETAILED } }]) {
+    const chrome = fakeChrome();
+    if (stored) Object.assign(chrome.state.local, stored);
+    const worker = createWorker({ chrome: chrome.api, now: () => BASE });
+    await worker.start();
+    const activity = () => worker.status().activities[SOURCE_YOUTUBE_MUSIC];
+
+    sendMusic(worker, musicState({
+      mediaId: undefined, trackUrl: undefined, pageUrl: undefined, paused: true,
+    }));
+    assert.equal(activity(), null, "paused publishes nothing in either mode");
+    sendMusic(worker, musicState({
+      mediaId: undefined, trackUrl: undefined, pageUrl: undefined,
+    }));
+    const card = activity();
+    assert.ok(card, "a playing card still publishes");
+    if (stored) {
+      assert.deepEqual(card.timestamps, { start: SEC - 10, end: SEC + 90 });
+    } else {
+      assert.equal("timestamps" in card, false, "no stable identity means no invented anchor");
+    }
+  }
 });

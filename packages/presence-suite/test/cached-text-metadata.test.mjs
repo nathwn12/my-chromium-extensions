@@ -6,7 +6,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { createWorker } from "../background.js";
-import { SOURCE_YOUTUBE_MUSIC, TOTALS_KEY } from "../config.js";
+import { CLOCK_DETAILED, SETTINGS_KEY, SOURCE_YOUTUBE_MUSIC, TOTALS_KEY } from "../config.js";
 
 const BASE = 1_700_000_000_000;
 const ID = "aaaaaaaaaaa";
@@ -21,7 +21,11 @@ function fakeChrome(seedTotals) {
   const clock = { t: BASE };
   const timers = [];
   let nextHandle = 1;
-  const state = { local: { [TOTALS_KEY]: seedTotals }, session: {} };
+  // The seek/total assertions below are detailed-mode behaviour.
+  const state = {
+    local: { [TOTALS_KEY]: seedTotals, [SETTINGS_KEY]: { clock: CLOCK_DETAILED } },
+    session: {},
+  };
   const area = (name) => ({
     async get(keys) {
       if (keys == null) return { ...state[name] };
