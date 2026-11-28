@@ -527,6 +527,13 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
     const now = typeof settings.now === 'function' ? settings.now : () => Date.now();
     const pageHook = settings.pageHook || null;
     const storage = settings.storage || null;
+    const lockPitchApi = Boolean(storage)
+      && typeof storage.getLockPitch === 'function'
+      && typeof storage.saveLockPitch === 'function';
+
+    function currentLockPitch() {
+      return lockPitchApi && storage.getLockPitch() === true;
+    }
     const getStyle = typeof settings.getStyle === 'function'
       ? settings.getStyle
       : (node) => win.getComputedStyle(node);
@@ -1606,6 +1613,19 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
       repeatText.textContent = 'Repeat section';
       repeatRow.append(repeat, repeatText);
 
+      let lockRow = null;
+      let lock = null;
+      if (lockPitchApi) {
+        lockRow = doc.createElement('label');
+        lockRow.className = 'slra-row';
+        lock = doc.createElement('input');
+        lock.type = 'checkbox';
+        lock.setAttribute('aria-label', 'Lock pitch');
+        const lockText = doc.createElement('span');
+        lockText.textContent = 'Lock pitch';
+        lockRow.append(lock, lockText);
+      }
+
       const fromRow = buildRow('From', 'Set From to now');
       const toRow = buildRow('To', 'Set To to now');
 
@@ -1624,7 +1644,10 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
       undo.disabled = true;
       actions.append(clear, save, undo);
 
-      panel.append(repeatRow, fromRow.row, toRow.row, status, actions);
+      const panelRows = [repeatRow];
+      if (lockRow) panelRows.push(lockRow);
+      panelRows.push(fromRow.row, toRow.row, status, actions);
+      panel.append(...panelRows);
 
       const volumeHud = doc.createElement('div');
       volumeHud.className = 'slra-volume';
@@ -1649,6 +1672,7 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
         shadow: shadow,
         panel: panel,
         repeat: repeat,
+        lock: lock,
         from: fromRow.input,
         to: toRow.input,
         fromNow: fromRow.now,
@@ -1667,6 +1691,12 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
         syncTick();
         syncPanel();
       });
+      if (lock) {
+        lock.addEventListener('change', () => {
+          void storage.saveLockPitch(lock.checked);
+          syncPanel();
+        });
+      }
       ui.from.addEventListener('input', () => {
         fromDirty = true;
         paintStatus();
@@ -1795,6 +1825,7 @@ const UNCONFIRMED_SEEK_GUARD_SECONDS = 1;
     function syncPanel() {
       if (!ui) return;
       ui.repeat.checked = active;
+      if (ui.lock) ui.lock.checked = currentLockPitch();
       const fromSeconds = session.startSeconds === null ? session.displayStartSeconds : session.startSeconds;
       const toSeconds = session.endSeconds === null ? session.displayEndSeconds : session.endSeconds;
       if (!fromDirty) ui.from.value = fromSeconds === null ? '' : formatTime(fromSeconds);

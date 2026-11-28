@@ -1007,7 +1007,7 @@ async function main() {
     'volumeHandler still maps media.muted to masterGain 0'
   );
   const alignBlock = (src.match(/function alignBeforeAudible\(controller\) \{[\s\S]*?\n  \}/) || [])[0] || '';
-  const alignRateAt = alignBlock.indexOf('writeIntendedRate(controller, state.settings.slow)');
+  const alignRateAt = alignBlock.indexOf('writeIntendedRate(controller, state.settings.slow, state.settings.lockPitch)');
   check(
     'rebuild resets the mute budget and only ramps through the rate gate (static)',
     /resetMuteDampener\(controller\);\s+alignBeforeAudible\(controller\);/.test(src) &&

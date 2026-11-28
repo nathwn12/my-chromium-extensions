@@ -3023,3 +3023,39 @@ test('F4: a commit never drags a mid-stream element that provenance names as ano
   await settle();
   assert.equal(media.currentTime, 45, 'never seek into another song: the unconfirmed mid-stream element stays put');
 });
+
+test('lock pitch: the in-player toggle reads, writes and resyncs the persisted flag', async () => {
+  const writes = [];
+  let lockPitch = false;
+  const storage = createStorage();
+  storage.getLockPitch = () => lockPitch;
+  storage.saveLockPitch = (value) => {
+    writes.push(value);
+    lockPitch = Boolean(value);
+    return Promise.resolve({ ok: true });
+  };
+  const harness = createHarness({ storage });
+  await harness.start();
+
+  const toggle = harness.panel('Lock pitch');
+  assert.ok(toggle, 'the toggle lives on the existing in-player panel');
+  assert.equal(toggle.checked, false, 'off by default');
+
+  toggle.checked = true;
+  toggle.dispatchEvent('change');
+  assert.deepEqual(writes, [true], 'the change writes the flag once');
+  assert.equal(harness.panel('Lock pitch').checked, true, 'the toggle reflects the saved flag');
+
+  lockPitch = false;
+  harness.controller.sync();
+  assert.equal(harness.panel('Lock pitch').checked, false, 'an external settings change is reflected on sync');
+  assert.equal(harness.panel('Repeat').checked, true, 'the Repeat control is unaffected');
+  assert.equal(harness.status(), 'Set From or To', 'the section status is unaffected');
+});
+
+test('lock pitch: no toggle is added when the settings bridge is missing', async () => {
+  const harness = createHarness({ storage: createStorage() });
+  await harness.start();
+  assert.equal(harness.panel('Lock pitch'), null, 'no new surface without a persisted flag');
+  assert.ok(harness.panel('Repeat'), 'the existing Repeat control stays');
+});
